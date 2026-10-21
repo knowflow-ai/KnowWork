@@ -1,0 +1,9 @@
+{
+  "name": "@knowwork/dsh-host-bundle",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "KnowWork 宿主配置层：叠在官方 sdk-minimal 之上，换掉 stdio 协议与本机 shell，加入 KnowWork 插件",
+  "main": "index.js",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

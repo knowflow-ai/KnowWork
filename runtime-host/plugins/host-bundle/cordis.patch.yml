@@ -1,0 +1,204 @@
+# KnowWork 宿主配置层，叠在官方 @deepseek-ai/dsh-sdk-minimal 之上。
+# 原则：只停用和插入，不改官方插件。
+# 宿主不在本机执行命令、不读写本机文件：代码执行只在业务服务调度的断网容器沙箱里进行。
+# 做法是官方留的扩展点：把 ctx.subprocess 与 ctx.fs 换成落到会话容器的远程实现，
+# 官方的 bash、文件工具、present、后台任务与 Office 技能原样挂上去，不另写一套。
+
+# 官方 SDK 启动与 stdio JSON-RPC 协议驱动 → 换成 KnowWork HTTP 驱动。
+# sdk-app 收到 stdin EOF 就退出进程，服务端部署（systemd、docker 不带 -i）会立刻退出，所以一并停用。
+- id: sdk-app-startup
+  disabled: true
+- id: sdk-jsonrpc-server
+  disabled: true
+
+# 本机 shell、终端、工作目录工具
+- id: persistent-bash
+  disabled: true
+- id: persistent-pwsh
+  disabled: true
+- id: terminal-bash
+  disabled: true
+- id: terminal-pwsh
+  disabled: true
+- id: tool-working-directory
+  disabled: true
+
+# 执行世界换成会话容器：官方本机的文件系统与子进程服务停用，由 knowwork-remote-fs、knowwork-remote-subprocess 接替
+- id: filesystem
+  disabled: true
+- id: subprocess
+  disabled: true
+
+# 官方文件工具（读、写、编辑、读图），读写的是会话容器里的文件。read_image 把读到的图存进宿主私有的附件存储再交给
+# 模型，Office 技能用它看渲染出的页面；模型不支持图片输入时它会如实拒绝，技能里有用 pdftotext 核对的退路。
+- id: tool-fs
+  config:
+    readImage: true
+
+# 模型一律经业务服务的模型网关（OpenAI 兼容），宿主不直连任何模型厂商
+- id: llm-deepseek
+  disabled: true
+
+# 人设（官方写法：替换 system-prompt 的整段配置，保留的字段照抄官方最小配置）。
+# 官方默认人设是英文的 software engineer assistant：模型会按编程助手自居。可用环境变量覆盖。
+# 语言规则不写在这里，由 knowwork-prompt-context 按业务服务下发的本轮语言写在提问之后。
+- id: system-prompt
+  config:
+    includeHarnessIdentity: false
+    includeRuntimeContext: false
+    personaPrefix: !!js >-
+      process.env.KNOWWORK_PERSONA ?? '你是 KnowWork 企业智能助手，帮助员工查资料、处理文档与表格、完成工作任务。调用工具前，先用一两句话告诉用户你要做什么；换个查法或重试前，说明原因和要改什么。说明要简短自然，不要提工具名、参数或内部协议。'
+
+- insert:
+    # 官方会话检查点：模型请求前、工具执行前、每步边界先落盘。崩溃后从存储恢复，
+    # 中断的工具调用以未知结果恢复、不自动重试。官方最小配置不含它，崩溃会丢整段会话。
+    - id: session-checkpoints
+      name: '@deepseek-ai/dsh-session-checkpoint-policy'
+
+    - id: knowwork-log-sink
+      name: '@knowwork/dsh-host/log-sink'
+
+    # 执行世界：会话容器（/sessions/<会话 id> 对到容器的 /workspace），经业务服务的内部沙箱接口
+    - id: knowwork-remote-fs
+      name: '@knowwork/dsh-host/remote-fs'
+    - id: knowwork-remote-subprocess
+      name: '@knowwork/dsh-host/remote-subprocess'
+
+    # 官方 bash（照 dsh-base 的挂法）：执行器建在 ctx.subprocess 上，所以命令跑在容器里；
+    # 超时、取消、输出截断、后台任务都是官方机制
+    - id: shell-env
+      name: '@deepseek-ai/dsh-shell-env'
+    - id: bash
+      name: '@deepseek-ai/dsh-bash-local'
+      config:
+        timeoutMs: 120000
+        maxTimeoutMs: 600000
+    - id: tool-bash
+      name: '@deepseek-ai/dsh-tool-bash'
+    - id: tool-jobs
+      name: '@deepseek-ai/dsh-tool-jobs'
+    - id: fs-observation-policy
+      name: '@deepseek-ai/dsh-fs-observation-policy'
+
+    # 官方文件交付：声明要交给用户的文件，业务服务据此收成产物
+    - id: tool-present
+      name: '@deepseek-ai/dsh-tool-present'
+
+    # KnowWork 自带的 Office 技能（Word、Excel、PPT，照搬 KnowFlow）：原生 LibreOffice、pandoc、docx-js、pptxgenjs
+    # 与 /opt/knowwork/office 下的脚本，都在沙箱镜像里。不挂官方 dsh-skill-office（理由见 bundled-skills.mjs）。
+    - id: knowwork-bundled-skills
+      name: '@knowwork/dsh-host/bundled-skills'
+
+    - id: knowwork-prompt-context
+      name: '@knowwork/dsh-host/prompt-context'
+
+    # 官方凭据服务：网关短期令牌经 ctx.credentials 轮换，下一次请求即生效，无需重启。
+    # 存储文件放在宿主私有目录（容器里挂 tmpfs），宿主不开放 shell 与文件工具，Agent 读不到。
+    - id: credentials-local
+      name: '@deepseek-ai/dsh-credentials-local'
+      config:
+        path: !!js process.env.KNOWWORK_CREDENTIALS_PATH ?? dshHomePath('knowwork-credentials.yaml')
+
+    - id: llm-knowwork-gateway
+      name: '@deepseek-ai/dsh-llm-pi-ai'
+      config:
+        providers:
+          knowwork-gateway:
+            displayName: KnowWork 模型网关
+            api: openai-completions
+            apiKeyEnv: KNOWWORK_MODEL_TOKEN
+            baseURL: !!js process.env.KNOWWORK_MODEL_BASE_URL ?? 'http://127.0.0.1:8001/internal/model/v1'
+            models:
+              - id: !!js process.env.KNOWWORK_MODEL ?? 'default'
+                name: 工作空间默认模型
+                contextWindow: !!js Number(process.env.KNOWWORK_MODEL_CONTEXT_WINDOW ?? 131072)
+                # 声明能收图片：不写时官方只按文字处理，read_image 读到的图发不出去。一个宿主服务所有工作空间，
+                # 这里只能写一份；默认模型没勾「看图」的空间，业务服务把 read_image 放进会话的 deny（官方
+                # tools.restrict 收掉），图片根本不会产生。官方提醒这个声明不做校验，所以收窄必须在业务服务做。
+                input: [text, image]
+            retryPolicy:
+              mode: normal
+              maxRetries: 2
+
+    - id: user-approval
+      name: '@deepseek-ai/dsh-user-approval'
+      config:
+        policy: ask
+
+    # 官方向用户提问：问答服务（ctx.userQuestions，挂官方 userQuestions 会话投影）与模型侧 ask_user_question。
+    # 用 timed 模式：请求带工具调用 id、问题进投影，宿主重启后恢复会话仍能回答；legacy 模式两样都没有。
+    # 前台默认等待与提问应答者的等待上限取同一个值，到期后模型先继续，问题仍可答，迟到回答开新一轮。
+    - id: user-questions
+      name: '@deepseek-ai/dsh-user-questions'
+
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+      config:
+        mode: timed
+        timeout: !!js Math.ceil(Number(process.env.KNOWWORK_QUESTION_TIMEOUT_MS ?? 1800000) / 1000)
+
+    # 官方待办：模型整表写入，落成 todo/write 会话事件，业务服务据此展示进度。
+    # 有子 Agent 与后台任务，几项同时进行是正常的，照官方 Web 预设允许并行。
+    - id: tool-todo
+      name: '@deepseek-ai/dsh-tool-todo'
+      config:
+        allowParallelInProgress: true
+
+    # 官方子 Agent：委派服务、进程内 spawn 后端、委派工具（照官方 dsh-base 的行）。
+    # 子会话的工具收窄、审批、事件按父会话继承，见 knowwork-subagent-policy。
+    # 不加 fork 后端与 list_agents：fork 会把父会话历史整段带进子会话，第一期不需要。
+    - id: subagent
+      name: '@deepseek-ai/dsh-subagent'
+
+    - id: subagent-spawn-in-process
+      name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+      config:
+        providerName: spawn
+
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+
+    # 官方技能注册表与模型侧的目录、`skill` 加载工具。不挂官方文件系统提供方：技能只来自业务服务
+    # 下发的本会话清单（knowwork-skill-provider 按 agent 作用域注册提供方），宿主机目录里的技能一律不读。
+    - id: skills
+      name: '@deepseek-ai/dsh-skill'
+
+    - id: tool-skill
+      name: '@deepseek-ai/dsh-tool-skill'
+
+    - id: knowwork-session-policy
+      name: '@knowwork/dsh-host/session-policy'
+
+    # 本会话技能清单、按需拉取技能内容、加载技能后解锁它认领的专业工具。
+    - id: knowwork-skill-provider
+      name: '@knowwork/dsh-host/skill-provider'
+
+    - id: knowwork-subagent-policy
+      name: '@knowwork/dsh-host/subagent-policy'
+
+    # 业务工具经工具桥回调业务服务内部端口；地址与超时取环境变量。
+    - id: knowwork-tool-bridge
+      name: '@knowwork/dsh-host/tool-bridge'
+
+    - id: knowwork-skill-gate
+      name: '@knowwork/dsh-host/skill-gate'
+
+    - id: knowwork-approval-broker
+      name: '@knowwork/dsh-host/approval-broker'
+      config:
+        timeoutMs: !!js Number(process.env.KNOWWORK_APPROVAL_TIMEOUT_MS ?? 1800000)
+
+    # 提问转给业务服务，用户在对话里作答；等待上限与 tool-ask-user 的默认期限一致
+    - id: knowwork-question-broker
+      name: '@knowwork/dsh-host/question-broker'
+      config:
+        timeoutMs: !!js Number(process.env.KNOWWORK_QUESTION_TIMEOUT_MS ?? 1800000)
+
+    - id: knowwork-http-host
+      name: '@knowwork/dsh-host/http-host'

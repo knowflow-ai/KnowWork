@@ -1,0 +1,12 @@
+# 会话沙箱（默认打开）：api 直接连本机 Docker daemon，按会话创建沙箱容器，模型发起的命令与文件读写都落在里面，
+# 碰不到这台服务器上的数据库连接、密钥和别人的数据。
+#
+# 挂 docker.sock 等于给了 api 宿主机 root，只用于私有化单机部署。不需要沙箱时，把 .env 里的
+# COMPOSE_FILE 改成只有 docker-compose.yml（install.sh --no-sandbox 会替你改）；这时模型不能执行命令，
+# 也生成不了 Word、Excel 这类文件。连远端 daemon 的做法见 .env.example。
+services:
+  api:
+    environment:
+      KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-true}
+    volumes:
+      - ${KNOWWORK_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock

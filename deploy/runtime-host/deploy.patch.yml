@@ -1,0 +1,6 @@
+# 容器部署层：叠在宿主配置档之上（dsh --patch）。
+# 宿主默认只监听 127.0.0.1；容器里改为监听容器网卡，由 compose 网络保证只有 api 能连到它。
+- id: knowwork-http-host
+  name: '@knowwork/dsh-host/http-host'
+  config:
+    host: !!js process.env.KNOWWORK_HOST_BIND ?? '0.0.0.0'

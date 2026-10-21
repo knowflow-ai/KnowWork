@@ -1,0 +1,8 @@
+# 只在测试时叠加：E1 用的三个测试工具，以及重新打开官方 DeepSeek 适配器指向官方模拟服务。
+# 生产配置不包含这些。
+- id: llm-deepseek
+  disabled: false
+
+- insert:
+    - id: knowwork-test-tools
+      name: '@knowwork/dsh-host/test-tools'

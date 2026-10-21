@@ -1,0 +1,15 @@
+/*
+ * 样式入口：Tailwind 加 ChatGPT 官方设计系统（@openai/apps-sdk-ui，MIT）的令牌与重置。
+ * 组件库的规则都放在 @layer 里；我们自己的 app.css 在 main.tsx 里随后引入、不分层，同名规则以 app.css 为准。
+ */
+@import 'tailwindcss';
+@import '@openai/apps-sdk-ui/css';
+/* 组件库的类名写在 node_modules 里，Tailwind 默认不扫那里，要点名，否则组件用到的工具类不会生成 */
+@source '../../node_modules/@openai/apps-sdk-ui';
+
+/* 官方字体栈后面补上中文字体，否则 Windows 上中文会落到宋体 */
+@theme {
+  --font-sans:
+    ui-sans-serif, -apple-system, system-ui, 'Segoe UI', 'Noto Sans', 'Helvetica', 'Arial', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}

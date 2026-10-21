@@ -1,0 +1,326 @@
+# KnowWork 默认部署：常驻 7 个容器（gateway、api、worker、runtime-host、postgres、redis、rustfs），
+# 另有一个一次性任务 bootstrap（生成部署密钥），跑完即退出。数据库迁移由 api 启动时自动执行（KNOWWORK_AUTO_MIGRATE）：
+# 迁移用库所有者 knowwork_owner，运行用只有增删改查的 knowwork_app（不是表的所有者，关不掉行级安全）。
+#
+# 网络划分（除 edge、egress 外全部 internal，不能出公网）：
+#   edge            gateway ↔ api 公开端口；api 经它访问模型上游
+#   egress          worker 访问外部 MinerU
+#   backend         api、worker ↔ postgres、redis、rustfs
+#   host-link       只有 api 与 runtime-host；api 的内部端口只绑定在这张网卡上，网关连不到
+#
+# 镜像都在阿里云容器镜像服务（KNOWWORK_REGISTRY）：我们的四个镜像，以及照原样同步过去的 postgres、redis、rustfs，
+# 国内拉取不依赖 Docker Hub。只发布 linux/amd64。
+#
+# 会话沙箱（Docker 后端，做法照抄 WeKnora）默认打开，配置在 docker-compose.sandbox.yml：api 挂本机 docker.sock，
+# 按会话创建沙箱容器（不在本文件里），模型的命令与文件读写都落在容器里。挂 docker.sock 等于给了 api 宿主机 root，
+# 只用于私有化单机部署；不要沙箱时把 .env 里 COMPOSE_FILE 的第二个文件去掉（install.sh --no-sandbox 会替你改）。
+#
+# 密钥：bootstrap 生成一个主密钥，其余（宿主令牌、数据库口令、模型网关令牌等）都由它派生，不需要手填。
+# 主密钥、宿主令牌、数据库口令分放三个卷，每个容器只挂自己用得到的那个，且只读。
+name: knowwork
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-server-image: &server-image
+  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.0.1}
+  pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-server-env: &server-env
+  KNOWWORK_MASTER_KEY_FILE: /run/knowwork/secrets/master.key
+  PGPASSFILE: /run/knowwork/secrets/pgpass
+  KNOWWORK_DATABASE_URL: postgresql+asyncpg://knowwork_app@postgres:5432/knowwork
+  KNOWWORK_HOST_BASE_URL: http://runtime-host:7300
+  KNOWWORK_MODEL_UPSTREAM_BASE_URL: ${KNOWWORK_MODEL_UPSTREAM_BASE_URL:-https://api.deepseek.com/v1}
+  KNOWWORK_MODEL_UPSTREAM_API_KEY: ${KNOWWORK_MODEL_UPSTREAM_API_KEY:-}
+  KNOWWORK_MODEL_UPSTREAM_MODEL: ${KNOWWORK_MODEL_UPSTREAM_MODEL:-deepseek-chat}
+  KNOWWORK_HOST_MODEL_ALIAS: ${KNOWWORK_HOST_MODEL_ALIAS:-default}
+  KNOWWORK_PUBLIC_BASE_URL: ${KNOWWORK_PUBLIC_BASE_URL:-http://localhost:8080}
+  KNOWWORK_COOKIE_SECURE: ${KNOWWORK_COOKIE_SECURE:-true}
+  KNOWWORK_OIDC_ISSUER: ${KNOWWORK_OIDC_ISSUER:-}
+  KNOWWORK_OIDC_CLIENT_ID: ${KNOWWORK_OIDC_CLIENT_ID:-}
+  KNOWWORK_OIDC_CLIENT_SECRET: ${KNOWWORK_OIDC_CLIENT_SECRET:-}
+  KNOWWORK_OIDC_REDIRECT_URI: ${KNOWWORK_OIDC_REDIRECT_URI:-}
+  KNOWWORK_MODEL_TOKEN_TTL_SECONDS: ${KNOWWORK_MODEL_TOKEN_TTL_SECONDS:-900}
+  KNOWWORK_REDIS_URL: redis://redis:6379/0
+  KNOWWORK_S3_ENDPOINT_URL: http://rustfs:9000
+  KNOWWORK_S3_BUCKET: ${KNOWWORK_S3_BUCKET:-knowwork}
+  KNOWWORK_S3_ACCESS_KEY: ${KNOWWORK_RUSTFS_ACCESS_KEY:?请先运行 deploy/install.sh 或在 .env 中设置 KNOWWORK_RUSTFS_ACCESS_KEY}
+  KNOWWORK_S3_SECRET_KEY: ${KNOWWORK_RUSTFS_SECRET_KEY:?请先运行 deploy/install.sh 或在 .env 中设置 KNOWWORK_RUSTFS_SECRET_KEY}
+  KNOWWORK_MINERU_BASE_URL: ${KNOWWORK_MINERU_BASE_URL:-}
+  TZ: ${TZ:-Asia/Shanghai}
+
+services:
+  bootstrap:
+    <<: [*server-image, *hardening]
+    restart: "no"
+    user: "0:0"
+    # 改属主、读已归其他用户的旧文件需要这三项，其余能力全部去掉
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    network_mode: none
+    read_only: true
+    command: ["python", "-m", "knowwork_server.ops.bootstrap"]
+    environment:
+      KNOWWORK_BOOTSTRAP_DATA_DIRS: /run/knowwork/rustfs-data=10001
+    volumes:
+      - secrets:/run/knowwork/secrets
+      - host-secrets:/run/knowwork/host
+      - db-secrets:/run/knowwork/db
+      - rustfs-data:/run/knowwork/rustfs-data
+    logging: *logging
+
+  postgres:
+    image: ${KNOWWORK_POSTGRES_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/postgres:17.6-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: knowwork
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/knowwork/db/postgres_password
+      KNOWWORK_DB_SECRETS_DIR: /run/knowwork/db
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - db-secrets:/run/knowwork/db:ro
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d knowwork -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    logging: *logging
+
+  redis:
+    image: ${KNOWWORK_REDIS_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/redis:7.4.2-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "${KNOWWORK_REDIS_MAXMEMORY:-256mb}",
+              "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    logging: *logging
+
+  rustfs:
+    image: ${KNOWWORK_RUSTFS_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/rustfs-rustfs:1.0.0-beta.7}
+    restart: unless-stopped
+    command: ["/data"]
+    environment:
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_ACCESS_KEY: ${KNOWWORK_RUSTFS_ACCESS_KEY:?请先运行 deploy/install.sh 或在 .env 中设置 KNOWWORK_RUSTFS_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${KNOWWORK_RUSTFS_SECRET_KEY:?请先运行 deploy/install.sh 或在 .env 中设置 KNOWWORK_RUSTFS_SECRET_KEY}
+    volumes:
+      - rustfs-data:/data
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    networks: [backend]
+    healthcheck:
+      # rustfs 的健康端点是 /health（MinIO 的 /minio/health/live 在 rustfs 上返回 403）
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    logging: *logging
+
+  runtime-host:
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.0.1}
+    pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
+    <<: *hardening
+    restart: unless-stopped
+    read_only: true
+    environment:
+      KNOWWORK_HOST_TOKEN_FILE: /run/knowwork/host/host_token
+      KNOWWORK_MODEL_BASE_URL: http://api:8001/internal/model/v1
+      KNOWWORK_TOOLS_BASE_URL: http://api:8001/internal/extensions/tools
+      KNOWWORK_SKILLS_BASE_URL: http://api:8001/internal/extensions/skills
+      # 宿主向模型网关请求时用的模型名，与 api 的 KNOWWORK_HOST_MODEL_ALIAS 一致
+      KNOWWORK_MODEL: ${KNOWWORK_HOST_MODEL_ALIAS:-default}
+      KNOWWORK_MODEL_CONTEXT_WINDOW: ${KNOWWORK_MODEL_CONTEXT_WINDOW:-131072}
+      KNOWWORK_APPROVAL_TIMEOUT_MS: ${KNOWWORK_APPROVAL_TIMEOUT_MS:-1800000}
+      # Agent 向用户提问时前台最多等多久；到期后 Agent 先继续，问题仍可答
+      KNOWWORK_QUESTION_TIMEOUT_MS: ${KNOWWORK_QUESTION_TIMEOUT_MS:-1800000}
+      KNOWWORK_LOG_LEVEL: ${KNOWWORK_LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - host-secrets:/run/knowwork/host:ro
+      - dsh-data:/data/dsh
+    tmpfs:
+      # 官方凭据服务的存储文件（模型网关短期令牌）只放内存
+      - /run/knowwork-host-private:uid=1000,gid=1000,mode=0700
+      - /tmp:uid=1000,gid=1000,mode=1777
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    networks: [host-link]
+    healthcheck:
+      test: ["CMD", "node", "-e",
+             "fetch('http://127.0.0.1:7300/health').then(r=>r.json()).then(v=>process.exit(v.ok===true?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    logging: *logging
+
+  api:
+    <<: [*server-image, *hardening]
+    restart: unless-stopped
+    read_only: true
+    # 入口以 root 起步，只为按 docker.sock 的属组给应用账号（10001）补附加组，随即降权再启动服务；
+    # 只保留降权要用的两项能力，降权后全部清空。不 chmod 套接字。
+    user: "0:0"
+    cap_add: [SETUID, SETGID]
+    entrypoint: ["python", "-m", "knowwork_server.ops.entrypoint"]
+    command: ["python", "-m", "knowwork_server"]
+    environment:
+      <<: *server-env
+      # 启动时用库所有者 knowwork_owner 把库升级到最新迁移，并给运行账号 knowwork_app 授权；
+      # 业务连接只用 knowwork_app（两者都非超级用户、无 BYPASSRLS，口令都在 pgpass 里）
+      KNOWWORK_AUTO_MIGRATE: "true"
+      KNOWWORK_MIGRATION_DATABASE_URL: postgresql+asyncpg://knowwork_owner@postgres:5432/knowwork
+      KNOWWORK_APP_DB_ROLE: knowwork_app
+      KNOWWORK_PUBLIC_HOST: 0.0.0.0
+      KNOWWORK_PUBLIC_PORT: "8000"
+      # 内部端口只绑定在 host-link 网卡上：宿主能回调，网关所在的 edge 网络连不到
+      KNOWWORK_INTERNAL_HOST: ${KNOWWORK_API_HOST_LINK_IP:-172.30.240.10}
+      KNOWWORK_INTERNAL_PORT: "8001"
+      # 会话沙箱：本文件里默认关闭，docker-compose.sandbox.yml 打开并挂本机 docker.sock。
+      # 连远端 daemon 时不用那个文件，在 .env 打开 KNOWWORK_SANDBOX_DOCKER_ENABLED，填 tcp://主机:2376，
+      # 并把含 ca.pem、cert.pem、key.pem 的证书目录挂进来、填到 TLS_CERT_PATH。
+      KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-false}
+      KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.1}}
+      KNOWWORK_SANDBOX_DOCKER_HOST: ${KNOWWORK_SANDBOX_DOCKER_HOST:-}
+      KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH: ${KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH:-}
+      KNOWWORK_SANDBOX_ALLOW_INTERNET: ${KNOWWORK_SANDBOX_ALLOW_INTERNET:-true}
+      KNOWWORK_SANDBOX_RUNTIME: ${KNOWWORK_SANDBOX_RUNTIME:-}
+    volumes:
+      - secrets:/run/knowwork/secrets:ro
+      # 本机 Docker 沙箱的 docker.sock 挂载在 docker-compose.sandbox.yml 里
+      # 连远端 daemon 时挂证书目录（并设 KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH=/run/knowwork/docker-certs）：
+      # - ./docker-certs:/run/knowwork/docker-certs:ro
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=1777
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      runtime-host:
+        condition: service_healthy
+    networks:
+      edge: {}
+      backend: {}
+      host-link:
+        ipv4_address: ${KNOWWORK_API_HOST_LINK_IP:-172.30.240.10}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    logging: *logging
+
+  worker:
+    <<: [*server-image, *hardening]
+    restart: unless-stopped
+    read_only: true
+    command: ["python", "-m", "knowwork_server.ops.worker"]
+    environment:
+      <<: *server-env
+      KNOWWORK_AUTO_MIGRATE: "false"
+    volumes:
+      - secrets:/run/knowwork/secrets:ro
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=1777
+    depends_on:
+      # 等 api 健康，即迁移已执行完、表都在
+      api:
+        condition: service_healthy
+    networks: [backend, egress]
+    logging: *logging
+
+  sandbox-image:
+    # 会话沙箱镜像：只用于拉取或本地构建，不常驻（WeKnora 的 sandbox 服务同此）；api 按会话用它创建容器。
+    # 拉取：docker compose --profile sandbox pull sandbox-image（install.sh 会做）；本地构建：把 pull 换成 build。
+    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.1}}
+    build:
+      context: ..
+      dockerfile: deploy/docker/sandbox.Dockerfile
+    profiles: [sandbox]
+    command: ["true"]
+    restart: "no"
+    network_mode: none
+    logging: *logging
+
+  gateway:
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.0.1}
+    pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
+    <<: *hardening
+    restart: unless-stopped
+    read_only: true
+    ports:
+      - "${KNOWWORK_BIND_ADDRESS:-0.0.0.0}:${KNOWWORK_PORT:-8080}:8080"
+    tmpfs:
+      - /tmp:uid=101,gid=101,mode=1777
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+
+networks:
+  edge: {}
+  egress: {}
+  backend:
+    internal: true
+  host-link:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${KNOWWORK_HOST_LINK_SUBNET:-172.30.240.0/24}
+
+volumes:
+  # 卷名带前缀，便于同机做隔离验证而不碰另一套安装
+  secrets:
+    name: ${KNOWWORK_VOLUME_PREFIX:-knowwork}_secrets
+  host-secrets:
+    name: ${KNOWWORK_VOLUME_PREFIX:-knowwork}_host-secrets
+  db-secrets:
+    name: ${KNOWWORK_VOLUME_PREFIX:-knowwork}_db-secrets
+  pg-data:
+    name: ${KNOWWORK_VOLUME_PREFIX:-knowwork}_pg-data
+  redis-data:
+    name: ${KNOWWORK_VOLUME_PREFIX:-knowwork}_redis-data
+  rustfs-data:
+    name: ${KNOWWORK_VOLUME_PREFIX:-knowwork}_rustfs-data
+  dsh-data:
+    name: ${KNOWWORK_VOLUME_PREFIX:-knowwork}_dsh-data

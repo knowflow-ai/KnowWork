@@ -1,0 +1,175 @@
+/**
+ * 运行记录（运行调试视图的管理端）：全空间每一轮按时间列出，点开看每一步。只有空间管理员能看；
+ * 查看、导出别人的运行会记进审计日志（服务端记）。按时间段、成员、状态筛选，向下翻页。
+ */
+import { lazy, Suspense, useState } from 'react';
+import { Button } from '@openai/apps-sdk-ui/components/Button';
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { listRuns, workspaceRun, type RunFilter, type RunRow } from '../../../api/debug';
+import { memberLabel } from '../../../api/workspace';
+import { formatDateTime } from '../../../utils/format';
+import { AdminPage, Toolbar } from '../AdminPage';
+import { useMembers } from '../queries';
+import { FilterSelect } from '../../../ui/FilterSelect';
+import { Skeleton } from '../../../ui/Skeleton';
+import { StatusDot } from '../../../ui/StatusDot';
+import { Table, type Column } from '../../../ui/Table';
+import { duration, statusTone, statusLabel } from '../../debug/format';
+
+const RunInspector = lazy(() => import('../../debug/RunInspector'));
+
+const RANGES = [
+  { value: '1', label: '最近一天' },
+  { value: '7', label: '最近 7 天' },
+  { value: '30', label: '最近 30 天' },
+  { value: '90', label: '最近 90 天' },
+] as const;
+
+const STATUSES = ['completed', 'running', 'cancelled', 'failed'].map((value) => ({
+  value,
+  label: statusLabel(value),
+}));
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export default function RunsPage() {
+  const members = useMembers();
+  const [days, setDays] = useState('7');
+  const [user, setUser] = useState<string>();
+  const [status, setStatus] = useState<string>();
+  const [opened, setOpened] = useState<RunRow>();
+  // 时间段在取数时才按当下往前推（渲染时不读时钟）
+  const runs = useInfiniteQuery({
+    queryKey: ['admin', 'runs', days, user, status],
+    queryFn: ({ pageParam }) => {
+      const filter: RunFilter = {
+        since: new Date(Date.now() - Number(days) * DAY_MS).toISOString(),
+        user,
+        status,
+      };
+      return listRuns(filter, pageParam);
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next ?? undefined,
+  });
+  const rows = (runs.data?.pages ?? []).flatMap((page) => page.items);
+  const memberName = (row: RunRow) => {
+    const member = members.data?.find((m) => m.userId === row.userId);
+    return member ? memberLabel(member) : (row.userName ?? row.userId);
+  };
+
+  const columns: readonly Column<RunRow>[] = [
+    {
+      key: 'started',
+      title: '开始时间',
+      width: 150,
+      render: (row) => <span className="kw-num">{formatDateTime(row.startedAt)}</span>,
+    },
+    { key: 'user', title: '成员', width: 160, ellipsis: true, render: (row) => memberName(row) },
+    {
+      key: 'conversation',
+      title: '会话',
+      ellipsis: true,
+      render: (row) => (
+        <span className="kw-cell-stack">
+          <span>{row.title || '未命名会话'}</span>
+          <span className="kw-secondary">第 {row.turn} 轮</span>
+        </span>
+      ),
+    },
+    {
+      key: 'status',
+      title: '状态',
+      width: 100,
+      render: (row) => <StatusDot tone={statusTone(row.status)}>{statusLabel(row.status)}</StatusDot>,
+    },
+    { key: 'duration', title: '耗时', width: 110, render: (row) => duration(row.durationMs) },
+    { key: 'calls', title: '模型调用', width: 90, align: 'right', render: (row) => row.modelCalls },
+    {
+      key: 'tokens',
+      title: 'Token',
+      width: 150,
+      render: (row) => (
+        <span className="kw-num">
+          {row.inputTokens} / {row.outputTokens}
+        </span>
+      ),
+    },
+    { key: 'cost', title: '费用', width: 90, render: (row) => row.cost ?? '—' },
+  ];
+
+  return (
+    <AdminPage
+      title="运行记录"
+      description="全空间每一轮的运行情况，点开逐步查看模型输出、工具调用与失败原因。查看别人的运行会记进审计日志。"
+    >
+      <Toolbar
+        left={
+          <>
+            <FilterSelect
+              label="时间段"
+              width={140}
+              options={RANGES}
+              value={days}
+              onChange={(next) => setDays(next ?? '7')}
+            />
+            <FilterSelect
+              label="成员"
+              clearable
+              width={180}
+              options={(members.data ?? []).map((m) => ({ value: m.userId, label: memberLabel(m) }))}
+              value={user}
+              onChange={setUser}
+            />
+            <FilterSelect
+              label="状态"
+              clearable
+              width={120}
+              options={STATUSES}
+              value={status}
+              onChange={setStatus}
+            />
+          </>
+        }
+      />
+      {runs.isPending ? (
+        <Skeleton rows={6} />
+      ) : (
+        <>
+          <Table<RunRow>
+            rowKey={(row) => `${row.conversationId}:${row.turn}`}
+            columns={columns}
+            rows={rows}
+            minWidth={960}
+            pageSize={false}
+            onRowClick={setOpened}
+            empty={runs.isError ? '运行记录加载失败，请刷新重试' : '这段时间没有运行记录'}
+          />
+          <div className="kw-admin-more">
+            <span className="kw-secondary">已加载 {rows.length} 轮</span>
+            {runs.hasNextPage ? (
+              <Button
+                color="secondary"
+                variant="outline"
+                loading={runs.isFetchingNextPage}
+                onClick={() => void runs.fetchNextPage()}
+              >
+                加载更多
+              </Button>
+            ) : null}
+          </div>
+        </>
+      )}
+      {opened ? (
+        <Suspense fallback={null}>
+          <RunInspector
+            source={workspaceRun(opened.conversationId)}
+            turn={opened.turn}
+            title={`${memberName(opened)} · ${opened.title || '未命名会话'} · 第 ${opened.turn} 轮`}
+            onClose={() => setOpened(undefined)}
+          />
+        </Suspense>
+      ) : null}
+    </AdminPage>
+  );
+}

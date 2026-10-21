@@ -1,0 +1,8 @@
+# 测试与本地开发产物
+.coverage
+node_modules
+deploy/.env
+.dev/
+# 没配 KNOWWORK_BLOB_DIR 时，在 server/ 下跑服务或测试，文件默认存到这里
+server/data/
+__pycache__/

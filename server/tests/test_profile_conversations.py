@@ -1,0 +1,181 @@
+"""每轮重算运行配置：版本变了就以新策略恢复宿主会话；权限收回后下一轮工具不可见、执行被拒。"""
+
+import pytest
+
+import knowwork_server.tools.models  # noqa: F401
+from knowwork_server.conversations.listeners import Broadcaster
+from knowwork_server.conversations.pump import EventPump, PumpTimings
+from knowwork_server.conversations.replay import EventFeed
+from knowwork_server.conversations.service import ConversationService
+from knowwork_server.conversations.tool_credentials import ToolCredentials
+from knowwork_server.conversations.writer import BatchWriter
+from knowwork_server.kernel.contract import SessionNotFound, TurnInput
+from knowwork_server.profile.clearance import AuthorizedToolRegistry, ToolClearance
+from knowwork_server.profile.errors import ProfileUnavailable
+from knowwork_server.profile.snapshot import TurnSelection
+from knowwork_server.tools import build_tool_service
+from knowwork_server.tools.service import ExecuteRequest, ToolAccessError
+
+from .fakes import FakeKernel
+from .profile_support import WS, Grants, Model, ensure_profile_tables, registry, skill
+
+pytestmark = pytest.mark.anyio
+USER = "ed"
+
+
+class Skills:
+    async def for_session(self, workspace_id, user_id):
+        return (skill("weekly-report"),)
+
+
+class Models:
+    async def usable_models(self, user_id, workspace_id):
+        return (Model("m1", "default", "默认"),)
+
+    async def default_capabilities(self, workspace_id):
+        return frozenset({"chat", "vision"})  # 能看图：本文件只关心授权收窄，看图工具的收窄见 test_profile_facts
+
+
+class Admin:
+    async def queryable(self, actor, workspace_id):
+        return []
+
+
+async def editor(user_id, workspace_id):
+    return "editor"
+
+
+@pytest.fixture
+async def db(sessionmaker):
+    return await ensure_profile_tables(sessionmaker)
+
+
+class Env:
+    def __init__(self, sessionmaker, kernel=None):
+        from knowwork_server.profile.assembly import build_profiles
+
+        self.kernel = kernel or FakeKernel()
+        self.grants = Grants({USER: "editor"})
+        clearance = ToolClearance(self.grants, builtin=frozenset({"kw_now"}))
+        self.registry = AuthorizedToolRegistry(registry(), clearance)
+        self.tools = build_tool_service("m" * 40, sessionmaker, registry=self.registry)
+        self.profiles = build_profiles(sessionmaker, self.registry, clearance, skills=Skills(), models=Models(),
+                                       knowledge=Admin(), role_of=editor)
+
+        async def issue(conversation):
+            return await self.tools.issue_session_token(conversation.workspace_id, conversation.id,
+                                                        user_id=conversation.user_id)
+
+        writer, broadcaster = BatchWriter(sessionmaker), Broadcaster()
+        self.pump = EventPump(self.kernel, sessionmaker, writer, broadcaster, timings=PumpTimings(idle_timeout=0.2))
+        self.service = ConversationService(self.kernel, sessionmaker, self.pump,
+                                           EventFeed(sessionmaker, writer, broadcaster, self.pump.produced_upto),
+                                           tool_credentials=ToolCredentials(self.kernel, issue),
+                                           profiles=self.profiles, resume_retry_delays=(0.01,))
+
+    def deny(self, index=-1):
+        return set(self.kernel.opened[index].policy.deny)
+
+    def claims(self, index=-1):
+        return self.tools.verify(self.kernel.opened[index].tools_token)
+
+
+async def test_create_opens_with_compiled_deny_and_records_version(db):
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    assert env.deny() == {"crm_write", "erp_read"}
+    assert await env.profiles.bound_version(conversation) == (await env.profiles.compile(conversation)).version
+    await env.pump.close()
+
+
+async def test_unchanged_profile_does_not_reopen(db):
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="一"))
+    await env.service.send(conversation, TurnInput(text="二"))
+    assert len(env.kernel.opened) == 1 and env.kernel.disposed == []
+    await env.pump.close()
+
+
+async def test_grant_then_revoke_reopens_each_time(db):
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    env.grants.grant(USER, "tool:crm_write")
+    await env.service.send(conversation, TurnInput(text="写台账"))
+    assert env.kernel.disposed == [conversation.id]
+    assert env.kernel.opened[-1].resume is True
+    assert "crm_write" not in env.deny() and "crm_write" in env.claims().tools
+    granted_claims = env.claims()
+
+    env.grants.revoke(USER, "tool:crm_write")
+    await env.service.send(conversation, TurnInput(text="再写一次"))
+    assert len(env.kernel.disposed) == 2 and len(env.kernel.opened) == 3
+    assert "crm_write" in env.deny(), "权限收回后下一轮宿主应收窄该工具"
+    assert "crm_write" not in env.claims().tools
+    with pytest.raises(ToolAccessError) as denied:
+        await env.tools.execute(granted_claims, ExecuteRequest(tool_name="crm_write", arguments={"q": "x"},
+                                                               agent_session_id=conversation.id,
+                                                               call_key=f"{conversation.id}:call-1"))
+    assert denied.value.code == "tool_not_available", "旧令牌在执行时也要按当前授权被拒"
+    await env.pump.close()
+
+
+async def test_selection_change_reopens(db):
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="用周报技能"), TurnSelection(skills=("weekly-report",)))
+    assert len(env.kernel.opened) == 2
+    await env.service.send(conversation, TurnInput(text="还是周报"), TurnSelection(skills=("weekly-report",)))
+    assert len(env.kernel.opened) == 2
+    await env.pump.close()
+
+
+async def test_lost_host_session_resumes_with_current_profile(db):
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    env.kernel.send_effects = [SessionNotFound("session_not_found", "x", 404)]
+    await env.service.send(conversation, TurnInput(text="宿主重启后"))
+    assert [s.resume for s in env.kernel.opened] == [False, True]
+    assert env.deny() == {"crm_write", "erp_read"}
+    await env.pump.close()
+
+
+async def test_reopen_failure_does_not_record_new_version(db):
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    old = await env.profiles.bound_version(conversation)
+    env.grants.grant(USER, "tool:erp_read")
+    env.kernel.open_effects = [OSError("host down")]
+    with pytest.raises(OSError):
+        await env.service.send(conversation, TurnInput(text="x"))
+    assert await env.profiles.bound_version(conversation) == old
+    await env.service.send(conversation, TurnInput(text="再试"))
+    assert "erp_read" not in env.deny()
+    assert await env.profiles.bound_version(conversation) != old
+    await env.pump.close()
+
+
+async def test_profile_unavailable_blocks_create_without_orphan(db):
+    env = Env(db)
+
+    async def broken(conversation, selection=None):
+        raise ProfileUnavailable()
+
+    env.profiles.compile = broken
+    with pytest.raises(ProfileUnavailable):
+        await env.service.create(workspace_id=WS, user_id="orphan-check")
+    assert env.kernel.opened == []
+    page = await env.service.list_page(workspace_id=WS, user_id="orphan-check")
+    assert page.items == ()
+    await env.pump.close()
+
+
+async def test_steer_does_not_reopen_mid_turn(db):
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    env.grants.grant(USER, "tool:erp_read")
+    await env.service.send(conversation, TurnInput(text="插一句", mode="steer"))
+    assert env.kernel.disposed == [] and len(env.kernel.opened) == 1
+    await env.service.send(conversation, TurnInput(text="下一轮"))
+    assert "erp_read" not in env.deny()
+    await env.pump.close()

@@ -1,0 +1,23 @@
+{
+  "name": "@knowwork/dsh-host",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "KnowWork 的 DeepSeek Harness 插件：HTTP 驱动、审批与提问转发、会话工具策略、技能门、技能提供方、工具桥、子 Agent 策略继承",
+  "exports": {
+    "./http-host": "./src/http-host.mjs",
+    "./log-sink": "./src/log-sink.mjs",
+    "./prompt-context": "./src/prompt-context.mjs",
+    "./bundled-skills": "./src/bundled-skills.mjs",
+    "./remote-fs": "./src/remote-fs.mjs",
+    "./remote-subprocess": "./src/remote-subprocess.mjs",
+    "./approval-broker": "./src/approval-broker.mjs",
+    "./question-broker": "./src/question-broker.mjs",
+    "./session-policy": "./src/session-policy.mjs",
+    "./skill-gate": "./src/skill-gate.mjs",
+    "./skill-provider": "./src/skill-provider.mjs",
+    "./subagent-policy": "./src/subagent-policy.mjs",
+    "./tool-bridge": "./src/tool-bridge.mjs",
+    "./test-tools": "./src/test-tools.mjs"
+  }
+}

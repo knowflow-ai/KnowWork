@@ -1,0 +1,290 @@
+/*
+ * 运行详情（运行调试视图）：布局照 OpenAI 平台的 Traces，左栏步骤、右栏详情；
+ * 配色照对话里的执行过程，单色、说明色小字、灰底框，不用彩色状态与提示框。
+ */
+.kw-trace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.kw-trace-state {
+  padding: 20px;
+}
+
+.kw-trace-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.kw-trace-request {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--font-text-md-size);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.kw-trace-meta {
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.kw-trace-strong {
+  color: var(--color-text);
+  font-weight: var(--font-weight-medium);
+}
+
+.kw-trace-problem {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+  overflow-wrap: anywhere;
+}
+
+.kw-trace-split {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 300px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.kw-trace-list {
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-secondary);
+}
+
+.kw-trace-detail {
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 24px 32px;
+  overflow-y: auto;
+}
+
+.kw-trace-replay {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px 8px 8px;
+}
+
+.kw-trace-replay .kw-trace-meta {
+  flex: 1;
+}
+
+.kw-trace-group + .kw-trace-group {
+  margin-top: 12px;
+}
+
+.kw-trace-group-label {
+  padding: 4px 8px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+  font-weight: var(--font-weight-medium);
+}
+
+.kw-trace-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kw-trace-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-lg);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+  text-align: left;
+  transition: background-color var(--transition-duration-basic);
+}
+
+.kw-trace-row:hover {
+  background: var(--color-background-primary-soft-alt);
+}
+
+.kw-trace-row.is-selected {
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--shadow-hairline);
+}
+
+.kw-trace-row-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.kw-trace-row-title {
+  flex: none;
+  color: var(--color-text);
+  font-weight: var(--font-weight-medium);
+}
+
+.kw-trace-row-target {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kw-trace-row-time,
+.kw-trace-row-problem {
+  flex: none;
+  font-size: var(--font-text-xs-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.kw-trace-bar {
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--color-border-subtle);
+}
+
+.kw-trace-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--gray-400);
+}
+
+.kw-trace-row.is-selected .kw-trace-bar > span {
+  background: var(--gray-700);
+}
+
+.kw-trace-step {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kw-trace-step-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kw-trace-step-title {
+  min-width: 0;
+}
+
+.kw-trace-step-title h3 {
+  margin: 0;
+  font-size: var(--font-text-md-size);
+  font-weight: var(--font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.kw-trace-thinking {
+  margin: 6px 0 0;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: var(--font-text-sm-size);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kw-trace-call {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.kw-trace-call-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  font-size: var(--font-text-sm-size);
+}
+
+/* 一段原文：灰底框，长行在框内折行，太长的在框内滚动 */
+.kw-trace-block {
+  min-width: 0;
+}
+
+.kw-trace-block-label {
+  margin-bottom: 4px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+}
+
+.kw-trace-block pre {
+  margin: 0;
+  max-height: 360px;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-secondary);
+  font-family: inherit;
+  font-size: var(--font-text-sm-size);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kw-trace-block pre.is-code {
+  font-family: var(--font-mono);
+  font-size: var(--font-text-xs-size);
+  line-height: 1.6;
+}
+
+.kw-trace-input {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kw-trace-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.kw-trace-message {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 窄屏：步骤列表叠在详情上面 */
+@media (max-width: 720px) {
+  .kw-trace-split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 40%) minmax(0, 1fr);
+  }
+
+  .kw-trace-list {
+    border-right: none;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+}

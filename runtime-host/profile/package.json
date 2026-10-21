@@ -1,0 +1,13 @@
+{
+  "name": "dsh-profile-knowwork-host",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-sdk-minimal",
+        "@knowwork/dsh-host-bundle"
+      ]
+    }
+  }
+}

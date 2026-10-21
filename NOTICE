@@ -1,0 +1,40 @@
+KnowWork
+Copyright 2026 The KnowWork Authors
+
+本产品以 Apache License 2.0 发布，全文见 LICENSE。
+
+本产品包含或改编自以下第三方软件，它们都以 MIT 许可证发布（许可证全文见本文件末尾）：
+
+-------------------------------------------------------------------------------
+DeepSeek Harness（https://www.npmjs.com/package/@deepseek-ai/dsh）
+Copyright (c) 2026 DeepSeek
+
+作为运行依赖由 npm 安装。另有几处照搬其实现：附件句柄的说明文字（dsh-llm）、HTML 产物的预览文档
+（dsh-client-ui-sidebar-documentpreview）、MCP 工具的命名规则（dsh-mcp-client）。
+
+-------------------------------------------------------------------------------
+WeKnora（https://github.com/Tencent/WeKnora）
+Copyright (C) 2026 Tencent. All rights reserved.
+
+会话沙箱的 Docker 后端（容器能力、资源限制、镜像内容）与部署编排参照其做法改写。
+
+-------------------------------------------------------------------------------
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

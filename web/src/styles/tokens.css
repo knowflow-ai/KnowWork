@@ -1,0 +1,36 @@
+/*
+ * KnowWork 自己的界面令牌：都指向组件库（ChatGPT 官方设计系统）的令牌，暗色主题跟着组件库一起切；
+ * 组件库没有的只有产品自己的链接色、几档字号与布局尺寸。新代码直接用组件库的变量（界面规范第 1 节）。
+ */
+:root {
+  --kw-link: #2b7de9;
+  --kw-text: var(--color-text);
+  --kw-text-secondary: var(--color-text-secondary);
+  --kw-text-tertiary: var(--color-text-tertiary);
+  --kw-border-secondary: var(--color-border);
+  --kw-sidebar-bg: var(--color-surface-secondary);
+  --kw-content-bg: var(--color-surface);
+  --kw-user-bubble-bg: var(--color-surface-tertiary);
+  --kw-hover-bg: var(--gray-100);
+  /* 彩色文件图标上的白色图案，亮色暗色都不变 */
+  --kw-on-color: #ffffff;
+  --kw-shadow-input: 0 4px 16px rgb(0 0 0 / 6%);
+  --kw-shadow-floating: var(--shadow-300), var(--shadow-hairline);
+  /* 文档预览里的一页：发丝描边加一层很浅的投影，摆在浅灰底上 */
+  --kw-shadow-page: var(--shadow-hairline), 0 2px 8px rgb(0 0 0 / 5%);
+  --kw-document-bg: var(--color-surface-tertiary);
+  --kw-radius-control: var(--radius-md);
+  --kw-radius-card: var(--radius-xl);
+  --kw-radius-card-lg: var(--radius-2xl);
+  --kw-radius-bubble: var(--radius-3xl);
+  --kw-font-xs: 12px;
+  --kw-font-sm: 13px;
+  --kw-font-base: 14px;
+  /* 只用于对话正文 */
+  --kw-font-chat: 15px;
+  --kw-font-md: 16px;
+  /* 只用于页面标题 */
+  --kw-font-title: 20px;
+  --kw-sidebar-width: 260px;
+  --kw-chat-max-width: 760px;
+}

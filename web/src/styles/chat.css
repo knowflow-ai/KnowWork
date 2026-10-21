@@ -1,0 +1,739 @@
+/* 对话页：消息、回答正文、引用、执行过程、审批与提问卡片、文件卡片、输入框。 */
+/* ---------- 对话页 ---------- */
+.kw-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.kw-chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.kw-chat-column {
+  max-width: var(--kw-chat-max-width);
+  margin: 0 auto;
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+
+.kw-chat-welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.kw-chat-welcome h1 {
+  text-align: center;
+  font-size: var(--kw-font-title);
+  font-weight: 600;
+  margin: 0 0 24px;
+}
+
+.kw-user-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  margin: 16px 0;
+}
+
+/* 附件小卡片：用户消息上方、输入框头部共用 */
+.kw-attachment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kw-composer .kw-attachment-chips {
+  justify-content: flex-start;
+  padding: 12px 14px 0;
+}
+
+.kw-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  padding: 4px 6px 4px 4px;
+  border: 1px solid var(--kw-border-secondary);
+  border-radius: var(--kw-radius-card);
+  background: var(--kw-content-bg);
+  font-size: var(--kw-font-sm);
+}
+
+.kw-attachment-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--kw-radius-control);
+  color: var(--kw-on-color);
+}
+
+.kw-attachment-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kw-attachment-size {
+  flex: none;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-user-bubble {
+  max-width: 70%;
+  background: var(--kw-user-bubble-bg);
+  border-radius: var(--kw-radius-bubble);
+  padding: 10px 16px;
+  font-size: var(--kw-font-chat);
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.kw-user-bubble.is-pending {
+  color: var(--kw-text-secondary);
+}
+
+.kw-assistant {
+  margin: 16px 0 24px;
+  font-size: var(--kw-font-chat);
+  line-height: 1.75;
+}
+
+/* 正文排版：Tailwind 的重置清掉了段落、列表、标题的默认样式，这里按 ChatGPT 回答的排版补回来 */
+.kw-markdown p,
+.kw-markdown ul,
+.kw-markdown ol,
+.kw-markdown pre,
+.kw-markdown table,
+.kw-markdown blockquote {
+  margin: 0 0 1em;
+}
+
+.kw-markdown ul,
+.kw-markdown ol {
+  padding-left: 1.625em;
+}
+
+.kw-markdown ul {
+  list-style: disc;
+}
+
+.kw-markdown ol {
+  list-style: decimal;
+}
+
+.kw-markdown li {
+  margin: 0.25em 0;
+}
+
+.kw-markdown li > ul,
+.kw-markdown li > ol {
+  margin: 0.25em 0 0;
+}
+
+.kw-markdown h1,
+.kw-markdown h2,
+.kw-markdown h3,
+.kw-markdown h4 {
+  margin: 1.25em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.kw-markdown h1 {
+  font-size: 1.5em;
+}
+
+.kw-markdown h2 {
+  font-size: 1.25em;
+}
+
+.kw-markdown h3 {
+  font-size: 1.125em;
+}
+
+.kw-markdown h4 {
+  font-size: 1em;
+}
+
+.kw-markdown blockquote {
+  padding-left: 1em;
+  border-left: 2px solid var(--kw-border-secondary);
+  color: var(--kw-text-secondary);
+}
+
+.kw-markdown hr {
+  margin: 1.5em 0;
+  border: none;
+  border-top: 1px solid var(--kw-border-secondary);
+}
+
+.kw-markdown a {
+  color: var(--kw-link);
+}
+
+.kw-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.kw-markdown :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: var(--kw-user-bubble-bg);
+}
+
+.kw-markdown img {
+  display: inline-block;
+}
+
+.kw-markdown > :first-child {
+  margin-top: 0;
+}
+
+.kw-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.kw-markdown pre {
+  background: var(--kw-user-bubble-bg);
+  border-radius: var(--kw-radius-control);
+  padding: 12px;
+  overflow-x: auto;
+  font-size: var(--kw-font-sm);
+}
+
+.kw-markdown table {
+  border-collapse: collapse;
+}
+
+.kw-markdown th,
+.kw-markdown td {
+  border: 1px solid var(--kw-border-secondary);
+  padding: 4px 8px;
+}
+
+.kw-citation {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 0 5px;
+  border: none;
+  border-radius: var(--kw-radius-control);
+  background: var(--kw-user-bubble-bg);
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+  line-height: 16px;
+  vertical-align: super;
+  cursor: pointer;
+}
+
+.kw-citation:hover {
+  background: var(--kw-hover-bg);
+}
+
+.kw-citation-source {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-citation-label,
+.kw-citation-page {
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+}
+
+.kw-citation-title {
+  font-weight: var(--font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+/* 摘录最多 6 行，再多点「查看原文」 */
+.kw-citation-excerpt {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+}
+
+.kw-link {
+  color: var(--kw-link);
+  text-decoration: none;
+}
+
+.kw-link:hover {
+  text-decoration: underline;
+}
+
+.kw-citation-notice {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--kw-font-xs);
+}
+
+.kw-process-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-sm);
+  cursor: pointer;
+}
+
+/* 执行过程（照 ChatGPT 思考面板）：左侧细竖线，整段次要色小字，不用彩色状态 */
+.kw-process-body {
+  margin: 8px 0 12px;
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--kw-border-secondary);
+  list-style: none;
+}
+
+.kw-step + .kw-step {
+  margin-top: 10px;
+}
+
+.kw-step-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-sm);
+  line-height: 1.7;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kw-step-head:disabled {
+  cursor: default;
+}
+
+.kw-step-head:not(:disabled):hover .kw-step-title {
+  color: var(--kw-text);
+}
+
+.kw-step-title {
+  font-weight: 500;
+}
+
+.kw-step-target {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.kw-step-note,
+.kw-step-extra,
+.kw-step-problem {
+  font-size: var(--kw-font-xs);
+}
+
+.kw-step-problem {
+  color: var(--kw-text-secondary);
+}
+
+.kw-step-detail {
+  margin-top: 6px;
+}
+
+/* 进行中的文字：灰色底上一道浅光扫过 */
+.kw-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--kw-text-secondary) 0%,
+    var(--kw-text-secondary) 40%,
+    var(--kw-text) 50%,
+    var(--kw-text-secondary) 60%,
+    var(--kw-text-secondary) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: kw-shimmer 2s linear infinite;
+}
+
+@keyframes kw-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* 思考与说明：浅色正文、保留换行，不加任何前缀 */
+.kw-step-text {
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-sm);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 参数与结果：浅灰底等宽代码框，过长在框内滚动 */
+.kw-step-code + .kw-step-code {
+  margin-top: 8px;
+}
+
+.kw-step-code-label {
+  margin-bottom: 4px;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-step-code pre {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px 12px;
+  border-radius: var(--kw-radius-control);
+  background: var(--kw-user-bubble-bg);
+  color: var(--kw-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--kw-font-xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.kw-approval {
+  margin: 12px 0;
+  border: 1px solid var(--kw-border-secondary);
+  border-radius: var(--kw-radius-card);
+  padding: 14px 16px;
+}
+
+.kw-approval-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.kw-approval-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+}
+
+.kw-approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.kw-approval-title {
+  font-size: var(--kw-font-base);
+  font-weight: 600;
+}
+
+.kw-approval-desc {
+  font-size: var(--kw-font-sm);
+  color: var(--kw-text-secondary);
+  word-break: break-all;
+}
+
+/* 处理过的审批收成一行小字，不占卡片 */
+.kw-approval-resolved {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  font-size: var(--kw-font-sm);
+  color: var(--kw-text-secondary);
+}
+
+.kw-approval-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.kw-question {
+  margin: 12px 0;
+  border: 1px solid var(--kw-border-secondary);
+  border-radius: var(--kw-radius-card);
+  padding: 14px 16px;
+}
+
+.kw-question-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.kw-question-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.kw-question-item {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kw-question-title {
+  padding: 0;
+  font-size: var(--kw-font-base);
+  font-weight: 600;
+  color: var(--kw-text);
+}
+
+.kw-question-header {
+  display: block;
+  margin-bottom: 2px;
+  font-size: var(--kw-font-xs);
+  font-weight: 400;
+  color: var(--kw-text-secondary);
+}
+
+.kw-question-desc {
+  font-size: var(--kw-font-sm);
+  color: var(--kw-text-secondary);
+  word-break: break-word;
+}
+
+.kw-question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kw-question-option {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.5;
+}
+
+.kw-question-tag {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: var(--kw-radius-control);
+  background: var(--kw-user-bubble-bg);
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-question-reply {
+  font-size: var(--kw-font-sm);
+  color: var(--kw-text);
+  word-break: break-word;
+}
+
+.kw-question-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.kw-todo {
+  margin: 4px 0 8px;
+}
+
+.kw-todo-list {
+  margin: 4px 0 0;
+  padding: 0 0 0 12px;
+  border-left: 1px solid var(--kw-border-secondary);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kw-todo-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--kw-font-sm);
+  color: var(--kw-text-secondary);
+}
+
+.kw-todo-item.is-in_progress {
+  color: var(--kw-text);
+}
+
+.kw-todo-item.is-completed {
+  color: var(--kw-text-tertiary);
+}
+
+.kw-todo-dot {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.kw-file-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 360px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--kw-border-secondary);
+  border-radius: var(--kw-radius-card);
+}
+
+.kw-file-icon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--kw-radius-control);
+  color: var(--kw-on-color);
+  font-size: var(--kw-font-md);
+}
+
+.kw-file-meta {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.kw-file-name {
+  font-size: var(--kw-font-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kw-file-sub {
+  font-size: var(--kw-font-xs);
+  color: var(--kw-text-secondary);
+}
+
+/* 输入框技能菜单：技能名下面一行浅色说明 */
+.kw-skill-option {
+  max-width: 320px;
+}
+
+.kw-skill-option-desc {
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+  white-space: normal;
+}
+
+.kw-answer-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 2px;
+}
+
+.kw-composer-dock {
+  flex: none;
+  padding: 0 16px 12px;
+}
+
+.kw-composer {
+  max-width: var(--kw-chat-max-width);
+  margin: 0 auto;
+}
+
+.kw-composer-box {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: 28px;
+  background: var(--color-surface);
+  box-shadow: var(--kw-shadow-input);
+  cursor: text;
+  transition: box-shadow var(--transition-duration-basic);
+}
+
+.kw-composer-box:focus-within {
+  border-color: var(--color-border-strong);
+}
+
+/* 拖文件到输入框上时提示可以放下 */
+.kw-composer-box.is-dragging {
+  box-shadow: 0 0 0 2px var(--kw-link);
+}
+
+.kw-composer-box.is-disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.kw-composer-input {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  max-height: 192px;
+  padding: 14px 20px 4px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--kw-font-chat);
+  line-height: 24px;
+  resize: none;
+  overflow-y: auto;
+}
+
+.kw-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px 10px;
+  cursor: default;
+}
+
+.kw-composer-spacer {
+  flex: 1;
+}
+
+.kw-composer-hint {
+  margin-top: 8px;
+  text-align: center;
+  font-size: var(--kw-font-xs);
+  color: var(--kw-text-secondary);
+}
+
+.kw-connection {
+  text-align: center;
+  font-size: var(--kw-font-xs);
+  color: var(--kw-text-secondary);
+  padding: 4px 0;
+}

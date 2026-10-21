@@ -1,0 +1,16 @@
+# 镜像构建上下文为仓库根目录；只放进 Dockerfile 用得到的东西
+.git
+.github
+docs
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.coverage
+**/coverage
+web/dist
+deploy/.env
+server/tests
+runtime-host/tests
