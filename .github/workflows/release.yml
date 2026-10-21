@@ -64,6 +64,9 @@ jobs:
     needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # build-push-action 默认把构建记录（*.dockerbuild）也传成产物，发布任务一并下载时解包会失败；用不上，关掉
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
     strategy:
       fail-fast: false
       matrix:
@@ -144,8 +147,14 @@ jobs:
     needs: [images, mirrors]
     runs-on: ubuntu-24.04
     steps:
+      # 只取发布说明与 SBOM，不碰其他产物
       - uses: actions/download-artifact@v4
         with:
+          name: notes
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sbom-*
           path: artifacts
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
