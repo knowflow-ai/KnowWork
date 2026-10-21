@@ -88,6 +88,10 @@ jobs:
           file: deploy/docker/${{ matrix.name }}.Dockerfile
           platforms: linux/amd64
           push: true
+          # 阿里云个人版不认 buildx 默认附带的来源证明（OCI 空配置清单），推送会报 unknown manifest class；
+          # 关掉它，推普通的镜像清单。依赖与许可证清单由下面单独生成的 SBOM 提供
+          provenance: false
+          sbom: false
           build-args: KNOWWORK_VERSION=${{ env.TAG }}
           tags: |
             ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:${{ env.TAG }}
