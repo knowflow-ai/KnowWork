@@ -15,7 +15,9 @@ RUN --mount=type=cache,target=/root/.npm \
 
 # hadolint ignore=DL3006
 FROM ${NODE_IMAGE} AS runtime
-ENV NODE_ENV=production \
+# 原生模块直接从 node_modules 加载，不复制到 /tmp 缓存（部署时 /tmp 是 noexec 的 tmpfs，见 docker-compose.yml）
+ENV NARB_DISABLE_NATIVE_CACHE=1 \
+    NODE_ENV=production \
     DSH_HOME=/data/dsh \
     KNOWWORK_APP_DIR=/app \
     KNOWWORK_HOST_PORT=7300 \

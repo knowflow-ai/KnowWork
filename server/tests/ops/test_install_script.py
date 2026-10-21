@@ -115,6 +115,27 @@ def test_no_sandbox_drops_overlay_and_sandbox_image(sandbox, ready_server):
     assert "docker-compose.sandbox.yml" not in calls and "sandbox-image" not in calls
 
 
+def test_url_option_sets_public_address(sandbox, ready_server):
+    result, _ = _run(sandbox, "--url", "http://117.50.180.59:8080/", port=ready_server)
+    assert result.returncode == 0, result.stderr
+    # 去掉末尾的斜杠；已有 .env 时再给 --url 也照样改
+    assert _env(sandbox[0])["KNOWWORK_PUBLIC_BASE_URL"] == "http://117.50.180.59:8080"
+    _run(sandbox, "--url", "https://kw.example.com", port=ready_server)
+    assert _env(sandbox[0])["KNOWWORK_PUBLIC_BASE_URL"] == "https://kw.example.com"
+    bad, _ = _run(sandbox, "--url", "kw.example.com", port=ready_server)
+    assert bad.returncode != 0 and "http://" in bad.stderr
+
+
+def test_private_address_gets_a_hint(sandbox, ready_server):
+    deploy = sandbox[0]
+    _run(sandbox, port=ready_server)
+    (deploy / ".env").write_text("\n".join(
+        "KNOWWORK_PUBLIC_BASE_URL=http://10.60.201.108:8080" if line.startswith("KNOWWORK_PUBLIC_BASE_URL=") else line
+        for line in (deploy / ".env").read_text().splitlines()) + "\n")
+    result, _ = _run(sandbox, port=ready_server)
+    assert "内网地址" in result.stdout and "--url" in result.stdout
+
+
 def test_warns_when_http_meets_secure_cookie(sandbox, ready_server):
     deploy = sandbox[0]
     _run(sandbox, port=ready_server)

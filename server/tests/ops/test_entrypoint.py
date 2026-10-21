@@ -79,11 +79,29 @@ def test_main_execs_command_and_only_drops_when_root(monkeypatch):
     executed, dropped = [], []
     monkeypatch.setattr(entrypoint, "drop_privileges", dropped.append)
     monkeypatch.setattr(os, "geteuid", lambda: 10001)
-    entrypoint.main(["python", "-m", "x"], env={}, execvp=lambda f, a: executed.append(a))
-    assert executed == [["python", "-m", "x"]] and dropped == []
+    entrypoint.main(["python", "-m", "x"], env={"HOME": "/home/me"},
+                    execvpe=lambda f, a, e: executed.append((a, e)))
+    assert executed == [(["python", "-m", "x"], {"HOME": "/home/me"})] and dropped == []
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     monkeypatch.setattr(entrypoint, "resolve_identity", lambda env: Identity(10001, 10001, (10001,)))
-    entrypoint.main(["true"], env={}, execvp=lambda f, a: executed.append(a))
+    monkeypatch.setattr(entrypoint, "home_of", lambda uid: f"/home/{uid}")
+    entrypoint.main(["true"], env={"HOME": "/root", "TZ": "Asia/Shanghai"},
+                    execvpe=lambda f, a, e: executed.append((a, e)))
     assert dropped == [Identity(10001, 10001, (10001,))]
+    # 降权后 HOME 换成应用账号的：还指着 /root 时，asyncpg 探测 ~/.postgresql/ 下的证书会报权限错误，连不上库
+    assert executed[-1] == (["true"], {"HOME": "/home/10001", "TZ": "Asia/Shanghai"})
     with pytest.raises(SystemExit):
         entrypoint.main([], env={})
+
+
+def test_home_of_falls_back_when_account_missing():
+    class Entry:
+        pw_dir = "/srv/app"
+
+    def lookup(uid):
+        if uid == 10001:
+            return Entry()
+        raise KeyError(uid)
+
+    assert entrypoint.home_of(10001, getpwuid=lookup) == "/srv/app"
+    assert entrypoint.home_of(12345, getpwuid=lookup) == "/nonexistent"

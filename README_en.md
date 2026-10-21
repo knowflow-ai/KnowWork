@@ -156,7 +156,8 @@ deploy/install.sh
 ```
 
 The script writes `deploy/.env`, pulls images from Alibaba Cloud Container Registry, starts the services, waits until
-they are ready and prints the address to open. Then:
+they are ready and prints the address to open. On a cloud server the public IP is usually not on the network interface:
+pass it with `deploy/install.sh --url http://<public-ip>:8080` and open port 8080 in the security group. Then:
 
 1. follow the setup wizard to create the administrator;
 2. go to Admin → Models, add a provider and a model, and set the model alias to `default`;

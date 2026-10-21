@@ -10,6 +10,7 @@
 
 ```sh
 deploy/install.sh              # 默认：拉镜像、启动、等到就绪
+deploy/install.sh --url http://公网IP:8080   # 指定浏览器访问的外部地址（云服务器的公网 IP 不在网卡上，要手动给）
 deploy/install.sh --no-sandbox # 不启用会话沙箱
 deploy/install.sh --no-pull    # 不拉镜像，用本机已有的（离线部署）
 deploy/install.sh --timeout 600
@@ -18,7 +19,8 @@ deploy/install.sh --timeout 600
 脚本依次做这些事：
 
 1. 检查 Docker 与 Compose 版本；
-2. 第一次运行时从 `deploy/.env.example` 复制出 `deploy/.env`，把访问地址换成本机 IP，生成对象存储的随机凭证；
+2. 第一次运行时从 `deploy/.env.example` 复制出 `deploy/.env`，把访问地址换成本机网卡上的 IP（给了 `--url` 就用它），
+   生成对象存储的随机凭证；
 3. 拉镜像，失败最多重试 3 次；
 4. `docker compose up -d`，轮询 `/ready` 直到就绪，打印访问地址。
 
@@ -48,6 +50,9 @@ deploy/install.sh --timeout 600
 - `KNOWWORK_PUBLIC_BASE_URL`：浏览器访问的外部地址，邀请链接与 OIDC 回调都用它拼。换域名或端口时同步改。
 - `KNOWWORK_COOKIE_SECURE`：会话 Cookie 是否只走 HTTPS。默认 `false`，因为装好时是 http；
   如果设成 `true` 却用 http 访问，浏览器不会保存 Cookie，表现为登录后马上又回到登录页。
+
+云服务器的公网 IP 通常不在网卡上，脚本自动取到的是内网地址，结束时会提醒。这时用
+`deploy/install.sh --url http://公网IP:8080` 重跑即可，并在云厂商的安全组或防火墙里放行 8080 端口。
 
 上 HTTPS 的做法：在网关前面放一层你自己的反向代理或负载均衡做 TLS 终止，转发到 8080；
 然后把访问地址改成 `https://…`、`KNOWWORK_COOKIE_SECURE` 改成 `true`，执行 `docker compose up -d` 生效。

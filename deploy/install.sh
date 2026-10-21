@@ -1,7 +1,8 @@
 #!/bin/sh
 # KnowWork 一条命令启动：检查 Docker 环境 → 准备 .env → 拉镜像（失败最多重试 3 次）→ 启动 → 轮询 /ready。
 #
-# 用法：deploy/install.sh [--no-pull] [--no-sandbox] [--timeout 秒]
+# 用法：deploy/install.sh [--url 地址] [--no-pull] [--no-sandbox] [--timeout 秒]
+#   --url 地址    浏览器访问的外部地址，例如 http://公网IP:8080 或 https://域名（默认取本机网卡上的 IP）
 #   --no-pull     跳过拉取（离线部署或使用本地构建的镜像）
 #   --no-sandbox  不启用会话沙箱（不挂 docker.sock；模型不能执行命令，也生成不了 Word、Excel）
 #   --timeout N   等待就绪的最长秒数（默认取 .env 的 KNOWWORK_READY_TIMEOUT，否则 300）
@@ -22,7 +23,7 @@ log() { printf '[knowwork] %s\n' "$*"; }
 die() { printf '[knowwork] 错误：%s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # version_ge A B：A >= B（只比较数字段，忽略预发布后缀）
@@ -100,6 +101,10 @@ prepare_env() {
   fi
   fill_secret KNOWWORK_RUSTFS_ACCESS_KEY
   fill_secret KNOWWORK_RUSTFS_SECRET_KEY
+  if [ -n "$public_url" ]; then
+    set_env KNOWWORK_PUBLIC_BASE_URL "${public_url%/}"
+    log "访问地址设为 ${public_url%/}"
+  fi
   if [ "$no_sandbox" -eq 1 ]; then
     set_env COMPOSE_FILE docker-compose.yml
     log "不启用会话沙箱：模型不能执行命令，也生成不了 Word、Excel"
@@ -162,6 +167,11 @@ wait_ready() {
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if [ "$(http_status "$url")" = "200" ]; then
       log "KnowWork 已就绪。浏览器打开 $(env_value KNOWWORK_PUBLIC_BASE_URL) ，按初始化向导创建管理员，再到「管理 → 模型」添加模型。"
+      # 云服务器的公网 IP 通常不在网卡上，自动取到的是内网地址：邀请链接、单点登录回调会指向它
+      case "$(env_value KNOWWORK_PUBLIC_BASE_URL)" in
+        http://10.*|http://192.168.*|http://172.1[6-9].*|http://172.2[0-9].*|http://172.3[01].*)
+          log "提醒：这是内网地址。从公网访问时用 --url http://公网IP:${port:-8080} 重跑本脚本（或改 .env 的 KNOWWORK_PUBLIC_BASE_URL），云服务器还要在安全组放行 ${port:-8080} 端口" ;;
+      esac
       return 0
     fi
     sleep 3
@@ -173,11 +183,16 @@ wait_ready() {
 main() {
   skip_pull=0
   no_sandbox=0
+  public_url=""
   timeout=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-pull) skip_pull=1 ;;
       --no-sandbox) no_sandbox=1 ;;
+      --url)
+        [ $# -ge 2 ] || die "--url 需要一个地址，例如 http://公网IP:8080"
+        case "$2" in http://*|https://*) public_url="$2" ;; *) die "--url 要以 http:// 或 https:// 开头" ;; esac
+        shift ;;
       --timeout)
         [ $# -ge 2 ] || die "--timeout 需要一个秒数"
         timeout="$2"; shift ;;

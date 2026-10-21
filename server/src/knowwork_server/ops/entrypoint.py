@@ -13,6 +13,7 @@ setgroups + setgid + setuid 后 exec（数字组号不需要 /etc/group 里有�
 
 import logging
 import os
+import pwd
 import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -22,6 +23,7 @@ log = logging.getLogger("knowwork.entrypoint")
 
 DEFAULT_SOCKET = "/var/run/docker.sock"
 DEFAULT_APP_ID = 10001
+NO_HOME = "/nonexistent"  # 镜像里建应用账号时给的家目录（server.Dockerfile 的 useradd --home-dir）
 
 
 @dataclass(frozen=True)
@@ -86,14 +88,27 @@ def drop_privileges(identity: Identity) -> None:
         raise RuntimeError("降权失败")
 
 
+def home_of(uid: int, *, getpwuid: Callable[[int], object] = pwd.getpwuid) -> str:
+    """应用账号的家目录；/etc/passwd 里没有这个账号（自定义了 KNOWWORK_APP_UID）就用 /nonexistent。"""
+    try:
+        return getpwuid(uid).pw_dir or NO_HOME
+    except KeyError:
+        return NO_HOME
+
+
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None,
-         execvp: Callable[[str, list[str]], object] = os.execvp) -> None:
+         execvpe: Callable[[str, list[str], Mapping[str, str]], object] = os.execvpe) -> None:
     command = list(sys.argv[1:] if argv is None else argv)
     if not command:
         raise SystemExit("用法：python -m knowwork_server.ops.entrypoint <命令> [参数…]")
+    environment = dict(os.environ if env is None else env)
     if os.geteuid() == 0:
-        drop_privileges(resolve_identity(os.environ if env is None else env))
-    execvp(command[0], command)
+        identity = resolve_identity(environment)
+        drop_privileges(identity)
+        # 以 root 起步时 HOME 是 /root，降权后读不了：asyncpg 连库前会探测 ~/.postgresql/ 下的客户端证书，
+        # 遇到权限错误不当成「没有」而是直接抛出，api 就起不来。换成应用账号自己的家目录
+        environment = {**environment, "HOME": home_of(identity.uid)}
+    execvpe(command[0], command, environment)
 
 
 if __name__ == "__main__":

@@ -160,6 +160,9 @@ services:
       # Agent 向用户提问时前台最多等多久；到期后 Agent 先继续，问题仍可答
       KNOWWORK_QUESTION_TIMEOUT_MS: ${KNOWWORK_QUESTION_TIMEOUT_MS:-1800000}
       KNOWWORK_LOG_LEVEL: ${KNOWWORK_LOG_LEVEL:-info}
+      # DSH 的原生模块加载器默认把 .node 复制到 /tmp 下的缓存再加载，而 /tmp 是 noexec 的 tmpfs，加载会报
+      # failed to map segment from shared object，宿主起不来。容器里的 node_modules 不会变，直接加载即可
+      NARB_DISABLE_NATIVE_CACHE: "1"
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - host-secrets:/run/knowwork/host:ro
