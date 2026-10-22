@@ -4,6 +4,7 @@
 - server/pyproject.toml 与 server/uv.lock 里本项目那一条（去掉 v）；
 - web、runtime-host 的 package.json 与 package-lock.json 根上的版本（去掉 v）；
 - deploy/docker-compose.yml 里 KNOWWORK_VERSION 的默认值、deploy/.env.example 的 KNOWWORK_VERSION（带 v）。
+- README.md 与 README_en.md 顶部的版本徽章（带 v）。徽章用静态的，公开仓库还没开放时动态徽章读不到仓库，显示不出来。
 业务服务镜像构建时由发布流程传入 KNOWWORK_VERSION，系统设置页显示的就是它。
 只做文本替换，不调用 uv、npm；每处都必须恰好命中，否则报错退出，免得漏改。
 """
@@ -49,6 +50,9 @@ def bump(tag: str) -> None:
     replace_once(ROOT / "deploy/docker-compose.yml", r"\$\{KNOWWORK_VERSION:-[^}]+\}", f"${{KNOWWORK_VERSION:-{tag}}}",
                  count=5)
     replace_once(ROOT / "deploy/.env.example", r"^KNOWWORK_VERSION=.*$", f"KNOWWORK_VERSION={tag}")
+    for readme in ("README.md", "README_en.md"):
+        replace_once(ROOT / readme, r"badge/version-v[0-9.]+-(\w+)\" alt=\"Version: v[0-9.]+\"",
+                     rf'badge/version-{tag}-\g<1>" alt="Version: {tag}"')
     print(f"版本已改为 {tag}")
 
 

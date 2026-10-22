@@ -164,6 +164,116 @@ async def test_total_timeout_truncates_long_stream():
     assert 0 < response.text.count("data:") < 50, "超过总时长后截断"
 
 
+def _delta(i):
+    return f'data: {{"choices":[{{"delta":{{"content":"第{i}段"}}}}]}}\n\n'.encode()
+
+
+class _Prefill(httpx.AsyncBaseTransport):
+    """先回响应头，正文第一块要等「预填充」（长上下文的自建大模型可能要一两分钟），之后可能在某处卡住。
+    role_first：有的模型服务一收到请求就先发一个只有 role、没有内容的块，再去预填充。"""
+
+    def __init__(self, first_chunk_delay=0.0, stall_after=None, stall=0.0, role_first=False):
+        self.first_chunk_delay, self.stall_after, self.stall = first_chunk_delay, stall_after, stall
+        self.role_first = role_first
+
+    async def handle_async_request(self, request):
+        first, stall_after, stall, role_first = self.first_chunk_delay, self.stall_after, self.stall, self.role_first
+
+        class Body(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                if role_first:
+                    yield b'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}\n\n'
+                await asyncio.sleep(first)
+                for i in range(20):
+                    if i == stall_after:
+                        await asyncio.sleep(stall)
+                    yield _delta(i)
+                    await asyncio.sleep(0.005)
+
+        return httpx.Response(200, stream=Body(), headers={"content-type": "text/event-stream"})
+
+
+async def test_slow_first_token_waits_within_total_timeout():
+    """首块之前只受总时长约束：等预填充比空闲超时久也不掐断（实测 3 万 token 上下文的首字超过 60 秒）。"""
+    limits = GatewayLimits(total_timeout_seconds=2.0, idle_timeout_seconds=0.1)
+    async with _client(Resolver(ROUTE), routed=_Prefill(first_chunk_delay=0.4), limits=limits) as client:
+        response = await client.post(URL, json={"model": "qwen", "messages": MESSAGES}, headers=_auth())
+    assert response.status_code == 200 and response.text.count("第") == 20
+
+
+async def test_empty_role_chunk_before_prefill_does_not_start_idle_timer():
+    """先发空的 role 块再预填充：空块不算开始出字，首个有内容的块之前仍只受总时长约束。"""
+    limits = GatewayLimits(total_timeout_seconds=2.0, idle_timeout_seconds=0.1)
+    transport = _Prefill(first_chunk_delay=0.4, role_first=True)
+    async with _client(Resolver(ROUTE), routed=transport, limits=limits) as client:
+        response = await client.post(URL, json={"model": "qwen", "messages": MESSAGES}, headers=_auth())
+    assert response.status_code == 200 and response.text.count("第") == 20
+
+
+async def test_stall_after_streaming_starts_is_cut_at_idle_timeout():
+    limits = GatewayLimits(total_timeout_seconds=5.0, idle_timeout_seconds=0.1)
+    started = asyncio.get_running_loop().time()
+    async with _client(Resolver(ROUTE), routed=_Prefill(stall_after=5, stall=1.5), limits=limits) as client:
+        response = await client.post(URL, json={"model": "qwen", "messages": MESSAGES}, headers=_auth())
+    assert response.status_code == 200 and response.text.count("第") == 5, "开始出字后卡住超过空闲超时就截断"
+    assert asyncio.get_running_loop().time() - started < 1.2, "按空闲超时截断，不等到卡住结束"
+
+
+class _ToolCall(httpx.AsyncBaseTransport):
+    """先出几段思考，再开始一个工具调用：只发出文件路径，正文参数攒了 stall 秒才一次发完。
+    null_tool_calls：有的模型服务在普通正文块里也带 "tool_calls": null，这不算开始工具调用。"""
+
+    def __init__(self, stall: float, null_tool_calls=False):
+        self.stall, self.null_tool_calls = stall, null_tool_calls
+
+    async def handle_async_request(self, request):
+        stall, null_tool_calls = self.stall, self.null_tool_calls
+
+        class Body(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                extra = ',"tool_calls":null' if null_tool_calls else ''
+                for i in range(3):
+                    yield f'data: {{"choices":[{{"delta":{{"reasoning_content":"想{i}"{extra}}}}}]}}\n\n'.encode()
+                if null_tool_calls:
+                    await asyncio.sleep(stall)
+                    yield b'data: {"choices":[{"delta":{"content":"tail"}}]}\n\n'
+                    return
+                call = '{"index":0,"id":"call_1","type":"function","function":{"name":"write","arguments":"{\\"file_path\\": \\"/w/a.js\\""}}'
+                yield f'data: {{"choices":[{{"delta":{{"tool_calls":[{call}]}}}}]}}\n\n'.encode()
+                await asyncio.sleep(stall)
+                rest = '{"index":0,"function":{"arguments":", \\"content\\": \\"脚本正文\\"}"}}'
+                yield f'data: {{"choices":[{{"delta":{{"tool_calls":[{rest}]}}}}]}}\n\n'.encode()
+                yield b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n'
+
+        return httpx.Response(200, stream=Body(), headers={"content-type": "text/event-stream"})
+
+
+async def test_buffered_tool_call_arguments_wait_within_total_timeout():
+    """工具调用开始后只受总时长约束：自建推理服务常把一个参数整段攒完再发，写长脚本时一两分钟没有一个字节
+    （实测发出 file_path 后静默超过 60 秒被截断，三次重试都一样，整轮失败）。"""
+    limits = GatewayLimits(total_timeout_seconds=2.0, idle_timeout_seconds=0.1)
+    async with _client(Resolver(ROUTE), routed=_ToolCall(stall=0.4), limits=limits) as client:
+        response = await client.post(URL, json={"model": "qwen", "messages": MESSAGES}, headers=_auth())
+    assert response.status_code == 200
+    assert "脚本正文" in response.text and '"finish_reason":"tool_calls"' in response.text
+
+
+async def test_null_tool_calls_field_does_not_lift_idle_timeout():
+    """正文块里带 "tool_calls": null 不算开始工具调用，卡住照样按空闲超时截断。"""
+    limits = GatewayLimits(total_timeout_seconds=5.0, idle_timeout_seconds=0.1)
+    started = asyncio.get_running_loop().time()
+    async with _client(Resolver(ROUTE), routed=_ToolCall(stall=1.5, null_tool_calls=True), limits=limits) as client:
+        response = await client.post(URL, json={"model": "qwen", "messages": MESSAGES}, headers=_auth())
+    assert response.status_code == 200 and "tail" not in response.text
+    assert asyncio.get_running_loop().time() - started < 1.2
+
+
+def test_httpx_read_timeout_does_not_cut_the_first_token():
+    """httpx 的读超时只兜底总时长：空闲超时由转发循环自己管，免得它把首字之前的等待也算进去。"""
+    timeout = GatewayLimits(total_timeout_seconds=300.0, idle_timeout_seconds=60.0).httpx_timeout()
+    assert timeout.read == 300.0 and timeout.connect == 10.0
+
+
 async def test_with_real_catalog(models):
     """端到端：真实模型目录 + 行级安全，网关解密密钥后转发。"""
     catalog = models.catalog

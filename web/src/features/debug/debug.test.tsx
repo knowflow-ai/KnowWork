@@ -4,7 +4,7 @@ import userEvent from '../../test/user';
 import { jsonResponse, renderWithApp, routeFetch } from '../../test/render';
 import { ownRun } from '../../api/debug';
 import RunInspector from './RunInspector';
-import { messageLabel, prettyJson } from './format';
+import { messageLabel, prettyJson, statusLabel, statusTone } from './format';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -109,5 +109,13 @@ describe('RunInspector', () => {
     expect(messageLabel('user', 'runtime-context')).toBe('运行上下文');
     expect(messageLabel('tool', null)).toBe('工具结果');
     expect(prettyJson('not json')).toBe('not json');
+  });
+});
+
+describe('运行状态的文案与颜色', () => {
+  it('DSH 的 aborted（用户中止）和 cancelled 一样显示成已取消、灰色，不露出英文', () => {
+    expect([statusLabel('aborted'), statusTone('aborted')]).toEqual(['已取消', 'default']);
+    expect([statusLabel('cancelled'), statusTone('cancelled')]).toEqual(['已取消', 'default']);
+    expect(statusTone('failed')).toBe('error');
   });
 });

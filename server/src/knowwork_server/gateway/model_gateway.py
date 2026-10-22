@@ -17,6 +17,7 @@
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -35,16 +36,25 @@ log = logging.getLogger(__name__)
 MODEL_AUDIENCE = "model"
 CHAT_PATH = "/chat/completions"
 UPSTREAM_DETAIL_LOG_BYTES = 500
+# 流里出现真正的内容（正文、思考、工具调用）才算开始出字。有的模型服务一收到请求就先发一个只有 role、
+# 内容为空的块，再去做长上下文的预填充，不能把那个空块当成开始
+_CONTENT = re.compile(rb'"(?:content|reasoning_content|reasoning)"\s*:\s*"[^"]|"tool_calls"')
+# 开始工具调用：自建推理服务的工具调用解析器常把一个参数整段攒完再发，写文件时脚本正文要生成一两分钟，
+# 期间一个字节都没有（实测发出 file_path 后静默超过 60 秒）。所以工具调用开始后不再套空闲超时，只受总时长约束。
+# 有的服务在普通正文块里也带 "tool_calls": null，要求后面跟数组才算
+_TOOL_CALL = re.compile(rb'"tool_calls"\s*:\s*\[')
 
 
 @dataclass(frozen=True)
 class GatewayLimits:
     total_timeout_seconds: float = 300.0  # 单次调用从发出到流结束的上限
-    idle_timeout_seconds: float = 60.0  # 两个流式块之间的最长等待
+    idle_timeout_seconds: float = 60.0  # 开始出字后，两个流式块之间的最长等待（首块之前与工具调用开始后不算，见 _relay）
     connect_timeout_seconds: float = 10.0
 
     def httpx_timeout(self) -> httpx.Timeout:
-        return httpx.Timeout(self.idle_timeout_seconds, connect=self.connect_timeout_seconds)
+        # 读超时只兜底总时长。流式接口先回响应头、等预填充完才出第一块：长上下文的自建大模型首字可能要一两分钟，
+        # 读超时若按空闲超时设，就会把这段等待当成断流掐掉（实测 3 万 token 上下文报 ReadTimeout）
+        return httpx.Timeout(self.total_timeout_seconds, connect=self.connect_timeout_seconds)
 
 
 class RouteResolver(Protocol):
@@ -85,15 +95,26 @@ def _verify(signer: TokenSigner, header: str) -> str:
         raise HTTPException(status_code=401, detail="invalid token") from error
 
 
-async def _relay(response: httpx.Response, deadline: float) -> AsyncIterator[bytes]:
+async def _relay(response: httpx.Response, deadline: float, idle: float) -> AsyncIterator[bytes]:
+    """转发上游的流。出现第一块有内容的数据之前只受总时长约束（在等预填充）；开始出字后，块与块之间超过空闲超时就截断；
+    开始工具调用后又只受总时长约束（参数可能被上游攒着发，见 _TOOL_CALL）。"""
     loop = asyncio.get_running_loop()
     chunks = response.aiter_raw()
+    started = calling = False
     try:
         while (remaining := deadline - loop.time()) > 0:
+            wait = min(idle, remaining) if started and not calling else remaining
             try:
-                chunk = await asyncio.wait_for(anext(chunks), remaining)
+                chunk = await asyncio.wait_for(anext(chunks), wait)
             except StopAsyncIteration:
                 return
+            except TimeoutError:
+                if wait < remaining:
+                    log.warning("model upstream stalled for %.0fs after streaming started; stream truncated", idle)
+                    return
+                raise
+            started = started or bool(_CONTENT.search(chunk))
+            calling = calling or bool(_TOOL_CALL.search(chunk))
             yield chunk
         log.warning("model call exceeded total timeout; stream truncated")
     except TimeoutError:
@@ -154,7 +175,8 @@ class _Forwarder:
             await response.aclose()
             log.warning("model upstream returned %s: %s", response.status_code, detail)
             return _error(_status_for_host(response.status_code), "上游模型返回错误")
-        return StreamingResponse(_relay(response, deadline), status_code=response.status_code,
+        return StreamingResponse(_relay(response, deadline, self.limits.idle_timeout_seconds),
+                                 status_code=response.status_code,
                                  media_type=response.headers.get("content-type", "text/event-stream"))
 
 

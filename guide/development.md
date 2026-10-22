@@ -63,7 +63,7 @@ CI（`.github/workflows/ci.yml`）跑的就是这几项，外加编排文件校�
 版本只有一个来源：仓库根的 `VERSION`。
 
 ```sh
-python scripts/bump_version.py v0.0.2     # 同步到 pyproject、package.json、锁文件、compose 与 .env.example
+python scripts/bump_version.py v0.0.2     # 同步到 pyproject、package.json、锁文件、compose、.env.example 与 README 徽章
 # 在 CHANGELOG.md 里写好这一版，提交后打标签
 git tag v0.0.2 && git push origin v0.0.2
 ```

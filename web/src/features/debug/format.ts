@@ -5,6 +5,8 @@ const STATUS: Readonly<Record<string, string>> = {
   completed: '已完成',
   running: '运行中',
   cancelled: '已取消',
+  // DSH 的回合结束原因：用户中止是 aborted，和 cancelled 同一个意思
+  aborted: '已取消',
   interrupted: '被打断',
   failed: '失败',
   error: '出错',
@@ -18,7 +20,7 @@ export const statusTone = (status: string): 'success' | 'processing' | 'default'
     ? 'success'
     : status === 'running'
       ? 'processing'
-      : status === 'cancelled' || status === 'interrupted'
+      : status === 'cancelled' || status === 'aborted' || status === 'interrupted'
         ? 'default'
         : 'error';
 

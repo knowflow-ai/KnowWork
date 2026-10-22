@@ -2,8 +2,17 @@
   <img src="web/public/brand/knowwork-logo.svg" alt="KnowWork" height="56">
 </p>
 
+<h3 align="center">开源的企业私有化 Agent 平台</h3>
+
 <p align="center">
-  基于 DeepSeek Harness 的企业级私有化 Agent 平台
+  以 DeepSeek Harness 为内核，补齐企业上线要的账号权限、会话沙箱、审批、审计与用量。<br>
+  你写技能、接工具、接知识库，其余的交给 KnowWork。
+</p>
+
+<p align="center">
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.1-2b7de9" alt="Version: v0.0.1"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
+  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
 
 <p align="center">
@@ -12,37 +21,137 @@
 
 ---
 
-> **DSH 负责智能体如何运行，KnowWork 负责智能体如何进入企业私有化部署的生产环境。**
+> **DeepSeek Harness 让 Agent 会干活，KnowWork 让你只管业务：企业私有化要的那一层，它已经做好了。**
 
-## 为什么做 KnowWork
+<p align="center">
+  <img src="guide/images/knowwork-overview.svg" alt="DeepSeek Harness 加上 KnowWork 补的企业层：RBAC 权限管理、企业沙箱、知识库、记忆层（规划中）、模型网关、审批与审计、技能管控、私有化部署" width="860">
+</p>
 
-我们判断，垂直行业的企业 Agent 正在进入爆发期。合同审查、制度问答、报表整理、工单处理，每个行业都会有一批
-贴着自己业务的 Agent。这些 Agent 要进企业，都绕不开下面几件事。
+合同审查、制度问答、报表整理、工单处理，每个行业都会有一批贴着自己业务的 Agent。它们要私有化部署进企业，绕不开同一层东西，
+以前每个团队都得从头搭一遍：
 
-- 数据和模型密钥不能出企业的机房，Agent 要部署在企业自己的服务器上；
-- 谁能用哪个模型、哪个知识库、哪个工具，要和企业的组织架构对得上；
-- Agent 执行的命令和文件操作要隔离，不能碰到服务器上的其他数据；
-- 写操作要有人批准，每一步要能审计、能回看，用量要能算清楚。
+| 企业要的 | KnowWork 怎么做 |
+|---|---|
+| 数据和密钥不出机房 | 整套部署在企业自己的服务器上；模型和工具的凭证只在业务服务里，DSH 拿不到 |
+| 谁能用什么，跟着组织架构走 | 模型、知识库、工具、技能按人、用户组、部门授权，沿部门树继承 |
+| Agent 碰不到服务器 | 一个会话一个 Docker 容器，模型发起的命令和文件读写都在里面 |
+| 写操作有人批，每一步能回看 | 写入类和高风险的工具调用先由发起人批准；每一轮逐步回看，人和 Agent 的操作分开审计 |
+| 用量算得清 | 按人、按模型统计 token 与费用 |
 
-每家团队都从头搭这一层，成本高、周期长，业务本身反而顾不上。KnowWork 把这一层做好。它以
-[DeepSeek Harness（DSH）](https://www.npmjs.com/package/@deepseek-ai/dsh)为 Agent 内核，补上企业私有化生产环境需要的
-账号权限、模型与密钥管理、会话沙箱、审批、审计与用量。基于它开发企业 Agent，团队只需要把精力放在业务上，
-写技能、接知识库、接工具。
+**Apache 2.0，没有附加条款。** 可以商用，可以改名、换 Logo、贴牌交付给客户；产品名和 Logo 在系统设置里就能换。
+
+## 演示
+
+https://github.com/user-attachments/assets/e4ac1c88-32c2-4976-8381-e954add99ef6
+
+<p align="center">
+  <sub>两分多钟走一遍：知识库问答带出处、待办与提问、生成 Word / HTML / PPT 并在线预览、逐步回看、按部门授权与审计。1080p 原片在 <a href="https://github.com/knowflow-ai/KnowWork/releases/download/v0.0.1/knowwork-demo.mp4">Release</a> 下载</sub>
+</p>
+
+| 回答带出处，点开就是原文 | 先列待办，动笔前问清楚 |
+|:-:|:-:|
+| ![知识库问答与引用出处](guide/images/answer-citation.png) | ![待办清单与提问卡片](guide/images/todo-question.png) |
+| **交付的 PPT 在线预览** | **交付的 HTML 在线预览** |
+| ![培训 PPT 在线预览](guide/images/preview-pptx.png) | ![宣传页 HTML 在线预览](guide/images/preview-html.png) |
+| **每一轮都能逐步回看** | **知识库按部门授权** |
+| ![运行详情](guide/images/run-trace.png) | ![新增授权](guide/images/admin-grant.png) |
+
+## 特点
+
+- **写技能就是写 Markdown。** `SKILL.md` 加参考资料打成 ZIP 上传，有草稿和发布版本，可以只授权给某个部门；
+  输入 `/技能名` 显式调用，或让模型按需加载。Word、Excel、PPT 三个技能随产品提供。
+- **技能能管住模型。** 技能可以声明「必须调用成功的工具」，没做到，模型交不出最终回答；技能认领的专业工具，
+  加载技能之前模型看不到。合同审查这类不能靠模型自觉的场景，约束是硬的。
+- **引用编不出来。** 回答里的引用编号只能指向这一轮工具实际返回过的证据，点开就是原文。
+- **Agent 碰不到服务器。** DSH 官方的本机 shell、文件系统、子进程都换成了落到会话沙箱的实现。附件和知识库里的
+  提示词注入，碰不到服务器上的数据库、密钥和别人的数据。
+- **DSH 里不放密钥。** 模型调用、工具执行、技能下载都由运行时宿主带短期令牌回调业务服务，凭证从不进 DSH。
+- **跟着 DSH 升级，不 fork。** 只用 DSH 官方扩展点：配置档、插件、技能提供方、工具收窄。想看 DSH 怎么做生产级的
+  二次开发，这里是一份完整的参考。
+- **国内装得上。** 一条命令安装，镜像全在阿里云容器镜像服务；模型接任意 OpenAI 兼容接口，DeepSeek、通义千问、
+  自建的 vLLM 都行。
+
+## 快速开始
+
+### 部署到服务器
+
+需要一台 Linux（x86_64）服务器，装好 Docker 24 以上与 Compose v2.24 以上。镜像里会话沙箱最大，约 2.2 GB，磁盘要留足。
+
+```sh
+git clone https://github.com/knowflow-ai/KnowWork.git
+cd KnowWork
+deploy/install.sh
+```
+
+脚本会生成 `deploy/.env`、从阿里云容器镜像服务拉镜像、启动服务并等到就绪，最后打印访问地址。云服务器的公网 IP
+不在网卡上，用 `deploy/install.sh --url http://公网IP:8080` 指定，并在安全组里放行 8080 端口。浏览器打开后按下面三步走。
+
+1. 按初始化向导创建管理员；
+2. 到「管理 → 模型」添加模型厂商和模型，模型别名填 `default`；
+3. 回到工作台，开始第一个任务。
+
+> 会话沙箱默认打开，需要把本机的 `docker.sock` 挂给业务服务，这等于给了它宿主机 root 权限，只适合私有化单机部署。
+> 不需要执行命令和生成文件时，用 `deploy/install.sh --no-sandbox` 关掉。
+
+部署选项、HTTPS、升级见 [guide/deploy.md](guide/deploy.md)，配置项见 [guide/configuration.md](guide/configuration.md)。
+
+### 本机开发
+
+需要 Python 3.12 与 [uv](https://docs.astral.sh/uv/)、Node.js 22.19 以上、Docker。不用装 PostgreSQL，开发用嵌入式的。
+
+```sh
+cd runtime-host && npm install && cd ..
+cd web && npm install && cd ..
+docker build -f deploy/docker/sandbox.Dockerfile -t knowwork-sandbox:dev .   # 会话沙箱镜像，第一次要构建
+cd server && uv sync && uv run python ../scripts/dev_stack.py
+```
+
+一条命令拉起嵌入式 PostgreSQL、运行时宿主、业务服务和前端，打开 http://127.0.0.1:5173 。检查命令与代码约定见
+[guide/development.md](guide/development.md)。
+
+## 架构
+
+```text
+浏览器 ──> 网关（nginx） ──> 业务服务（Python，FastAPI） ──> PostgreSQL / Redis / 对象存储
+                                  │  ▲
+                     内核合同 kernel.v1  │  短期令牌回调：模型调用、工具执行、技能下载、沙箱
+                                  ▼  │
+                            运行时宿主（Node，DSH） ──> 会话沙箱（每个会话一个 Docker 容器）
+```
+
+- 浏览器只连业务服务。账号、权限、模型密钥、审计都在业务服务里，DSH 里不放密钥，也不做权限判断。
+- 运行时宿主用 DSH 官方的配置档与插件扩展点组装 Agent；模型调用、工具执行都由宿主带短期令牌回调业务服务。
+- 业务服务只通过带版本号的内核合同调用宿主，DSH 升级时变化收在宿主一侧。
+
+| 目录 | 内容 |
+|---|---|
+| `server/` | 业务服务：Python 3.12、FastAPI、SQLAlchemy 2（异步）、Alembic |
+| `runtime-host/` | 运行时宿主：DSH 配置档、插件组装（`cordis.patch.yml`）与 KnowWork 自己的插件 |
+| `web/` | 前端：React 19、TypeScript、Vite、Tailwind 4 |
+| `deploy/` | Docker Compose、各镜像的 Dockerfile、nginx 网关、`install.sh` |
+| `guide/` | 部署、配置、架构、开发、界面规范 |
+
+详见 [guide/architecture.md](guide/architecture.md)。
+
+## 几个设计取舍
 
 **只做网页版，不做桌面版。** 企业私有化部署是多人共用一台服务器，权限、模型、审计都要由管理员集中管；
 员工打开浏览器就能用，不用在每台电脑上装客户端。
 
-**持续兼容 DSH。** KnowWork 只用 DSH 的官方扩展点（配置档、插件、技能提供方、工具收窄等），不 fork DSH。具体做法有三条。
+**持续兼容 DSH。** KnowWork 不 fork DSH，具体做法有三条。
 
 - 所有 `@deepseek-ai/*` 包锁在同一个版本（当前 `0.2.1-rc.2`）；
 - 升级前先跑预检和准入测试（建会话、执行、取消、恢复、技能加载、子 Agent、工具桥等），通过才换版本；
 - DSH 发新版本后跟进升级，DSH 自带的新能力直接用上。
 
-KnowWork 和 [KnowFlow](https://github.com/knowflow-ai/KnowFlow) 同属一个产品家族，KnowFlow 管知识，KnowWork 管干活。
-
-当前版本 v0.0.1，是第一个公开版本，接口和数据结构在 1.0 之前还可能变。
+**命令一律落到沙箱。** 桌面端的 Agent 可以假定「这台机器归用户一个人」，企业服务器不行：上面有数据库连接、密钥和
+别人的数据。所以模型发起的命令和文件读写不在宿主本机执行，都经业务服务落到会话自己的容器里。代价是命令要等跑完
+才一次拿回输出，需要和宿主实时双向通信的 DSH 能力暂时用不了。
 
 ## 功能清单
+
+<details>
+<summary>展开全部功能：对话、沙箱、交付、技能、知识与工具、模型、组织与审计、账号、部署</summary>
 
 ### 对话与执行
 
@@ -133,52 +242,35 @@ KnowWork 和 [KnowFlow](https://github.com/knowflow-ai/KnowFlow) 同属一个产
 | 密钥自动生成 | 部署主密钥自动生成，其余凭证由它派生，不用手填 |
 | 健康检查 | `/ready` 报告数据库和运行时宿主是否正常 |
 
-### 规划中
+</details>
 
-技能验证台（用例、结构断言、草稿版对比发布版）、场景包、固定工作流的界面、备份与恢复、修改密码与禁用账号。
+## 现状与路线图
 
-## 快速开始
+当前版本 v0.0.1，是第一个公开版本，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
 
-需要一台 Linux（x86_64）服务器，装好 Docker 24 以上与 Compose v2.24 以上。镜像里会话沙箱最大，约 2.2 GB，磁盘要留足。
-
-```sh
-git clone https://github.com/knowflow-ai/KnowWork.git
-cd KnowWork
-deploy/install.sh
-```
-
-脚本会生成 `deploy/.env`、从阿里云容器镜像服务拉镜像、启动服务并等到就绪，最后打印访问地址。云服务器的公网 IP
-不在网卡上，用 `deploy/install.sh --url http://公网IP:8080` 指定，并在安全组里放行 8080 端口。浏览器打开后按下面三步走。
-
-1. 按初始化向导创建管理员；
-2. 到「管理 → 模型」添加模型厂商和模型，模型别名填 `default`；
-3. 回到工作台，开始第一个任务。
-
-> 会话沙箱默认打开，需要把本机的 `docker.sock` 挂给业务服务，这等于给了它宿主机 root 权限，只适合私有化单机部署。
-> 不需要执行命令和生成文件时，用 `deploy/install.sh --no-sandbox` 关掉。
-
-部署选项、HTTPS、升级见 [guide/deploy.md](guide/deploy.md)，配置项见 [guide/configuration.md](guide/configuration.md)。
-
-## 架构
-
-```text
-浏览器 ──> 网关（nginx） ──> 业务服务（Python，FastAPI） ──> PostgreSQL / Redis / 对象存储
-                                  │  ▲
-                     内核合同 kernel.v1  │  短期令牌回调：模型调用、工具执行、技能下载、沙箱
-                                  ▼  │
-                            运行时宿主（Node，DSH） ──> 会话沙箱（每个会话一个 Docker 容器）
-```
-
-- 浏览器只连业务服务。账号、权限、模型密钥、审计都在业务服务里，DSH 里不放密钥，也不做权限判断。
-- 运行时宿主用 DSH 官方的配置档与插件扩展点组装 Agent；模型调用、工具执行都由宿主带短期令牌回调业务服务。
-- 业务服务只通过带版本号的内核合同调用宿主，DSH 升级时变化收在宿主一侧。
-
-详见 [guide/architecture.md](guide/architecture.md)。
+接下来要做：技能验证台（用例、结构断言、草稿版对比发布版）、场景包、固定工作流的界面、备份与恢复、修改密码与禁用账号。
 
 ## 参与开发
 
-本机一条命令拉起全套（嵌入式 PostgreSQL、运行时宿主、业务服务、前端），见 [guide/development.md](guide/development.md)。
-提交前请读 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
+欢迎这几类贡献：
+
+- **写技能**：把你所在行业的做法写成技能包，在 issue 里分享；
+- **接工具**：接入 MCP 服务时踩到的坑、缺的配置项；
+- **沙箱与部署**：别的容器运行时、别的发行版和云厂商上装不上的问题；
+- **文档**：`guide/` 目前只有中文，欢迎补英文。
+
+新功能或较大的改动请先开 issue 说清楚要解决什么问题。提交前请读 [CONTRIBUTING.md](CONTRIBUTING.md)，
+安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。觉得 KnowWork 有用，点个 Star 能让更多人看到它。
+
+## 相关项目
+
+KnowWork 和下面几个项目同属一个产品家族：KnowFlow 管知识，KnowFlow Analytics 管数据，KnowEval 管评测，KnowWork 管干活。
+
+| 项目 | 是什么 |
+|---|---|
+| [KnowFlow](https://github.com/knowflow-ai/KnowFlow) | 企业知识库。KnowWork 内置了它的连接器，接上后 Agent 只检索提问人有权使用的库，引用落回原文 |
+| [KnowFlow Analytics](https://github.com/knowflow-ai/analytics) | 面向 AI Agent 与数据应用的开源语义层和受治理查询引擎。指标、维度、口径维护成可版本化的语义模型，大模型只写业务名组成的语义 SQL，访问数据库的 SQL 由系统确定性编译 |
+| [KnowEval](https://github.com/knowflow-ai/KnowEval) | 中文企业文档 RAG 的端到端开源评测工具。从原始文档出发，测答得准不准、不知道时会不会说不知道、引用能不能和原文对上 |
 
 ## 许可证与致谢
 
@@ -189,3 +281,9 @@ KnowWork 以 [Apache License 2.0](LICENSE) 发布。
 - [@openai/apps-sdk-ui](https://www.npmjs.com/package/@openai/apps-sdk-ui)，界面组件（MIT）。
 
 第三方声明见 [NOTICE](NOTICE)。
+
+## 社区与支持
+
+- **微信公众号** - KnowFlow 企业知识库
+- **交流群** - 加微信 `skycode007`，备注「加群」
+- **问题反馈** - [GitHub Issues](https://github.com/knowflow-ai/KnowWork/issues)

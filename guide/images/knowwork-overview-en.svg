@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="440" viewBox="0 0 960 440" font-family="-apple-system, BlinkMacSystemFont, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif" role="img" aria-label="DeepSeek Harness plus the enterprise layer is KnowWork">
+<title>DeepSeek Harness plus the enterprise layer is KnowWork</title>
+<style>
+.card{fill:#ffffff;stroke:#e3e8ef}
+.kernel{fill:#f4f6f9;stroke:#d5dbe3}
+.layer{fill:#f3f8ff;stroke:#b9d3f5}
+.tile{fill:#ffffff;stroke:#d9e2ee}
+.t1{fill:#1d2433}
+.t2{fill:#5b6475}
+.op{fill:#8b95a5}
+.dot{fill:#2b7de9}
+.hollow{fill:none;stroke:#2b7de9;stroke-width:1.5}
+.pill{fill:#fff3dc}
+.pilltext{fill:#9a5b00}
+@media (prefers-color-scheme: dark){
+.card{fill:#0d1117;stroke:#30363d}
+.kernel{fill:#161b22;stroke:#30363d}
+.layer{fill:#0f1b2d;stroke:#1f4475}
+.tile{fill:#161b22;stroke:#30363d}
+.t1{fill:#e6edf3}
+.t2{fill:#9198a1}
+.op{fill:#6e7681}
+.dot{fill:#4493f8}
+.hollow{fill:none;stroke:#4493f8;stroke-width:1.5}
+.pill{fill:#3b2a0e}
+.pilltext{fill:#f0b455}
+}
+</style>
+<rect x="0.5" y="0.5" width="959" height="439" rx="16" class="card"/>
+<text x="112.0" y="44" class="t2" font-size="13" font-weight="500" text-anchor="middle">Agent kernel</text>
+<text x="480.0" y="44" class="t2" font-size="13" font-weight="500" text-anchor="middle">Enterprise layer KnowWork adds</text>
+<text x="848.0" y="44" class="t2" font-size="13" font-weight="500" text-anchor="middle">Open source · Apache 2.0</text>
+<rect x="24" y="64" width="176" height="332" rx="14" class="kernel"/>
+<text x="112.0" y="160" class="t1" font-size="22" font-weight="700" text-anchor="middle">DeepSeek</text>
+<text x="112.0" y="188" class="t1" font-size="22" font-weight="700" text-anchor="middle">Harness</text>
+<text x="112.0" y="214" class="t2" font-size="13" font-weight="400" text-anchor="middle">(DSH)</text>
+<line x1="52" y1="250" x2="172" y2="250" class="kernel" stroke-width="1"/>
+<text x="112.0" y="278" class="t2" font-size="12" font-weight="400" text-anchor="middle">Agent loop · tool calls</text>
+<text x="112.0" y="300" class="t2" font-size="12" font-weight="400" text-anchor="middle">Skills · subagents · to-dos</text>
+<text x="112.0" y="322" class="t2" font-size="12" font-weight="400" text-anchor="middle">Official extension points</text>
+<text x="225.0" y="242.0" class="op" font-size="34" font-weight="300" text-anchor="middle">+</text>
+<rect x="250" y="64" width="460" height="332" rx="14" class="layer"/>
+<rect x="264" y="78" width="210" height="68" rx="10" class="tile"/><circle cx="284" cy="102" r="4" class="dot"/><text x="296" y="107" class="t1" font-size="15" font-weight="600" text-anchor="start">RBAC permissions</text><text x="282" y="130" class="t2" font-size="12" font-weight="400" text-anchor="start">Users, groups, departments</text>
+<rect x="486" y="78" width="210" height="68" rx="10" class="tile"/><circle cx="506" cy="102" r="4" class="dot"/><text x="518" y="107" class="t1" font-size="15" font-weight="600" text-anchor="start">Enterprise sandbox</text><text x="504" y="130" class="t2" font-size="12" font-weight="400" text-anchor="start">One container per session</text>
+<rect x="264" y="156" width="210" height="68" rx="10" class="tile"/><circle cx="284" cy="180" r="4" class="dot"/><text x="296" y="185" class="t1" font-size="15" font-weight="600" text-anchor="start">Knowledge bases</text><text x="282" y="208" class="t2" font-size="12" font-weight="400" text-anchor="start">Permission-aware, cited</text>
+<rect x="486" y="156" width="210" height="68" rx="10" class="tile" stroke-dasharray="5 4"/><circle cx="506" cy="180" r="4" class="hollow"/><text x="518" y="185" class="t1" font-size="15" font-weight="600" text-anchor="start">Memory layer</text><text x="504" y="208" class="t2" font-size="12" font-weight="400" text-anchor="start">Remembers user preferences</text><rect x="622" y="170" width="58" height="19" rx="9.5" class="pill"/><text x="651" y="184" class="pilltext" font-size="11" font-weight="600" text-anchor="middle">Planned</text>
+<rect x="264" y="234" width="210" height="68" rx="10" class="tile"/><circle cx="284" cy="258" r="4" class="dot"/><text x="296" y="263" class="t1" font-size="15" font-weight="600" text-anchor="start">Model gateway</text><text x="282" y="286" class="t2" font-size="12" font-weight="400" text-anchor="start">Keys never enter DSH</text>
+<rect x="486" y="234" width="210" height="68" rx="10" class="tile"/><circle cx="506" cy="258" r="4" class="dot"/><text x="518" y="263" class="t1" font-size="15" font-weight="600" text-anchor="start">Approval &amp; audit</text><text x="504" y="286" class="t2" font-size="12" font-weight="400" text-anchor="start">Approvals, step replay</text>
+<rect x="264" y="312" width="210" height="68" rx="10" class="tile"/><circle cx="284" cy="336" r="4" class="dot"/><text x="296" y="341" class="t1" font-size="15" font-weight="600" text-anchor="start">Skill controls</text><text x="282" y="364" class="t2" font-size="12" font-weight="400" text-anchor="start">Hard completion criteria</text>
+<rect x="486" y="312" width="210" height="68" rx="10" class="tile"/><circle cx="506" cy="336" r="4" class="dot"/><text x="518" y="341" class="t1" font-size="15" font-weight="600" text-anchor="start">Self-hosted deploy</text><text x="504" y="364" class="t2" font-size="12" font-weight="400" text-anchor="start">One command, China mirrors</text>
+<text x="735.0" y="241.0" class="op" font-size="34" font-weight="300" text-anchor="middle">=</text>
+<rect x="760" y="64" width="176" height="332" rx="14" fill="#2b7de9"/>
+<g transform="translate(807.0,144.3) scale(0.32)" fill="#ffffff"><rect x="40" y="24" width="40" height="192" rx="20"/><path d="M92 120 C110 60 160 28 216 24 C212 80 170 116 92 120 Z"/><path d="M92 120 C170 124 212 160 216 216 C160 212 110 180 92 120 Z"/></g>
+<text x="848.0" y="252" class="" font-size="24" font-weight="700" text-anchor="middle" fill="#ffffff">KnowWork</text>
+<text x="848.0" y="282" class="" font-size="14" font-weight="500" text-anchor="middle" fill="#ffffff" fill-opacity="0.9">Self-hosted</text>
+<text x="848.0" y="304" class="" font-size="14" font-weight="500" text-anchor="middle" fill="#ffffff" fill-opacity="0.9">Agent platform</text>
+</svg>
