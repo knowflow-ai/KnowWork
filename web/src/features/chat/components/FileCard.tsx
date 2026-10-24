@@ -4,8 +4,8 @@ import { Download, Eye } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
 import { formatBytes } from '../../../utils/format';
 import { previewKindOf } from '../../preview/previewKind';
-import { fileKindOf } from './fileKind';
-import { FILE_KINDS } from './fileKindStyles';
+import { fileKindOf } from '../../../ui/fileKind';
+import { FILE_KINDS } from '../../../ui/fileKindStyles';
 
 interface Props {
   readonly name: string;

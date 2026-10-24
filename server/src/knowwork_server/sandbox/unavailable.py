@@ -20,5 +20,13 @@ class UnavailableSandbox:
                              max_bytes: int, timeout_seconds: float) -> bytes:
         raise SandboxError(NOT_ENABLED)
 
+    async def convert_doc_to_docx(self, workspace_id: str, session_id: str, data: bytes, *, max_bytes: int,
+                                  timeout_seconds: float) -> bytes:
+        raise SandboxError(NOT_ENABLED)
+
+    async def recalc_xlsx(self, workspace_id: str, session_id: str, data: bytes, *, max_bytes: int,
+                          timeout_seconds: float) -> bytes:
+        raise SandboxError(NOT_ENABLED)
+
     async def destroy(self, workspace_id: str, session_id: str) -> None:
         return None

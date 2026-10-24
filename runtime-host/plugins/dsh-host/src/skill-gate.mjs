@@ -1,8 +1,8 @@
 /**
- * 技能门（技术方案 6.3 节规则 3）：本轮结束前，完成判据必须满足，否则最终回答被拦下。
+ * 技能门：本轮结束前，完成判据必须满足，否则最终回答被拦下。
  *
  * 完成判据有两个来源，同时生效：
- * - 会话策略 `policy.gate.requiredTool`：本轮必须成功调用这个工具（E1 的形态，固定流程也用它）；
+ * - 会话策略 `policy.gate.requiredTool`：本轮必须成功调用这个工具（固定流程也用它）；
  * - 本轮根会话加载过的技能（skill-provider 记进 `state.gate.loaded`）：每个声明了 completionTools 的技能，
  *   其 completionTools 里至少一个在本轮成功调用过。
  *

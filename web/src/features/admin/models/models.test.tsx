@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import userEvent from '../../../test/user';
+import userEvent, { pickOption } from '../../../test/user';
 import { jsonResponse, renderWithApp, routeFetch } from '../../../test/render';
 import ModelsPage from './ModelsPage';
 import { providerInput } from './providerForm';
@@ -35,9 +35,6 @@ function api(extra = {}) {
   return routeFetch({
     [`GET ${B}/model-providers`]: jsonResponse([PROVIDER]),
     [`GET ${B}/models`]: jsonResponse([MODEL]),
-    [`GET ${B}/model-groups`]: jsonResponse([
-      { id: 'g1', name: '通用', description: '日常对话', model_ids: ['m1'] },
-    ]),
     [`POST ${B}/model-providers`]: jsonResponse({}, 201),
     [`PATCH ${B}/model-providers/*`]: jsonResponse({}),
     [`DELETE ${B}/model-providers/*`]: ok(),
@@ -45,9 +42,6 @@ function api(extra = {}) {
     [`PATCH ${B}/models/*`]: jsonResponse({}),
     [`DELETE ${B}/models/*`]: ok(),
     [`POST ${B}/models/*/test`]: jsonResponse({ ok: true, latency_ms: 85, message: '' }),
-    [`POST ${B}/model-groups`]: jsonResponse({}, 201),
-    [`PATCH ${B}/model-groups/*`]: jsonResponse({}),
-    [`DELETE ${B}/model-groups/*`]: ok(),
     ...extra,
   });
 }
@@ -56,6 +50,13 @@ const fill = (dialog: HTMLElement, label: string, value: string) =>
   fireEvent.change(within(dialog).getByLabelText(label), { target: { value } });
 
 describe('模型', () => {
+  it('模型不按人授权：只有模型、厂商、文档解析三个标签页，没有分组', async () => {
+    api();
+    renderWithApp(<ModelsPage />);
+    await screen.findByText('chat-default');
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['模型', '厂商', '文档解析']);
+  });
+
   it('列出模型、厂商名与单价，连通测试给出结果', async () => {
     const calls = api();
     renderWithApp(<ModelsPage />);
@@ -97,6 +98,7 @@ describe('模型', () => {
         alias: 'reasoner',
         name: 'deepseek-reasoner',
         capabilities: ['chat'],
+        thinking: null,
       }),
     );
 
@@ -104,11 +106,13 @@ describe('模型', () => {
     await userEvent.click(within(row).getByRole('button', { name: '修改' }));
     const edit = await screen.findByRole('dialog');
     fill(edit, '上游模型名', 'deepseek-chat-v3');
+    await pickOption(edit, '思考', '关闭');
     await userEvent.click(within(edit).getByRole('button', { name: '保存' }));
     await waitFor(() =>
       expect(calls.find('PATCH', `${B}/models/m1`)[0]?.body).toMatchObject({
         name: 'deepseek-chat-v3',
         input_price_per_mtok: 2,
+        thinking: 'off',
       }),
     );
 
@@ -165,51 +169,5 @@ describe('厂商', () => {
     expect(providerInput(values, true, true).apiKey).toBe('');
     expect(providerInput(values, true, false).apiKey).toBeUndefined();
     expect(providerInput(values, false, false).apiKey).toBe('');
-  });
-});
-
-describe('分组', () => {
-  it('新建、修改与删除分组', async () => {
-    const calls = api();
-    renderWithApp(<ModelsPage />);
-    await userEvent.click(await screen.findByRole('tab', { name: '分组' }));
-    const row = (await screen.findByText('日常对话')).closest('tr') as HTMLElement;
-    await userEvent.click(screen.getByRole('button', { name: /新建分组/ }));
-    const dialog = await screen.findByRole('dialog');
-    fill(dialog, '名称', '推理');
-    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
-    await waitFor(() =>
-      expect(calls.find('POST', `${B}/model-groups`)[0]?.body).toEqual({
-        name: '推理',
-        description: '',
-        model_ids: [],
-      }),
-    );
-    await userEvent.click(within(row).getByRole('button', { name: '修改' }));
-    const edit = await screen.findByRole('dialog');
-    fill(edit, '说明', '日常对话与写作');
-    await userEvent.click(within(edit).getByRole('button', { name: '保存' }));
-    await waitFor(() =>
-      expect(calls.find('PATCH', `${B}/model-groups/g1`)[0]?.body).toEqual({
-        name: '通用',
-        description: '日常对话与写作',
-        model_ids: ['m1'],
-      }),
-    );
-    await userEvent.click(within(row).getByRole('button', { name: '删除' }));
-    const pop = await screen.findByRole('alertdialog', { name: /删除分组「通用」/ });
-    await userEvent.click(within(pop).getByRole('button', { name: '删除' }));
-    await waitFor(() => expect(calls.find('DELETE', `${B}/model-groups/g1`)).toHaveLength(1));
-  });
-
-  it('删除失败时提示后端原因', async () => {
-    api({ [`DELETE ${B}/model-groups/*`]: jsonResponse({ detail: '分组还在被引用' }, 409) });
-    renderWithApp(<ModelsPage />);
-    await userEvent.click(await screen.findByRole('tab', { name: '分组' }));
-    const row = (await screen.findByText('日常对话')).closest('tr') as HTMLElement;
-    await userEvent.click(within(row).getByRole('button', { name: '删除' }));
-    const pop = await screen.findByRole('alertdialog', { name: /删除分组「通用」/ });
-    await userEvent.click(within(pop).getByRole('button', { name: '删除' }));
-    expect(await screen.findByText('分组还在被引用')).toBeInTheDocument();
   });
 });

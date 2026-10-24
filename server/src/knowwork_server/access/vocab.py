@@ -22,18 +22,19 @@ class Action(StrEnum):
 ACTION_RANK: dict[str, int] = {Action.USE: 1, Action.EDIT: 2, Action.OWNER: 3}
 
 # 可授权的资源类型；工作空间自身的管理权用保留资源 WORKSPACE_RESOURCE 表达，不能经授权接口授出
-RESOURCE_TYPES: frozenset[str] = frozenset({"skill", "tool", "knowledge_base", "knowledge_source", "model_group"})
+RESOURCE_TYPES: frozenset[str] = frozenset({"skill", "tool", "knowledge_base", "knowledge_source"})
 WORKSPACE_RESOURCE = "workspace"
 SUBJECT_KINDS: frozenset[str] = frozenset({"user", "group", "dept", "role"})
 
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+TYPE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 WILDCARD = "*"
 # 允许「前缀*」通配的资源类型，判定用 Casbin keyMatch（*只能在末尾，按前缀匹配），不需要另写规则：
 # - 一个 MCP 服务的工具都以 mcp__<服务名>__ 开头，tool:mcp__<服务名>__* 覆盖整个服务；
-# - 知识库 id 是 <知识源id>.<知识库id>，knowledge_base:<知识源id>.* 覆盖一个来源下的全部知识库（技术方案第 8 章开头）。
+# - 知识库 id 是 <知识源id>.<知识库id>，knowledge_base:<知识源id>.* 覆盖一个来源下的全部知识库。
 PREFIX_WILDCARD_TYPES: frozenset[str] = frozenset({"tool", "knowledge_base"})
 # 能经授权接口授出的资源类型。knowledge_source 只表示谁能改这条连接，由空间角色的默认规则给；
-# 谁能查授在它下面的知识库上（技术方案 5.2 节，2026-10-20）。
+# 谁能查授在它下面的知识库上。
 GRANTABLE_TYPES: frozenset[str] = RESOURCE_TYPES - {"knowledge_source"}
 KNOWLEDGE_BASE = "knowledge_base"
 
@@ -110,10 +111,11 @@ class Resource:
         return self.id == WILDCARD
 
     @staticmethod
-    def parse(text: str, *, allow_wildcard: bool = True) -> "Resource":
+    def parse(text: str, *, allow_wildcard: bool = True, types: frozenset[str] = RESOURCE_TYPES) -> "Resource":
+        """types 是可接受的资源类型：默认内置的，装了资源层级时再加上它引入的类型（AccessCore.resource_types）。"""
         rtype, sep, ident = (text or "").partition(":")
-        if not sep or rtype not in RESOURCE_TYPES:
-            raise InvalidInput("资源须写成 <类型>:<id>，类型为 " + "、".join(sorted(RESOURCE_TYPES)))
+        if not sep or rtype not in types:
+            raise InvalidInput("资源须写成 <类型>:<id>，类型为 " + "、".join(sorted(types)))
         if ident == WILDCARD or ident.endswith(WILDCARD) and rtype in PREFIX_WILDCARD_TYPES:
             if not allow_wildcard:
                 raise InvalidInput("这里不接受通配资源")
@@ -124,9 +126,10 @@ class Resource:
         return Resource(rtype, ident)
 
 
-def grantable(resource: Resource) -> Resource:
-    """授权接口额外的约束：知识源不单独授权；知识库要写成 <知识源id>.<知识库id> 或 <知识源id>.*。"""
-    if resource.type not in GRANTABLE_TYPES:
+def grantable(resource: Resource, extra: frozenset[str] = frozenset()) -> Resource:
+    """授权接口额外的约束：知识源不单独授权；知识库要写成 <知识源id>.<知识库id> 或 <知识源id>.*。
+    extra 是资源层级引入的类型（例如目录），都可以授权。"""
+    if resource.type not in GRANTABLE_TYPES | extra:
         raise InvalidInput("知识源不单独授权：谁能改连接由空间角色决定，谁能查请授权它下面的知识库")
     if resource.type == KNOWLEDGE_BASE and not resource.is_wildcard:
         source, dot, base = resource.id.partition(".")
@@ -135,9 +138,9 @@ def grantable(resource: Resource) -> Resource:
     return resource
 
 
-def parse_resource_type(value: str) -> str:
-    if value not in RESOURCE_TYPES:
-        raise InvalidInput("资源类型只能是 " + "、".join(sorted(RESOURCE_TYPES)))
+def parse_resource_type(value: str, types: frozenset[str] = RESOURCE_TYPES) -> str:
+    if value not in types:
+        raise InvalidInput("资源类型只能是 " + "、".join(sorted(types)))
     return value
 
 

@@ -83,21 +83,37 @@ s=$(stat -c %s -- "$p") || exit 6
 cat -- "$p"
 '''
 
-# Office 转 PDF（预览用）：$1 私有临时目录（里面已放好 in.<扩展名>），$2 原生 LibreOffice 的封装脚本
-# （/opt/knowwork/office/soffice.py：每次独立的配置目录，并发不抢配置锁），$3 扩展名，$4 PDF 字节上限。
-# 成功时 stdout 只有 PDF 字节；失败时转换日志写 stderr。无论成败都删掉临时目录。
-# 退出码：9 PDF 超限，10 转换失败，11 转换进程被强制终止（多半是内存不够）。
-CONVERT_TO_PDF = r'''
+# Office 格式转换：转 PDF（预览用），或把旧格式 Word 转成 docx（知识库按 docx 解析、在浏览器里渲染）。
+# $1 私有临时目录（里面已放好 in.<扩展名>），$2 原生 LibreOffice 的封装脚本（/opt/knowwork/office/soffice.py：
+# 每次独立的配置目录，并发不抢配置锁），$3 原扩展名，$4 结果字节上限，$5 目标格式（pdf、docx，和原扩展名不同）。
+# 成功时 stdout 只有结果文件的字节；失败时转换日志写 stderr。无论成败都删掉临时目录。
+# 退出码：9 结果超限，10 转换失败，11 转换进程被强制终止（多半是内存不够）。
+CONVERT_OFFICE = r'''
 d="$1"
 trap 'rm -rf "$d"' EXIT
-python3 "$2" --headless --convert-to pdf --outdir "$d" "$d/in.$3" >"$d/log" 2>&1; c=$?
+python3 "$2" --headless --convert-to "$5" --outdir "$d" "$d/in.$3" >"$d/log" 2>&1; c=$?
 # 被强制终止（多半是容器内存不够）：sh 看到的是 137，封装脚本转述 soffice 被杀时是 247（-9）
 [ "$c" -eq 137 ] || [ "$c" -eq 247 ] && { tail -c 2000 "$d/log" >&2; exit 11; }
 [ "$c" -eq 0 ] || { tail -c 2000 "$d/log" >&2; exit 10; }
-[ -f "$d/in.pdf" ] || { tail -c 2000 "$d/log" >&2; exit 10; }
-s=$(stat -c %s -- "$d/in.pdf") || exit 10
+[ -f "$d/in.$5" ] || { tail -c 2000 "$d/log" >&2; exit 10; }
+s=$(stat -c %s -- "$d/in.$5") || exit 10
 [ "$s" -le "$4" ] || exit 9
-cat -- "$d/in.pdf"
+cat -- "$d/in.$5"
+'''
+
+# 重算 Excel 公式（知识库解析表格前用）：$1 私有临时目录（里面已放好 in.xlsx），$2 重算脚本
+# （/opt/knowwork/office/recalc.py：经 LibreOffice 重算后原地写回，stdout 是 JSON 报告），$3 超时秒数，$4 字节上限。
+# 成功时 stdout 只有重算后的 xlsx；报告里没有 status（打不开、有外部链接）算失败，报告与日志写 stderr。
+# 退出码：9 结果超限，10 重算失败，11 进程被强制终止（多半是内存不够）。
+RECALC_XLSX = r'''
+d="$1"
+trap 'rm -rf "$d"' EXIT
+python3 "$2" "$d/in.xlsx" "$3" >"$d/report" 2>"$d/log"; c=$?
+[ "$c" -eq 137 ] || [ "$c" -eq 247 ] && { tail -c 2000 "$d/log" >&2; exit 11; }
+grep -q '"status"' "$d/report" || { cat "$d/report" "$d/log" | tail -c 2000 >&2; exit 10; }
+s=$(stat -c %s -- "$d/in.xlsx") || exit 10
+[ "$s" -le "$4" ] || exit 9
+cat -- "$d/in.xlsx"
 '''
 
 # 写文件前的准备：目标不能是目录，建好上级目录，并确认执行账号对上级目录有写权限

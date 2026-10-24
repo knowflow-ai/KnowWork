@@ -4,7 +4,8 @@ from alembic import context
 
 from knowwork_server.db.registry import load_all_models
 
-target_metadata = load_all_models()
+# 扩展的模型模块由 migrate.py 经 config.attributes 传进来（扩展的表在自己的迁移分支里）
+target_metadata = load_all_models(context.config.attributes.get("model_modules", ()))
 
 
 def run_migrations_online() -> None:

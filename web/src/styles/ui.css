@@ -21,6 +21,58 @@
   animation: kw-fade-in 150ms var(--cubic-enter);
 }
 
+/* 看大图（ui/ImageViewer）：深色遮罩，图按屏幕大小缩放，点图外面关 */
+.kw-image-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgb(0 0 0 / 82%);
+  animation: kw-fade-in 150ms var(--cubic-enter);
+}
+
+.kw-image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1101;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 16px 24px;
+  outline: none;
+  animation: kw-fade-in 150ms var(--cubic-enter);
+}
+
+.kw-image-viewer-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+.kw-image-viewer-figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  max-height: 100%;
+  margin: 0;
+}
+
+.kw-image-viewer-figure img {
+  max-width: min(1400px, 100%);
+  max-height: calc(100vh - 120px);
+  object-fit: contain;
+  border-radius: var(--radius-md, 8px);
+  background: #fff;
+}
+
+.kw-image-viewer-figure figcaption {
+  max-width: 720px;
+  color: rgb(255 255 255 / 85%);
+  font-size: var(--kw-font-sm);
+  text-align: center;
+}
+
 /* 抽屉的遮罩浅一些，左边的对话还看得清 */
 .kw-overlay-light {
   background: rgb(0 0 0 / 12%);
@@ -151,7 +203,8 @@
 
 .kw-sheet-body.is-flush {
   padding: 0;
-  overflow: hidden;
+  /* clip：里面的阅读器自己滚，scrollIntoView 不会把抽屉正文一起滚歪（见 app.css 布局一节） */
+  overflow: clip;
 }
 
 @keyframes kw-fade-in {
@@ -430,15 +483,18 @@
 }
 
 /* ---------- 状态点 ---------- */
+/* 文字按基线排、圆点单独居中：align-items: center 时第一项是没有文字的圆点，浏览器拿圆点底边当整个组件的基线，
+   和同一行别的字对齐时整块被往下推，「就绪」比后面的「· 15 块」低两三像素（2026-10-23 实测） */
 .kw-status {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
   white-space: nowrap;
 }
 
 .kw-status-dot {
   flex: none;
+  align-self: center;
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -583,6 +639,42 @@
   text-overflow: ellipsis;
 }
 
+/* ---------- 树形选择框 ---------- */
+.kw-tree-select-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 360px;
+}
+
+.kw-tree-select-tree {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 节点名字前的类型图标（ui/TreeSelect 的 icon） */
+.kw-tree-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.kw-tree-node-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-text-secondary);
+}
+
+.kw-tree-node-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.kw-tree-title.is-group {
+  color: var(--color-text-secondary);
+}
+
 /* ---------- 详情抽屉里的分节 ---------- */
 .kw-detail-summary {
   margin-bottom: 16px;
@@ -596,4 +688,19 @@
   margin: 0 0 8px;
   font-size: var(--font-text-sm-size);
   font-weight: var(--font-weight-semibold);
+}
+
+/* ---------- 文件类型图标（ui/FileKindIcon） ---------- */
+.kw-file-kind-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm, 4px);
+  color: var(--kw-on-color);
+}
+
+.kw-file-kind-icon svg {
+  width: 70%;
+  height: 70%;
 }

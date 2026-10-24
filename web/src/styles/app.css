@@ -27,10 +27,19 @@ body {
 }
 
 /* ---------- 布局 ---------- */
+/*
+ * 整页从不滚动，只有页面里该滚的那一层滚（2026-10-23 实测文档页「一直往下拖整页被顶歪」）：
+ * - position: relative：外壳里的绝对定位元素（组件库开关里给读屏的 sr-only 文字等）以外壳为包含块、被它裁掉。
+ *   原来它们一路往上找不到定位祖先，挂在页面根上，一屏分块就把页面撑到三千多像素，分块列表滚到底以后
+ *   浏览器把多出来的滚动交给页面根，整个外壳被顶上去、底下露出一片空白；
+ * - clip 而不是 hidden：hidden 的元素用户滚不动、脚本却能滚，预览里 scrollIntoView 把高亮滚进视野时会把
+ *   所有上级一起滚。clip 不是滚动容器，只有真正该滚的那一层会动。
+ */
 .kw-shell {
+  position: relative;
   display: flex;
   height: 100vh;
-  overflow: hidden;
+  overflow: clip;
 }
 
 .kw-sidebar {
@@ -93,7 +102,92 @@ body {
 }
 
 .kw-sidebar-brand {
-  padding: 6px 12px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 8px 12px;
+}
+
+/* 收起：只有图标的窄栏（照 ChatGPT），宽度变化带一点过渡 */
+.kw-sidebar {
+  transition: width 160ms ease;
+}
+
+.kw-sidebar.is-collapsed {
+  width: 60px;
+  padding: 12px 10px;
+  align-items: center;
+  gap: 4px;
+}
+
+.kw-sidebar.is-collapsed .kw-sidebar-link {
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+}
+
+.kw-sidebar.is-collapsed .kw-sidebar-link > svg {
+  width: 20px;
+  height: 20px;
+}
+
+.kw-sidebar.is-collapsed .kw-sidebar-footer {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.kw-sidebar-spacer {
+  flex: 1;
+}
+
+/* 窄栏顶上：产品图标，悬停换成「展开侧栏」图标 */
+.kw-sidebar-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 8px;
+  border: none;
+  border-radius: var(--kw-radius-control);
+  background: transparent;
+  color: var(--kw-text-secondary);
+  cursor: pointer;
+}
+
+.kw-sidebar-open:hover {
+  background: var(--kw-hover-bg);
+}
+
+.kw-sidebar-open-mark {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
+.kw-sidebar-open-icon {
+  display: none;
+  width: 20px;
+  height: 20px;
+}
+
+.kw-sidebar-open:hover .kw-sidebar-open-mark,
+.kw-sidebar-open:focus-visible .kw-sidebar-open-mark {
+  display: none;
+}
+
+.kw-sidebar-open:hover .kw-sidebar-open-icon,
+.kw-sidebar-open:focus-visible .kw-sidebar-open-icon {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kw-sidebar {
+    transition: none;
+  }
 }
 
 /* 管理后台侧栏顶部：品牌加一个「管理后台」小标签 */
@@ -185,7 +279,7 @@ body {
   flex: 1;
   min-width: 0;
   background: var(--kw-content-bg);
-  overflow: hidden;
+  overflow: clip;
   display: flex;
   flex-direction: column;
 }
@@ -200,6 +294,18 @@ body {
 
 .kw-menu-value {
   color: var(--kw-text-secondary);
+}
+
+/* 菜单项下面一行说明（输入框「+」里的「快速问答 / 只检索知识库，回答更快」） */
+.kw-menu-item-text {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kw-menu-item-text small {
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 /* ---------- 侧栏会话项 ---------- */

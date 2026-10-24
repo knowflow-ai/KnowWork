@@ -12,6 +12,7 @@ import {
 } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
 import { toast } from '../../../ui/toastStore';
+import { withoutImages } from './citations';
 
 interface Props {
   readonly text: string;
@@ -19,6 +20,8 @@ interface Props {
   readonly regenerateDisabled?: boolean;
   /** 打开这一轮的运行详情（运行调试视图）。 */
   readonly onInspect?: () => void;
+  /** 排在图标后面的内容（这次回答的来源按钮）。 */
+  readonly trailing?: ReactNode;
 }
 
 type Feedback = 'up' | 'down' | null;
@@ -54,12 +57,12 @@ function Action({
   );
 }
 
-export function AnswerActions({ text, onRegenerate, regenerateDisabled, onInspect }: Props) {
+export function AnswerActions({ text, onRegenerate, regenerateDisabled, onInspect, trailing }: Props) {
   const [feedback, setFeedback] = useState<Feedback>(null);
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(withoutImages(text));
       toast.success('已复制');
     } catch {
       toast.error('复制没有成功，请手动选中文字复制');
@@ -96,6 +99,7 @@ export function AnswerActions({ text, onRegenerate, regenerateDisabled, onInspec
         </Action>
       ) : null}
       {inspect}
+      {trailing}
     </div>
   );
 }

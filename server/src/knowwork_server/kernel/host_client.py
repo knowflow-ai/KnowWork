@@ -133,9 +133,18 @@ class HostKernel:
         return str(response.json()["epoch"])
 
     async def send(self, session_id: str, turn: TurnInput) -> str:
-        body = {"text": turn.text, "mode": turn.mode, "language": resolve_turn_language(turn.text, turn.language)}
+        body = {"text": turn.text, "mode": turn.mode, "language": resolve_turn_language(turn.text, turn.language),
+                "answerMode": turn.answer_mode}
         if turn.attachments:
             body["attachments"] = [_attachment(a) for a in turn.attachments]
+        if turn.knowledge is not None:
+            body["knowledge"] = {"bases": [{"id": e.id, "name": e.name, "description": e.description,
+                                            **({"fields": list(e.fields)} if e.fields else {})}
+                                           for e in turn.knowledge.bases], "omitted": turn.knowledge.omitted}
+        if turn.mentions:
+            body["mentions"] = [{"type": m.type, "id": m.id, "name": m.name,
+                                 **({"base": m.base, "baseName": m.base_name or m.base} if m.base else {})}
+                                for m in turn.mentions]
         response = await self._client.post(f"/v1/sessions/{_segment(session_id)}/messages", json=body)
         _raise_for(response)
         return str(response.json()["messageId"])

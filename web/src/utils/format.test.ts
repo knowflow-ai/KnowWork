@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { describeArguments, formatBytes, truncate } from './format';
-import { fileKindOf } from '../features/chat/components/fileKind';
+import { fileKindOf } from '../ui/fileKind';
 import { markCitations } from '../features/chat/components/citations';
 import { modeForKey } from '../features/chat/components/keys';
 
@@ -40,7 +40,10 @@ describe('fileKindOf', () => {
 
 describe('markCitations', () => {
   it('两种引用标记都改写成内部链接', () => {
-    expect(markCitations('结论[ID:2]与依据[^10]')).toBe('结论[2](#kw-cite-2)与依据[10](#kw-cite-10)');
+    // title 是编号前面那句话（点开时框出原文那一块用）
+    expect(markCitations('结论[ID:2]与依据[^10]')).toBe(
+      '结论[2](#kw-cite-2 "结论")与依据[10](#kw-cite-10 "结论与依据")',
+    );
     expect(markCitations('普通 [链接](http://a)')).toBe('普通 [链接](http://a)');
   });
 });

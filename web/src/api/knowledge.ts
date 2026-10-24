@@ -6,7 +6,7 @@ import { WORKSPACE_ID } from './workspace';
 const base = (path = '') => `/api/workspaces/${seg(WORKSPACE_ID)}/knowledge-sources${path}`;
 
 /**
- * 认证方式（技术方案 8.4 节）：统一账号是主用的；签名断言要 KnowFlow 先支持，新建时不提供，
+ * 认证方式：统一账号是主用的；签名断言要 KnowFlow 先支持，新建时不提供，
  * 只在修改还在用它的知识源时出现，方便改成统一账号。
  */
 export type AuthMode = 'shared' | 'assertion';

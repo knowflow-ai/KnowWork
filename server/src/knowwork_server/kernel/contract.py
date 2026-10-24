@@ -52,11 +52,45 @@ class TurnAttachment(_Frozen):
     extracted_path: str | None = Field(default=None, pattern=r"^/workspace/input/[^/]{1,200}$")
 
 
+class KnowledgeEntry(_Frozen):
+    """知识库目录里的一项：全局 id（<知识源>.<知识库>）、名字、截短的描述、能筛的字段（「名字（类型）」）。"""
+
+    id: str = Field(min_length=3, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=300)
+    fields: tuple[str, ...] = Field(default=(), max_length=30)
+
+
+class KnowledgeCatalog(_Frozen):
+    """本轮可查的知识库目录。宿主照官方技能目录的形态交给模型：列名字、描述和能筛的字段名，
+    可选值、标签集由模型按需调 knowledge_bases 取。omitted 是太多没列出来的个数。"""
+
+    bases: tuple[KnowledgeEntry, ...] = Field(default=(), max_length=100)
+    omitted: int = Field(default=0, ge=0)
+
+
+class TurnMention(_Frozen):
+    """用户这一轮 @ 的一项，宿主写进这条消息（模型读得到，业务服务投影时取出来显示在气泡上，重新生成时照原样再发）。
+    type 是 knowledge_base、folder、document、tag、skill；id 同 conversations/mentions.py 的 Mention.id
+    （技能就是技能名，宿主写成 /技能名，官方插件据此注入技能）；base、base_name 是文件、标签所在的知识库。"""
+
+    type: Literal["knowledge_base", "folder", "document", "tag", "skill"]
+    id: str = Field(min_length=1, max_length=300)
+    name: str = Field(min_length=1, max_length=200)
+    base: str | None = Field(default=None, max_length=200)
+    base_name: str | None = Field(default=None, max_length=200)
+
+
 class TurnInput(_Frozen):
     text: str = Field(min_length=1, max_length=200_000)
     mode: Literal["followup", "steer"] = "followup"
     language: Literal["zh", "en"] | None = None  # 用户在聊天页指定的语言；不给时按提问判断（kernel/locale.py）
+    # 回答方式：智能体，或只检索知识库的快速问答。宿主在这条消息进入步骤时切换，会话中途可以换
+    answer_mode: Literal["agent", "quick"] = "agent"
     attachments: tuple[TurnAttachment, ...] = Field(default=(), max_length=20)
+    # 本轮的知识库目录；None = 这轮没算（宿主沿用上一轮的），空目录 = 没有可查的知识库
+    knowledge: KnowledgeCatalog | None = None
+    mentions: tuple[TurnMention, ...] = Field(default=(), max_length=30)
 
 
 class KernelEvent(_Frozen):
@@ -77,6 +111,9 @@ class KernelEvent(_Frozen):
 
 INVALID_FRAME_KIND = "kernel.invalid"
 GAP_FRAME_KIND = "gap"
+# 逐字输出的临时帧（官方 agent/assistant-stream 的正文片段）：宿主只推给当前订阅方、不进回放缓冲，
+# 游标是当时最后一个，业务服务不落库、不推进续读位置（conversations/live.py）
+LIVE_FRAME_KIND = "assistant/stream"
 
 
 class PendingApproval(_Frozen):

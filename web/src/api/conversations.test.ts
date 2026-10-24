@@ -37,15 +37,33 @@ describe('conversations api', () => {
     });
     await expect(createConversation('标'.repeat(300))).resolves.toEqual({ id: 'c1', title: 't' });
     await sendMessage('a/b', 'hi', 'steer');
+    await sendMessage('c1', '再答', 'followup', {
+      answerMode: 'quick',
+      droppedConditions: ['部门 = 财务部'],
+      mentions: [
+        { type: 'document', id: 'kb1/d1', name: '差旅办法.pdf', base: 'builtin.kb1', baseName: '制度库' },
+      ],
+    });
     await cancelRun('c1');
     await decideApproval('c1', 'ap 1', true);
     await renameConversation('c1', '  新名  ');
     await deleteConversation('c1');
-    const [create, send, cancel, decide, rename, remove] = api.calls;
+    const [create, send, resend, cancel, decide, rename, remove] = api.calls;
     expect((create?.body as { title: string }).title).toHaveLength(200);
     expect(send).toMatchObject({
       path: '/api/conversations/a%2Fb/messages',
       body: { text: 'hi', mode: 'steer' },
+    });
+    expect(send?.body).not.toHaveProperty('dropped_conditions');
+    expect(send?.body).not.toHaveProperty('answer_mode');
+    expect(resend?.body).toEqual({
+      text: '再答',
+      mode: 'followup',
+      answer_mode: 'quick',
+      dropped_conditions: ['部门 = 财务部'],
+      mentions: [
+        { type: 'document', id: 'kb1/d1', name: '差旅办法.pdf', base: 'builtin.kb1', base_name: '制度库' },
+      ],
     });
     expect(cancel?.path).toBe('/api/conversations/c1/cancel');
     expect(decide).toMatchObject({ path: '/api/conversations/c1/approvals/ap%201', body: { allow: true } });

@@ -1,4 +1,4 @@
-"""api 容器入口：按挂进来的 Docker 套接字的属组给应用账号补一个附加组，然后降权运行主进程。
+"""api 与 worker 容器入口：按挂进来的 Docker 套接字的属组给应用账号补一个附加组，然后降权运行主进程。
 
 照抄 WeKnora 的 scripts/docker-entrypoint.sh（grant_docker_sock_to_appuser）：套接字通常是 root:docker 0660，
 应用账号要读写它就得在那个组里。**绝不 chmod 套接字**：那会削弱宿主机上 daemon 的访问控制。属组是 0（root）

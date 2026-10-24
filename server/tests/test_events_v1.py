@@ -1,5 +1,7 @@
 """events.v1 映射：DSH 原始会话事件与插件帧 → 前端事件。纯函数，逐类覆盖。"""
 
+import json
+
 import pytest
 
 from knowwork_server.conversations.events_v1 import GAP_KIND, ITEM_KINDS, RUN_TYPES, ProjectionState, project
@@ -80,6 +82,22 @@ def test_tool_call_and_result():
     bad = {"turn": 1, "error": {"code": "TOOL_FAILED"}, "message": {"toolCallId": "c1", "isError": True, "content": []}}
     _, failed = one(S0, "session/event", session("tool/result", bad))
     assert failed[0]["type"] == "item.failed" and failed[0]["data"]["code"] == "TOOL_FAILED"
+
+
+def test_knowledge_search_results_carry_a_summary_for_the_conditions_bar():
+    """检索结果带摘要：命中哪些文档（去重）、用了与撤掉了哪些条件。按完整原文摘，结果再长、显示文字被截断也不影响。"""
+    hits = [{"ref": i, "source_id": "builtin", "doc_ref": f"kb1/d{i % 3}", "text": "长" * 3000} for i in range(6)]
+    text = json.dumps({"results": hits, "notes": [], "conditions": ["年度 = 2025"], "conditions_removed": ["部门 = 财务部"]},
+                      ensure_ascii=False)
+    found = {"turn": 1, "message": {"toolCallId": "c1", "content": [{"type": "text", "text": text}]}}
+    _, [event] = one(S0, "session/event", session("tool/result", found))
+    assert len(event["data"]["text"]) == 8000
+    assert event["data"]["search"] == {"documents": ["builtin:kb1/d0", "builtin:kb1/d1", "builtin:kb1/d2"],
+                                       "conditions": ["年度 = 2025"], "removed": ["部门 = 财务部"]}
+    for other in ("结果", json.dumps({"results": [{"title": "别的工具"}]}), json.dumps([1, 2])):
+        plain = {"turn": 1, "message": {"toolCallId": "c2", "content": [{"type": "text", "text": other}]}}
+        _, [event] = one(S0, "session/event", session("tool/result", plain))
+        assert "search" not in event["data"], other
 
 
 def test_approval_resolved_and_subagent():
@@ -216,3 +234,18 @@ def test_attachment_handles_become_attachments_not_text():
     data = events[0]["data"]
     assert data == {"role": "user", "text": "帮我改付款条款", "attachments": [{"name": '合同 "终版".docx', "size": 2048}]}
     assert "/workspace" not in str(events)
+
+
+def test_mention_block_becomes_chips_not_text():
+    """宿主写的 @ 说明块不进气泡文字，换成小标签数据（类型、名字、所在知识库）；格式不对的项丢掉。"""
+    items = [{"type": "document", "id": "kb1/d1", "name": "差旅办法.pdf", "base": "builtin.kb1", "baseName": "制度库"},
+             {"type": "skill", "id": "weekly-report", "name": "周报"}, {"type": "unknown", "id": "x", "name": "x"},
+             {"type": "tag", "name": "没有 id"}]
+    block = "[用户这一轮 @ 点名的范围] " + json.dumps(items, ensure_ascii=False) + "\nknowledge_search 已由系统限定……\n用户点名的技能： /weekly-report "
+    message = {"source": {"kind": "user"}, "id": "u1",
+               "content": [{"type": "text", "text": "报销标准"}, {"type": "text", "text": block}]}
+    _, [event] = one(S0, "session/event", session("user/message", message))
+    assert event["data"]["text"] == "报销标准"
+    assert event["data"]["mentions"] == [
+        {"type": "document", "id": "kb1/d1", "name": "差旅办法.pdf", "base": "builtin.kb1", "base_name": "制度库"},
+        {"type": "skill", "id": "weekly-report", "name": "周报"}]

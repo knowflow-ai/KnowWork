@@ -75,7 +75,7 @@ def permission(subject: str, workspace_id: str, obj: str, action: str) -> Rule:
 
 
 # 空间角色的默认权限。workspace:use = 成员可读组织与成员；workspace:edit = 管理成员、组织与授权；
-# workspace:owner = 管理空间所有者。资源默认只给模型分组的「可用」，其余资源靠显式授权。
+# workspace:owner = 管理空间所有者。资源都靠显式授权；模型不授权，空间成员一律可用。
 _DEFAULTS: tuple[tuple[str, str, str], ...] = (
     (Role.OWNER, WILDCARD, Action.OWNER),
     (Role.ADMIN, WORKSPACE_RESOURCE, Action.EDIT),
@@ -83,11 +83,8 @@ _DEFAULTS: tuple[tuple[str, str, str], ...] = (
     (Role.ADMIN, "tool:*", Action.OWNER),
     (Role.ADMIN, "knowledge_base:*", Action.OWNER),
     (Role.ADMIN, "knowledge_source:*", Action.OWNER),
-    (Role.ADMIN, "model_group:*", Action.OWNER),
     (Role.EDITOR, WORKSPACE_RESOURCE, Action.USE),
-    (Role.EDITOR, "model_group:*", Action.USE),
     (Role.VIEWER, WORKSPACE_RESOURCE, Action.USE),
-    (Role.VIEWER, "model_group:*", Action.USE),
 )
 
 

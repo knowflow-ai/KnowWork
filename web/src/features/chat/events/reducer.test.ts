@@ -392,6 +392,48 @@ describe('历史提问', () => {
 });
 
 describe('执行过程的先后顺序', () => {
+  it('知识检索结束时记下业务服务给的检索摘要，格式不对的不要', () => {
+    const search = { documents: ['b:d1'], conditions: ['年度 = 2025'], removed: ['部门 = 财务部'] };
+    const state = fold([
+      ev.runStarted(1, 1),
+      wire({
+        id: '2',
+        type: 'item.started',
+        run: 1,
+        item: 'c1',
+        kind: 'tool',
+        data: { name: 'knowledge_search' },
+      }),
+      wire({
+        id: '3',
+        type: 'item.completed',
+        run: 1,
+        item: 'c1',
+        kind: 'tool',
+        data: { text: '{}', search },
+      }),
+      wire({
+        id: '4',
+        type: 'item.started',
+        run: 1,
+        item: 'c2',
+        kind: 'tool',
+        data: { name: 'knowledge_search' },
+      }),
+      wire({
+        id: '5',
+        type: 'item.completed',
+        run: 1,
+        item: 'c2',
+        kind: 'tool',
+        data: { text: '{}', search: 'x' },
+      }),
+    ]);
+    const [first, second] = state.runs['run-1']?.steps ?? [];
+    expect(first?.search).toEqual(search);
+    expect(second?.search).toBeUndefined();
+  });
+
   it('思考、说明与步骤按发生先后交错记下', () => {
     const state = fold([
       ev.runStarted(1, 1),

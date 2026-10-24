@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '../../../test/user';
 import { renderWithApp } from '../../../test/render';
 import { ApprovalCard } from './ApprovalCard';
@@ -194,7 +194,7 @@ describe('Composer', () => {
     expect(onSend).not.toHaveBeenCalled();
     await userEvent.type(input, '你好');
     fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('你好', 'followup', []));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('你好', 'followup', [], []));
     await waitFor(() => expect(input).toHaveValue(''));
     expect(screen.getByText('回答可能有误，重要结论请点开出处核对')).toBeInTheDocument();
   });
@@ -206,7 +206,7 @@ describe('Composer', () => {
     const input = screen.getByRole('textbox');
     await userEvent.type(input, '再加一点');
     fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('再加一点', 'steer', []));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('再加一点', 'steer', [], []));
     expect(screen.getByText(/Ctrl\/⌘ \+ 回车：补充到当前任务/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '停止' }));
     expect(onStop).toHaveBeenCalled();
@@ -227,7 +227,7 @@ describe('Composer', () => {
     expect(within(rail).queryByText('明细.csv')).not.toBeInTheDocument();
     await userEvent.type(screen.getByRole('textbox'), '改一下付款条款');
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('改一下付款条款', 'followup', [contract]));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('改一下付款条款', 'followup', [contract], []));
     await waitFor(() => expect(screen.queryByRole('list', { name: '待发送的附件' })).not.toBeInTheDocument());
   });
 
@@ -240,12 +240,32 @@ describe('Composer', () => {
     await waitFor(() => expect(screen.getByText('上一条消息还在处理，请稍后再试')).toBeInTheDocument());
     expect(input).toHaveValue('你好');
   });
+});
 
-  it('选择技能会插入技能名', async () => {
-    renderWithApp(<Composer running={false} onSend={vi.fn()} skills={[{ key: 's1', name: '周报生成' }]} />);
-    await userEvent.click(screen.getByRole('button', { name: '选择技能' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: '周报生成' }));
-    expect(screen.getByRole('textbox')).toHaveValue('/周报生成 ');
+describe('逐字输出', () => {
+  it('正在输出的文字接在已有回答后面显示，没结束时不出操作按钮', () => {
+    const running: RunView = {
+      ...endedTurn,
+      status: 'running',
+      endedAt: undefined,
+      endReason: undefined,
+      answer: '先说结论。',
+    };
+    renderWithApp(
+      <AssistantTurn
+        run={running}
+        approvals={[]}
+        questions={[]}
+        artifacts={[]}
+        onDecide={vi.fn()}
+        onAnswer={vi.fn()}
+        busy
+        liveText="短剧规模继续增长"
+      />,
+    );
+    expect(screen.getByText('先说结论。')).toBeInTheDocument();
+    expect(screen.getByText('短剧规模继续增长')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '复制' })).toBeNull();
   });
 });
 
@@ -263,6 +283,55 @@ describe('Markdown 与引用', () => {
     expect(screen.getByRole('link', { name: '文档' })).toHaveAttribute('target', '_blank');
   });
 
+  it('回答里的图按出处换成图片，放在它说明的那句话后面；对不上或出处还没拉到时不显示', () => {
+    const text = '报销分三步[1]。\n\n[IMG:1:0]\n\n[IMG:1:5]\n\n[IMG:2:0]';
+    const { container, rerender } = renderWithApp(
+      <Markdown
+        text={text}
+        sources={{
+          1: { title: '差旅办法', images: [{ url: '/api/x/img1?sig=s', caption: '报销流程图' }] },
+        }}
+      />,
+    );
+    const image = screen.getByRole('img', { name: '报销流程图' });
+    expect(image).toHaveAttribute('src', '/api/x/img1?sig=s');
+    expect(image.closest('a')).toBeNull();
+    expect(container.querySelectorAll('img')).toHaveLength(1);
+    expect(container.textContent).not.toContain('IMG');
+    rerender(<Markdown text={text} />);
+    expect(container.querySelectorAll('img')).toHaveLength(0);
+  });
+
+  it('点图在看图层里放大，带图注；Esc 关掉，不跳新标签页', async () => {
+    renderWithApp(
+      <Markdown
+        text="见下图[1]。\n\n[IMG:1:0]"
+        sources={{ 1: { title: '差旅办法', images: [{ url: '/api/x/img1?sig=s', caption: '报销流程图' }] } }}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '放大查看：报销流程图' }));
+    const viewer = await screen.findByRole('dialog', { name: '报销流程图' });
+    expect(within(viewer).getByRole('img', { name: '报销流程图' })).toHaveAttribute(
+      'src',
+      '/api/x/img1?sig=s',
+    );
+    expect(within(viewer).getByText('报销流程图', { selector: 'figcaption' })).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('回答过程中重新渲染、重新拉出处，图不重建（不重新加载、不闪）', () => {
+    const text = '报销分三步[1]。\n\n[IMG:1:0]';
+    const sources = () => ({
+      1: { title: '差旅办法', images: [{ url: '/api/x/img1?sig=s', caption: '报销流程图' }] },
+    });
+    // 不用 renderWithApp：它的 rerender 会连外层 Provider 一起换掉，整棵树都会重挂
+    const { rerender } = render(<Markdown text={text} sources={sources()} />);
+    const image = screen.getByRole('img', { name: '报销流程图' });
+    rerender(<Markdown text={`${text}\n\n审批后报销。`} sources={sources()} />);
+    expect(screen.getByRole('img', { name: '报销流程图' })).toBe(image);
+  });
+
   it('没有出处数据时说明暂不可用，不渲染原始 HTML', async () => {
     const { container } = renderWithApp(<Markdown text={'<script>x</script>\n\n见[^2]'} />);
     expect(container.querySelector('script')).toBeNull();
@@ -272,6 +341,34 @@ describe('Markdown 与引用', () => {
 });
 
 describe('引用出处与无效编号', () => {
+  it('回答里原样摘了原文才收窄到那一处（摘录、页码跟着换）；改写过的照样是整块', async () => {
+    const source = {
+      title: 'F-CM324C',
+      page: 11,
+      excerpt: '说明 若想设置左右摆头以本体为中心时……',
+      spots: [
+        { locate: { type: 'pdf' as const, page: 11, boxes: [], quotes: ['说明'] }, quote: '说明' },
+        {
+          locate: { type: 'pdf' as const, page: 12, boxes: [], quotes: ['注意 可动部位不可把手指伸入。'] },
+          quote: '注意 可动部位不可把手指伸入。',
+        },
+      ],
+    };
+    renderWithApp(
+      <Markdown
+        text="手动调节时，可动部位不要把手指伸入[3]。说明书写着「注意：可动部位不可把手指伸入」[4]。"
+        sources={{ 3: source, 4: source }}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '查看出处 3' }));
+    expect(await screen.findByText('说明 若想设置左右摆头以本体为中心时……')).toBeInTheDocument();
+    expect(screen.getByText('第 11 页')).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: '查看出处 4' }));
+    expect(await screen.findByText('注意 可动部位不可把手指伸入。')).toBeInTheDocument();
+    expect(screen.getByText('第 12 页')).toBeInTheDocument();
+  });
+
   it('[n] 渲染成上标，点开显示标题、页码、摘录与查看原文', async () => {
     renderWithApp(
       <Markdown
@@ -314,6 +411,29 @@ describe('引用出处与无效编号', () => {
     expect(screen.getByText('已去掉 1 处没有出处的引用编号：[7]')).toBeInTheDocument();
   });
 
+  it('回答结束后图标行末尾有来源按钮，答到一半时没有', () => {
+    const sources = {
+      1: { title: '采购合同.pdf', url: 'http://kf/1' },
+      2: { title: '采购合同.pdf', url: 'http://kf/1' },
+    };
+    const props = {
+      approvals: [],
+      questions: [],
+      artifacts: [],
+      sources,
+      onDecide: vi.fn(),
+      onAnswer: vi.fn(async () => true),
+      busy: false,
+    };
+    const { unmount } = renderWithApp(
+      <AssistantTurn {...props} run={{ ...endedTurn, endedAt: undefined, answer: '期限 30 天[1]' }} />,
+    );
+    expect(screen.queryByRole('button', { name: /个来源/ })).toBeNull();
+    unmount();
+    renderWithApp(<AssistantTurn {...props} run={{ ...endedTurn, answer: '期限 30 天[1]，违约金[2]。' }} />);
+    expect(screen.getByRole('button', { name: '1 个来源' })).toBeInTheDocument();
+  });
+
   it('引用目录还没拉到时编号照常显示，不提示', () => {
     const run: RunView = { ...endedTurn, answer: '见[7]。' };
     renderWithApp(
@@ -342,6 +462,14 @@ describe('FileCard 与 AnswerActions', () => {
   it('没有地址时下载不可用', () => {
     renderWithApp(<FileCard name="x.bin" />);
     expect(screen.getByRole('button', { name: '下载 x.bin' })).toBeDisabled();
+  });
+
+  it('复制回答时去掉图片编号（复制出去换不成图）', async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    renderWithApp(<AnswerActions text={'报销分三步[1]。\n\n[IMG:1:0]\n\n先填单。'} onRegenerate={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: '复制' }));
+    expect(writeText).toHaveBeenCalledWith('报销分三步[1]。\n\n先填单。');
   });
 
   it('复制、反馈与重新生成', async () => {

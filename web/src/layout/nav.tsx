@@ -6,6 +6,7 @@ import {
   Groups,
   History,
   Members,
+  Pulse,
   Report,
   Settings,
   ShieldKey,
@@ -13,6 +14,7 @@ import {
   Tools,
 } from '@openai/apps-sdk-ui/components/Icon';
 import type { ReactNode } from 'react';
+import { slotItems } from '../slots/registry';
 
 export interface NavItem {
   readonly to: string;
@@ -56,8 +58,26 @@ export const ADMIN_NAV: readonly NavGroup[] = [
 /** 系统级设置，只有系统管理员（初始化时建的账号）看得到。 */
 export const SYSTEM_NAV: NavGroup = {
   label: '系统',
-  items: [{ to: '/admin/system', label: '系统设置', icon: <Settings /> }],
+  items: [
+    { to: '/admin/system', label: '系统设置', icon: <Settings /> },
+    { to: '/admin/jobs', label: '运行面板', icon: <Pulse /> },
+  ],
 };
+
+/** 管理后台侧栏：内置分组加上扩展注册的菜单项（插进同名分组，没有就新起一组）。 */
+export function adminNav(): readonly NavGroup[] {
+  const groups = ADMIN_NAV.map((group) => ({ label: group.label, items: [...group.items] }));
+  for (const entry of slotItems('admin.nav')) {
+    let group = groups.find((candidate) => candidate.label === entry.group);
+    if (!group) {
+      group = { label: entry.group, items: [] };
+      groups.push(group);
+    }
+    const at = entry.before ?? group.items.length;
+    group.items = [...group.items.slice(0, at), entry.item, ...group.items.slice(at)];
+  }
+  return groups;
+}
 
 export const ADMIN_HOME = '/admin/members';
 

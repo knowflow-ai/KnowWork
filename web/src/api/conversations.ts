@@ -1,5 +1,6 @@
 /** 会话接口封装（server/src/knowwork_server/conversations/api.py）。 */
 import { request, seg } from './http';
+import { mentionBody, type Mention } from './mentions';
 import { isRecord, listOf, str, text } from './parse';
 
 export type SendMode = 'followup' | 'steer';
@@ -84,21 +85,48 @@ export const REPLY_LANGUAGES: readonly { readonly value: ReplyLanguage; readonly
   { value: 'en', label: 'English' },
 ];
 
-/** attachments：本轮带的附件 id（先经 uploadForTurn 上传）；不带时不发这个字段。 */
+/**
+ * 回答方式（服务端 conversations/api.py 的 answer_mode）：智能体，或只检索知识库的快速问答。
+ * 每条消息都带，会话中途可以换；快速问答不能带附件，@ 的技能不算。
+ */
+export type AnswerMode = 'agent' | 'quick';
+
+export const ANSWER_MODES: readonly { readonly value: AnswerMode; readonly label: string }[] = [
+  { value: 'agent', label: '智能体' },
+  { value: 'quick', label: '快速问答' },
+];
+
+/** 一条消息除了文字以外带的东西；不带的不发对应字段。 */
+export interface SendExtras {
+  /** 聊天页选的回答语言 */
+  readonly language?: ReplyLanguage;
+  /** 输入框里选的回答方式 */
+  readonly answerMode?: AnswerMode;
+  /** 本轮带的附件 id（先经 uploadForTurn 上传） */
+  readonly attachments?: readonly string[];
+  /** 用户在上一轮回答上方撤掉的检索条件（照检索结果给的写法），这一轮检索时去掉 */
+  readonly droppedConditions?: readonly string[];
+  /** 输入框里 @ 的知识库、目录、文件、标签、技能 */
+  readonly mentions?: readonly Mention[];
+}
+
 export function sendMessage(
   conversationId: string,
   value: string,
   mode: SendMode,
-  language?: ReplyLanguage,
-  attachments: readonly string[] = [],
+  extras: SendExtras = {},
 ): Promise<{ messageId: string }> {
+  const { language, answerMode, attachments = [], droppedConditions = [], mentions = [] } = extras;
   return request(`/api/conversations/${seg(conversationId)}/messages`, {
     method: 'POST',
     body: {
       text: value,
       mode,
       ...(language ? { language } : {}),
+      ...(answerMode ? { answer_mode: answerMode } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
+      ...(droppedConditions.length > 0 ? { dropped_conditions: droppedConditions } : {}),
+      ...(mentions.length > 0 ? { mentions: mentions.map(mentionBody) } : {}),
     },
   });
 }

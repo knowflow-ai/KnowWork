@@ -16,11 +16,20 @@ import secrets
 from dataclasses import dataclass
 
 from .containers import ContainerManager, SandboxKey
-from .contract import INPUT_DIR, ExecResult, SandboxError, SandboxFile, SandboxTooLarge
+from .contract import INPUT_DIR, ExecResult, SandboxConversionFailed, SandboxError, SandboxFile, SandboxTooLarge
 from .docker_engine import DockerEngine
 from .execution import ExecRequest, RawExec, run
 from .paths import WORKSPACE_DIR, check_name, resolve, resolve_writable
-from .scripts import CONVERT_TO_PDF, FILE_ERRORS, LIST_DIR, PREPARE_WRITE, READ_DELIVERED, READ_FILE, STAT_PATH
+from .scripts import (
+    CONVERT_OFFICE,
+    FILE_ERRORS,
+    LIST_DIR,
+    PREPARE_WRITE,
+    READ_DELIVERED,
+    READ_FILE,
+    RECALC_XLSX,
+    STAT_PATH,
+)
 from .tarball import Entry, build
 
 INTERNAL_TIMEOUT_SECONDS = 30.0
@@ -29,6 +38,7 @@ MAX_EXEC_OUTPUT = 16 * 1024 * 1024
 NOT_STARTED = "这个会话还没有沙箱"
 # 沙箱镜像里原生 LibreOffice 的封装脚本（见 deploy/docker/sandbox.Dockerfile，照搬 KnowFlow）
 SOFFICE = "/opt/knowwork/office/soffice.py"
+RECALC = "/opt/knowwork/office/recalc.py"
 CONVERTIBLE = frozenset({"doc", "docx", "odt", "rtf", "ppt", "pptx", "odp"})
 
 
@@ -193,29 +203,66 @@ class DockerSessionSandbox:
 
     async def convert_to_pdf(self, workspace_id: str, session_id: str, extension: str, data: bytes, *,
                              max_bytes: int, timeout_seconds: float) -> bytes:
-        """在会话容器里用原生 LibreOffice 把一份 Office 文档转成 PDF（预览用）。文件放在容器的私有临时目录，
-        不进工作区，转完即删。
-        解析外来文档的风险留在断网、无凭证的沙箱里，不进业务服务与宿主。"""
+        """在会话容器里用原生 LibreOffice 把一份 Office 文档转成 PDF（预览用）。"""
         if extension not in CONVERTIBLE:
             raise SandboxError("这种文件不能转换成 PDF")
+        return await self._convert(workspace_id, session_id, data, extension, "pdf", b"%PDF-",
+                                   max_bytes=max_bytes, timeout_seconds=timeout_seconds)
+
+    async def convert_doc_to_docx(self, workspace_id: str, session_id: str, data: bytes, *, max_bytes: int,
+                                  timeout_seconds: float) -> bytes:
+        """旧格式 Word（.doc，二进制）转成 .docx：知识库按 docx 交给 MinerU 解析（3.x 只认 docx），预览在浏览器里
+        渲染这份 docx（浏览器读不了 .doc）。原件不动，下载仍是用户传的那份。"""
+        return await self._convert(workspace_id, session_id, data, "doc", "docx", b"PK",
+                                   max_bytes=max_bytes, timeout_seconds=timeout_seconds)
+
+    async def _convert(self, workspace_id: str, session_id: str, data: bytes, source: str, target: str,
+                       magic: bytes, *, max_bytes: int, timeout_seconds: float) -> bytes:
+        """文件放在容器的私有临时目录，不进工作区，转完即删。
+        解析外来文档的风险留在断网、无凭证的沙箱里，不进业务服务与宿主。"""
         if len(data) > self._max_input:
             raise SandboxTooLarge("文件超出转换上限")
         directory = f"/tmp/kw-convert-{secrets.token_hex(8)}"
-        tar = build([Entry(f"{directory.lstrip('/')}/in.{extension}", 0, 0, 0o600, data)])
+        tar = build([Entry(f"{directory.lstrip('/')}/in.{source}", 0, 0, 0o600, data)])
         async with self._containers.using(SandboxKey.of(workspace_id, session_id)) as container_id:
             await self._engine.put_archive(str(container_id), "/", tar)
-            result = await self._run(str(container_id), ["sh", "-c", CONVERT_TO_PDF, "kw", directory, SOFFICE,
-                                                         extension, str(max_bytes)],
+            result = await self._run(str(container_id), ["sh", "-c", CONVERT_OFFICE, "kw", directory, SOFFICE,
+                                                         source, str(max_bytes), target],
                                      timeout=timeout_seconds, cap=max_bytes, workdir="/", user="root")
         if result.timed_out:
             raise SandboxError("文档转换超时")
         if result.exit_code == 9 or result.truncated:
-            raise SandboxTooLarge("转换出的 PDF 超出上限")
+            raise SandboxTooLarge("转换出的文件超出上限")
         if result.exit_code == 11:
             raise SandboxError("沙箱内存不足，文档转换被系统终止，请让管理员调高沙箱内存上限")
-        if result.exit_code != 0 or not result.stdout.startswith(b"%PDF-"):
+        if result.exit_code != 0 or not result.stdout.startswith(magic):
             detail = result.stderr.decode("utf-8", errors="replace")[-300:]
-            raise SandboxError(f"文档转换失败（{detail.strip() or '没有输出'}）")
+            raise SandboxConversionFailed(f"文档转换失败（{detail.strip() or '没有输出'}）")
+        return result.stdout
+
+    async def recalc_xlsx(self, workspace_id: str, session_id: str, data: bytes, *, max_bytes: int,
+                          timeout_seconds: float) -> bytes:
+        """用 LibreOffice 重算一份 xlsx 里的公式，返回重算后的文件（知识库解析表格前用：没有缓存值的公式算出来）。
+        和转 PDF 一样放在容器的私有临时目录里，算完即删。引用了别的文件（外部链接）的不算：重算会把那些格子变成
+        #NAME?，比留着缓存值更糟。"""
+        if len(data) > self._max_input:
+            raise SandboxTooLarge("文件超出重算上限")
+        directory = f"/tmp/kw-recalc-{secrets.token_hex(8)}"
+        tar = build([Entry(f"{directory.lstrip('/')}/in.xlsx", 0, 0, 0o600, data)])
+        async with self._containers.using(SandboxKey.of(workspace_id, session_id)) as container_id:
+            await self._engine.put_archive(str(container_id), "/", tar)
+            result = await self._run(str(container_id), ["sh", "-c", RECALC_XLSX, "kw", directory, RECALC,
+                                                         str(max(1, int(timeout_seconds) - 5)), str(max_bytes)],
+                                     timeout=timeout_seconds, cap=max_bytes, workdir="/", user="root")
+        if result.timed_out:
+            raise SandboxError("公式重算超时")
+        if result.exit_code == 9 or result.truncated:
+            raise SandboxTooLarge("重算后的文件超出上限")
+        if result.exit_code == 11:
+            raise SandboxError("沙箱内存不足，公式重算被系统终止，请让管理员调高沙箱内存上限")
+        if result.exit_code != 0 or not result.stdout.startswith(b"PK"):
+            detail = result.stderr.decode("utf-8", errors="replace")[-300:]
+            raise SandboxError(f"公式重算失败（{detail.strip() or '没有输出'}）")
         return result.stdout
 
     async def destroy(self, workspace_id: str, session_id: str) -> None:

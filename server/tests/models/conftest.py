@@ -1,5 +1,6 @@
 """models 测试夹具：每个测试一个独立数据库，应用以普通角色（非超级用户、无 BYPASSRLS）连接，
 行级安全真实生效。空间 ws1：owner alice，admin bob，editor carol，viewer dave。
+文档解析服务的配置（docparse）在界面上属于「模型」，表也建在这里。
 """
 
 import uuid
@@ -13,6 +14,7 @@ from knowwork_server.access.models import ACCESS_RLS_TABLES, ACCESS_TABLES
 from knowwork_server.access.rls import enable_row_level_security
 from knowwork_server.access.service import AccessService
 from knowwork_server.db.base import Base, make_engine, make_sessionmaker
+from knowwork_server.docparse import DOCPARSE_RLS_TABLES, DOCPARSE_TABLES
 from knowwork_server.models import MODELS_RLS_TABLES, MODELS_TABLES, build_models_service
 
 APP_ROLE = "kw_models_app"
@@ -41,9 +43,9 @@ async def db(database_url):
     admin_url = _swap(database_url, user="postgres", database=name)
     admin = create_async_engine(admin_url)
     async with admin.begin() as conn:
-        tables = list(ACCESS_TABLES) + list(MODELS_TABLES)
+        tables = list(ACCESS_TABLES) + list(MODELS_TABLES) + list(DOCPARSE_TABLES)
         await conn.run_sync(lambda sync: Base.metadata.create_all(sync, tables=tables))
-        await enable_row_level_security(conn, ACCESS_RLS_TABLES + MODELS_RLS_TABLES)
+        await enable_row_level_security(conn, ACCESS_RLS_TABLES + MODELS_RLS_TABLES + DOCPARSE_RLS_TABLES)
         await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}"))
         await conn.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {APP_ROLE}"))
         await conn.execute(text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {APP_ROLE}"))

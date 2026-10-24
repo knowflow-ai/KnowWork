@@ -106,6 +106,35 @@ describe('openEventStream', () => {
     expect(statuses).toContain('reconnecting:无法连接服务，请检查网络后重试');
   });
 
+  it('逐字片段（live，不带 id）交给 onLive，不当成事件、不改变续传位置', async () => {
+    const live = (body: string) => `event: live\ndata: ${body}\n\n`;
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      calls.push((init?.headers as Record<string, string>)['Last-Event-ID'] ?? '');
+      return calls.length === 1
+        ? new Response(
+            streamOf([
+              frame('5', 5),
+              live('{"run_id":"run-1","step":1,"offset":0,"text":"短剧"}'),
+              live('{"bad":true}'),
+            ]),
+            { status: 200 },
+          )
+        : new Response(streamOf([]), { status: 200 });
+    });
+    const events: WireEvent[] = [];
+    const pieces: unknown[] = [];
+    const close = openEventStream(
+      { url: '/e', retryMs: 1, fetchImpl: fetchImpl as typeof fetch },
+      { onEvent: (e) => events.push(e), onLive: (p) => pieces.push(p) },
+    );
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2));
+    close();
+    expect(events.map((e) => e.id)).toEqual(['5']);
+    expect(pieces).toEqual([{ runId: 'run-1', step: 1, offset: 0, text: '短剧' }]);
+    expect(calls[1]).toBe('5');
+  });
+
   it('从给定位置续传，服务端 5xx 时给出可读原因并重试', async () => {
     let count = 0;
     const seen: string[] = [];

@@ -1,5 +1,5 @@
 /**
- * 技能清单与内容的拉取（技术方案 3.4 节「技能提供方」）。
+ * 技能清单与内容的拉取（技能提供方）。
  *
  * 宿主插件回调业务服务统一走 `/internal/extensions/{plugin}/{operation}`，这里是 `skills` 的两个操作：
  * - `GET /catalog`：本会话可用技能清单（已发布版本），每项带 allowedTools / completionTools / unlocks；

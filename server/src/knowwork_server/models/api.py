@@ -20,7 +20,7 @@ from .core import ADMIN_ACTION, Authorizer
 from .errors import Conflict, Denied, Invalid, ModelsError, NotFound, Unavailable
 from .probe import DEFAULT_PROBE_TIMEOUT, pick_capability, probe
 from .recorder import GroupBy, UsageRecorder
-from .schemas import Capability, GroupCreate, GroupUpdate, ModelCreate, ModelUpdate, ProviderCreate, ProviderUpdate
+from .schemas import Capability, ModelCreate, ModelUpdate, ProviderCreate, ProviderUpdate
 from .service import ModelCatalog
 
 _STATUS = {Denied: 403, NotFound: 404, Conflict: 409, Invalid: 422, Unavailable: 503}
@@ -51,7 +51,6 @@ def build_router(catalog: ModelCatalog, recorder: UsageRecorder, authorizer: Aut
     Who = Annotated[Principal, Depends(current_principal)]
     _providers(router, catalog, Admin)
     _models(router, catalog, Admin, probe_http, probe_timeout)
-    _groups(router, catalog, Admin)
     _member_routes(router, catalog, recorder, Who, Admin)
     return router
 
@@ -101,32 +100,7 @@ def _models(router: APIRouter, catalog: ModelCatalog, Admin, http: httpx.AsyncCl
         return asdict(await probe(http, route, chosen, timeout=timeout))
 
 
-def _groups(router: APIRouter, catalog: ModelCatalog, Admin) -> None:
-    @router.get("/model-groups")
-    async def list_groups(workspace_id: IdPath, who: Admin):
-        return [asdict(v) for v in await _call(catalog.list_groups(who.user_id, workspace_id))]
-
-    @router.post("/model-groups", status_code=201)
-    async def create_group(workspace_id: IdPath, body: GroupCreate, who: Admin):
-        return asdict(await _call(catalog.create_group(who.user_id, workspace_id, body)))
-
-    @router.patch("/model-groups/{group_id}")
-    async def update_group(workspace_id: IdPath, group_id: IdPath, body: GroupUpdate, who: Admin):
-        return asdict(await _call(catalog.update_group(who.user_id, workspace_id, group_id, body)))
-
-    @router.delete("/model-groups/{group_id}", status_code=204)
-    async def delete_group(workspace_id: IdPath, group_id: IdPath, who: Admin):
-        await _call(catalog.delete_group(who.user_id, workspace_id, group_id))
-        return Response(status_code=204)
-
-
 def _member_routes(router: APIRouter, catalog: ModelCatalog, recorder: UsageRecorder, Who, Admin) -> None:
-    @router.get("/usable-models")
-    async def usable_models(workspace_id: IdPath, who: Who):
-        models = await _call(catalog.usable_models(who.user_id, workspace_id))
-        return [{"alias": m.alias, "name": m.name, "capabilities": list(m.capabilities),
-                 "context_length": m.context_length} for m in models]
-
     @router.get("/usage")
     async def usage(workspace_id: IdPath, who: Admin, start: Annotated[date, Query()],
                     end: Annotated[date, Query()], group_by: Annotated[GroupBy, Query()] = GroupBy.USER,

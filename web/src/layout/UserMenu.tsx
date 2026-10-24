@@ -13,7 +13,14 @@ import { useReplyLanguage } from '../stores/replyLanguage';
 import { useIsWorkspaceAdmin, useMe } from '../features/auth/queries';
 import { toast } from '../ui/toastStore';
 
-export function UserMenu({ inAdmin = false }: { readonly inAdmin?: boolean }) {
+/** compact：侧栏收起时只显示头像。 */
+export function UserMenu({
+  inAdmin = false,
+  compact = false,
+}: {
+  readonly inAdmin?: boolean;
+  readonly compact?: boolean;
+}) {
   const navigate = useNavigate();
   const client = useQueryClient();
   const me = useMe();
@@ -37,10 +44,12 @@ export function UserMenu({ inAdmin = false }: { readonly inAdmin?: boolean }) {
         <Menu.Trigger>
           <button type="button" className="kw-sidebar-link" aria-label="账号菜单">
             <Avatar name={name} size={28} />
-            <span className="kw-user-meta">
-              <span className="kw-ellipsis">{name}</span>
-              <small className="kw-ellipsis">{me.data?.email ?? '默认空间'}</small>
-            </span>
+            {compact ? null : (
+              <span className="kw-user-meta">
+                <span className="kw-ellipsis">{name}</span>
+                <small className="kw-ellipsis">{me.data?.email ?? '默认空间'}</small>
+              </span>
+            )}
           </button>
         </Menu.Trigger>
         <Menu.Content side="top" align="start" minWidth={220}>

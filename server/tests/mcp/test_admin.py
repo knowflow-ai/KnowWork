@@ -26,7 +26,7 @@ async def register(env, stub, **over):
 
 
 async def test_delete_removes_the_servers_tool_grants(env, stub):
-    """删除服务时同一事务删掉它的工具授权（单个工具与整个服务的），别的服务的不动（技术方案 5.2 节）。"""
+    """删除服务时同一事务删掉它的工具授权（单个工具与整个服务的），别的服务的不动。"""
     record = await register(env, stub)
     await env.access.grant("alice", "ws1", "user:carol", "tool:mcp__demo__*", "use")
     await env.access.grant("alice", "ws1", "user:dave", f"tool:{ADD}", "use")

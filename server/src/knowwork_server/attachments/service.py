@@ -1,12 +1,14 @@
 """附件服务：上传校验、存原件、放进沙箱或排队解析、列表、沙箱重建后重放、会话删除时清理。
 
+解析任务排进通用任务表（jobs，类型 attachment.parse），和附件行同一事务写入；执行在 worker 进程（parse_job.py）。
+
 每个事务开头都 set_workspace，普通账号连库时行级安全按工作空间放行；
 同一会话的入库按会话加事务级 advisory 锁串行，沙箱里的文件名因此不会撞。
 """
 
 import logging
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -16,11 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..access.rls import set_workspace
 from ..conversations.models import Conversation
+from ..jobs import JobKind, cancel, enqueue
 from ..sandbox.contract import SandboxError, SandboxTooLarge, SessionSandbox
 from ..sessionfiles.names import InvalidFileName, clean_name, replace_extension, unique_name
 from ..sessionfiles.storage import SessionStores
 from ..skills.errors import BlobIntegrityError
-from .models import Attachment, AttachmentParseJob
+from .models import Attachment
 from .settings import AttachmentSettings
 from .types import PARSED_KINDS, AttachmentRejected, Kind, detect
 
@@ -60,6 +63,18 @@ class AttachmentView:
 
 
 @dataclass(frozen=True)
+class ParseSource:
+    """解析任务要用的附件信息。"""
+
+    conversation_id: str
+    filename: str
+    parsed_name: str
+    mime: str
+    digest: str
+    parsed_digest: str | None  # 上一次已经解析出、存下的 Markdown；放进沙箱失败重试时不用再解析
+
+
+@dataclass(frozen=True)
 class UploadResult:
     items: tuple[AttachmentView, ...]
     failures: tuple[FileFailure, ...]
@@ -85,11 +100,15 @@ async def lock_session(session: AsyncSession, conversation_id: str) -> None:
 
 class AttachmentService:
     def __init__(self, sessionmaker: async_sessionmaker, stores: SessionStores, sandbox: SessionSandbox,
-                 settings: AttachmentSettings) -> None:
+                 settings: AttachmentSettings, parse_kind: JobKind, *,
+                 parser_configured: Callable[[str], Awaitable[bool]]) -> None:
         self._sessionmaker = sessionmaker
         self._stores = stores
         self._sandbox = sandbox
         self._settings = settings
+        self._parse_kind = parse_kind
+        # 这个空间配没配文档解析服务（管理后台里能随时改，所以每次上传时问）
+        self._parser_configured = parser_configured
 
     @asynccontextmanager
     async def _tx(self, workspace_id: str) -> AsyncIterator[AsyncSession]:
@@ -140,7 +159,7 @@ class AttachmentService:
             raise AttachmentRejected("storage_unavailable", "文件存储暂时不可用，请稍后重试") from error
         # 原件总是原样放进沙箱（照官方：文件按原字节保存，模型用文件工具按需读）；配了 MinerU 的 PDF、Word、PPT
         # 另外解析出一份同名 Markdown 放在旁边，方便读长文档。没配 MinerU 不影响上传，沙箱里有读 Office 文件的工具。
-        parsed = kind in PARSED_KINDS and self._settings.mineru_configured
+        parsed = kind in PARSED_KINDS and await self._parser_configured(conversation.workspace_id)
         async with self._tx(conversation.workspace_id) as session:
             await lock_session(session, conversation.id)
             names = (await session.execute(select(Attachment.input_name, Attachment.parsed_name)
@@ -155,10 +174,7 @@ class AttachmentService:
                              parse_status="parsing" if parsed else None, created_at=datetime.now(UTC))
             session.add(row)
             if parsed:
-                await session.flush()
-                session.add(AttachmentParseJob(id=f"apj_{uuid.uuid4().hex}", workspace_id=conversation.workspace_id,
-                                               attachment_id=row.id, status="queued", attempts=0,
-                                               max_attempts=self._settings.attachment_parse_max_attempts))
+                await enqueue(session, self._parse_kind, workspace_id=conversation.workspace_id, subject_id=row.id)
         return row
 
     async def _place_original(self, conversation: Conversation, row: Attachment,
@@ -173,17 +189,31 @@ class AttachmentService:
         await self.mark(conversation.workspace_id, row.id, status="ready")
         return replace(view(row), status="ready"), None
 
-    async def mark_parse(self, workspace_id: str, attachment_id: str, *, parse_status: str,
-                         code: str | None = None, message: str | None = None,
-                         parsed_digest: str | None = None) -> None:
-        """解析任务的结果只动 parse_status，不动原件的 status：解析失败时原件照样可用。"""
+    async def parse_source(self, workspace_id: str, attachment_id: str) -> ParseSource | None:
+        """解析任务开始时读附件；附件已删（会话删了）或不需要解析时返回 None。"""
+        async with self._tx(workspace_id) as session:
+            row = await session.get(Attachment, attachment_id)
+        if row is None or not row.parsed_name:
+            return None
+        return ParseSource(conversation_id=row.conversation_id, filename=row.filename, parsed_name=row.parsed_name,
+                           mime=row.mime, digest=row.digest, parsed_digest=row.parsed_digest)
+
+    async def save_parsed(self, workspace_id: str, attachment_id: str, parsed_digest: str) -> None:
+        """解析结果一存下就记到附件上：之后放进沙箱失败重试、或沙箱重建时重放，都不用再调解析服务。"""
+        async with self._tx(workspace_id) as session:
+            await session.execute(update(Attachment).where(Attachment.id == attachment_id)
+                                  .values(parsed_digest=parsed_digest, updated_at=func.now()))
+
+    async def apply_parse(self, session: AsyncSession, attachment_id: str, *, parse_status: str,
+                          code: str | None = None, message: str | None = None,
+                          parsed_digest: str | None = None) -> None:
+        """写解析结果，在任务收尾的事务里调用。只动 parse_status，不动原件的 status：解析失败时原件照样可用。"""
         values = {"parse_status": parse_status, "updated_at": func.now()}
         if code is not None:
             values.update(error_code=code, error_message=message and message[:500])
         if parsed_digest is not None:
             values["parsed_digest"] = parsed_digest
-        async with self._tx(workspace_id) as session:
-            await session.execute(update(Attachment).where(Attachment.id == attachment_id).values(**values))
+        await session.execute(update(Attachment).where(Attachment.id == attachment_id).values(**values))
 
     async def ready(self, conversation: Conversation, ids: Sequence[str]) -> tuple[AttachmentView, ...]:
         """本轮消息带的附件：必须属于这个会话、原件已放进沙箱。缺一个就整轮拒绝，免得模型以为有文件其实没有。"""
@@ -247,13 +277,17 @@ class AttachmentService:
         return None
 
     async def erase(self, conversation: Conversation) -> None:
-        """会话删除时调用：删行（解析任务随外键级联），再删该会话命名空间里的原件与解析结果。"""
+        """会话删除时调用：取消解析任务、删行，再删该会话命名空间里的原件与解析结果。
+
+        运行中的解析任务收到取消标记后停下；万一它已经在收尾，写结果时附件行已不在，只是空操作。
+        """
         async with self._tx(conversation.workspace_id) as session:
-            rows = (await session.execute(select(Attachment.digest, Attachment.parsed_digest)
+            rows = (await session.execute(select(Attachment.id, Attachment.digest, Attachment.parsed_digest)
                                           .where(Attachment.conversation_id == conversation.id))).all()
+            await cancel(session, self._parse_kind, [row.id for row in rows])
             await session.execute(delete(Attachment).where(Attachment.conversation_id == conversation.id))
         store = self._stores(conversation.workspace_id, conversation.id)
-        for digest in {d for pair in rows for d in pair if d}:
+        for digest in {d for row in rows for d in (row.digest, row.parsed_digest) if d}:
             try:
                 await store.delete(digest)
             except BlobIntegrityError:

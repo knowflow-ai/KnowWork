@@ -92,6 +92,15 @@
     - id: knowwork-prompt-context
       name: '@knowwork/dsh-host/prompt-context'
 
+    # 回答方式：每条消息带「智能体 / 快速问答」，会话中途可切换；快速问答在提问后加一段只检索的指令，
+    # 执行时只放行知识库检索。工具清单与系统提示不随切换变化（照官方计划模式）
+    - id: knowwork-answer-mode
+      name: '@knowwork/dsh-host/answer-mode'
+
+    # 知识库目录：照官方 dsh-tool-skill 的会话技能目录，只列名字与简介，字段与标签由 knowledge_bases 按需取
+    - id: knowwork-knowledge-catalog
+      name: '@knowwork/dsh-host/knowledge-catalog'
+
     # 官方凭据服务：网关短期令牌经 ctx.credentials 轮换，下一次请求即生效，无需重启。
     # 存储文件放在宿主私有目录（容器里挂 tmpfs），宿主不开放 shell 与文件工具，Agent 读不到。
     - id: credentials-local
@@ -146,7 +155,7 @@
 
     # 官方子 Agent：委派服务、进程内 spawn 后端、委派工具（照官方 dsh-base 的行）。
     # 子会话的工具收窄、审批、事件按父会话继承，见 knowwork-subagent-policy。
-    # 不加 fork 后端与 list_agents：fork 会把父会话历史整段带进子会话，第一期不需要。
+    # 不加 fork 后端与 list_agents：fork 会把父会话历史整段带进子会话，目前不需要。
     - id: subagent
       name: '@deepseek-ai/dsh-subagent'
 

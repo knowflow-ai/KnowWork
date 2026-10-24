@@ -163,7 +163,7 @@ async def test_admin_permissions_and_validation(env):
 
 
 async def test_deleting_a_source_removes_its_base_grants(env):
-    """删除知识源时同一事务删掉它下面的知识库授权，授权页不会留下孤儿授权（技术方案 5.2 节）。"""
+    """删除知识源时同一事务删掉它下面的知识库授权，授权页不会留下孤儿授权。"""
     gone = await create(env)
     kept = await create(env, name="制度库")
     await grant_use(env, "carol", gone.id)

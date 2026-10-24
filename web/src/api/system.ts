@@ -40,19 +40,40 @@ export async function checkSystemAdmin(): Promise<boolean> {
   return isRecord(body) && body.allowed === true;
 }
 
+export interface ExtensionInfo {
+  readonly name: string;
+  readonly enabled: boolean;
+  /** 没启用的原因 */
+  readonly reason: string | null;
+}
+
 export interface SystemInfo {
   readonly knowwork: string;
   readonly dsh: string | null;
   readonly database: string | null;
+  /** 授权状态，一句话 */
+  readonly license: string | null;
+  /** 装了的扩展模块；开源版为空 */
+  readonly extensions: readonly ExtensionInfo[];
+}
+
+function extensionOf(value: unknown): ExtensionInfo | undefined {
+  if (!isRecord(value)) return undefined;
+  const name = str(value.name);
+  if (!name) return undefined;
+  return { name, enabled: value.enabled === true, reason: str(value.reason) ?? null };
 }
 
 export async function getSystemInfo(): Promise<SystemInfo> {
   const body = await request<unknown>('/api/system/info');
   const record = isRecord(body) ? body : {};
+  const extensions = Array.isArray(record.extensions) ? record.extensions : [];
   return {
     knowwork: str(record.knowwork) ?? '未知',
     dsh: str(record.dsh) ?? null,
     database: str(record.database) ?? null,
+    license: str(record.license) ?? null,
+    extensions: extensions.map(extensionOf).filter((item): item is ExtensionInfo => item !== undefined),
   };
 }
 

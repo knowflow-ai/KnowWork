@@ -6,12 +6,9 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import text
 
-from knowwork_server.access.engine import VisibleSet
 from knowwork_server.models.crypto import SecretBox
 from knowwork_server.models.errors import Conflict, Denied, Invalid, NotFound, Unavailable
 from knowwork_server.models.schemas import (
-    GroupCreate,
-    GroupUpdate,
     ModelCreate,
     ModelUpdate,
     ProviderCreate,
@@ -71,8 +68,19 @@ async def test_management_requires_workspace_admin(catalog, actor):
         await catalog.create_provider(actor, "ws1", ProviderCreate(name="x", base_url="https://h/v1"))
     with pytest.raises(Denied):
         await catalog.list_models(actor, "ws1")
-    with pytest.raises(Denied):
-        await catalog.list_groups(actor, "ws1")
+
+
+async def test_chat_models_carry_a_thinking_setting_into_their_route(catalog):
+    """思考：不填是跟随服务默认（不补参数），可以改成开、关，也能改回跟随；转发路由带着它，网关与内部客户端据此补参数。"""
+    provider = await _provider(catalog)
+    model = await _model(catalog, provider.id)
+    assert model.thinking is None
+    assert (await catalog.update_model("bob", "ws1", model.id, ModelUpdate(thinking="off"))).thinking == "off"
+    assert (await catalog.resolve("ws1", model.alias)).thinking == "off"
+    assert (await catalog.resolve_capable("ws1", model.alias, "chat")).thinking == "off"
+    assert (await catalog.update_model("bob", "ws1", model.id, ModelUpdate(thinking=None))).thinking is None
+    with pytest.raises(ValidationError):
+        ModelUpdate(thinking="maybe")
 
 
 async def test_model_crud_and_conflicts(catalog):
@@ -143,77 +151,27 @@ async def test_provider_without_key(catalog):
     assert route.api_key == "" and view.id == model.id
 
 
-async def test_groups_crud(catalog):
+async def test_capable_models_list_enabled_models_with_the_capability(catalog):
+    """后台任务挑模型（知识库的嵌入、重排）：启用的、带这种能力的都列出来。"""
     provider = await _provider(catalog)
-    a, b = await _model(catalog, provider.id, "a"), await _model(catalog, provider.id, "b")
-    group = await catalog.create_group("bob", "ws1", GroupCreate(name="通用", model_ids=(b.id, a.id, a.id)))
-    assert group.model_ids == tuple(sorted((a.id, b.id)))
-    with pytest.raises(Conflict):
-        await catalog.create_group("bob", "ws1", GroupCreate(name="通用"))
-    with pytest.raises(Invalid):
-        await catalog.create_group("bob", "ws1", GroupCreate(name="坏", model_ids=("md_missing",)))
-    renamed = await catalog.update_group("bob", "ws1", group.id, GroupUpdate(name="改名", description="说明"))
-    assert renamed.model_ids == group.model_ids and renamed.description == "说明"
-    shrunk = await catalog.update_group("bob", "ws1", group.id, GroupUpdate(model_ids=(a.id,)))
-    assert shrunk.model_ids == (a.id,)
-    assert [(g.name, g.model_ids) for g in await catalog.list_groups("bob", "ws1")] == [("改名", (a.id,))]
-    await catalog.delete_model("bob", "ws1", a.id)
-    assert (await catalog.list_groups("bob", "ws1"))[0].model_ids == ()
-    await catalog.delete_group("bob", "ws1", group.id)
-    with pytest.raises(NotFound):
-        await catalog.delete_group("bob", "ws1", group.id)
-
-
-async def test_usable_models_follow_group_grants(catalog, access):
-    provider = await _provider(catalog)
-    grouped = await _model(catalog, provider.id, "grouped")
-    await _model(catalog, provider.id, "loose")
-    await catalog.create_group("bob", "ws1", GroupCreate(name="g", model_ids=(grouped.id,)))
-    # 空间角色默认对全部模型分组有 use：成员能用分组里的模型，不在任何分组里的模型谁都不能用
-    assert [m.alias for m in await catalog.usable_models("dave", "ws1")] == ["grouped"]
-    assert (await catalog.ensure_usable("dave", "ws1", "grouped")).id == grouped.id
-    with pytest.raises(Denied):
-        await catalog.ensure_usable("dave", "ws1", "loose")
-    assert await catalog.usable_models("mallory", "ws1") == (), "非成员什么都用不了"
-    with pytest.raises(Denied):
-        await catalog.ensure_usable("mallory", "ws1", "grouped")
+    await _model(catalog, provider.id, "bge", capabilities=["embedding"])
+    off = await _model(catalog, provider.id, "old-bge", capabilities=["embedding"])
+    await _model(catalog, provider.id, "chat", capabilities=["chat"])
+    await catalog.update_model("bob", "ws1", off.id, ModelUpdate(enabled=False))
+    assert [m.alias for m in await catalog.capable_models("ws1", "embedding")] == ["bge"]
+    assert [m.alias for m in await catalog.capable_models("ws1", "chat")] == ["chat"]
     await catalog.update_provider("bob", "ws1", provider.id, ProviderUpdate(enabled=False))
-    assert await catalog.usable_models("dave", "ws1") == ()
-
-
-class _OnlyGroups:
-    """只授权指定分组的判定器：模拟管理员撤掉默认通配、只给某个组授权的情形。"""
-
-    def __init__(self, inner, ids):
-        self.inner, self.ids = inner, frozenset(ids)
-
-    def check(self, *args):
-        return self.inner.check(*args)
-
-    def visible_resources(self, user_id, workspace_id, resource_type, action):
-        return VisibleSet(all_=False, ids=self.ids) if user_id == "dave" else VisibleSet(False, frozenset())
-
-
-async def test_unauthorized_group_is_rejected(sessionmaker, access, catalog):
-    provider = await _provider(catalog)
-    a, b = await _model(catalog, provider.id, "a"), await _model(catalog, provider.id, "b")
-    granted = await catalog.create_group("bob", "ws1", GroupCreate(name="授权", model_ids=(a.id,)))
-    await catalog.create_group("bob", "ws1", GroupCreate(name="未授权", model_ids=(b.id,)))
-    scoped = ModelCatalog(sessionmaker, _OnlyGroups(access, {granted.id}), SecretBox.from_master_key("m" * 40))
-    assert [m.alias for m in await scoped.usable_models("dave", "ws1")] == ["a"]
-    with pytest.raises(Denied):
-        await scoped.ensure_usable("dave", "ws1", "b")
-    assert await scoped.usable_models("carol", "ws1") == ()
+    assert await catalog.capable_models("ws1", "embedding") == (), "厂商停用了也不列"
 
 
 async def test_default_alias_falls_back_to_the_first_enabled_chat_model(catalog):
     """宿主请求的模型名是 default；没有哪个模型的别名正好叫 default 时，用最早添加、已启用的对话模型。"""
     provider = await _provider(catalog)
     embedding = await _model(catalog, provider.id, alias="bge", capabilities=["embedding"])
-    first = await _model(catalog, provider.id, alias="qwen235b")
+    first = await _model(catalog, provider.id, alias="qwen3-32b")
     await _model(catalog, provider.id, alias="later")
     assert embedding.alias == "bge"
-    assert (await catalog.resolve("ws1", "default")).alias == "qwen235b"
+    assert (await catalog.resolve("ws1", "default")).alias == "qwen3-32b"
     await catalog.update_model("bob", "ws1", first.id, ModelUpdate(enabled=False))
     assert (await catalog.resolve("ws1", "default")).alias == "later", "停用的跳过"
     with pytest.raises(NotFound):
@@ -226,8 +184,8 @@ async def test_default_capabilities_follow_the_model_the_host_actually_uses(cata
     """运行配置据此决定要不要收掉看图工具：和网关解析 default 用同一套规则。"""
     assert await catalog.default_capabilities("ws1") is None, "还没配模型"
     provider = await _provider(catalog)
-    text_only = await _model(catalog, provider.id, alias="qwen235b", capabilities=["chat"])
+    text_only = await _model(catalog, provider.id, alias="qwen3-32b", capabilities=["chat"])
     assert await catalog.default_capabilities("ws1") == frozenset({"chat"})
     await _model(catalog, provider.id, alias="default", capabilities=["chat", "vision"])
     assert await catalog.default_capabilities("ws1") == frozenset({"chat", "vision"}), "显式叫 default 的优先"
-    assert text_only.alias == "qwen235b"
+    assert text_only.alias == "qwen3-32b"

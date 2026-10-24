@@ -24,6 +24,26 @@ function api(allowed = true, extra = {}) {
 }
 
 describe('系统设置', () => {
+  it('系统信息：授权与各扩展模块的状态', async () => {
+    api(true, {
+      'GET /api/system/info': jsonResponse({
+        knowwork: '0.1.0',
+        dsh: null,
+        database: '0018',
+        license: '授权有效',
+        extensions: [
+          { name: 'library', enabled: true, reason: null },
+          { name: 'demo', enabled: false, reason: '授权里没有「demo」模块' },
+        ],
+      }),
+    });
+    renderWithApp(<SystemPage />);
+    const info = await screen.findByRole('region', { name: '系统信息' });
+    expect(await within(info).findByText('授权有效')).toBeInTheDocument();
+    expect(within(info).getByText('已启用')).toBeInTheDocument();
+    expect(within(info).getByText('未启用：授权里没有「demo」模块')).toBeInTheDocument();
+  });
+
   it('系统信息：版本号，取不到的写未知', async () => {
     api();
     renderWithApp(<SystemPage />);

@@ -5,11 +5,13 @@ import pytest
 from fastapi import FastAPI
 
 from knowwork_server.attachments import AttachmentSettings, build_attachments, build_router
+from knowwork_server.jobs import JobRunner
 from knowwork_server.sandbox.contract import SandboxError, SandboxTooLarge
 from knowwork_server.sessionfiles import local_session_stores
 from knowwork_server.skills.blobstore import sha256_hex
 from knowwork_server.skills.errors import BlobIntegrityError
 
+from ..fake_parsers import EnvParsers
 from ..fake_sandbox import FakeSandbox
 from ..fakes import token_actor
 from ..office_samples import DOCX, PDF, xlsx
@@ -24,11 +26,17 @@ CONFIGURED = AttachmentSettings(mineru_base_url="http://mineru", attachment_max_
 def setup(files_db, tmp_path, settings=CONFIGURED, *, user="alice", workspace="ws1"):
     sandbox = FakeSandbox()
     stores = local_session_stores(tmp_path)
-    attachments = build_attachments(files_db.sessionmaker, stores, sandbox, settings)
+    attachments = build_attachments(files_db.sessionmaker, stores, sandbox, settings, parsers=EnvParsers(settings))
     app = FastAPI()
     app.include_router(build_router(attachments.service, files_db.lookup, token_actor(TOKEN, user, workspace)))
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://public")
     return http, attachments, sandbox, stores
+
+
+def parse_runner(files_db, attachments):
+    runner = JobRunner(files_db.sessionmaker)
+    attachments.parse_job.register(runner)
+    return runner
 
 
 async def post(http, cid, *files):
@@ -64,7 +72,7 @@ async def test_pdf_without_mineru_is_placed_as_is(files_db, tmp_path):
     assert [(i["inputName"], i["status"], i["parseStatus"]) for i in body["items"]] == [
         ("合同.pdf", "ready", None), ("a.txt", "ready", None)]
     assert sandbox.inputs[("ws1", conv.id)]["合同.pdf"] == PDF
-    assert attachments.mineru is None
+    assert not await attachments.mineru.configured("ws1"), "没配 MinerU：只放原件，不排解析"
 
 
 async def test_pdf_with_mineru_is_placed_and_queued_for_parsing(files_db, tmp_path):
@@ -75,8 +83,8 @@ async def test_pdf_with_mineru_is_placed_and_queued_for_parsing(files_db, tmp_pa
     assert [(i["inputName"], i["status"], i["parsedName"], i["parseStatus"]) for i in body["items"]] == [
         ("合同.pdf", "ready", "合同.md", "parsing"), ("合同.docx", "ready", "合同 (2).md", "parsing")]
     assert set(sandbox.inputs[("ws1", conv.id)]) == {"合同.pdf", "合同.docx"}, "原件先放进去，解析是附加的"
-    claim = await attachments.worker.claim("ws1")
-    assert claim is not None and claim.attempts == 1
+    claim = await parse_runner(files_db, attachments).claim("ws1")
+    assert (claim.kind, claim.tries) == ("attachment.parse", 1), "解析任务和附件行一起排进了任务表"
     await attachments.aclose()
 
 
@@ -133,7 +141,8 @@ async def test_invalid_names_and_storage_failure(files_db, tmp_path):
         async def put(self, data):
             raise BlobIntegrityError("disk full /var/lib")
 
-    attachments = build_attachments(files_db.sessionmaker, lambda w, s: BrokenStore(), sandbox, CONFIGURED)
+    attachments = build_attachments(files_db.sessionmaker, lambda w, s: BrokenStore(), sandbox, CONFIGURED,
+                                    parsers=EnvParsers(CONFIGURED))
     from knowwork_server.attachments import IncomingFile
     result = await attachments.service.upload(conv, [IncomingFile(".env", b"x"), IncomingFile("a.txt", b"x"),
                                                      IncomingFile(None, b"x")])
@@ -161,7 +170,7 @@ async def test_restage_and_erase(files_db, tmp_path):
     assert await attachments.service.list(conv) == ()
     with pytest.raises(BlobIntegrityError):
         await stores("ws1", conv.id).get(sha256_hex(b"hello"), max_bytes=100)
-    assert await attachments.worker.claim("ws1") is None  # 解析任务随附件级联删除
+    assert await parse_runner(files_db, attachments).claim("ws1") is None, "解析任务随会话删除一起取消"
     await attachments.aclose()
 
 

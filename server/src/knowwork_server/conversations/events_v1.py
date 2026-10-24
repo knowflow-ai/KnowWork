@@ -1,6 +1,6 @@
 """执行事件模型 events.v1：把宿主帧（DSH 原始会话事件 + KnowWork 插件帧）投影成前端只认的事件。
 
-设计见技术方案 4.1、4.2 节。这里只有纯函数：输入当前投影状态与一帧，
+这里只有纯函数：输入当前投影状态与一帧，
 输出新状态与零到多条 events.v1 事件。原始帧另行完整落库，投影结果也随帧落库，
 所以回放不需要重新计算、也不依赖投影状态。
 
@@ -32,11 +32,17 @@ TEXT_LIMIT = 8000
 _FILE_HANDLE = re.compile(r'^\[File (?P<name>"(?:[^"\\]|\\.)*") \((?P<bytes>\d+) bytes, sha256:[0-9a-f]{8}\): '
                           r'verbatim read-only copy saved at ')
 _EXTRACTED_HANDLE = "[Markdown extracted from "
+# 宿主写的 @ 说明块（runtime-host mentions.mjs）：第一行是这个前缀加 JSON，不进显示文字，换成气泡上的小标签
+_MENTION_PREFIX = "[用户这一轮 @ 点名的范围] "
+MENTION_TYPES = ("knowledge_base", "folder", "document", "tag", "skill")
+MAX_MENTIONS = 30
 FIELD_LIMIT = 2000
 LABEL_LIMIT = 1000
 MAX_QUESTIONS = 16
 MAX_OPTIONS = 32
 MAX_TODOS = 100
+MAX_CONDITIONS = 50
+MAX_SEARCH_DOCUMENTS = 50
 TODO_STATUSES = ("pending", "in_progress", "completed")
 QUESTION_FRAMES = ("question/requested", "question/answered", "question/continued", "question/closed")
 
@@ -68,12 +74,40 @@ def _turn(payload: dict, state: ProjectionState) -> int | None:
     return state.turn if turn is None else turn
 
 
-def _texts(content: Any, block_types: tuple[str, ...]) -> str:
+def _joined(content: Any, block_types: tuple[str, ...]) -> str:
     if not isinstance(content, list):
         return ""
-    parts = [b.get("text", "") for b in content
-             if isinstance(b, dict) and b.get("type") in block_types and isinstance(b.get("text"), str)]
-    return "".join(parts)[:TEXT_LIMIT]
+    return "".join(b.get("text", "") for b in content
+                   if isinstance(b, dict) and b.get("type") in block_types and isinstance(b.get("text"), str))
+
+
+def _texts(content: Any, block_types: tuple[str, ...]) -> str:
+    return _joined(content, block_types)[:TEXT_LIMIT]
+
+
+def _labels(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(x)[:LABEL_LIMIT] for x in value if isinstance(x, str)][:MAX_CONDITIONS]
+
+
+def _search_summary(text: str) -> dict | None:
+    """知识检索结果（knowledge/tools.py 的 knowledge_search）的摘要：命中哪些文档、用了与撤掉了哪些条件。
+
+    界面拿它在回答上方列出检索条件、让用户撤掉重答；结果原文会被截到 TEXT_LIMIT，界面自己解析不了，
+    所以在这里按完整原文摘。工具结果帧不带工具名，按结果的形状认：results 里每条都有 doc_ref 与 source_id。
+    """
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    results = parsed.get("results") if isinstance(parsed, dict) else None
+    if not isinstance(results, list) or not all(
+            isinstance(r, dict) and isinstance(r.get("doc_ref"), str) and "source_id" in r for r in results):
+        return None
+    documents = list(dict.fromkeys(f"{r['source_id']}:{r['doc_ref']}" for r in results))
+    return {"documents": documents[:MAX_SEARCH_DOCUMENTS], "conditions": _labels(parsed.get("conditions")),
+            "removed": _labels(parsed.get("conditions_removed"))}
 
 
 def _assistant_message(state: ProjectionState, payload: dict, seq: int, time: int) -> list[dict]:
@@ -98,21 +132,48 @@ def _user_message(state: ProjectionState, payload: dict, seq: int, time: int) ->
     source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
     if source.get("kind") != "user":
         return []
-    text, attachments = user_parts(payload.get("content"))
+    text, attachments, mentions = user_parts(payload.get("content"))
     if not text and not attachments:
         return []
     message_id = str(payload.get("id") or f"user-{seq}")
-    data = {"role": "user", "text": text, **({"attachments": attachments} if attachments else {})}
+    data = {"role": "user", "text": text, **({"attachments": attachments} if attachments else {}),
+            **({"mentions": mentions} if mentions else {})}
     return [_event("item.completed", seq=seq, turn=state.turn, time=time, item_id=message_id, kind="message",
                    data=data)]
 
 
-def user_parts(content: Any) -> tuple[str, list[dict]]:
-    """用户原话与附件：附件说明块按固定格式认出来，只留文件名与大小（路径是沙箱内部的，不给浏览器）。"""
+def _mentions(block: str) -> list[dict] | None:
+    """@ 说明块的第一行；不是说明块返回 None。留类型、id、名字与所在知识库（重新生成时前端照原样再发）。"""
+    if not block.startswith(_MENTION_PREFIX):
+        return None
+    try:
+        items = json.loads(block[len(_MENTION_PREFIX):].split("\n", 1)[0])
+    except ValueError:
+        return None
+    if not isinstance(items, list):
+        return None
+    def field(item: dict, key: str) -> dict:
+        return {key: str(item[key])[:LABEL_LIMIT]} if isinstance(item.get(key), str) else {}
+
+    return [{"type": item["type"], "id": str(item["id"])[:LABEL_LIMIT], "name": str(item["name"])[:LABEL_LIMIT],
+             **field(item, "base"), **({"base_name": item["baseName"][:LABEL_LIMIT]}
+                                       if isinstance(item.get("baseName"), str) else {})}
+            for item in items[:MAX_MENTIONS]
+            if isinstance(item, dict) and item.get("type") in MENTION_TYPES and isinstance(item.get("name"), str)
+            and isinstance(item.get("id"), str)]
+
+
+def user_parts(content: Any) -> tuple[str, list[dict], list[dict]]:
+    """用户原话、附件与 @：附件、@ 的说明块按固定格式认出来。附件只留文件名与大小（路径是沙箱内部的，不给浏览器）。"""
     texts: list[str] = []
     attachments: list[dict] = []
+    mentions: list[dict] = []
     for block in content if isinstance(content, list) else []:
         if not isinstance(block, dict) or block.get("type") != "text" or not isinstance(block.get("text"), str):
+            continue
+        mentioned = _mentions(block["text"])
+        if mentioned is not None:
+            mentions.extend(mentioned)
             continue
         found = _FILE_HANDLE.match(block["text"])
         if found is not None:
@@ -122,7 +183,7 @@ def user_parts(content: Any) -> tuple[str, list[dict]]:
                 texts.append(block["text"])
         elif not block["text"].startswith(_EXTRACTED_HANDLE):
             texts.append(block["text"])
-    return "".join(texts)[:TEXT_LIMIT], attachments
+    return "".join(texts)[:TEXT_LIMIT], attachments, mentions
 
 
 def _turn_end(state: ProjectionState, payload: dict, seq: int, time: int) -> tuple[ProjectionState, list[dict]]:
@@ -163,7 +224,11 @@ def _tool_result(state: ProjectionState, payload: dict, seq: int, time: int) -> 
         return []
     turn = _turn(payload, state)
     failed = message.get("isError") is True
-    data: dict = {"text": _texts(message.get("content"), ("text",))}
+    full = _joined(message.get("content"), ("text",))
+    data: dict = {"text": full[:TEXT_LIMIT]}
+    search = None if failed else _search_summary(full)
+    if search is not None:
+        data["search"] = search
     error = payload.get("error")
     if failed and isinstance(error, dict):
         data["code"] = str(error.get("code", ""))[:64]

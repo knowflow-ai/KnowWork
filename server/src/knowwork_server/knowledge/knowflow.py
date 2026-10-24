@@ -1,4 +1,4 @@
-"""KnowFlow 连接器：调 RAGFlow SDK 接口（技术方案 5.4、8.4 节）。
+"""KnowFlow 连接器：调 RAGFlow SDK 接口。
 
 两种身份模式：
 - shared：统一账号，所有人都用管理员配置的同一个 KnowFlow API Key（Authorization: Bearer）。KnowFlow 只看到
@@ -22,7 +22,18 @@ import httpx
 from .assertion import HEADER_NAME, AssertionSigner
 from .errors import IdentityUnavailable, InvalidInput, KnowledgeError, ScopeDenied, SourceUnavailable
 from .knowflow_mapping import KnowFlowConfig, document_of, evidence_of, split_doc_ref
-from .models import BaseInfo, Caller, Cursor, DocumentPage, Evidence, Page, ReadResult, Scope
+from .models import (
+    BaseInfo,
+    Caller,
+    Cursor,
+    DocumentPage,
+    Evidence,
+    Page,
+    ReadRequest,
+    ReadResult,
+    Scope,
+    SearchRequest,
+)
 from .rrf import rrf_merge
 
 log = logging.getLogger(__name__)
@@ -87,6 +98,8 @@ class KnowFlowSource:
     def __init__(self, *, source_id: str, name: str, base_url: str, config: KnowFlowConfig,
                  identity: IdentityProvider, client: httpx.AsyncClient) -> None:
         self.source_id = source_id
+        # KnowFlow 的检索接口只收检索词与知识库、文档范围；按文件夹、标签、元数据过滤与文档内查找都不支持
+        self.features: frozenset[str] = frozenset()
         self._name = name
         self._base = base_url.rstrip("/")
         self._web = config.web_base_url or self._base
@@ -99,14 +112,16 @@ class KnowFlowSource:
     async def list_bases(self, caller: Caller) -> tuple[BaseInfo, ...]:
         configured = self._config.dataset_ids
         rows = await self._dataset_rows(caller)
-        return tuple(BaseInfo(id=r["id"], name=str(r.get("name") or r["id"])) for r in rows
+        return tuple(BaseInfo(id=r["id"], name=str(r.get("name") or r["id"]),
+                              description=str(r.get("description") or "")[:500]) for r in rows
                      if not configured or r["id"] in configured)
 
     def base_of(self, doc_ref: str) -> str:
         return self._doc(doc_ref)[0]
 
-    async def search(self, caller: Caller, query: str, scope: Scope, top_n: int) -> list[Evidence]:
+    async def search(self, caller: Caller, request: SearchRequest) -> list[Evidence]:
         """先合并查一次；KnowFlow 说嵌入模型不一致时，按模型分组各查一次，再按名次融合（各组分数口径不同）。"""
+        query, scope, top_n = request.query, request.scope, request.top_n
         datasets = self._in_range(scope)
         body = {"question": query, "page": 1, "page_size": top_n, "document_ids": list(scope.document_ids),
                 "similarity_threshold": self._config.similarity_threshold,
@@ -141,9 +156,10 @@ class KnowFlowSource:
             groups.setdefault(key, []).append(dataset_id)
         return tuple(tuple(ids) for ids in groups.values())
 
-    async def read(self, caller: Caller, doc_ref: str, cursor: Cursor | None, max_chars: int) -> ReadResult:
+    async def read(self, caller: Caller, request: ReadRequest) -> ReadResult:
+        doc_ref, max_chars = request.doc_ref, request.max_chars
         dataset_id, document_id = self._doc(doc_ref)
-        position = cursor or Cursor()
+        position = request.cursor or Cursor()
         spans: list[Evidence] = []
         text, title, used = "", document_id, 0
         while len(text) < max_chars and used < MAX_CHUNK_PAGES_PER_READ:

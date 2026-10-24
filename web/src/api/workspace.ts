@@ -193,12 +193,11 @@ export const ACTIONS: readonly { readonly value: Action; readonly label: string 
   { value: 'owner', label: '完全管理' },
 ];
 
-/** 能授权的资源类型。知识源（连接）不单独授权，谁能查授在它下面的知识库上（技术方案 5.2 节）。 */
+/** 能授权的资源类型。知识源（连接）不单独授权，谁能查授在它下面的知识库上。 */
 export const RESOURCE_TYPES = [
   { value: 'skill', label: '技能' },
   { value: 'tool', label: '工具' },
   { value: 'knowledge_base', label: '知识库' },
-  { value: 'model_group', label: '模型分组' },
 ] as const;
 
 export type SubjectKind = 'user' | 'group' | 'dept' | 'role';

@@ -1,4 +1,4 @@
-"""MCP 服务表（技术方案 7.1 节）。带 workspace_id，开启行级安全（登记在 db/registry.RLS_TABLES）。
+"""MCP 服务表。带 workspace_id，开启行级安全（登记在 db/registry.RLS_TABLES）。
 
 请求头整体加密成一段密文（AES-256-GCM，用途 mcp-secrets），明文只在连接 MCP 服务的那一刻出现在内存里；
 header_names 只存请求头名字与值的末四位，给管理界面展示用。

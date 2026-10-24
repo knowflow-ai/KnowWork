@@ -1,4 +1,4 @@
-"""MCP 工具接入（技术方案 7.1 节）：业务服务用官方 Python SDK 连 MCP 服务（Streamable HTTP），
+"""MCP 工具接入：业务服务用官方 Python SDK 连 MCP 服务（Streamable HTTP），
 请求头加密存库，工具接在 ToolRegistry 接口后面，审批、动作回执、审计、授权都沿用工具桥。
 
 不用 DSH 官方的 dsh-mcp-client：它把凭据写在宿主配置里、由宿主直接调用 MCP 服务，绕开了业务服务的

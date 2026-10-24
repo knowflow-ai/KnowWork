@@ -1,9 +1,9 @@
-"""技能的表（技术方案 6.2、6.6 节）。全部带 workspace_id，受行级安全保护。
+"""技能的表。全部带 workspace_id，受行级安全保护。
 
 - skill：一个技能的可变控制面。草稿字段随安装、更新变化；发布字段指向最近一次发布；
   scope_key 是「workspace」或「user:<用户 id>」，同一范围内技能名唯一；
 - skill_release：不可变的发布版本，(skill_id, version) 唯一；运行配置只引用它；
-- skill_run、skill_step_run：运行事实，第一期先有表与写入接口。skill_run 只记技能 id 与版本字符串，
+- skill_run、skill_step_run：运行事实，目前先有表与写入接口。skill_run 只记技能 id 与版本字符串，
   不加外键：技能删除后，历史运行事实仍要能查。
 """
 

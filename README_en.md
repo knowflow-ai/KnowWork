@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.1-2b7de9" alt="Version: v0.0.1"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.2-2b7de9" alt="Version: v0.0.2"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -145,9 +145,8 @@ Browser ──> Gateway (nginx) ──> Business service (Python, FastAPI) ─�
 | `runtime-host/` | Runtime host: DSH profile, plugin assembly (`cordis.patch.yml`) and KnowWork's own plugins |
 | `web/` | Frontend: React 19, TypeScript, Vite, Tailwind 4 |
 | `deploy/` | Docker Compose, Dockerfiles for each image, the nginx gateway, `install.sh` |
-| `guide/` | Deployment, configuration, architecture, development, UI guidelines |
+| `guide/` | Deployment, configuration, development |
 
-See [guide/architecture.md](guide/architecture.md).
 
 ## Design choices
 
@@ -177,11 +176,14 @@ communication with the host are not available for now.
 
 | Feature | Description |
 |---|---|
-| Visible execution | Every step the model takes is streamed: which tool it called, with what arguments and what came back. Collapsed by default, expandable at any time |
+| Visible execution | Every step the model takes is streamed: which tool it called, with what arguments and what came back. Collapsed by default, expandable at any time; answers stream token by token |
+| Quick answer | Searches the knowledge bases and answers only from what it found, with citations, without the full agent loop; switch between agent and quick answer mid-conversation |
+| Thinking switch | Turn the chat model's thinking on or off, sent the way each provider expects |
+| @ mentions | @ a knowledge base in the input box to search only that base this turn; @ a skill to invoke it explicitly |
 | Follow-ups and cancel | Enter queues a message until the current task finishes; a key combination adds it to the running task. Cancel at any time |
 | Tasks keep running | Close the browser and the task still finishes on the server; sessions resume automatically after the runtime host restarts |
 | Native DSH features | Subagents, to-do lists, background jobs and questions to the user are shown and answered in the web UI |
-| Attachments | Uploaded files are placed in the session sandbox for the model to read; PDF and Office files are parsed to Markdown by MinerU |
+| Attachments | Uploaded files are placed in the session sandbox for the model to read; PDF and Office files are parsed to Markdown by MinerU, configured in the admin console without a restart |
 | Traceable citations | Citation numbers in an answer can only point to evidence a tool actually returned; click to see the source |
 | Skill invocation | Type `/skill-name` to invoke a skill explicitly, or let the model load it when needed |
 | Answer language | Choose Chinese or English; otherwise it follows the question |
@@ -201,7 +203,7 @@ communication with the host are not available for now.
 | Feature | Description |
 |---|---|
 | Explicit delivery | Only files the model delivers with DSH's official `present` tool show up in the conversation; temporary files do not |
-| Online preview | Word, Excel, PDF, Markdown, CSV and more can be previewed; PDF text is selectable and zoomable |
+| Online preview | Word, Excel, PDF, Markdown, CSV and more can be previewed; Word files render as the original, sheet row numbers match Excel; PDF text is selectable and zoomable |
 | Safe download | Permissions are checked on every download; exported spreadsheets are protected against formula injection |
 
 ### Skills
@@ -220,6 +222,7 @@ communication with the host are not available for now.
 | Feature | Description |
 |---|---|
 | KnowFlow knowledge bases | Authorized per knowledge base; only bases the asker may use are searched, and citations lead back to the source |
+| External search | Other systems search the knowledge bases over REST or MCP; the API key needs the `knowledge:read` scope and is narrowed to its owner's grants |
 | MCP | Administrators connect MCP servers and grant them to users, groups and departments |
 | Approvals | Write and high-risk tool calls are approved by the person who started the turn, with the option to allow the same kind of action for the rest of the session |
 | Action receipts | Each tool call is recorded once per action, so retries never repeat a write |
@@ -239,7 +242,7 @@ communication with the host are not available for now.
 | Feature | Description |
 |---|---|
 | Organization | Members, invitations, a department tree, user groups |
-| Roles and grants | Four roles per workspace; skills, tools, knowledge bases and model groups can be granted to users, groups and departments, inherited down the department tree |
+| Roles and grants | Four roles per workspace; skills, tools and knowledge bases can be granted to users, groups and departments, inherited down the department tree; registered models are available to every workspace member |
 | Data isolation | PostgreSQL row-level security per workspace; the application account does not own the tables |
 | Audit | Human write operations and agent tool calls are recorded separately and can be searched |
 | Run history | Administrators browse every turn in the workspace by time, member and status; viewing someone else's run is itself audited |
@@ -261,12 +264,13 @@ communication with the host are not available for now.
 | Automatic migrations | The database is upgraded when the business service starts, under a lock |
 | Generated secrets | A deployment master key is generated automatically and all other credentials are derived from it |
 | Health check | `/ready` reports whether the database and the runtime host are healthy |
+| Jobs panel | System administrators see background jobs (attachment parsing and so on) queued and running, and worker heartbeats |
 
 </details>
 
 ## Status and roadmap
 
-The current version is v0.0.1, the first public release. APIs and data structures may still change before 1.0. Known
+The current version is v0.0.2. APIs and data structures may still change before 1.0. Known
 limitations are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Next up: a skill test bench (cases, structural assertions, draft versus published comparison), scenario packs, a UI for

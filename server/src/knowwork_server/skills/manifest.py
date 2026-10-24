@@ -1,4 +1,4 @@
-"""SKILL.md 的 frontmatter 解析（技术方案 6.1 节）。
+"""SKILL.md 的 frontmatter 解析。
 
 字段：name、description（必填）；version、allowed-tools、completion-tools、env、
 disable-model-invocation、user-invocable（选填）。

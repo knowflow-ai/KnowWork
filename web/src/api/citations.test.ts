@@ -31,6 +31,56 @@ describe('citations api', () => {
     });
   });
 
+  it('一条引用就是一块：定位用这一块的全部位置合起来，点开整块高亮', async () => {
+    routeFetch({
+      'GET /api/conversations/*/citations': jsonResponse({
+        items: [
+          {
+            number: 1,
+            title: '产品说明',
+            page: 21,
+            locator: { type: 'slide', page: 21, quote: '三步部署开启企业知识飞轮' },
+            locators: [
+              { type: 'slide', page: 21, quote: '三步部署开启企业知识飞轮' },
+              { type: 'slide', page: 21, quote: '快速部署' },
+            ],
+          },
+        ],
+      }),
+    });
+    const [source] = Object.values(await listCitations('c1'));
+    expect(source?.locate).toEqual({
+      type: 'pdf',
+      page: 21,
+      boxes: [],
+      quotes: ['三步部署开启企业知识飞轮', '快速部署'],
+    });
+    expect(source?.spots).toHaveLength(2);
+  });
+
+  it('图片只认站内地址与 http(s)，别的协议丢掉', async () => {
+    routeFetch({
+      'GET /api/conversations/*/citations': jsonResponse({
+        items: [
+          {
+            number: 1,
+            title: 't',
+            images: [
+              { url: '/api/x/img1?sig=s', caption: '流程图' },
+              { url: 'javascript:alert(1)', caption: '坏的' },
+              { url: 'data:image/png;base64,xx' },
+              { url: 'https://cdn.example.com/a.png' },
+            ],
+          },
+        ],
+      }),
+    });
+    expect((await listCitations('c1'))[1]?.images).toEqual([
+      { url: '/api/x/img1?sig=s', caption: '流程图' },
+      { url: 'https://cdn.example.com/a.png', caption: '' },
+    ]);
+  });
+
   it('只接受 http(s) 的原文链接，别的协议当作没有', async () => {
     routeFetch({
       'GET /api/conversations/*/citations': jsonResponse({

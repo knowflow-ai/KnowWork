@@ -186,16 +186,19 @@ def _request(events: Sequence[Event]) -> str:
 
 
 def _readable_request(message: dict) -> str:
-    """提问原话；宿主给附件写的说明块（沙箱里的路径、读取提示）换成「附件：文件名」，和对话里显示的一致。"""
+    """提问原话；宿主给附件、@ 写的说明块换成「附件：文件名」「@：名字」，和对话里显示的一致。"""
     content = message.get("content")
     if isinstance(content, list):
-        text, attachments = user_parts(content)
+        text, attachments, mentions = user_parts(content)
         names = "、".join(item["name"] for item in attachments)
+        mentioned = "、".join(item["name"] for item in mentions)
     else:
-        text, names = text_of(message), ""
+        text, names, mentioned = text_of(message), "", ""
+    extras = "；".join(part for part in (f"附件：{names}" if names else "", f"@：{mentioned}" if mentioned else "")
+                      if part)
     request = " ".join(text.split())
-    if names:
-        request = f"{request}（附件：{names}）" if request else f"附件：{names}"
+    if extras:
+        request = f"{request}（{extras}）" if request else extras
     return clip(request, REQUEST_LIMIT)[0]
 
 

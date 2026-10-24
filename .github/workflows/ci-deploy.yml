@@ -1,0 +1,39 @@
+name: ci-deploy
+
+# 部署配置：compose 校验、shellcheck、hadolint。只在 deploy/ 有改动时跑（省 Actions 分钟数）。
+
+on:
+  push:
+    branches: [main]
+    paths: ["deploy/**", ".github/workflows/ci-deploy.yml"]
+  pull_request:
+    paths: ["deploy/**", ".github/workflows/ci-deploy.yml"]
+
+concurrency:
+  group: ci-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: 部署配置校验
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: compose 配置校验
+        env:
+          KNOWWORK_RUSTFS_ACCESS_KEY: ci-access
+          KNOWWORK_RUSTFS_SECRET_KEY: ci-secret
+        run: |
+          docker compose -f deploy/docker-compose.yml config --quiet
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.sandbox.yml config --quiet
+      - name: shellcheck
+        run: shellcheck -s sh deploy/install.sh deploy/runtime-host/entrypoint.sh deploy/postgres/initdb/*.sh
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: "*.Dockerfile"
+          recursive: true

@@ -4,7 +4,7 @@
 
 - `profile/`：宿主配置档模板，组合 `@deepseek-ai/dsh-sdk-minimal` 与 `@knowwork/dsh-host-bundle`。
 - `plugins/host-bundle/`：KnowWork 配置层，停用官方 stdio 协议与本机 shell，插入 KnowWork 插件、官方审批服务、官方提问（`ask_user_question`）与待办（`todo_write`）、官方技能注册表与 `skill` 工具。
-- `plugins/dsh-host/`：KnowWork 插件（HTTP 驱动、审批与提问转发、会话工具策略、技能门、技能提供方与专业工具解锁、工具桥、子 Agent 策略继承、E1 测试工具）。
+- `plugins/dsh-host/`：KnowWork 插件（HTTP 驱动、审批与提问转发、会话工具策略、技能门、技能提供方与专业工具解锁、工具桥、子 Agent 策略继承、测试工具）。
 - `tests/`：E1 准入测试，真实 DSH 组合加官方 `dsh-llm-mock-server`。
 
 ## 运行

@@ -36,12 +36,12 @@ deploy/install.sh --timeout 600
 |---|---|
 | gateway | nginx：前端静态文件，反向代理 `/api/`，对外端口默认 8080 |
 | api | 业务服务：公开接口、模型网关、工具桥、附件解析、审计；启动时自动执行数据库迁移 |
-| worker | 后台任务的入口，目前还没有任务接进来，只占位 |
+| worker | 后台任务：附件解析等；和 api 连同一个 Docker，把解析结果放进会话沙箱 |
 | runtime-host | 运行时宿主：Node 与 DSH |
 | postgres、redis、rustfs | 数据库、缓存与队列、对象存储 |
 | bootstrap | 一次性：生成部署密钥后退出 |
 
-会话沙箱容器由 api 按会话创建，空闲一段时间后自动回收，不在上表里。
+会话沙箱容器由 api（以及放解析结果的 worker）按会话创建，空闲一段时间后自动回收，不在上表里。
 
 ## 访问地址与 HTTPS
 
@@ -72,13 +72,15 @@ deploy/install.sh --timeout 600
 
 ## 附件解析
 
-PDF、Office 等附件的解析用 MinerU。在 `.env` 里填 `KNOWWORK_MINERU_BASE_URL`；留空时，上传这类附件会明确提示未配置。
+PDF、Office 等附件的解析用 MinerU。部署后在「管理后台 → 模型 → 文档解析」里填 MinerU 地址，保存后几秒内生效，不用重启；也可以在 `.env` 里用 `KNOWWORK_MINERU_BASE_URL` 给个默认值，后台配了以后台为准。两边都没配时，上传这类附件会明确提示未配置。
 
 ## 升级
 
 1. 先备份数据（见下一节）；
-2. 把 `deploy/.env` 的 `KNOWWORK_VERSION` 改成新版本；
-3. 重新执行 `deploy/install.sh`：它会拉新镜像（包括会话沙箱镜像）并重启服务。
+2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.2`（换成要升级到的版本）。编排文件
+   可能随版本变，只改版本号会用旧的编排文件跑新镜像。`deploy/.env` 不在仓库里，切换版本不会动它；
+3. 把 `deploy/.env` 的 `KNOWWORK_VERSION` 改成新版本；
+4. 重新执行 `deploy/install.sh`：它会拉新镜像（包括会话沙箱镜像）并重启服务。
 
 数据库迁移在 api 启动时自动执行（带锁，多实例不会重复跑）。每个版本要注意的事写在 [CHANGELOG](../CHANGELOG.md) 里。
 

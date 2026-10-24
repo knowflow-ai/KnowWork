@@ -6,9 +6,11 @@ alpine:3.20，不会为测试去拉大镜像）。daemon 地址与业务一样�
 测试不访问外网：网络只检查路由表。跑完删掉建过的容器。
 """
 
+import io
 import os
 import time
 import uuid
+import zipfile
 
 import docker
 import pytest
@@ -229,6 +231,42 @@ async def test_convert_office_document_to_pdf(factory):
     # 原生 LibreOffice 认不出格式时按纯文本导入，照样出 PDF（预览成乱码文字），不报错
     with pytest.raises(SandboxError):
         await sandbox.convert_to_pdf(ws, sid, "exe", docx, max_bytes=20 << 20, timeout_seconds=240)
+
+
+@pytest.mark.skipif("knowwork-sandbox" not in IMAGE, reason="Office 转换需要带 LibreOffice 的沙箱镜像")
+async def test_convert_legacy_word_to_docx(factory):
+    """旧格式 Word 转成 docx（知识库解析与预览用）：正文还在，临时目录删掉；不是 Word 的转不出来，报转换失败。"""
+    module, (ws, sid) = await factory(exec_max_timeout_seconds=300, max_input_bytes=1 << 20, memory_bytes=512 << 20)
+    sandbox = module.sandbox
+    made = await _sh(sandbox, ws, sid, "cd /workspace && python3 -c \"from docx import Document; d=Document(); "
+                                       "d.add_paragraph('采购合同'); d.save('a.docx')\" && "
+                                       "python3 /opt/knowwork/office/soffice.py --headless --convert-to doc a.docx")
+    assert made.exit_code == 0, made.stderr
+    doc = await sandbox.read_delivered(ws, sid, "/workspace/a.doc", max_bytes=1 << 20)
+    assert doc.startswith(b"\xd0\xcf\x11\xe0")
+    docx = await sandbox.convert_doc_to_docx(ws, sid, doc, max_bytes=20 << 20, timeout_seconds=240)
+    with zipfile.ZipFile(io.BytesIO(docx)) as archive:
+        assert "采购合同" in archive.read("word/document.xml").decode("utf-8")
+    leftovers = await _sh(sandbox, ws, sid, "ls /tmp | grep -c kw-convert || true")
+    assert leftovers.stdout.strip() == "0", "转换的临时目录没删"
+
+
+@pytest.mark.skipif("knowwork-sandbox" not in IMAGE, reason="公式重算需要带 LibreOffice 的沙箱镜像")
+async def test_recalc_fills_formulas_without_cached_values(factory):
+    """openpyxl 写的公式没有缓存值；重算后读得到结果，临时目录删掉。引用别的文件的工作簿不算。"""
+    module, (ws, sid) = await factory(exec_max_timeout_seconds=300, max_input_bytes=1 << 20, memory_bytes=512 << 20)
+    sandbox = module.sandbox
+    made = await _sh(sandbox, ws, sid, "python3 -c \"from openpyxl import Workbook; w=Workbook(); s=w.active; "
+                                       "s.append([1, 2, '=A1+B1']); w.save('/workspace/t.xlsx')\"")
+    assert made.exit_code == 0, made.stderr
+    data = await sandbox.read_delivered(ws, sid, "/workspace/t.xlsx", max_bytes=1 << 20)
+    recalculated = await sandbox.recalc_xlsx(ws, sid, data, max_bytes=20 << 20, timeout_seconds=240)
+    from openpyxl import load_workbook
+    assert load_workbook(io.BytesIO(recalculated), data_only=True).active["C1"].value == 3
+    leftovers = await _sh(sandbox, ws, sid, "ls /tmp | grep -c kw-recalc || true")
+    assert leftovers.stdout.strip() == "0", "重算的临时目录没删"
+    with pytest.raises(SandboxError, match="公式重算失败"):
+        await sandbox.recalc_xlsx(ws, sid, b"not a workbook", max_bytes=20 << 20, timeout_seconds=240)
 
 
 @pytest.mark.skipif("knowwork-sandbox" not in IMAGE, reason="Office 转换需要带 LibreOffice Kit 的沙箱镜像")

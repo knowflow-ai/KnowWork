@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDuration, hasProcess, summarizeProcess } from './selectors';
+import { formatDuration, hasProcess, selectRunSearch, summarizeProcess } from './selectors';
 import type { RunView, StepView } from './types';
 
 const run = (patch: Partial<RunView> = {}): RunView => ({
@@ -57,5 +57,33 @@ describe('summarizeProcess', () => {
     expect(hasProcess(run({ endedAt: 1 }))).toBe(false);
     expect(hasProcess(run({ endedAt: 1, notes: ['x'] }))).toBe(true);
     expect(hasProcess(run({ endedAt: 1, problems: ['x'] }))).toBe(true);
+  });
+});
+
+describe('selectRunSearch', () => {
+  const searched = (callId: string, documents: string[], conditions: string[], removed: string[] = []) => ({
+    ...step('done', 'knowledge_search'),
+    callId,
+    search: { documents, conditions, removed },
+  });
+
+  it('合并这一轮各次检索的条件与文档，撤掉的不算用上的', () => {
+    const view = run({
+      steps: [
+        searched('a', ['s:1', 's:2'], ['年度 = 2025', '部门 = 财务部'], ['部门 = 财务部']),
+        searched('b', ['s:2'], ['年度 = 2025', '标签：已签']),
+        step('done'),
+      ],
+    });
+    expect(selectRunSearch(view)).toEqual({
+      conditions: ['年度 = 2025', '标签：已签'],
+      removed: ['部门 = 财务部'],
+      documents: 2,
+    });
+  });
+
+  it('没检索或检索没带条件时没有', () => {
+    expect(selectRunSearch(run({ steps: [step('done')] }))).toBeUndefined();
+    expect(selectRunSearch(run({ steps: [searched('a', ['s:1'], [])] }))).toBeUndefined();
   });
 });

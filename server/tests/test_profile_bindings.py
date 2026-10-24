@@ -5,7 +5,7 @@ from sqlalchemy import delete, func, select
 
 from knowwork_server.conversations.models import Conversation
 from knowwork_server.profile.compiler import KnowledgeEntry, ProfileFacts, compile_profile
-from knowwork_server.profile.snapshot import NO_SELECTION, TurnSelection
+from knowwork_server.profile.snapshot import NO_SELECTION, PinnedScope, TurnSelection
 from knowwork_server.tools.registry import ToolContext, ToolFailure
 
 from .profile_support import ensure_profile_tables
@@ -61,23 +61,27 @@ async def test_same_snapshot_is_stored_once(db, conversation_id):
     assert await count(db, tables()[1]) == before + 1
 
 
-async def test_bound_bases_follow_selection(db, conversation_id):
+async def test_tools_read_the_turns_selection(db, conversation_id):
+    """知识工具一次读出本轮绑定的配置：选了的知识库、撤掉的条件、@ 点名的文件与标签。"""
     bindings = bindings_for(db)
     ctx = ToolContext(workspace_id="default", session_id=conversation_id, user_id="dev-user")
-    assert await bindings.bound_bases(ctx) is None, "还没绑定配置时与现状一致"
-    await bindings.bind("default", conversation_id, profile())
-    assert await bindings.bound_bases(ctx) is None
-    await bindings.bind("default", conversation_id, profile(selection=TurnSelection(knowledge_bases=("k1.ds1",))))
-    assert await bindings.bound_bases(ctx) == ("k1.ds1",)
+    assert await bindings.for_tool(ctx) is None, "还没绑定配置时不限定"
+    chosen = TurnSelection(knowledge_bases=("k1.ds1",), dropped_conditions=("部门 = 财务部", "部门 = 财务部"),
+                           pins=(PinnedScope(base="k1.ds2", documents=("ds2/d1",)),))
+    await bindings.bind("default", conversation_id, profile(selection=chosen))
+    bound = await bindings.for_tool(ctx)
+    assert bound.bound_knowledge == ("k1.ds1", "k1.ds2"), "点名的库并进本轮可查的库"
+    assert bound.dropped_conditions == ("部门 = 财务部",)
+    assert bound.pins == (PinnedScope(base="k1.ds2", documents=("ds2/d1",)),)
 
 
-async def test_bound_bases_fail_closed(db):
+async def test_tools_fail_closed_when_the_binding_cannot_be_read(db):
     class Broken(type(bindings_for(db))):
         async def current(self, workspace_id, conversation_id):
             raise RuntimeError("db down")
 
     with pytest.raises(ToolFailure):
-        await Broken(db).bound_bases(ToolContext(workspace_id="default", session_id="c", user_id="u"))
+        await Broken(db).for_tool(ToolContext(workspace_id="default", session_id="c", user_id="u"))
 
 
 async def test_binding_goes_with_conversation(db, conversation_id):

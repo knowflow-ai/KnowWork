@@ -12,13 +12,15 @@ import {
   type SendMode,
 } from '../../../api/conversations';
 import { chipsOf, uploadForTurn, type AttachmentChip } from '../../../api/attachments';
+import type { Mention } from '../../../api/mentions';
+import { currentAnswerMode } from '../../../stores/answerMode';
 import { currentReplyLanguage } from '../../../stores/replyLanguage';
 import { ApiError, readableError } from '../../../api/http';
 import { openEventStream } from '../../../api/sse';
 import { chatReducer, initialChatState } from '../events/reducer';
 import type { ChatState } from '../events/types';
 import { completedRunCount, useArtifacts } from './useArtifacts';
-import { useCitations } from './useCitations';
+import { knowledgeResults, useCitations } from './useCitations';
 
 export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
@@ -26,7 +28,7 @@ export interface ConversationApi {
   readonly state: ChatState;
   readonly connection: ConnectionState;
   readonly connectionMessage?: string;
-  readonly send: (text: string, mode: SendMode, files?: readonly File[]) => Promise<void>;
+  readonly send: (text: string, mode: SendMode, extras?: TurnExtras) => Promise<void>;
   readonly cancel: () => Promise<void>;
   readonly decide: (approvalId: string, allow: boolean, remember?: boolean) => Promise<void>;
   readonly answer: (questionId: string, answers: readonly QuestionAnswer[]) => Promise<void>;
@@ -47,6 +49,16 @@ function rethrow(error: unknown, fallback: string): never {
 export interface FirstMessage {
   readonly text: string;
   readonly attachments?: readonly AttachmentChip[];
+  readonly mentions?: readonly Mention[];
+}
+
+/** 一轮消息除了文字以外带的东西。 */
+export interface TurnExtras {
+  readonly files?: readonly File[];
+  /** 回答上方撤掉的检索条件 */
+  readonly dropped?: readonly string[];
+  /** 输入框里 @ 的东西 */
+  readonly mentions?: readonly Mention[];
 }
 
 /** 新建会话时首条消息已经发出：事件流回显之前先把它摆上。 */
@@ -59,6 +71,7 @@ function initialState(first?: FirstMessage): ChatState {
     text: first.text,
     mode: 'followup',
     attachments: first.attachments,
+    mentions: first.mentions,
   });
   return chatReducer(sent, { type: 'local/delivered', localId });
 }
@@ -69,7 +82,7 @@ export function useConversation(conversationId: string | undefined, first?: Firs
   const [connectionMessage, setConnectionMessage] = useState<string>();
   const completedRuns = completedRunCount(state);
   useArtifacts(conversationId, completedRuns, dispatch);
-  useCitations(conversationId, completedRuns, dispatch);
+  useCitations(conversationId, `${completedRuns}-${knowledgeResults(state)}`, dispatch);
 
   useEffect(() => {
     // 页面按会话 id 重新挂载（ChatPage 用 key），这里不需要手动重置状态。
@@ -78,6 +91,7 @@ export function useConversation(conversationId: string | undefined, first?: Firs
       { url: eventsUrl(conversationId) },
       {
         onEvent: (event) => dispatch({ type: 'wire', event }),
+        onLive: (live) => dispatch({ type: 'live', live }),
         onStatus: (status, reason) => {
           setConnection(status);
           setConnectionMessage(reason);
@@ -91,14 +105,21 @@ export function useConversation(conversationId: string | undefined, first?: Firs
   }, [conversationId]);
 
   const send = useCallback(
-    async (text: string, mode: SendMode, files: readonly File[] = []) => {
+    async (text: string, mode: SendMode, extras: TurnExtras = {}) => {
       if (!conversationId) return;
+      const { files = [], dropped = [], mentions = [] } = extras;
       const localId = nextLocalId();
-      dispatch({ type: 'local/sent', localId, text, mode, attachments: chipsOf(files) });
+      dispatch({ type: 'local/sent', localId, text, mode, attachments: chipsOf(files), mentions });
       try {
         // 先把文件放进会话工作区，再带着附件 id 发消息；有文件没收下就整条不发
         const attachments = await uploadForTurn(conversationId, files);
-        await sendMessage(conversationId, text, mode, currentReplyLanguage(), attachments);
+        await sendMessage(conversationId, text, mode, {
+          language: currentReplyLanguage(),
+          answerMode: currentAnswerMode(),
+          attachments,
+          droppedConditions: dropped,
+          mentions,
+        });
         dispatch({ type: 'local/delivered', localId });
       } catch (error) {
         dispatch({ type: 'local/failed', localId });

@@ -18,7 +18,9 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noUncheckedSideEffectImports": true,
-    "types": ["vite/client", "@testing-library/jest-dom/vitest"]
+    "types": ["vite/client", "@testing-library/jest-dom/vitest"],
+    // 类型检查按开源的空实现；带扩展的构建由 vite.config.ts 换掉实际入口，扩展包要导出同样签名的 install
+    "paths": { "@knowwork/extensions": ["./src/slots/none.ts"] }
   },
   "include": ["src"]
 }

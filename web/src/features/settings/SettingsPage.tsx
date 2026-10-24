@@ -1,4 +1,5 @@
-/** 个人设置：账号信息、API Key、我的用量。 */
+/** 个人设置：账号信息、API Key、我的用量；扩展注册的标签页排在后面。 */
+import { slotItems } from '../../slots/registry';
 import { Tabs } from '../../ui/Tabs';
 import { AdminPage } from '../admin/AdminPage';
 import { AccountTab, ApiKeysTab, MyUsageTab } from './tabs';
@@ -11,6 +12,7 @@ export default function SettingsPage() {
           { key: 'account', label: '账号', children: <AccountTab /> },
           { key: 'api-keys', label: 'API Key', children: <ApiKeysTab /> },
           { key: 'usage', label: '我的用量', children: <MyUsageTab /> },
+          ...slotItems('settings.tabs'),
         ]}
       />
     </AdminPage>

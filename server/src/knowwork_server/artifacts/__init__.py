@@ -1,4 +1,4 @@
-"""会话产物（技术方案 9.2 节，F-ART-1/2/3/5）：回合结束收沙箱 output、上限告知、公式转义、实时鉴权下载。
+"""会话产物：回合结束收沙箱 output、上限告知、公式转义、实时鉴权下载。
 
 装配：
     artifacts = build_artifacts(sessionmaker, stores, sandbox)

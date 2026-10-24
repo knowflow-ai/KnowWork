@@ -3,7 +3,7 @@
  * 由调用方丢弃这一帧，绝不因为一帧坏数据让整个页面出错。
  */
 import { isRecord, num, str } from '../../../api/parse';
-import type { Cursor, V1Event } from './types';
+import type { Cursor, SearchSummary, V1Event } from './types';
 
 export { isRecord, num, str };
 
@@ -44,6 +44,19 @@ export function parseV1Event(value: unknown): V1Event | undefined {
 }
 
 const PREVIEW_LIMIT = 400;
+
+const strings = (value: unknown): readonly string[] =>
+  Array.isArray(value) ? value.filter((x): x is string => typeof x === 'string' && x !== '') : [];
+
+/** 工具结束事件里的检索摘要；不是检索结果（没有 documents 列表）时返回 undefined。 */
+export function searchSummary(value: unknown): SearchSummary | undefined {
+  if (!isRecord(value) || !Array.isArray(value.documents)) return undefined;
+  return {
+    documents: strings(value.documents),
+    conditions: strings(value.conditions),
+    removed: strings(value.removed),
+  };
+}
 
 export function preview(value: string): string {
   return value.length > PREVIEW_LIMIT ? `${value.slice(0, PREVIEW_LIMIT)}…` : value;

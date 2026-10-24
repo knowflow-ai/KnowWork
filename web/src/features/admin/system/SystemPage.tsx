@@ -149,6 +149,11 @@ function SystemInfoList() {
         { label: 'KnowWork 版本', value: info.data.knowwork },
         { label: 'DSH 版本', value: info.data.dsh ?? UNKNOWN },
         { label: '数据库版本', value: info.data.database ?? UNKNOWN },
+        ...(info.data.license ? [{ label: '授权', value: info.data.license }] : []),
+        ...info.data.extensions.map((item) => ({
+          label: `扩展模块 ${item.name}`,
+          value: item.enabled ? '已启用' : `未启用：${item.reason ?? '原因未知'}`,
+        })),
       ]}
     />
   );

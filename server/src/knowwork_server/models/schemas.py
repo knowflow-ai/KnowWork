@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 Name = Annotated[str, Field(min_length=1, max_length=100)]
 Alias = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:\-]{1,64}$")]
 Price = Annotated[Decimal, Field(ge=0, max_digits=14, decimal_places=6)]
+# 对话模型的思考：on、off；不填（null）是跟随服务默认，不补参数（models/thinking.py）
+ThinkingSetting = Literal["on", "off"]
 
 
 class Capability(StrEnum):
@@ -63,6 +65,7 @@ class ModelCreate(_Input):
     name: Annotated[str, Field(min_length=1, max_length=200)]
     capabilities: Annotated[tuple[Capability, ...], Field(min_length=1, max_length=4)] = (Capability.CHAT,)
     context_length: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
+    thinking: ThinkingSetting | None = None
     input_price_per_mtok: Price | None = None
     output_price_per_mtok: Price | None = None
     currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] = "CNY"
@@ -74,22 +77,11 @@ class ModelUpdate(_Input):
     name: Annotated[str | None, Field(default=None, min_length=1, max_length=200)] = None
     capabilities: Annotated[tuple[Capability, ...] | None, Field(default=None, min_length=1, max_length=4)] = None
     context_length: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
+    thinking: ThinkingSetting | None = None
     input_price_per_mtok: Price | None = None
     output_price_per_mtok: Price | None = None
     currency: Annotated[str | None, Field(default=None, pattern=r"^[A-Z]{3}$")] = None
     enabled: bool | None = None
-
-
-class GroupCreate(_Input):
-    name: Name
-    description: Annotated[str, Field(max_length=500)] = ""
-    model_ids: Annotated[tuple[str, ...], Field(max_length=200)] = ()
-
-
-class GroupUpdate(_Input):
-    name: Name | None = None
-    description: Annotated[str | None, Field(default=None, max_length=500)] = None
-    model_ids: Annotated[tuple[str, ...] | None, Field(default=None, max_length=200)] = None
 
 
 @dataclass(frozen=True)
@@ -115,14 +107,7 @@ class ModelView:
     output_price_per_mtok: Decimal | None
     currency: str
     enabled: bool
-
-
-@dataclass(frozen=True)
-class GroupView:
-    id: str
-    name: str
-    description: str
-    model_ids: tuple[str, ...]
+    thinking: str | None = None  # on、off；空是跟随服务默认
 
 
 @dataclass(frozen=True)
@@ -134,6 +119,8 @@ class Route:
     upstream_model: str
     base_url: str
     api_key: str
+    context_length: int | None = None  # 管理员填的上下文长度；嵌入模型就是它的最大输入长度
+    thinking: str | None = None  # 对话模型的思考设置，转发时按服务商的写法补参数（models/thinking.py）
 
     def __repr__(self) -> str:  # 防止异常栈或日志意外带出密钥
         return f"Route(alias={self.alias!r}, upstream_model={self.upstream_model!r}, base_url={self.base_url!r})"

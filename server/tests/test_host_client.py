@@ -8,6 +8,8 @@ import pytest
 from knowwork_server.kernel.contract import (
     INVALID_FRAME_KIND,
     KernelError,
+    KnowledgeCatalog,
+    KnowledgeEntry,
     QuestionAnswer,
     QuestionAnswerItem,
     SessionNotFound,
@@ -145,6 +147,22 @@ async def test_send_carries_the_chosen_language_or_the_one_resolved_from_the_pro
     await kernel.aclose()
 
 
+async def test_send_carries_the_answer_mode():
+    """回答方式每条消息都带：宿主按消息进入步骤的时机切换，不带等于智能体。"""
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(202, json={"messageId": "m1", "mode": "followup"})
+
+    client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t" * 32, client=client)
+    await kernel.send("s1", TurnInput(text="整理一下"))
+    await kernel.send("s1", TurnInput(text="报销标准", answer_mode="quick"))
+    assert [body["answerMode"] for body in seen] == ["agent", "quick"]
+    await kernel.aclose()
+
+
 def test_turn_language_rule_any_han_character_means_chinese():
     assert resolve_turn_language("短剧有哪些代表作品？") == "zh"
     assert resolve_turn_language("Explain 微短剧 please") == "zh"
@@ -208,4 +226,25 @@ async def test_answer_errors_keep_the_host_code():
         await kernel.answer_question("s1", "call_1", QuestionAnswer(answers=(QuestionAnswerItem(id="q"),)))
     assert (caught.value.code, caught.value.status) == ("question_not_found", 404)
     assert not isinstance(caught.value, SessionNotFound)
+    await kernel.aclose()
+
+
+async def test_send_carries_the_knowledge_catalog_only_when_computed():
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(202, json={"messageId": "m1", "mode": "followup"})
+
+    client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t" * 32, client=client)
+    catalog = KnowledgeCatalog(bases=(KnowledgeEntry(id="builtin.kb1", name="合同库", description="采购合同",
+                                                     fields=("部门（文本）", "签订日期（日期）")),), omitted=2)
+    await kernel.send("s1", TurnInput(text="查合同", knowledge=catalog))
+    await kernel.send("s1", TurnInput(text="再查", knowledge=KnowledgeCatalog()))
+    await kernel.send("s1", TurnInput(text="还查"))
+    assert seen[0]["knowledge"] == {"bases": [{"id": "builtin.kb1", "name": "合同库", "description": "采购合同",
+                                               "fields": ["部门（文本）", "签订日期（日期）"]}], "omitted": 2}
+    assert seen[1]["knowledge"] == {"bases": [], "omitted": 0}, "空目录也要发：宿主据此撤掉旧目录"
+    assert "knowledge" not in seen[2], "没算出来就不发，宿主沿用上一轮的"
     await kernel.aclose()

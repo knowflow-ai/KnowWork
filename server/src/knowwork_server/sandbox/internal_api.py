@@ -1,7 +1,7 @@
 """宿主执行器回调的沙箱内部路由，只挂在内部端口。
 
 宿主的官方 bash、文件工具与 present 跑在 DSH 里，它们经宿主的远程 `ctx.subprocess` 与 `ctx.fs` 落到这里，
-再进本会话的容器（技术方案：执行只在业务服务调度的容器里，宿主不碰本机）：
+再进本会话的容器（执行只在业务服务调度的容器里，宿主不碰本机）：
 - `POST /internal/extensions/sandbox/exec`：在容器里执行一条 argv；
 - `POST /internal/extensions/sandbox/stat`：路径元数据（follow 决定是否跟随最后一级符号链接）；
 - `POST /internal/extensions/sandbox/read`：按字节区间读；

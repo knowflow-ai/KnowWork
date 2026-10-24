@@ -73,6 +73,17 @@ async def test_routes_by_alias_with_provider_key():
     assert fixed.requests == []
 
 
+async def test_the_models_thinking_setting_is_added_to_the_request():
+    """「管理 → 模型」里给对话模型关了思考：转发时按服务商的写法补上（自建的 vLLM、SGLang 用 chat_template_kwargs）。"""
+    routed = Upstream()
+    quiet = Route(model_id="m", alias="qwen", upstream_model="qwen3-32b", base_url="http://10.0.0.6:8000/v1",
+                  api_key="", thinking="off")
+    async with _client(Resolver(quiet), routed=httpx.MockTransport(routed)) as client:
+        await client.post(URL, json={"model": "qwen", "messages": MESSAGES}, headers=_auth())
+    assert routed.requests[0]["body"] == {"model": "qwen3-32b", "messages": MESSAGES,
+                                          "chat_template_kwargs": {"enable_thinking": False}}
+
+
 async def test_route_without_key_sends_no_authorization():
     routed = Upstream()
     keyless = Route(model_id="m", alias="local", upstream_model="llama", base_url="http://vllm/v1", api_key="")

@@ -4,7 +4,9 @@
  * 业务服务的 /events 推 events.v1（server/src/knowwork_server/conversations/events_v1.py）：
  * SSE id 是 `seq`（一帧投影出的最后一条）或 `seq.i`（同一帧的第 i 条），event 是事件类型，data 是事件 JSON。
  */
+import type { PreviewLocate } from '../../preview/locate';
 import type { AttachmentChip } from '../../../api/attachments';
+import type { Mention } from '../../../api/mentions';
 
 /** 事件在会话里的位置。index 为 Infinity 表示这一帧的最后一条（SSE id 不带小数部分）。 */
 export interface Cursor {
@@ -54,6 +56,15 @@ export interface StepView {
   /** 工具结果的文本预览（截断）。 */
   readonly resultPreview?: string;
   readonly errorReason?: string;
+  /** 知识检索的摘要（业务服务按完整结果摘出）：回答上方据此列出检索条件。 */
+  readonly search?: SearchSummary;
+}
+
+/** 一次知识检索：命中的文档（来源:文档，去重）、用上的条件、用户这一轮撤掉的条件。条件的写法由业务服务给出。 */
+export interface SearchSummary {
+  readonly documents: readonly string[];
+  readonly conditions: readonly string[];
+  readonly removed: readonly string[];
 }
 
 export type RunStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
@@ -98,6 +109,8 @@ export interface AskedMessage {
   readonly text: string;
   /** 这条提问带的文件（事件流里宿主写的附件说明，服务端已换成名字与大小）。 */
   readonly attachments?: readonly AttachmentChip[];
+  /** 这条提问 @ 的范围与技能（宿主写的 @ 说明块，服务端已取出来）；目录只有路径，重新生成时再展开。 */
+  readonly mentions?: readonly Mention[];
 }
 
 export type ApprovalStatus = 'pending' | 'allowed' | 'rejected' | 'cancelled';
@@ -162,11 +175,26 @@ export interface ArtifactView {
 }
 
 /** 回答里 [n] 的出处：来自 /citations，按编号查。 */
+/** 片段里的图：回答里的 [IMG:n:j] 换成第 n 条出处的第 j 张 */
+export interface CitationImage {
+  /** 站内取图地址（带签名）或 http(s) 地址 */
+  readonly url: string;
+  readonly caption: string;
+}
+
 export interface CitationSource {
   readonly title: string;
   readonly excerpt?: string;
   readonly page?: number;
   readonly url?: string;
+  /** 哪个知识源、哪份文档：有引用预览器（插槽 citation.preview）时据此打开预览 */
+  readonly sourceId?: string;
+  readonly docRef?: string;
+  /** 点开时高亮哪里：这一块的几处位置合起来（整块） */
+  readonly locate?: PreviewLocate;
+  /** 这一块里每处的位置与原文：回答里原样写了某处原文时只标那几处（components/claim.ts） */
+  readonly spots?: readonly { readonly locate: PreviewLocate; readonly quote: string }[];
+  readonly images?: readonly CitationImage[];
 }
 
 /**
@@ -180,6 +208,7 @@ export interface SentMessage {
   readonly afterRuns: number;
   readonly status: 'sending' | 'sent';
   readonly attachments?: readonly AttachmentChip[];
+  readonly mentions?: readonly Mention[];
 }
 
 export type TimelineEntry =
@@ -207,7 +236,20 @@ export interface ChatState {
   /** 当前未结束的轮次。 */
   readonly openRun?: string;
   readonly sent: readonly SentMessage[];
+  /** 正在逐字输出的那一步（events/live.ts）：片段拼成，不进事件日志，这一步的正式消息到了就清掉。 */
+  readonly live?: LiveText;
 }
+
+export interface LiveText {
+  readonly runId: string;
+  readonly step: number;
+  readonly text: string;
+}
+
+/** 服务端推来的一个逐字片段：offset 为 0 表示从头替换；done 表示这一步输出结束。 */
+export type LivePiece =
+  | { readonly runId: string; readonly step: number; readonly offset: number; readonly text: string }
+  | { readonly runId: string; readonly step: number; readonly done: true };
 
 export type ChatAction =
   | { readonly type: 'wire'; readonly event: WireEvent }
@@ -218,6 +260,7 @@ export type ChatAction =
       readonly text: string;
       readonly mode: SentMessage['mode'];
       readonly attachments?: readonly AttachmentChip[];
+      readonly mentions?: readonly Mention[];
     }
   | { readonly type: 'local/delivered'; readonly localId: string }
   | { readonly type: 'local/failed'; readonly localId: string }
@@ -227,4 +270,6 @@ export type ChatAction =
   | { readonly type: 'artifacts/loaded'; readonly artifacts: readonly ArtifactView[] }
   /** 从 /citations 拉到的本会话引用目录，整体替换。 */
   | { readonly type: 'citations/loaded'; readonly citations: Readonly<Record<number, CitationSource>> }
+  /** 逐字片段（不来自事件日志）。 */
+  | { readonly type: 'live'; readonly live: LivePiece }
   | { readonly type: 'reset' };

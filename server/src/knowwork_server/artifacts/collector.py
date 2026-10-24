@@ -1,4 +1,4 @@
-"""回合结束时收产物：模型用宿主的官方 present 交付的文件（技术方案 9.1、9.2）。
+"""回合结束时收产物：模型用宿主的官方 present 交付的文件。
 
 collect(workspace_id, session_id, paths=...) 供事件观察者在回合完成时调用，paths 是本回合 present 过的路径
 （宿主路径 /sessions/<会话>/...）：

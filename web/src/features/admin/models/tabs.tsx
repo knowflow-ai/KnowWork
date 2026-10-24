@@ -1,4 +1,4 @@
-/** 模型管理的三个标签页：厂商、模型、分组。 */
+/** 模型管理的两个标签页：厂商、模型。 */
 import { useState } from 'react';
 import { Badge } from '@openai/apps-sdk-ui/components/Badge';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
@@ -7,11 +7,9 @@ import { readableError } from '../../../api/http';
 import {
   capabilityLabel,
   deleteModel,
-  deleteModelGroup,
   deleteProvider,
   testModel,
   type Model,
-  type ModelGroup,
   type Provider,
 } from '../../../api/models';
 import { Toolbar } from '../AdminPage';
@@ -23,9 +21,8 @@ import { Table, type Column } from '../../../ui/Table';
 import { toast } from '../../../ui/toastStore';
 import { KEYS } from '../queries';
 import { ModelDialog } from './ModelDialog';
-import { ModelGroupDialog } from './ModelGroupDialog';
 import { ProviderDialog } from './ProviderDialog';
-import { useModelGroups, useModels, useProviders } from './queries';
+import { useModels, useProviders } from './queries';
 
 const enabledBadge = (enabled: boolean) => (
   <StatusDot tone={enabled ? 'success' : 'default'}>{enabled ? '启用' : '停用'}</StatusDot>
@@ -125,7 +122,7 @@ export function ModelsTab() {
   const [editing, setEditing] = useState<Editing<Model>>(null);
   const test = useModelTest();
   const remove = useAction((id: string) => deleteModel(id), {
-    invalidate: [KEYS.models, KEYS.modelGroups],
+    invalidate: [KEYS.models],
     success: '已删除模型',
     failure: '删除没有成功，请稍后重试',
   });
@@ -187,7 +184,7 @@ export function ModelsTab() {
               key: 'delete',
               label: '删除',
               danger: true,
-              confirm: `删除模型「${m.alias}」？引用它的技能与分组将不能再用它。`,
+              confirm: `删除模型「${m.alias}」？引用它的技能将不能再用它。`,
               onClick: () => void remove.run(m.id),
             },
           ]}
@@ -220,66 +217,6 @@ export function ModelsTab() {
       )}
       {editing ? (
         <ModelDialog model={editing.item} providers={providers.data ?? []} onClose={() => setEditing(null)} />
-      ) : null}
-    </>
-  );
-}
-
-export function GroupsTab() {
-  const groups = useModelGroups();
-  const models = useModels();
-  const [editing, setEditing] = useState<Editing<ModelGroup>>(null);
-  const remove = useAction((id: string) => deleteModelGroup(id), {
-    invalidate: [KEYS.modelGroups],
-    success: '已删除分组',
-    failure: '删除没有成功，请稍后重试',
-  });
-  const columns: readonly Column<ModelGroup>[] = [
-    { key: 'name', title: '名称', width: 180, ellipsis: true, render: (g) => g.name },
-    { key: 'description', title: '说明', ellipsis: true, render: (g) => g.description },
-    {
-      key: 'count',
-      title: '模型数',
-      width: 90,
-      align: 'right',
-      render: (g) => <span className="kw-num">{g.modelIds.length}</span>,
-    },
-    {
-      key: 'actions',
-      title: '操作',
-      width: 130,
-      render: (g) => (
-        <RowActions
-          actions={[
-            { key: 'edit', label: '修改', onClick: () => setEditing({ item: g }) },
-            {
-              key: 'delete',
-              label: '删除',
-              danger: true,
-              confirm: `删除分组「${g.name}」？授给它的权限会失效。`,
-              onClick: () => void remove.run(g.id),
-            },
-          ]}
-        />
-      ),
-    },
-  ];
-  return (
-    <>
-      <Toolbar right={<AddButton label="新建分组" onClick={() => setEditing({})} />} />
-      {groups.isPending ? (
-        <Skeleton rows={5} />
-      ) : (
-        <Table<ModelGroup>
-          rowKey={(g) => g.id}
-          columns={columns}
-          rows={groups.data ?? []}
-          loading={groups.isFetching}
-          empty={groups.isError ? '分组加载失败，请刷新重试' : '还没有分组'}
-        />
-      )}
-      {editing ? (
-        <ModelGroupDialog group={editing.item} models={models.data ?? []} onClose={() => setEditing(null)} />
       ) : null}
     </>
   );

@@ -10,6 +10,7 @@ export const API_KEY_SCOPES = [
   { value: 'workspace:manage', label: '管理成员与授权' },
   { value: 'models:manage', label: '管理模型' },
   { value: 'knowledge:manage', label: '管理知识源' },
+  { value: 'knowledge:read', label: '检索知识（对外接口与 MCP）' },
   { value: 'tools:manage', label: '管理工具与 MCP' },
   { value: 'audit:read', label: '查看审计日志' },
 ] as const;

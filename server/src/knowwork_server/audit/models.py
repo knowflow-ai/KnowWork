@@ -1,4 +1,4 @@
-"""审计日志表（技术方案 11.1 节）。带 workspace_id，开启行级安全（AUDIT_RLS_TABLES）。
+"""审计日志表。带 workspace_id，开启行级安全（AUDIT_RLS_TABLES）。
 
 只存「谁、经由什么凭证、对什么、做了什么、结果如何」：不存提示词、回答原文、密钥、文档内容；
 detail 是经过脱敏与限长的小字典（见 events.py）。凭证只存会话或 API Key 的 id，不存明文。

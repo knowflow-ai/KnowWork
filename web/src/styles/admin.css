@@ -137,6 +137,17 @@
   min-width: 0;
 }
 
+.kw-labeled-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--kw-text-secondary);
+}
+
+.kw-labeled-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
 .kw-tags {
   display: inline-flex;
   flex-wrap: wrap;
@@ -225,6 +236,48 @@
   align-items: center;
   gap: 12px;
   margin-top: 12px;
+}
+
+/* ---------- 运行面板 ---------- */
+.kw-jobs-section {
+  margin-bottom: 32px;
+}
+
+.kw-jobs-section > h2,
+.kw-jobs-head > h2 {
+  margin: 0 0 12px;
+  font-size: var(--font-text-md-size);
+  font-weight: var(--font-weight-semibold);
+}
+
+.kw-jobs-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.kw-jobs-subhead {
+  margin: 24px 0 8px;
+  font-size: var(--font-text-sm-size);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* ---------- 模型 → 文档解析 ---------- */
+.kw-field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 12px 0;
+}
+
+.kw-parser-probe {
+  margin: 0 0 12px;
+}
+
+.kw-form-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 8px;
 }
 
 /* ---------- 系统设置 ---------- */

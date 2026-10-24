@@ -1,4 +1,4 @@
-"""运行配置的持久化（技术方案 12 节「运行时」：kernel_binding、runtime_profile）。
+"""运行配置的持久化（kernel_binding、runtime_profile）。
 
 - runtime_profile：按内容寻址的配置快照，主键 (workspace_id, version)；同一份配置只存一行，供审计与回看；
 - kernel_binding：会话当前绑定的配置版本。选单独一张表而不是给 conversation 加列：

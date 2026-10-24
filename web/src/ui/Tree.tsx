@@ -1,5 +1,6 @@
 /**
- * 可展开的树（部门树）：默认全部展开，点三角收起，点名称选中；选中项浅灰底、正文色（界面规范第 1 节「列表选中项」）。
+ * 可展开的树（部门树、树形选择框）：默认全部展开，点三角收起，点名称选中（分组节点点名称是展开收起）；
+ * 选中项浅灰底、正文色（界面规范第 1 节「列表选中项」）。
  * 组件库没有树，键盘与读屏照 WAI-ARIA 的 tree 模式。
  */
 import { useState, type ReactNode } from 'react';
@@ -10,6 +11,8 @@ export interface TreeNode {
   readonly key: string;
   readonly title: ReactNode;
   readonly children: readonly TreeNode[];
+  /** false 时只是分组（例如树形选择框里的知识源），点名称展开收起，不能选中 */
+  readonly selectable?: boolean;
 }
 
 interface Props {
@@ -60,7 +63,11 @@ function Branch({
         ) : (
           <span className="kw-tree-toggle" aria-hidden="true" />
         )}
-        <button type="button" className="kw-tree-title" onClick={() => onSelect(node.key)}>
+        <button
+          type="button"
+          className={cx('kw-tree-title', node.selectable === false && 'is-group')}
+          onClick={() => (node.selectable === false ? onToggle(node.key) : onSelect(node.key))}
+        >
           {node.title}
         </button>
       </div>

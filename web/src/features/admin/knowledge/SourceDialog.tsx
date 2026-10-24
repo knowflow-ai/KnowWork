@@ -2,7 +2,7 @@
 import { Input } from '@openai/apps-sdk-ui/components/Input';
 import { RadioGroup } from '@openai/apps-sdk-ui/components/RadioGroup';
 import { Switch } from '@openai/apps-sdk-ui/components/Switch';
-import { TagInput } from '@openai/apps-sdk-ui/components/TagInput';
+import { TAG_DELIMITERS, TagInput } from '../../../ui/TagInput';
 import {
   AUTH_MODES,
   createSource,
@@ -147,6 +147,8 @@ export function SourceDialog({
             id={id}
             size="md"
             placeholder="留空表示全部；指定时输入 ID 后回车"
+            // ID 里没有空格：空格也当分隔，粘贴一串空格隔开的 ID 能直接拆开
+            delimiters={[...TAG_DELIMITERS, ' ']}
             value={values.datasetIds.map((value) => ({ value, valid: true }))}
             onChange={(tags) =>
               set(

@@ -1,4 +1,4 @@
-"""附件与产物测试共用的数据库夹具：独立库，超级用户建表与开启行级安全，业务读写用普通角色（不绕过 RLS）。"""
+"""附件、产物与后台任务测试共用的数据库夹具：独立库，超级用户建表与开启行级安全，业务读写用普通角色（不绕过 RLS）。"""
 
 import uuid
 from dataclasses import dataclass
@@ -13,6 +13,7 @@ from knowwork_server.attachments import ATTACHMENT_RLS_TABLES, ATTACHMENT_TABLES
 from knowwork_server.conversations.models import Conversation, RunEvent
 from knowwork_server.conversations.service import ConversationNotFound
 from knowwork_server.db.base import Base, make_engine, make_sessionmaker
+from knowwork_server.jobs import JOB_RLS_TABLES, JOB_TABLES
 
 APP_ROLE = "kw_files_app"
 
@@ -23,10 +24,11 @@ def _swap(url: str, *, user: str, database: str) -> str:
 
 async def _prepare(admin_url: str) -> None:
     admin = create_async_engine(admin_url)
-    tables = [Conversation.__table__, RunEvent.__table__, *ATTACHMENT_TABLES, *ARTIFACT_TABLES]
+    tables = [Conversation.__table__, RunEvent.__table__, *ATTACHMENT_TABLES, *ARTIFACT_TABLES, *JOB_TABLES]
     async with admin.begin() as conn:
         await conn.run_sync(lambda sync: Base.metadata.create_all(sync, tables=tables))
-        await enable_row_level_security(conn, ("conversation", "run_event", *ATTACHMENT_RLS_TABLES, *ARTIFACT_RLS_TABLES))
+        await enable_row_level_security(conn, ("conversation", "run_event", *ATTACHMENT_RLS_TABLES, *ARTIFACT_RLS_TABLES,
+                                                *JOB_RLS_TABLES))
         for statement in (f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}",
                           f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {APP_ROLE}"):
             await conn.execute(text(statement))

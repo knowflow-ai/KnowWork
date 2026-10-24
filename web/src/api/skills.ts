@@ -148,14 +148,3 @@ export async function setSkillEnabled(skill: Skill, enabled: boolean): Promise<S
 export async function deleteSkill(skill: Skill): Promise<void> {
   await request<unknown>(base(skill.scope, `/${seg(skill.id)}`), { method: 'DELETE' });
 }
-
-/** 对话里能选的技能：已发布且启用（空间与个人的合在一起，个人优先，同名只留一个）。 */
-export async function listUsableSkills(): Promise<readonly Skill[]> {
-  const [mine, shared] = await Promise.all([listSkills('personal'), listSkills('workspace')]);
-  const seen = new Set<string>();
-  return [...mine, ...shared].filter((skill) => {
-    if (skill.status !== 'published' || !skill.enabled || seen.has(skill.name)) return false;
-    seen.add(skill.name);
-    return true;
-  });
-}

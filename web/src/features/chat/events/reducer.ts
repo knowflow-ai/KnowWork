@@ -22,6 +22,7 @@ import {
   runFor,
 } from './runs';
 import { onQuestion, onQuestionExpired, onTodos } from './questions';
+import { onLive, settleLive } from './live';
 
 export const initialChatState: ChatState = {
   log: [],
@@ -127,15 +128,18 @@ export function reduceWire(state: ChatState, wire: WireEvent): ChatState {
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'wire':
-      return reduceWire(state, action.event);
+      return settleLive(reduceWire(state, action.event), action.event.event);
     case 'wire/batch':
-      return action.events.reduce(reduceWire, state);
+      return action.events.reduce((s, wire) => settleLive(reduceWire(s, wire), wire.event), state);
+    case 'live':
+      return onLive(state, action.live);
     case 'local/sent': {
       const message = {
         localId: action.localId,
         text: action.text,
         mode: action.mode,
         ...(action.attachments?.length ? { attachments: action.attachments } : {}),
+        ...(action.mentions?.length ? { mentions: action.mentions } : {}),
       };
       return {
         ...state,

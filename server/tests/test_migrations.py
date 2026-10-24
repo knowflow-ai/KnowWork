@@ -1,6 +1,8 @@
 """迁移合同：空库升级到最新后，表结构与模型完全一致，且所有带工作空间的业务表都开了行级安全。"""
 
 import asyncio
+import json
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +14,7 @@ from sqlalchemy import MetaData, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from knowwork_server.db import migrate
 from knowwork_server.db.base import Base
 from knowwork_server.db.migrate import (
     MIGRATIONS_DIR,
@@ -23,6 +26,12 @@ from knowwork_server.db.migrate import (
 from knowwork_server.db.registry import MODEL_MODULES, RLS_TABLES, load_all_models
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(autouse=True)
+def main_line_only(monkeypatch):
+    """这里测开源主线的迁移合同。装着扩展的环境里也只升级主线：扩展的分支有它自己的合同测试。"""
+    monkeypatch.setattr(migrate, "_installed_branches", lambda: migrate.MAIN_LINE)
 
 # 带 workspace_id 但有意不做行级安全的表：API Key 跨空间归属于用户，按 user_id 判定。
 RLS_EXEMPT = {"api_key"}
@@ -353,3 +362,145 @@ def test_settings_validate_app_db_role():
             Settings(**base, app_db_role=bad)
     with pytest.raises(ValidationError):
         Settings(**base, migration_lock_timeout_seconds=0)
+
+
+async def test_0017_moves_pending_attachment_parses_into_the_job_table(fresh_url):
+    """排队中、运行中的附件解析任务搬成通用任务重新排队（worker 以前从没消费过它们），
+    已失败的不搬；旧表删掉；回退时把还在排队的搬回旧表。"""
+    await _alembic(fresh_url, command.upgrade, "0016")
+    engine = create_async_engine(fresh_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("INSERT INTO workspace (id, name) VALUES ('w1', 'W1')"))
+            await connection.execute(text(
+                "INSERT INTO conversation (id, workspace_id, user_id, title) VALUES ('c1', 'w1', 'u1', '')"))
+            for attachment_id, status in (("a_q", "queued"), ("a_r", "running"), ("a_f", "failed")):
+                await connection.execute(text(
+                    "INSERT INTO attachment (id, workspace_id, conversation_id, user_id, filename, input_name,"
+                    " parsed_name, kind, mime, size, digest, status, parse_status) VALUES (:a, 'w1', 'c1', 'u1',"
+                    " :a, :a, :md, 'pdf', 'application/pdf', 1, 'd', 'ready', 'parsing')"),
+                    {"a": attachment_id, "md": f"{attachment_id}.md"})
+                await connection.execute(text(
+                    "INSERT INTO attachment_parse_job (id, workspace_id, attachment_id, status, attempts, max_attempts)"
+                    " VALUES (:j, 'w1', :a, :s, 1, 3)"), {"j": f"apj_{attachment_id}", "a": attachment_id, "s": status})
+    finally:
+        await engine.dispose()
+    await upgrade_to_head(fresh_url)
+    rows = await _execute(fresh_url, "SELECT json_agg(json_build_array(subject_id, kind, status, tries, max_tries, pool)"
+                                     " ORDER BY subject_id) FROM job")
+    assert rows == [["a_q", "attachment.parse", "queued", 0, 3, "core"],
+                    ["a_r", "attachment.parse", "queued", 0, 3, "core"]]
+    assert await _execute(fresh_url, "SELECT to_regclass('attachment_parse_job')") is None
+    await _alembic(fresh_url, command.downgrade, "0016")
+    assert await _execute(fresh_url, "SELECT json_agg(attachment_id ORDER BY attachment_id)"
+                                     " FROM attachment_parse_job") == ["a_q", "a_r"]
+    assert await _execute(fresh_url, "SELECT to_regclass('job')") is None
+
+
+async def test_0018_types_old_locators_and_drops_unitless_boxes(fresh_url):
+    """已存引用的定位改成带类型的 pdf 定位：留页码与章节路径，没有单位的旧框丢掉；回退还原成旧形状。"""
+    await _alembic(fresh_url, command.upgrade, "0017")
+    engine = create_async_engine(fresh_url)
+    old = ('{"page": 3, "boxes": [{"page": 3, "x0": 10, "x1": 200, "top": 5, "bottom": 9}],'
+           ' "section_path": ["第三章"]}')
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("INSERT INTO workspace (id, name) VALUES ('w1', 'W1')"))
+            await connection.execute(text(
+                "INSERT INTO citation_catalog (id, workspace_id, size, \"limit\", truncated, dropped)"
+                " VALUES ('c1', 'w1', 2, 50, false, 0)"))
+            for number, locator in ((1, old), (2, None)):
+                await connection.execute(text(
+                    "INSERT INTO citation (catalog_id, workspace_id, number, source_id, doc_ref, span_ref, title, text,"
+                    " locator) VALUES ('c1', 'w1', :n, 's', 'd', :span, 't', 'x', CAST(:loc AS jsonb))"),
+                    {"n": number, "span": f"p{number}", "loc": locator})
+    finally:
+        await engine.dispose()
+    await upgrade_to_head(fresh_url)
+    rows = await _execute(fresh_url, "SELECT json_agg(locator ORDER BY number) FROM citation")
+    assert rows == [{"type": "pdf", "page": 3, "section_path": ["第三章"]}, None]
+    await _alembic(fresh_url, command.downgrade, "0017")
+    assert await _execute(fresh_url, "SELECT locator FROM citation WHERE number = 1") == {
+        "page": 3, "section_path": ["第三章"]}
+
+
+
+@pytest.fixture
+async def owner_db(fresh_url):
+    """库和 public 模式归一个非超级用户（同部署里的 knowwork_owner）：FORCE 行级安全对表的所有者也生效，
+    迁移改数据要逐个空间声明 app.workspace_id；超级用户会绕过行级安全，漏了声明测试也看不出来。"""
+    role = f"own_{uuid.uuid4().hex[:8]}"
+    admin = create_async_engine(fresh_url, isolation_level="AUTOCOMMIT")
+    async with admin.connect() as connection:
+        await connection.execute(text(f"CREATE ROLE {role} LOGIN NOSUPERUSER NOBYPASSRLS"))
+        await connection.execute(text(f"ALTER SCHEMA public OWNER TO {role}"))
+    yield SimpleNamespace(url=fresh_url.replace("postgres@", f"{role}@", 1), role=role)
+    async with admin.connect() as connection:
+        await connection.execute(text("ALTER SCHEMA public OWNER TO postgres"))
+        await connection.execute(text(f"DROP OWNED BY {role}"))
+        await connection.execute(text(f"DROP ROLE {role}"))
+    await admin.dispose()
+
+
+# v0.0.1 发布时 0002 建的模型分组两张表（发布后 0002 去掉了它们，见 0019）
+_V001_MODEL_GROUPS = (
+    ("CREATE TABLE model_group (id varchar(64) PRIMARY KEY, workspace_id varchar(64) NOT NULL,"
+     " name varchar(100) NOT NULL, description varchar(500) NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),"
+     " CONSTRAINT uq_model_group_name UNIQUE (workspace_id, name))"),
+    "CREATE INDEX ix_model_group_workspace_id ON model_group (workspace_id)",
+    ("CREATE TABLE model_group_item (group_id varchar(64) REFERENCES model_group (id) ON DELETE CASCADE,"
+     " model_id varchar(64) REFERENCES model (id) ON DELETE CASCADE, workspace_id varchar(64) NOT NULL,"
+     " PRIMARY KEY (group_id, model_id))"),
+    "CREATE INDEX ix_model_group_item_workspace_id ON model_group_item (workspace_id)",
+    *(statement for table in ("model_group", "model_group_item") for statement in (
+        f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY', f'ALTER TABLE "{table}" FORCE ROW LEVEL SECURITY',
+        (f"CREATE POLICY workspace_isolation ON \"{table}\""
+         " USING (workspace_id = current_setting('app.workspace_id', true))"
+         " WITH CHECK (workspace_id = current_setting('app.workspace_id', true))"))),
+)
+
+
+async def test_0019_brings_a_v001_database_up_to_the_current_models(owner_db, fresh_url):
+    """v0.0.1 的库（0002 是改之前的）：补上文档解析表与思考开关列，删掉模型分组的表和授权，
+    运行配置快照去掉 models（不去掉老会话一读快照就校验失败）；别的授权不动。新装的库这里什么都不做（见上面几条）。"""
+    from knowwork_server.profile.snapshot import RuntimeProfile
+
+    await _alembic(owner_db.url, command.upgrade, "0018")
+    legacy = RuntimeProfile(workspace_id="w1", user_id="u1", role="editor", member=True).payload() | {
+        "models": [{"id": "m1", "alias": "default", "name": "deepseek-chat"}]}
+    kept = {("w1", "role:admin", "skill:*", "owner"), ("w1", "user:u1", "skill:s", "use"),
+            ("w2", "role:admin", "knowledge_base:*", "owner")}
+    granted = {("w1", "role:admin", "model_group:*", "owner"), ("w1", "role:viewer", "model_group:*", "use"),
+               ("w1", "user:u1", "model_group:mg1", "use"), ("w2", "role:editor", "model_group:*", "use")}
+    engine = create_async_engine(fresh_url)  # 超级用户，造数据不受行级安全限制
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("DROP TABLE document_parser"))
+            await connection.execute(text("ALTER TABLE model DROP COLUMN thinking"))
+            await connection.execute(text("INSERT INTO workspace (id, name) VALUES ('w1', 'W1'), ('w2', 'W2')"))
+            await connection.execute(text(f"SET ROLE {owner_db.role}"))  # 分组表也归库所有者，迁移才删得掉
+            for statement in _V001_MODEL_GROUPS:
+                await connection.execute(text(statement))
+            await connection.execute(text("RESET ROLE"))
+            await connection.execute(text(
+                "INSERT INTO model_group (id, workspace_id, name, description) VALUES ('mg1', 'w1', '通用', '')"))
+            for workspace_id, subject, obj, act in kept | granted:
+                await connection.execute(text(
+                    "INSERT INTO casbin_rule (workspace_id, ptype, v0, v1, v2, v3) VALUES (:w, 'p', :s, :w, :o, :a)"),
+                    {"w": workspace_id, "s": subject, "o": obj, "a": act})
+            await connection.execute(text(
+                "INSERT INTO runtime_profile (workspace_id, version, user_id, snapshot)"
+                " VALUES ('w1', 'v-old', 'u1', CAST(:s AS jsonb))"), {"s": json.dumps(legacy)})
+    finally:
+        await engine.dispose()
+
+    await upgrade_to_head(owner_db.url)
+    assert await _diff(fresh_url) == [], "升级上来的库与新装的库表结构一致"
+    assert await _execute(fresh_url, "SELECT to_regclass('model_group')") is None
+    assert await _execute(fresh_url, "SELECT to_regclass('model_group_item')") is None
+    assert await _execute(fresh_url, "SELECT count(*) FROM pg_policies WHERE tablename = 'document_parser'") == 1
+    assert await _execute(fresh_url, "SELECT relforcerowsecurity FROM pg_class WHERE relname = 'document_parser'")
+    assert await _rules(fresh_url) == kept
+    snapshot = await _execute(fresh_url, "SELECT snapshot FROM runtime_profile WHERE version = 'v-old'")
+    assert "models" not in snapshot
+    RuntimeProfile.model_validate(snapshot)

@@ -114,7 +114,7 @@ class SourceStore:
 
     async def delete(self, workspace_id: str, source_id: str,
                      also: Callable[[AsyncSession], Awaitable[T]]) -> T:
-        """删除知识源；also 在同一事务里执行（删掉指向它的授权，技术方案 5.2 节），返回它的结果。"""
+        """删除知识源；also 在同一事务里执行（删掉指向它的授权），返回它的结果。"""
         async with self._session(workspace_id) as session:
             result = await session.execute(delete(KnowledgeSourceRow).where(KnowledgeSourceRow.id == source_id))
             if result.rowcount == 0:

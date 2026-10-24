@@ -1,0 +1,49 @@
+name: ci-server
+
+# 业务服务：ruff + pytest。按目录触发，没改到相关目录不跑（省 Actions 分钟数）：
+# 端到端测试会起真实宿主进程，部署相关的测试会读 deploy/ 下的编排文件与脚本，所以这两处改了也跑。
+
+on:
+  push:
+    branches: [main]
+    paths: ["server/**", "runtime-host/**", "deploy/**", ".github/workflows/ci-server.yml"]
+  pull_request:
+    paths: ["server/**", "runtime-host/**", "deploy/**", ".github/workflows/ci-server.yml"]
+
+concurrency:
+  group: ci-server-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: 业务服务（ruff + pytest）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.8"
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+      # 端到端测试会起真实宿主进程，需要 Node 与宿主依赖
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: runtime-host/package-lock.json
+      - name: 安装宿主依赖
+        working-directory: runtime-host
+        run: npm ci --no-audit --no-fund
+      - name: 安装 Python 依赖
+        run: uv sync --frozen --python 3.12
+      - name: ruff
+        run: uv run ruff check
+      - name: pytest
+        run: uv run pytest

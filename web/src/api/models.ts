@@ -90,6 +90,11 @@ export function deleteProvider(id: string): Promise<void> {
   return request(base(`/model-providers/${seg(id)}`), { method: 'DELETE' });
 }
 
+/** 对话模型的思考：开、关；null 是跟随服务默认（不补参数） */
+export type Thinking = 'on' | 'off' | null;
+
+const thinkingOf = (value: unknown): Thinking => (value === 'on' || value === 'off' ? value : null);
+
 export interface Model {
   readonly id: string;
   readonly providerId: string;
@@ -97,6 +102,7 @@ export interface Model {
   readonly name: string;
   readonly capabilities: readonly string[];
   readonly contextLength: number | null;
+  readonly thinking: Thinking;
   readonly inputPrice: number | null;
   readonly outputPrice: number | null;
   readonly currency: string;
@@ -115,6 +121,7 @@ function parseModel(value: unknown): Model | undefined {
     name: str(value.name) ?? alias,
     capabilities: strings(value.capabilities),
     contextLength: num(value.context_length) ?? null,
+    thinking: thinkingOf(value.thinking),
     inputPrice: num(value.input_price_per_mtok) ?? null,
     outputPrice: num(value.output_price_per_mtok) ?? null,
     currency: str(value.currency) ?? 'CNY',
@@ -132,6 +139,7 @@ export interface ModelInput {
   readonly name: string;
   readonly capabilities: readonly string[];
   readonly contextLength: number | null;
+  readonly thinking: Thinking;
   readonly inputPrice: number | null;
   readonly outputPrice: number | null;
   readonly enabled: boolean;
@@ -145,6 +153,7 @@ function modelBody(input: ModelInput): Record<string, unknown> {
     name: input.name.trim(),
     capabilities: input.capabilities,
     context_length: input.contextLength,
+    thinking: input.thinking,
     input_price_per_mtok: input.inputPrice,
     output_price_per_mtok: input.outputPrice,
     enabled: input.enabled,
@@ -180,49 +189,6 @@ export async function testModel(id: string): Promise<ProbeResult> {
     latencyMs: num(body.latency_ms) ?? null,
     message: str(body.message) ?? '',
   };
-}
-
-export interface ModelGroup {
-  readonly id: string;
-  readonly name: string;
-  readonly description: string;
-  readonly modelIds: readonly string[];
-}
-
-function parseModelGroup(value: unknown): ModelGroup | undefined {
-  if (!isRecord(value)) return undefined;
-  const id = text(value.id);
-  const name = text(value.name);
-  if (!id || !name) return undefined;
-  return { id, name, description: str(value.description) ?? '', modelIds: strings(value.model_ids) };
-}
-
-export async function listModelGroups(): Promise<readonly ModelGroup[]> {
-  return listOf(await request<unknown>(base('/model-groups')), parseModelGroup);
-}
-
-export interface ModelGroupInput {
-  readonly name: string;
-  readonly description: string;
-  readonly modelIds: readonly string[];
-}
-
-const groupBody = (input: ModelGroupInput) => ({
-  name: input.name.trim(),
-  description: input.description.trim(),
-  model_ids: input.modelIds,
-});
-
-export function createModelGroup(input: ModelGroupInput): Promise<unknown> {
-  return request(base('/model-groups'), { method: 'POST', body: groupBody(input) });
-}
-
-export function updateModelGroup(id: string, input: ModelGroupInput): Promise<unknown> {
-  return request(base(`/model-groups/${seg(id)}`), { method: 'PATCH', body: groupBody(input) });
-}
-
-export function deleteModelGroup(id: string): Promise<void> {
-  return request(base(`/model-groups/${seg(id)}`), { method: 'DELETE' });
 }
 
 // ---- 用量 ----

@@ -13,6 +13,8 @@
 授权与迁移在同一事务里，授权失败整个迁移回滚。
 
 迁移脚本放在本包的 migrations/ 下，随 Python 包一起发布，不依赖工作目录里的 alembic.ini。
+扩展各带一条自己的迁移分支：已安装的扩展的迁移目录追加进 version_locations，升级到全部分支的
+最新（heads）。扩展只加自己的表，不改开源表。
 """
 
 import asyncio
@@ -20,6 +22,7 @@ import os
 import re
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -51,22 +54,47 @@ def validate_role_name(role: str) -> str:
     return role
 
 
-def alembic_config(url: str) -> Config:
+@dataclass(frozen=True)
+class Branches:
+    """主线之外要一起升级的迁移：扩展的迁移目录与它们的模型模块（env.py 据此加载模型）。"""
+
+    locations: tuple[Path, ...] = ()
+    model_modules: tuple[str, ...] = ()
+
+
+def _installed_branches() -> Branches:
+    from ..extensions import installed_extensions
+
+    extensions = installed_extensions()
+    return Branches(locations=extensions.migration_dirs, model_modules=extensions.model_modules)
+
+
+MAIN_LINE = Branches()
+
+
+def alembic_config(url: str, branches: Branches = MAIN_LINE) -> Config:
     config = Config()
     config.set_main_option("script_location", str(MIGRATIONS_DIR))
+    config.set_main_option("path_separator", "os")
+    if branches.locations:
+        # 设了 version_locations 就不再自动包含主线目录，要显式列上
+        locations = (MIGRATIONS_DIR / "versions", *branches.locations)
+        config.set_main_option("version_locations", os.pathsep.join(str(path) for path in locations))
     config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    config.attributes["model_modules"] = branches.model_modules
     return config
 
 
 async def _run(url: str, action: Callable[[Config], None], before: Step | None = None,
-               after: Step | None = None) -> None:
+               after: Step | None = None, branches: Branches | None = None) -> None:
+    branches = _installed_branches() if branches is None else branches
     engine = create_async_engine(url)
     try:
         async with engine.begin() as connection:
             def _sync(sync_connection: Connection) -> None:
                 if before is not None:
                     before(sync_connection)
-                config = alembic_config(url)
+                config = alembic_config(url, branches)
                 config.attributes["connection"] = sync_connection
                 action(config)
                 if after is not None:
@@ -127,11 +155,13 @@ def _grant_step(role: str) -> Step:
 
 
 async def upgrade_to_head(url: str, *, app_role: str | None = None,
-                          lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS) -> None:
-    """用 url 的账号（成为表的 owner）升级到最新；给了 app_role 就在同一事务里给它授权。"""
+                          lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+                          branches: Branches | None = None) -> None:
+    """用 url 的账号（成为表的 owner）升级到最新；给了 app_role 就在同一事务里给它授权。
+    branches 不给时取本进程已安装的扩展；升级到全部分支的最新。"""
     before = _lock_step(lock_timeout_seconds)
     after = _grant_step(app_role) if app_role is not None else None
-    await _run(url, lambda config: command.upgrade(config, "head"), before=before, after=after)
+    await _run(url, lambda config: command.upgrade(config, "heads"), before=before, after=after, branches=branches)
 
 
 async def migrate_for_settings(settings: MigrationSettings) -> None:
@@ -147,7 +177,9 @@ async def current_revision(url: str) -> str | None:
     engine = create_async_engine(url)
     try:
         async with engine.connect() as connection:
-            return await connection.run_sync(lambda sync: MigrationContext.configure(sync).get_current_revision())
+            # 装了扩展时版本表里每条分支一行，get_current_revision 遇到多行会报错；多行时用逗号连起来
+            heads = await connection.run_sync(lambda sync: MigrationContext.configure(sync).get_current_heads())
+            return ", ".join(sorted(heads)) or None
     finally:
         await engine.dispose()
 

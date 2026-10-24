@@ -1,6 +1,5 @@
-"""收集编译输入并编译（技术方案 5.3 节）。只依赖各模块已有的「按调用者过滤」入口，不另写一套权限判定：
+"""收集编译输入并编译。只依赖各模块已有的「按调用者过滤」入口，不另写一套权限判定：
 
-- 模型：models 包的 usable_models（模型分组的 use 权限）；
 - 工具：注册表全部工具 + ToolClearance（口径见 clearance）；
 - 技能：skills 包的会话技能清单（已发布、已启用、按 skill 的 use 权限过滤，撞名撞认领已跳过）；
 - 知识：knowledge 包的可查知识库，按知识源分组（knowledge_base 的 use 授权 ∩ 知识源的开放范围）；
@@ -38,8 +37,6 @@ class SkillSource(Protocol):
 
 
 class ModelSource(Protocol):
-    async def usable_models(self, user_id: str, workspace_id: str) -> tuple[Any, ...]: ...
-
     async def default_capabilities(self, workspace_id: str) -> frozenset[str] | None: ...
 
 
@@ -96,7 +93,6 @@ class ProfileCompiler:
             workspace_id=workspace_id, user_id=user_id, role=await self._s.role_of(user_id, workspace_id),
             member=True, tools=specs, permitted_tools=clearance.permitted(user_id, workspace_id, [s.name for s in specs]),
             builtin_tools=clearance.builtin, skills=tuple(await self._s.skills.for_session(workspace_id, user_id)),
-            models=tuple(await self._s.models.usable_models(user_id, workspace_id)),
             knowledge=await self._s.knowledge(user_id, workspace_id), selection=selection,
             host_denied=host_denied)
 

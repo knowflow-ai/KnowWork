@@ -1,4 +1,4 @@
-"""审计（技术方案 11.1、13 节；一期 F-AUD-1：基础审计 90 天，区分人和 Agent 的操作）。
+"""审计（基础审计 90 天，区分人和 Agent 的操作）。
 
 - 建表：AUDIT_TABLES（挂在 db.base.Base 上），行级安全：AUDIT_RLS_TABLES = ("audit_log",)；
 - 装配：`audit = build_audit(global_sessionmaker, default_workspace_id=DEFAULT_WORKSPACE_ID)`，

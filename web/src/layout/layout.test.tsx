@@ -6,11 +6,13 @@ import { AdminLayout } from './AdminLayout';
 import { AppLayout } from './AppLayout';
 import { flattenPages } from '../features/conversations/queries';
 import { useReplyLanguage } from '../stores/replyLanguage';
+import { useSidebar } from '../stores/sidebar';
 
 afterEach(() => {
   vi.unstubAllGlobals();
   window.localStorage.clear();
   useReplyLanguage.setState({ language: 'zh' });
+  useSidebar.setState({ collapsed: false });
 });
 
 const page1 = {
@@ -39,6 +41,28 @@ function api(admin: boolean, extra = {}) {
 }
 
 describe('AppLayout 与侧栏', () => {
+  it('侧栏可以收起成只有图标的窄栏（照 ChatGPT）：入口名字放进悬停提示，最近会话不显示；记在本浏览器里；快捷键也能切换', async () => {
+    api(false);
+    renderWithApp(<AppLayout />, { route: '/chat', path: '*' });
+    expect(await screen.findByRole('link', { name: /季度总结/ })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '收起侧栏' }));
+    const nav = screen.getByRole('navigation', { name: '主导航' });
+    expect(nav).toHaveClass('is-collapsed');
+    expect(within(nav).getByRole('link', { name: '新对话' })).toHaveAttribute('href', '/chat');
+    // 提示组件包着入口时 className 不能是函数，不然样式全丢、挤成一团
+    expect(within(nav).getByRole('link', { name: '新对话' })).toHaveClass('kw-sidebar-link', 'is-active');
+    expect(within(nav).queryByText('新对话')).toBeNull();
+    expect(screen.queryByRole('link', { name: /季度总结/ })).toBeNull();
+    expect(window.localStorage.getItem('kw.sidebarCollapsed')).toBe('1');
+
+    await userEvent.click(screen.getByRole('button', { name: '展开侧栏' }));
+    expect(await screen.findByRole('link', { name: /季度总结/ })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'S', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(nav).toHaveClass('is-collapsed'));
+    fireEvent.keyDown(window, { key: 's', metaKey: true, shiftKey: true });
+    await waitFor(() => expect(nav).not.toHaveClass('is-collapsed'));
+  });
+
   it('显示新对话、分页的最近会话与用户；管理入口不在侧栏，在用户菜单里', async () => {
     api(true);
     renderWithApp(<AppLayout />, {

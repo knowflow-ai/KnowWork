@@ -1,4 +1,4 @@
-"""SKILL.md frontmatter 解析与技能门的安装期规则（技术方案 6.1、6.3 节）。"""
+"""SKILL.md frontmatter 解析与技能门的安装期规则。"""
 
 import pytest
 

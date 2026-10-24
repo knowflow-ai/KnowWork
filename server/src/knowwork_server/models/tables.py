@@ -2,7 +2,6 @@
 
 - model_provider：厂商与 API 地址，密钥只存 AES-256-GCM 密文与末四位；
 - model：厂商下的一个模型，alias 是宿主请求里写的名字，name 是厂商侧的模型名；
-- model_group / model_group_item：RBAC 资源「model_group:<id>」，用户只能用被授权分组里的模型；
 - usage_record：每次模型调用一条（来自宿主事件流），不存提示词与回答原文；
 - usage_daily：按天、用户、模型汇总，管理页直接读它。
 """
@@ -61,6 +60,8 @@ class Model(Base):
     name: Mapped[str] = mapped_column(String(200))
     capabilities: Mapped[list[str]] = mapped_column(ARRAY(String(16)))  # chat | embedding | rerank | vision
     context_length: Mapped[int | None] = mapped_column(Integer)
+    # 对话模型的思考：on、off，空是跟随服务默认（不补参数）；转发时按服务商的写法补（models/thinking.py）
+    thinking: Mapped[str | None] = mapped_column(String(8))
     input_price_per_mtok: Mapped[Decimal | None] = mapped_column(PRICE)
     output_price_per_mtok: Mapped[Decimal | None] = mapped_column(PRICE)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
@@ -68,25 +69,6 @@ class Model(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
                                                  onupdate=func.now())
-
-
-class ModelGroup(Base):
-    __tablename__ = "model_group"
-    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_model_group_name"),)
-
-    id: Mapped[str] = mapped_column(ID, primary_key=True)
-    workspace_id: Mapped[str] = mapped_column(ID, index=True)
-    name: Mapped[str] = mapped_column(String(100))
-    description: Mapped[str] = mapped_column(String(500), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class ModelGroupItem(Base):
-    __tablename__ = "model_group_item"
-
-    group_id: Mapped[str] = mapped_column(ForeignKey("model_group.id", ondelete="CASCADE"), primary_key=True)
-    model_id: Mapped[str] = mapped_column(ForeignKey("model.id", ondelete="CASCADE"), primary_key=True)
-    workspace_id: Mapped[str] = mapped_column(ID, index=True)
 
 
 class UsageRecord(Base):
@@ -128,5 +110,5 @@ class UsageDaily(Base):
     cost: Mapped[Decimal] = mapped_column(COST, default=Decimal(0))
 
 
-MODELS_TABLES = tuple(t.__table__ for t in (ModelProvider, Model, ModelGroup, ModelGroupItem, UsageRecord, UsageDaily))
-MODELS_RLS_TABLES = ("model_provider", "model", "model_group", "model_group_item", "usage_record", "usage_daily")
+MODELS_TABLES = tuple(t.__table__ for t in (ModelProvider, Model, UsageRecord, UsageDaily))
+MODELS_RLS_TABLES = ("model_provider", "model", "usage_record", "usage_daily")

@@ -1,4 +1,4 @@
-"""运行配置编译：纯函数（技术方案 5.3 节）。
+"""运行配置编译：纯函数。
 
 输入是已经按授权取好的事实（ProfileFacts），输出是不可变快照；同一输入永远得到同一版本号。
 - 不是空间成员：模型、技能、知识全空，全部工具被拒；
@@ -20,7 +20,6 @@ from ..tools.registry import ToolSpec
 from .snapshot import (
     NO_SELECTION,
     ProfileKnowledgeSource,
-    ProfileModel,
     ProfileSkill,
     ProfileTool,
     RuntimeProfile,
@@ -54,7 +53,6 @@ class ProfileFacts:
     permitted_tools: frozenset[str] = frozenset()
     builtin_tools: frozenset[str] = frozenset()
     skills: tuple[Any, ...] = ()  # skills.views.CatalogEntry：name、version、digest、description、scope
-    models: tuple[Any, ...] = ()  # models.schemas.ModelView：id、alias、name
     knowledge: tuple[KnowledgeEntry, ...] = ()
     selection: TurnSelection = field(default=NO_SELECTION)
     host_denied: tuple[str, ...] = ()
@@ -65,14 +63,16 @@ def compile_profile(facts: ProfileFacts) -> RuntimeProfile:
     names = sorted({spec.name for spec in facts.tools})
     if not facts.member:
         return RuntimeProfile(workspace_id=facts.workspace_id, user_id=facts.user_id, role=None, member=False,
-                              denied_tools=_denied(names, facts.host_denied), bound_knowledge=selection.knowledge_bases)
+                              denied_tools=_denied(names, facts.host_denied), bound_knowledge=selection.knowledge_bases,
+                              dropped_conditions=selection.dropped_conditions, pins=selection.pins)
     tools = _tools(facts.tools, facts.permitted_tools, facts.builtin_tools)
     allowed = {tool.name for tool in tools}
     knowledge, bound = _knowledge(facts.knowledge, selection.knowledge_bases)
     return RuntimeProfile(
         workspace_id=facts.workspace_id, user_id=facts.user_id, role=facts.role, member=True,
-        models=_models(facts.models), tools=tools, denied_tools=_denied((n for n in names if n not in allowed), facts.host_denied),
-        skills=_skills(facts.skills, selection.skills), knowledge=knowledge, bound_knowledge=bound)
+        tools=tools, denied_tools=_denied((n for n in names if n not in allowed), facts.host_denied),
+        skills=_skills(facts.skills, selection.skills), knowledge=knowledge, bound_knowledge=bound,
+        dropped_conditions=selection.dropped_conditions, pins=selection.pins)
 
 
 def _denied(names: Iterable[str], host_denied: tuple[str, ...]) -> tuple[str, ...]:
@@ -84,9 +84,6 @@ def _tools(specs: Iterable[ToolSpec], permitted: frozenset[str], builtin: frozen
     return tuple(ProfileTool(name=name, risk=chosen[name].risk, builtin=name in builtin) for name in sorted(chosen))
 
 
-def _models(models: Iterable[Any]) -> tuple[ProfileModel, ...]:
-    unique = {str(m.id): ProfileModel(id=str(m.id), alias=str(m.alias), name=str(m.name)) for m in models}
-    return tuple(unique[key] for key in sorted(unique))
 
 
 def _skills(entries: Iterable[Any], selected: tuple[str, ...] | None) -> tuple[ProfileSkill, ...]:
@@ -107,7 +104,7 @@ def _skills(entries: Iterable[Any], selected: tuple[str, ...] | None) -> tuple[P
 
 
 def _skill(entry: Any, picked: set[str]) -> ProfileSkill | None:
-    """一个技能编译失败只跳过它并记日志（技术方案 5.3 节）。"""
+    """一个技能编译失败只跳过它并记日志。"""
     try:
         name = str(entry.name)
         return ProfileSkill(name=name, version=str(entry.version), digest=str(entry.digest),

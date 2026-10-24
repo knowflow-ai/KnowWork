@@ -4,7 +4,7 @@ Revision ID: 0015
 Revises: 0014
 Create Date: 2026-10-20 19:50:00
 
-2026-10-20 起知识源只有统一账号与签名断言两种认证方式（技术方案 8.4 节），谁能查哪个知识库统一在 KnowWork 里授权：
+2026-10-20 起知识源只有统一账号与签名断言两种认证方式，谁能查哪个知识库统一在 KnowWork 里授权：
 - 还在用个人 Key 方式的知识源改成统一账号，连接密钥留空，管理员补填 KnowFlow API Key 之前检索会明确报「还没有配置」；
 - 删掉存个人 KnowFlow Key 的表。
 knowledge_source 开了 FORCE ROW LEVEL SECURITY，改配置时逐个空间声明 app.workspace_id（同 0014）。

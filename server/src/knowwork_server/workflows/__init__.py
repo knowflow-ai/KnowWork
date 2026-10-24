@@ -1,4 +1,4 @@
-"""固定工作流：技能包里的 workflow.yaml 由业务服务按步骤驱动（技术方案 6.5 节退路，实验 E2 的结论）。
+"""固定工作流：技能包里的 workflow.yaml 由业务服务按步骤驱动，是模型自己编排不可靠时的退路。
 
 主线整合（不改 app.py 之外的模块，见最终报告）：
 - 建表：WORKFLOW_TABLES（挂在 db.base.Base 上），行级安全：WORKFLOW_RLS_TABLES；

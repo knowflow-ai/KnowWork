@@ -84,13 +84,20 @@ describe('模型与分组', () => {
       }),
     });
     const [parsed] = await m.listModels();
-    expect(parsed).toMatchObject({ alias: 'chat', inputPrice: 2, outputPrice: 8, contextLength: 64000 });
+    expect(parsed).toMatchObject({
+      alias: 'chat',
+      inputPrice: 2,
+      outputPrice: 8,
+      contextLength: 64000,
+      thinking: null,
+    });
     const input = {
       providerId: 'p1',
       alias: ' chat ',
       name: ' n ',
       capabilities: ['chat'],
       contextLength: null,
+      thinking: 'off' as const,
       inputPrice: 1,
       outputPrice: null,
       enabled: true,
@@ -104,6 +111,7 @@ describe('模型与分组', () => {
       alias: 'chat',
       name: 'n',
       input_price_per_mtok: 1,
+      thinking: 'off',
     });
     expect(api.calls[2]?.body).not.toHaveProperty('provider_id');
     expect(m.capabilityLabel('vision')).toBe('看图');
@@ -113,24 +121,6 @@ describe('模型与分组', () => {
   it('测试结果不完整时说明', async () => {
     routeFetch({ [`POST ${B}/models/*/test`]: jsonResponse('x') });
     await expect(m.testModel('m1')).resolves.toMatchObject({ ok: false });
-  });
-
-  it('分组增改删', async () => {
-    const api = routeFetch({
-      [`GET ${B}/model-groups`]: jsonResponse([
-        { id: 'g1', name: '通用', description: '', model_ids: ['m1'] },
-      ]),
-      [`POST ${B}/model-groups`]: jsonResponse({}, 201),
-      [`PATCH ${B}/model-groups/*`]: jsonResponse({}),
-      [`DELETE ${B}/model-groups/*`]: ok(),
-    });
-    expect(await m.listModelGroups()).toEqual([
-      { id: 'g1', name: '通用', description: '', modelIds: ['m1'] },
-    ]);
-    await m.createModelGroup({ name: ' 通用 ', description: ' 说明 ', modelIds: ['m1'] });
-    await m.updateModelGroup('g1', { name: '通用', description: '', modelIds: [] });
-    await m.deleteModelGroup('g1');
-    expect(api.calls[1]?.body).toEqual({ name: '通用', description: '说明', model_ids: ['m1'] });
   });
 });
 

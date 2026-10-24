@@ -1,4 +1,4 @@
-"""workflow.yaml 的解析与校验，以及安装期把它并进技能包校验（技术方案 6.5 节）。"""
+"""workflow.yaml 的解析与校验，以及安装期把它并进技能包校验。"""
 
 import io
 import zipfile

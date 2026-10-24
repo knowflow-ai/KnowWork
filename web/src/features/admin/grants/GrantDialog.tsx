@@ -16,8 +16,18 @@ import { Field } from '../../../ui/Field';
 import { useAction } from '../useAction';
 import { KEYS } from '../queries';
 import type { Directory } from './labels';
-import { resourceOptions, subjectOptions, validateGrant, type GrantInput } from './form';
+import { resourceKey, resourceOptions, subjectOptions, validateGrant, type GrantInput } from './form';
 import { KnowledgeBasePicker } from './KnowledgeBasePicker';
+import { ToolPicker } from './ToolPicker';
+
+const typeLabel = (type: string): string => RESOURCE_TYPES.find((t) => t.value === type)?.label ?? '资源';
+
+/** 「全部」勾选框的说法：全部什么、含不含以后新增的。知识库是所有知识源下的全部（树里每个知识源另有自己的「全部知识库」）。 */
+function allLabel(type: string): string {
+  return type === 'knowledge_base'
+    ? '全部知识库（所有知识源，含以后新增的）'
+    : `全部${typeLabel(type)}（含以后新增的）`;
+}
 
 /** 校验不通过时，错误挂在对应的表单项下面。 */
 function problemField(problem: string | null): 'subject' | 'resource' | null {
@@ -36,12 +46,7 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
   const [problem, setProblem] = useState<string | null>(null);
   const patch = (next: Partial<GrantInput>) => setValue((v) => ({ ...v, ...next }));
   const action = useAction(
-    (input: GrantInput) =>
-      grant(
-        `${input.subjectKind}:${input.subjectId}`,
-        `${input.resourceType}:${input.all ? '*' : input.resourceId.trim()}`,
-        input.action,
-      ),
+    (input: GrantInput) => grant(`${input.subjectKind}:${input.subjectId}`, resourceKey(input), input.action),
     { invalidate: [KEYS.grants], success: '已授权', failure: '授权没有成功，请稍后重试' },
   );
   const submit = async () => {
@@ -89,22 +94,33 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
             onChange={(option) => patch({ resourceType: option.value, resourceId: '' })}
           />
         </Field>
-        {value.resourceType === 'knowledge_base' ? (
+        {value.all ? null : value.resourceType === 'knowledge_base' ? (
           <Field label="知识库" error={at === 'resource' ? problem : undefined}>
             <KnowledgeBasePicker
               sources={dir.knowledge}
+              trees={dir.trees}
               value={value.resourceId}
-              disabled={value.all}
-              onChange={(id) => patch({ resourceId: id })}
+              invalid={at === 'resource'}
+              onChange={(resource) => patch({ resourceId: resource })}
+            />
+          </Field>
+        ) : value.resourceType === 'tool' ? (
+          <Field label="工具" error={at === 'resource' ? problem : undefined}>
+            <ToolPicker
+              servers={dir.tools}
+              value={value.resourceId}
+              invalid={at === 'resource'}
+              onChange={(resource) => patch({ resourceId: resource })}
             />
           </Field>
         ) : known.length > 0 ? (
-          <Field label="资源" error={at === 'resource' ? problem : undefined}>
+          <Field label={typeLabel(value.resourceType)} error={at === 'resource' ? problem : undefined}>
             <Select
               block
-              disabled={value.all}
               value={value.resourceId}
               placeholder="请选择"
+              searchPlaceholder="搜索"
+              searchEmptyMessage="没有匹配的选项"
               options={[...known]}
               onChange={(option) => patch({ resourceId: option.value })}
             />
@@ -114,7 +130,6 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
             {(id) => (
               <Input
                 id={id}
-                disabled={value.all}
                 value={value.resourceId}
                 placeholder="资源 ID"
                 maxLength={64}
@@ -125,7 +140,13 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
         )}
       </div>
       <div className="kw-field">
-        <Checkbox label="全部" checked={value.all} onCheckedChange={(checked) => patch({ all: checked })} />
+        {/* 写明是全部什么：只写「全部」时，勾上它又在上面选了某个目录，看不出到底授的是哪个。
+            勾上就不再显示具体选哪个，已选的也清掉 */}
+        <Checkbox
+          label={allLabel(value.resourceType)}
+          checked={value.all}
+          onCheckedChange={(checked) => patch({ all: checked, resourceId: '' })}
+        />
       </div>
       <Field label="权限" help="使用 < 编辑 < 完全管理，高档包含低档">
         <Select

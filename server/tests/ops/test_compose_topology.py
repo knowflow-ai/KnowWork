@@ -71,11 +71,15 @@ def test_main_compose_file_alone_keeps_sandbox_off_and_socket_unmounted():
     assert not any(_socket_mounts(_services()).values())
 
 
-def test_sandbox_overlay_turns_it_on_and_mounts_socket_only_for_api():
+def test_sandbox_overlay_turns_it_on_and_mounts_socket_only_for_api_and_worker():
+    """worker 把解析出的附件 Markdown 放进会话容器，要和 api 连同一个 daemon、用同一份沙箱配置。"""
     services = _config(SANDBOX)["services"]
-    assert services["api"]["environment"]["KNOWWORK_SANDBOX_DOCKER_ENABLED"] == "true"
+    for name in ("api", "worker"):
+        assert services[name]["environment"]["KNOWWORK_SANDBOX_DOCKER_ENABLED"] == "true", name
+        assert services[name]["environment"]["KNOWWORK_SANDBOX_IMAGE"] == (
+            f"crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai/knowwork-sandbox:{VERSION}"), name
     assert {name: targets for name, targets in _socket_mounts(services).items() if targets} == {
-        "api": ["/var/run/docker.sock"]}
+        "api": ["/var/run/docker.sock"], "worker": ["/var/run/docker.sock"]}
 
 
 def test_sandbox_is_on_by_default_through_compose_file_in_env_example():
@@ -93,11 +97,13 @@ def test_images_come_from_one_registry_with_versioned_tags():
         assert _services()[name]["image"].endswith(f":{VERSION}"), name
 
 
-def test_api_entrypoint_drops_to_app_user_with_only_setuid_setgid():
-    api = _services()["api"]
-    assert api["user"] == "0:0" and sorted(api["cap_add"]) == ["SETGID", "SETUID"]
-    assert api["entrypoint"] == ["python", "-m", "knowwork_server.ops.entrypoint"]
-    assert api["command"] == ["python", "-m", "knowwork_server"]
+def test_api_and_worker_entrypoints_drop_to_app_user_with_only_setuid_setgid():
+    for name, command in (("api", ["python", "-m", "knowwork_server"]),
+                          ("worker", ["python", "-m", "knowwork_server.ops.worker"])):
+        service = _services()[name]
+        assert service["user"] == "0:0" and sorted(service["cap_add"]) == ["SETGID", "SETUID"], name
+        assert service["entrypoint"] == ["python", "-m", "knowwork_server.ops.entrypoint"], name
+        assert service["command"] == command, name
 
 
 def test_sandbox_image_is_build_only_behind_a_profile():

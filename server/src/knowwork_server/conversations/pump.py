@@ -21,9 +21,18 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from ..kernel.contract import GAP_FRAME_KIND, AgentKernel, EpochMismatch, KernelError, KernelEvent, SessionNotFound
+from ..kernel.contract import (
+    GAP_FRAME_KIND,
+    LIVE_FRAME_KIND,
+    AgentKernel,
+    EpochMismatch,
+    KernelError,
+    KernelEvent,
+    SessionNotFound,
+)
 from .events_v1 import GAP_KIND, ProjectionState, project
 from .listeners import Broadcaster, StoredEvent
+from .live import LiveText, advance, snapshot
 from .models import RunEvent
 from .sanitize import clean_json
 from .writer import BatchWriter, PendingRow
@@ -62,6 +71,7 @@ class _Stream:
     active: bool = False
     task: asyncio.Task | None = None
     projection: ProjectionState = field(default_factory=ProjectionState)
+    live: LiveText | None = None  # 正在逐字输出的那一步（不落库，见 live.py）
 
 
 class _Exit(Exception):
@@ -93,6 +103,11 @@ class EventPump:
     def is_active(self, conversation_id: str) -> bool:
         stream = self._streams.get(conversation_id)
         return stream is not None and stream.active
+
+    def live_snapshot(self, conversation_id: str) -> dict | None:
+        """正在逐字输出的那一步到目前为止的全文；浏览器中途打开、断线重连时先补这一份。"""
+        stream = self._streams.get(conversation_id)
+        return snapshot(stream.live) if stream is not None else None
 
     def produced_upto(self, conversation_id: str) -> int | None:
         """本进程已分配的最大序号；泵还没从库里恢复位置时返回 None。"""
@@ -202,6 +217,11 @@ class EventPump:
         return frame.kind == "agent/status" and isinstance(frame.data, dict) and frame.data.get("status") == "idle"
 
     async def _accept(self, stream: _Stream, frame: KernelEvent) -> None:
+        if frame.kind == LIVE_FRAME_KIND:  # 临时帧：不分配序号、不落库、不推进续读位置
+            stream.live, payload = advance(stream.live, frame.data)
+            if payload is not None:
+                self._broadcaster.publish_live(stream.conversation_id, payload)
+            return
         if stream.epoch is not None and frame.epoch != stream.epoch:
             await self._host_restarted()
         kind = frame.kind
@@ -233,6 +253,8 @@ class EventPump:
     def _track_running(stream: _Stream, kind: str, data: object) -> None:
         if kind == "agent/status" and isinstance(data, dict):
             stream.running = data.get("status") != "idle"
+            if not stream.running:
+                stream.live = None  # 跑完了还没收到结束帧（取消、出错）：不再给新打开的页面补半截
         elif kind == "session/event" and isinstance(data, dict) and data.get("type") == "turn/start":
             stream.running = True
 

@@ -1,4 +1,4 @@
-"""初始化向导后端（F-INIT-2、F-INIT-3）。"""
+"""初始化向导后端。"""
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 

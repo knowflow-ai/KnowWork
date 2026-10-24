@@ -46,11 +46,28 @@ export interface GrantInput {
   readonly action: Action;
 }
 
+/** 按树选的资源类型：选中的值本身就是完整资源（`类型:id`）。 */
+const TREE_TYPES: Readonly<Record<string, string>> = { knowledge_base: '知识库', tool: '工具' };
+
+/**
+ * 授权的资源（`类型:id`）。知识库、工具那一栏是树形选择，选中的值本身就是完整资源（知识库或按目录授权的目录、
+ * 单个工具或一个 MCP 服务的全部工具），其余类型是「类型 + 选的或填的 id」。
+ */
+export function resourceKey(input: GrantInput): string {
+  if (input.all) return `${input.resourceType}:*`;
+  const id = input.resourceId.trim();
+  return input.resourceType in TREE_TYPES ? id : `${input.resourceType}:${id}`;
+}
+
 export function validateGrant(input: GrantInput): string | null {
   if (!input.subjectId) return '请选择授权对象';
-  const id = input.resourceId.trim();
-  if (input.resourceType === 'knowledge_base' && !input.all && !id) return '请选择知识库';
-  const prefix = PREFIX_TYPES.has(input.resourceType) && id.endsWith('*') ? id.slice(0, -1) : id;
-  if (!input.all && !ID_PATTERN.test(prefix)) return '请填写资源 ID（字母、数字、下划线、点或短横线）';
+  if (input.all) return null;
+  const tree = TREE_TYPES[input.resourceType];
+  if (tree && !input.resourceId.trim()) return `请选择${tree}`;
+  const key = resourceKey(input);
+  const type = key.slice(0, key.indexOf(':'));
+  const id = key.slice(key.indexOf(':') + 1);
+  const prefix = PREFIX_TYPES.has(type) && id.endsWith('*') ? id.slice(0, -1) : id;
+  if (!ID_PATTERN.test(prefix)) return '请填写资源 ID（字母、数字、下划线、点或短横线）';
   return null;
 }

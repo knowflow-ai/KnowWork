@@ -32,6 +32,8 @@ class SseReader:
     def __init__(self, client: httpx.AsyncClient, url: str, headers: dict) -> None:
         self.client, self.url, self.headers = client, url, headers
         self.events: asyncio.Queue = asyncio.Queue()
+        self.taken = 0  # 已取走的落库事件数：记下每个片段到达时前面已有几条落库事件
+        self.live: list[dict] = []  # 逐字片段（SSE 事件名 live，不带 id）单独收着，不混进落库事件的顺序里
         self.connected = asyncio.Event()
         self.task: asyncio.Task | None = None
 
@@ -42,7 +44,10 @@ class SseReader:
             fields: dict[str, str] = {}
             async for line in response.aiter_lines():
                 if line == "":
-                    if "event" in fields:
+                    if fields.get("event") == "live":
+                        self.live.append({"id": fields.get("id"), "data": json.loads(fields.get("data", "null")),
+                                          "before": self.events.qsize() + self.taken})
+                    elif "event" in fields:
                         self.events.put_nowait({"id": fields.get("id"), "event": fields["event"],
                                                 "data": json.loads(fields.get("data", "null"))})
                     fields = {}
@@ -65,6 +70,7 @@ class SseReader:
         async with asyncio.timeout(timeout):
             while True:
                 event = await self.events.get()
+                self.taken += 1
                 got.append(event)
                 if predicate(event):
                     return got
@@ -149,6 +155,14 @@ async def test_message_round_trip_and_reconnect(app_db):
 
         types = [e["event"] for e in events]
         assert types[0] == "run.started" and types[-1] == "run.completed", types
+        # 逐字输出：上游按段吐字，片段边生成边推，不带 id；拼起来就是回答，并且先于这一步的正式消息到达
+        answer_at = next(i for i, e in enumerate(events) if e["event"] == "item.completed"
+                         and e["data"]["data"].get("text") == "这是来自上游模型的回答")
+        pieces = [p for p in sse.live if p["data"].get("text")]
+        assert len(pieces) > 1 and all(p["id"] is None for p in sse.live), sse.live
+        assert "".join(p["data"]["text"] for p in pieces) == "这是来自上游模型的回答"
+        assert all(p["before"] <= answer_at for p in pieces), "片段先于正式消息到达"
+        assert sse.live[-1]["data"].get("done") is True
         messages = [e["data"]["data"] for e in events if e["event"] == "item.completed" and e["data"]["kind"] == "message"]
         assert {"role": "user", "text": "你好"} in messages, "提问要进事件流，刷新后才看得到"
         assert {"role": "assistant", "text": "这是来自上游模型的回答"} in messages

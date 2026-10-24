@@ -6,7 +6,8 @@
   position: relative;
   height: 100%;
   min-height: 0;
-  overflow: hidden;
+  /* clip：只让里面的 scrollport 滚，scrollIntoView 不会把外框一起滚歪（见 app.css 布局一节） */
+  overflow: clip;
 }
 
 .kw-zoom-scrollport {
@@ -48,9 +49,10 @@
   min-width: 0;
 }
 
+/* 没画的页按第一页的比例占位（PdfPage 的 ratio）；量不出来时按 A4 */
 .kw-pdf-placeholder {
   width: 100%;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: 1 / 1.414;
   background: var(--kw-hover-bg);
 }
 
@@ -92,6 +94,24 @@
  * 选区照 ChatGPT：用系统默认的选区色（Highlight），和对话里选中文字一样；不透明色加正片叠底，
  * 画面上的黑字照样看得清，相邻文字块重叠处也不会叠出深一块（半透明色会，2026-10-20 用户反馈不协调）。
  */
+/* 引用定位的框：叠在画面上、文字层下面，不挡选中；用链接色的浅底（界面规范：产品色只用于链接与可点的引用） */
+.kw-pdf-mark {
+  position: absolute;
+  z-index: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--kw-link) 22%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--kw-link) 55%, transparent);
+  pointer-events: none;
+  /* 定位后高亮区的顶端对齐视口顶部，上面留一点边距 */
+  scroll-margin-top: 24px;
+}
+
+.kw-preview-mark {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--kw-link) 22%, transparent);
+  color: inherit;
+}
+
 .kw-pdf-text {
   position: absolute;
   inset: 0;
@@ -240,6 +260,19 @@
   padding: 20px;
 }
 
+/* 嵌在页面里的预览（知识库文档页左栏）：PDF、HTML 自己管滚动，其余在这里滚 */
+.kw-preview-pane {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.kw-preview-pane.is-flush {
+  overflow: clip;
+  padding: 0;
+}
+
 .kw-preview-problem {
   margin: 0;
   padding: 20px;
@@ -248,16 +281,16 @@
 }
 
 /* 表格预览：照电子表格，列名与行号是浅灰底，细网格线，单元格单行省略 */
-.kw-sheet-note {
-  margin: 0 0 8px;
-  color: var(--color-text-secondary);
-  font-size: var(--font-text-xs-size);
-}
-
+/* 表格自己滚动（表头、行号才能贴住），只渲染可见的行，行高固定为 28px（sheets.ts 的 ROW_HEIGHT） */
 .kw-sheet-scroll {
+  max-height: calc(100vh - 180px);
   overflow: auto;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
+}
+
+.kw-sheet-table tbody tr {
+  height: 28px;
 }
 
 .kw-sheet-table {
@@ -296,6 +329,15 @@
   text-align: right;
 }
 
+/* 引用定位到的行：底色加深一档，行号用正文色，单色不上彩 */
+.kw-sheet-table tbody tr.is-hit td {
+  background: var(--color-surface-tertiary);
+}
+
+.kw-sheet-table tbody tr.is-hit th {
+  color: var(--color-text);
+}
+
 .kw-sheet-table thead th:first-child {
   left: 0;
   z-index: 2;
@@ -314,4 +356,29 @@
   margin-top: 8px;
   font-size: var(--kw-font-sm);
   color: var(--kw-text-secondary);
+}
+
+/* Word 原件预览（DocxView）：docx-preview 自带灰底与白色页面，这里只管滚动和高亮 */
+.kw-docx-view {
+  height: 100%;
+  overflow: auto;
+  background: var(--kw-document-bg);
+}
+
+.kw-docx-view .docx-wrapper {
+  background: transparent;
+}
+
+.kw-docx-view .kw-docx-mark {
+  border-radius: 2px;
+  background-color: color-mix(in srgb, var(--kw-link) 14%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kw-link) 14%, transparent);
+  /* 定位后高亮区的顶端对齐视口顶部，上面留一点边距 */
+  scroll-margin-top: 24px;
+}
+
+/* 表格的格子各有底色，整张描一圈 */
+.kw-docx-view table.kw-docx-mark {
+  outline: 2px solid color-mix(in srgb, var(--kw-link) 55%, transparent);
+  outline-offset: 2px;
 }

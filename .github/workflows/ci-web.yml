@@ -1,0 +1,37 @@
+name: ci-web
+
+# 前端：lint + test + build。只在 web/ 有改动时跑（省 Actions 分钟数）。
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/ci-web.yml"]
+  pull_request:
+    paths: ["web/**", ".github/workflows/ci-web.yml"]
+
+concurrency:
+  group: ci-web-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: 前端（lint + test + build）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build

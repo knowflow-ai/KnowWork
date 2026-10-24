@@ -1,5 +1,7 @@
 """每轮重算运行配置：版本变了就以新策略恢复宿主会话；权限收回后下一轮工具不可见、执行被拒。"""
 
+import asyncio
+
 import pytest
 
 import knowwork_server.tools.models  # noqa: F401
@@ -9,7 +11,7 @@ from knowwork_server.conversations.replay import EventFeed
 from knowwork_server.conversations.service import ConversationService
 from knowwork_server.conversations.tool_credentials import ToolCredentials
 from knowwork_server.conversations.writer import BatchWriter
-from knowwork_server.kernel.contract import SessionNotFound, TurnInput
+from knowwork_server.kernel.contract import KnowledgeCatalog, KnowledgeEntry, SessionNotFound, TurnInput
 from knowwork_server.profile.clearance import AuthorizedToolRegistry, ToolClearance
 from knowwork_server.profile.errors import ProfileUnavailable
 from knowwork_server.profile.snapshot import TurnSelection
@@ -17,7 +19,7 @@ from knowwork_server.tools import build_tool_service
 from knowwork_server.tools.service import ExecuteRequest, ToolAccessError
 
 from .fakes import FakeKernel
-from .profile_support import WS, Grants, Model, ensure_profile_tables, registry, skill
+from .profile_support import WS, Grants, ensure_profile_tables, registry, skill
 
 pytestmark = pytest.mark.anyio
 USER = "ed"
@@ -29,9 +31,6 @@ class Skills:
 
 
 class Models:
-    async def usable_models(self, user_id, workspace_id):
-        return (Model("m1", "default", "默认"),)
-
     async def default_capabilities(self, workspace_id):
         return frozenset({"chat", "vision"})  # 能看图：本文件只关心授权收窄，看图工具的收窄见 test_profile_facts
 
@@ -51,7 +50,7 @@ async def db(sessionmaker):
 
 
 class Env:
-    def __init__(self, sessionmaker, kernel=None):
+    def __init__(self, sessionmaker, kernel=None, knowledge_catalog=None):
         from knowwork_server.profile.assembly import build_profiles
 
         self.kernel = kernel or FakeKernel()
@@ -71,7 +70,8 @@ class Env:
         self.service = ConversationService(self.kernel, sessionmaker, self.pump,
                                            EventFeed(sessionmaker, writer, broadcaster, self.pump.produced_upto),
                                            tool_credentials=ToolCredentials(self.kernel, issue),
-                                           profiles=self.profiles, resume_retry_delays=(0.01,))
+                                           profiles=self.profiles, knowledge_catalog=knowledge_catalog,
+                                           resume_retry_delays=(0.01,))
 
     def deny(self, index=-1):
         return set(self.kernel.opened[index].policy.deny)
@@ -178,4 +178,43 @@ async def test_steer_does_not_reopen_mid_turn(db):
     assert env.kernel.disposed == [] and len(env.kernel.opened) == 1
     await env.service.send(conversation, TurnInput(text="下一轮"))
     assert "erp_read" not in env.deny()
+    await env.pump.close()
+
+
+CATALOG = KnowledgeCatalog(bases=(KnowledgeEntry(id="builtin.kb1", name="合同库"),))
+
+
+async def test_each_turn_carries_the_knowledge_catalog(db):
+    seen = []
+
+    async def catalog(conversation, profile):
+        seen.append(profile.version)
+        return CATALOG
+
+    env = Env(db, knowledge_catalog=catalog)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="查合同"))
+    assert env.kernel.sent[-1].knowledge == CATALOG and len(seen) == 1
+    await env.pump.close()
+
+
+async def test_a_failing_or_slow_catalog_does_not_block_the_turn(db, monkeypatch):
+    async def broken(conversation, profile):
+        raise RuntimeError("知识源挂了")
+
+    env = Env(db, knowledge_catalog=broken)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="查合同"))
+    assert env.kernel.sent[-1].knowledge is None, "没算出来就不带，宿主沿用上一轮的"
+    await env.pump.close()
+
+    async def slow(conversation, profile):
+        await asyncio.sleep(5)
+        return CATALOG
+
+    monkeypatch.setattr("knowwork_server.conversations.service.CATALOG_TIMEOUT", 0.05)
+    env = Env(db, knowledge_catalog=slow)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="查合同"))
+    assert env.kernel.sent[-1].knowledge is None
     await env.pump.close()

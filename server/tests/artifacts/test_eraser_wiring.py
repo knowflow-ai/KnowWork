@@ -11,6 +11,7 @@ from knowwork_server.conversations.service import ConversationService
 from knowwork_server.conversations.writer import BatchWriter
 from knowwork_server.sessionfiles import local_session_stores
 
+from ..fake_parsers import EnvParsers
 from ..fake_sandbox import FakeSandbox
 from ..fakes import FakeKernel
 
@@ -19,7 +20,8 @@ pytestmark = pytest.mark.anyio
 
 async def test_conversation_delete_runs_both_erasers(files_db, tmp_path):
     sessionmaker, sandbox, stores = files_db.sessionmaker, FakeSandbox(), local_session_stores(tmp_path)
-    attachments = build_attachments(sessionmaker, stores, sandbox, AttachmentSettings())
+    attachments = build_attachments(sessionmaker, stores, sandbox, AttachmentSettings(),
+                                    parsers=EnvParsers(AttachmentSettings()))
     artifacts = build_artifacts(sessionmaker, stores, sandbox)
     conv = await files_db.conversation(workspace_id="default", user_id="dev-user")
     await attachments.service.upload(conv, [IncomingFile("a.txt", b"in")])

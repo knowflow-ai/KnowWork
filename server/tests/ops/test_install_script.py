@@ -130,7 +130,7 @@ def test_private_address_gets_a_hint(sandbox, ready_server):
     deploy = sandbox[0]
     _run(sandbox, port=ready_server)
     (deploy / ".env").write_text("\n".join(
-        "KNOWWORK_PUBLIC_BASE_URL=http://10.60.201.108:8080" if line.startswith("KNOWWORK_PUBLIC_BASE_URL=") else line
+        "KNOWWORK_PUBLIC_BASE_URL=http://10.0.0.9:8080" if line.startswith("KNOWWORK_PUBLIC_BASE_URL=") else line
         for line in (deploy / ".env").read_text().splitlines()) + "\n")
     result, _ = _run(sandbox, port=ready_server)
     assert "内网地址" in result.stdout and "--url" in result.stdout

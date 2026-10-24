@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from ..audit.context import annotate
@@ -28,7 +28,8 @@ from ..kernel.contract import (
     TurnInput,
 )
 from ..profile.errors import ProfileUnavailable
-from ..profile.snapshot import MAX_SELECTED, TurnSelection
+from ..profile.snapshot import MAX_DROPPED, MAX_SELECTED, TurnSelection
+from .mentions import MAX_MENTIONS, Mention, mentioned, turn_mentions
 from .models import Conversation
 from .replay import parse_cursor
 from .service import MAX_PAGE, AttachmentUnavailable, ConversationNotFound, ConversationService
@@ -68,6 +69,8 @@ def conversation_view(conversation: Conversation) -> dict:
 SelectionName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:-]{1,128}$")]
 # 知识库的全局 id <知识源id>.<知识库id>，或 <知识源id>.* 表示这个来源下的全部
 KnowledgeBaseName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}\.([A-Za-z0-9_-]{1,64}|\*)$")]
+# 检索条件的写法如「部门 = 财务部」「标签：简报」，原样比对，不解析
+ConditionLabel = Annotated[str, Field(min_length=1, max_length=500)]
 
 
 class SendMessage(BaseModel):
@@ -80,10 +83,38 @@ class SendMessage(BaseModel):
     # 本轮选择的技能与知识库；不传表示没有选（技能不标选中、知识用全部可查的）
     skills: list[SelectionName] | None = Field(default=None, max_length=MAX_SELECTED)
     knowledge_bases: list[KnowledgeBaseName] | None = Field(default=None, max_length=MAX_SELECTED)
+    # 用户在上一轮回答上方撤掉的检索条件（照检索结果里的写法交回），这一轮检索时去掉
+    dropped_conditions: list[ConditionLabel] = Field(default_factory=list, max_length=MAX_DROPPED)
+    # 输入框里 @ 的知识库、目录、文件、标签、技能（见 mentions.py）
+    mentions: list[Mention] = Field(default_factory=list, max_length=MAX_MENTIONS)
+    # 回答方式：智能体，或只检索知识库的快速问答（宿主只放行 knowledge_search）；用户在输入框里随时切换
+    answer_mode: Literal["agent", "quick"] = "agent"
+
+    @model_validator(mode="after")
+    def _quick_has_no_files(self) -> "SendMessage":
+        # 快速问答没有读文件的工具，附件放进会话容器也没人读
+        if self.answer_mode == "quick" and self.attachments:
+            raise ValueError("快速问答只检索知识库，不能带附件；要处理附件请切换到智能体")
+        return self
+
+    def _scoped(self) -> tuple[list[str] | None, list[Mention]]:
+        """这一轮算数的技能与 @：快速问答用不了技能（宿主拦下 skill），选了也不算，免得技能目录把它标成选中。"""
+        if self.answer_mode == "quick":
+            return None, [m for m in self.mentions if m.type != "skill"]
+        return self.skills, self.mentions
 
     def selection(self) -> TurnSelection:
-        return TurnSelection(skills=None if self.skills is None else tuple(self.skills),
-                             knowledge_bases=None if self.knowledge_bases is None else tuple(self.knowledge_bases))
+        skills, mentions = self._scoped()
+        chosen = TurnSelection(skills=None if skills is None else tuple(skills),
+                               knowledge_bases=None if self.knowledge_bases is None else tuple(self.knowledge_bases),
+                               dropped_conditions=tuple(self.dropped_conditions))
+        return mentioned(chosen, mentions)
+
+    def turn(self) -> TurnInput:
+        # 插话进行中的回合，新的选择留到下一轮才生效（service.send），@ 也就不写进这条消息，免得模型以为已经限定了
+        mentions = turn_mentions(self._scoped()[1]) if self.mode == "followup" else ()
+        return TurnInput(text=self.text, mode=self.mode, language=self.language, mentions=mentions,
+                         answer_mode=self.answer_mode)
 
 
 class Decision(BaseModel):
@@ -191,9 +222,8 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
     @router.post("/{conversation_id}/messages", status_code=202)
     async def send(conversation_id: str, body: SendMessage, who: Who):
         conversation = await owned(conversation_id, who)
-        turn = TurnInput(text=body.text, mode=body.mode, language=body.language)
         try:
-            message_id = await service.send(conversation, turn, body.selection(),
+            message_id = await service.send(conversation, body.turn(), body.selection(),
                                             tuple(body.attachments or ()))
         except AttachmentUnavailable as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
@@ -271,7 +301,10 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
 
         async def stream() -> AsyncIterator[dict]:
             async for item in feed:
-                yield {"id": item.sse_id, "event": item.type, "data": json.dumps(item.payload, ensure_ascii=False)}
+                data = json.dumps(item.payload, ensure_ascii=False)
+                # 逐字片段不带 id：浏览器的 Last-Event-ID 只停在落库的事件上
+                yield ({"event": item.type, "data": data} if item.sse_id is None
+                       else {"id": item.sse_id, "event": item.type, "data": data})
 
         return EventSourceResponse(stream(), ping=15)
 

@@ -6,6 +6,7 @@ import './styles/tokens.css';
 import './styles/ui.css';
 import './styles/app.css';
 import './styles/chat.css';
+import './styles/mentions.css';
 import './styles/preview.css';
 import './styles/admin.css';
 import './styles/auth.css';

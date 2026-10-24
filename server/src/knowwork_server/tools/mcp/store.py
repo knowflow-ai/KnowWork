@@ -116,7 +116,7 @@ class McpServerStore:
 
     async def delete(self, workspace_id: str, server_id: str,
                      also: Callable[[AsyncSession, str], Awaitable[T]]) -> T:
-        """删除服务；also(session, 服务名) 在同一事务里执行（删掉它的工具授权，技术方案 5.2 节），返回它的结果。"""
+        """删除服务；also(session, 服务名) 在同一事务里执行（删掉它的工具授权），返回它的结果。"""
         async with self._session(workspace_id) as session:
             row = await self._row(session, server_id)
             await session.delete(row)

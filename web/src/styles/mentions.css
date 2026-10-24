@@ -1,0 +1,194 @@
+/*
+ * 输入框 @（features/chat/mentions）：浮在输入框上方的点名菜单，和输入框、气泡上的 @ 小标签。
+ * 单色（使用端不上色）；类型靠图标和类型名区分，和附件卡片（带彩色类型块与大小）分开。
+ */
+.kw-composer {
+  position: relative;
+}
+
+.kw-mention-menu {
+  position: absolute;
+  left: 12px;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: min(420px, calc(100% - 24px));
+  max-height: 380px;
+  border-radius: var(--kw-radius-card-lg);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--kw-shadow-floating);
+  overflow: hidden;
+}
+
+.kw-mention-title {
+  padding: 12px 14px 4px;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-mention-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 4px;
+  border: none;
+  background: none;
+  color: var(--kw-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kw-mention-back .kw-mention-detail {
+  margin-left: 4px;
+}
+
+.kw-mention-list {
+  overflow-y: auto;
+  padding: 4px 6px 6px;
+}
+
+.kw-mention-section {
+  padding: 10px 8px 4px;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-mention-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--kw-radius-card);
+  cursor: pointer;
+}
+
+.kw-mention-row.is-active {
+  background: var(--kw-hover-bg);
+}
+
+.kw-mention-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--kw-radius-control);
+  background: var(--color-surface-secondary);
+  color: var(--kw-text-secondary);
+}
+
+.kw-mention-icon svg,
+.kw-mention-arrow,
+.kw-mention-chip-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.kw-mention-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.kw-mention-name,
+.kw-mention-detail {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kw-mention-name {
+  color: var(--kw-text);
+  font-size: var(--kw-font-sm);
+}
+
+.kw-mention-detail {
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-mention-kind,
+.kw-mention-count {
+  flex: none;
+  color: var(--kw-text-tertiary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-mention-arrow {
+  flex: none;
+  color: var(--kw-text-tertiary);
+}
+
+.kw-mention-more {
+  flex: 1;
+  padding-left: 38px;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-mention-empty {
+  padding: 12px 10px;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-mention-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kw-composer .kw-mention-chips {
+  padding: 12px 14px 0;
+}
+
+.kw-user-row .kw-mention-chips {
+  justify-content: flex-end;
+}
+
+.kw-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 300px;
+  height: 28px;
+  padding: 0 2px 0 10px;
+  border-radius: 999px;
+  background: var(--color-surface-secondary);
+  font-size: var(--kw-font-sm);
+}
+
+.kw-mention-chip.is-static {
+  padding-right: 10px;
+}
+
+.kw-mention-chip-body {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.kw-mention-chip-icon {
+  display: inline-flex;
+  color: var(--kw-text-secondary);
+}
+
+.kw-mention-chip-kind {
+  flex: none;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-mention-chip-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

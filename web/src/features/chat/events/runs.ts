@@ -2,8 +2,9 @@
  * events.v1 的轮次事件与条目事件折叠进界面状态。全部是纯函数，只返回新对象。
  */
 import type { AttachmentChip } from '../../../api/attachments';
+import type { Mention, MentionType } from '../../../api/mentions';
 import type { ApprovalStatus, ChatState, EndReason, RunView, StepView, V1Event } from './types';
-import { argumentsText, preview, str } from './parse';
+import { argumentsText, preview, searchSummary, str } from './parse';
 
 /** 不作为步骤显示的工具：提问由卡片展示，待办由清单展示，放进执行过程只会凑步骤数。 */
 export const INTERNAL_TOOLS: ReadonlySet<string> = new Set(['ask_user_question', 'todo_write']);
@@ -200,6 +201,7 @@ export function onToolEnded(state: ChatState, event: V1Event, runId: string, cal
   if (state.internalCalls.includes(callId)) return state;
   const failed = event.type === 'item.failed';
   const resultPreview = preview(str(event.data.text) ?? '');
+  const search = failed ? undefined : searchSummary(event.data.search);
   return updateRun(withRun(state, runId, event.time), runId, (r) =>
     upsertStep(r, callId, (s) => {
       const base: StepView = s ?? { callId, kind: 'tool', name: '工具', arguments: '', status: 'running' };
@@ -212,7 +214,7 @@ export function onToolEnded(state: ChatState, event: V1Event, runId: string, cal
             resultPreview,
             errorReason: failureReason(resultPreview),
           }
-        : { ...base, status: 'done', endedAt: event.time, resultPreview };
+        : { ...base, status: 'done', endedAt: event.time, resultPreview, ...(search ? { search } : {}) };
     }),
   );
 }
@@ -246,12 +248,38 @@ function attachmentsOf(value: unknown): readonly AttachmentChip[] {
   });
 }
 
+const MENTION_TYPES: readonly MentionType[] = ['knowledge_base', 'folder', 'document', 'tag', 'skill'];
+
+/** 用户消息 @ 的东西：服务端从宿主写的说明块里取出来的类型、id、名字与所在知识库。 */
+function mentionsOf(value: unknown): readonly Mention[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item: unknown): Mention[] => {
+    if (typeof item !== 'object' || item === null) return [];
+    const { type, id, name, base, base_name: baseName } = item as Record<string, unknown>;
+    if (!MENTION_TYPES.includes(type as MentionType) || typeof id !== 'string' || typeof name !== 'string')
+      return [];
+    return [
+      {
+        type: type as MentionType,
+        id,
+        name,
+        ...(typeof base === 'string'
+          ? { base, baseName: typeof baseName === 'string' ? baseName : base }
+          : {}),
+      },
+    ];
+  });
+}
+
 export function onMessage(state: ChatState, event: V1Event, runId: string): ChatState {
   const role = str(event.data.role);
   const value = (str(event.data.text) ?? '').trim();
   if (role === 'user') {
     const attachments = attachmentsOf(event.data.attachments);
-    return value || attachments.length > 0 ? onAsked(state, event, runId, value, attachments) : state;
+    const mentions = mentionsOf(event.data.mentions);
+    return value || attachments.length > 0
+      ? onAsked(state, event, runId, value, attachments, mentions)
+      : state;
   }
   if (!value) return state;
   if (role !== undefined && role !== 'assistant') return state;
@@ -267,9 +295,15 @@ function onAsked(
   runId: string,
   text: string,
   attachments: readonly AttachmentChip[],
+  mentions: readonly Mention[],
 ): ChatState {
   const id = event.itemId ?? `asked-${runId}-${text}`;
-  const message = attachments.length > 0 ? { id, text, attachments } : { id, text };
+  const message = {
+    id,
+    text,
+    ...(attachments.length > 0 ? { attachments } : {}),
+    ...(mentions.length > 0 ? { mentions } : {}),
+  };
   return updateRun(withRun(state, runId, event.time), runId, (r) =>
     r.asked.some((m) => m.id === id) ? r : { ...r, asked: [...r.asked, message] },
   );

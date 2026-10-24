@@ -1,7 +1,7 @@
 import pytest
 
 from knowwork_server.knowledge.citations import CitationCatalog
-from knowwork_server.knowledge.models import Evidence
+from knowwork_server.knowledge.models import Evidence, EvidenceImage
 
 
 def ev(span, source="kf"):
@@ -48,3 +48,13 @@ def test_check_reports_truncation():
     result = catalog.check("无引用")
     assert result.cited == () and result.removed == ()
     assert any("截断" in w for w in result.warnings)
+
+
+def test_check_keeps_images_from_this_turn_and_drops_made_up_ones():
+    pictured = Evidence(source_id="s", doc_ref="d", span_ref="p", title="t", text="x",
+                        images=(EvidenceImage(ref="a", caption="流程图"),))
+    catalog, _ = CitationCatalog().register([pictured])
+    check = catalog.check("报销分三步[1]。\n[IMG:1:0]\n[IMG:1:1]\n[IMG:2:0]")
+    assert check.text == "报销分三步[1]。\n[IMG:1:0]\n\n", "只留第 1 条证据真有的那张图"
+    assert [w for w in check.warnings if "IMG" in w] == ["回答里的图 [IMG:1:1] 不在本轮结果里，已去掉",
+                                                         "回答里的图 [IMG:2:0] 不在本轮结果里，已去掉"]

@@ -137,6 +137,25 @@ async def test_live_events_after_replay_are_deduplicated(sessionmaker, conversat
     assert [i.sse_id for i in items] == ["1", "2"]
 
 
+async def test_live_snapshot_follows_the_replay_and_live_pieces_carry_no_id(sessionmaker, conversation_id):
+    """中途打开的页面：先回放落库的事件，再补正在输出的那一步的快照，之后的片段接着推；片段都不带 id。"""
+    writer = BatchWriter(sessionmaker)
+    broadcaster = Broadcaster()
+    await writer.put(row(conversation_id, 1))
+    snapshot = {"run_id": "run-1", "step": 1, "offset": 0, "text": "短剧"}
+    feed = EventFeed(sessionmaker, writer, broadcaster, lambda cid: 1, live_snapshot=lambda cid: snapshot)
+
+    async def publish_later():
+        await asyncio.sleep(0.05)
+        broadcaster.publish_live(conversation_id, {"run_id": "run-1", "step": 1, "offset": 2, "text": "规模"})
+
+    task = asyncio.create_task(publish_later())
+    items = await collect(feed, conversation_id, Cursor(0), 3)
+    await task
+    assert [(i.sse_id, i.type) for i in items] == [("1", items[0].type), (None, "live"), (None, "live")]
+    assert [i.payload.get("text") for i in items[1:]] == ["短剧", "规模"]
+
+
 async def test_slow_consumer_is_closed_and_stream_ends(sessionmaker, conversation_id):
     writer = BatchWriter(sessionmaker)
     broadcaster = Broadcaster(backlog=3)

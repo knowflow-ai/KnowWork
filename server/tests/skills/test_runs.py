@@ -1,4 +1,4 @@
-"""技能运行事实的写入接口（技术方案 6.6 节）。"""
+"""技能运行事实的写入接口。"""
 
 from datetime import UTC, datetime, timedelta
 

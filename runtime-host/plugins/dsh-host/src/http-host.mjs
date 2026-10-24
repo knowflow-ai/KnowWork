@@ -19,7 +19,9 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { AnswerError, checkAnswer, parseAnswer } from './question-answers.mjs'
 import { attachmentBlocks, attachmentsOf } from './attachment-handles.mjs'
 import { sessionRoot } from './sandbox-client.mjs'
-import { EPOCH, createSession, dropSession, framesAfter, getSession, oldestCursor, publish } from './state.mjs'
+import { EPOCH, createSession, dropSession, framesAfter, getSession, oldestCursor, publish, publishLive } from './state.mjs'
+import { catalogOf } from './knowledge-catalog.mjs'
+import { mentionBlocks, mentionsOf } from './mentions.mjs'
 
 // DSH 版本号随 /health 一起报给业务服务，系统信息页显示（所有 @deepseek-ai 包锁在同一版本）
 const DSH_VERSION = createRequire(import.meta.url)('@deepseek-ai/dsh/package.json').version
@@ -170,6 +172,13 @@ export function apply(ctx, config) {
   ctx.on('agent/status', ({ agent, status }) => {
     publish(String(agent.session.id), 'agent/status', { status })
   })
+  // 逐字输出：官方 dsh-agent-loop 的 agent/assistant-stream（官方会话接口 dsh-api-session-controller、
+  // 命令行运行 dsh-headless 都订阅它出字）。只转正文片段，作为临时帧推给当前订阅方；
+  // 这一步的正式消息照常落成会话事件，业务服务拿它整段替换。子 Agent 的会话不是宿主打开的，查不到就丢。
+  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    const data = liveFrame(frame)
+    if (data !== undefined) publishLive(String(agent.session.id), 'assistant/stream', data)
+  }, { global: true })
 
   function liveAgent(sessionId) {
     const handle = handles.get(sessionId)
@@ -222,16 +231,27 @@ export function apply(ctx, config) {
     if (language !== undefined && language !== 'zh' && language !== 'en') {
       throw new HttpError(400, 'invalid_request', 'language 只能是 zh 或 en')
     }
+    const answerMode = body.answerMode ?? 'agent'
+    if (answerMode !== 'agent' && answerMode !== 'quick') {
+      throw new HttpError(400, 'invalid_request', 'answerMode 只能是 agent 或 quick')
+    }
     let files
+    let knowledge
+    let mentions
     try {
       files = attachmentsOf(body.attachments)
+      knowledge = catalogOf(body.knowledge)
+      mentions = mentionsOf(body.mentions)
     } catch (error) {
       throw new HttpError(400, 'invalid_request', error.message)
     }
     const state = getSession(sessionId)
     if (state !== undefined && language !== undefined) state.language = language
-    const content = [{ type: 'text', text }, ...attachmentBlocks(files)]
+    if (state !== undefined && knowledge !== undefined) state.knowledgeCatalog = knowledge
+    const content = [{ type: 'text', text }, ...attachmentBlocks(files), ...mentionBlocks(mentions)]
     const message = createUserMessage({ content, source: { kind: 'user' } })
+    // 回答方式等这条消息进入步骤时才生效（answer-mode）：排队到下一轮的消息不改正在跑的这一轮
+    state?.answerModes.set(String(message.id), answerMode)
     if (mode === 'steer') agent.steer(message)
     else agent.followup(message)
     return { messageId: message.id, mode }
@@ -470,4 +490,17 @@ export function apply(ctx, config) {
       await Promise.allSettled(live.map(([, handle]) => handle.dispose()))
     }
   }, 'knowwork.http-host')
+}
+
+/**
+ * 官方逐字帧 → 转给业务服务的样子：开始（带轮次、步）、正文片段、结束。思考与工具参数的片段不转。
+ * @param {{ type: string, attemptId?: string, turn?: number, step?: number, chunk?: { type: string, text?: string } }} frame
+ */
+function liveFrame(frame) {
+  if (frame.type === 'start') return { type: 'start', attemptId: frame.attemptId, turn: frame.turn, step: frame.step }
+  if (frame.type === 'end') return { type: 'end', attemptId: frame.attemptId }
+  if (frame.type === 'chunk' && frame.chunk?.type === 'text-delta' && typeof frame.chunk.text === 'string') {
+    return { type: 'text', attemptId: frame.attemptId, text: frame.chunk.text }
+  }
+  return undefined
 }

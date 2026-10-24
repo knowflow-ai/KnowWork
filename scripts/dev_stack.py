@@ -1,4 +1,4 @@
-"""本机开发环境：嵌入式 PostgreSQL + DSH 宿主 + 业务服务 + 前端开发服务器，一条命令拉起。
+"""本机开发环境：嵌入式 PostgreSQL + DSH 宿主 + 业务服务 + 后台任务 worker + 前端开发服务器，一条命令拉起。
 
 用法（在仓库根目录）：
     cd server && uv run python ../scripts/dev_stack.py
@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import pgserver
@@ -69,6 +70,21 @@ def start(name: str, args: list[str], *, cwd: Path, env: dict) -> subprocess.Pop
                                 start_new_session=True)
 
 
+def wait_healthy(url: str, proc: subprocess.Popen, timeout: float = 90.0) -> bool:
+    """等业务服务起来（启动时会跑数据库迁移），worker 再起，免得它领任务时表还没建好、刷一屏错误日志。"""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 不读系统代理
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and proc.poll() is None:
+        try:
+            with opener.open(url, timeout=2) as response:
+                if response.status == 200:
+                    return True
+        except OSError:
+            pass
+        time.sleep(0.5)
+    return False
+
+
 def main() -> int:
     (DEV / "logs").mkdir(parents=True, exist_ok=True)
     pg = pgserver.get_server(str(DEV / "pg"), cleanup_mode="stop")
@@ -92,20 +108,26 @@ def main() -> int:
                      "KNOWWORK_MODEL_BASE_URL": f"{internal}/internal/model/v1",
                      "KNOWWORK_TOOLS_BASE_URL": f"{internal}/internal/extensions/tools",
                      "KNOWWORK_SKILLS_BASE_URL": f"{internal}/internal/extensions/skills"})
-    server = start("server", [sys.executable, "-m", "knowwork_server"], cwd=ROOT / "server", env={
+    # 业务服务与 worker 共用：同一个库、同一份对象存储、同一个沙箱（worker 把解析出的 Markdown 放进会话容器）。
+    # MinerU 地址等其余 KNOWWORK_* 照外面的环境变量传进来。
+    app_env = {
         **base_env, "KNOWWORK_DATABASE_URL": database_url, "KNOWWORK_MASTER_KEY": secret("master_key"),
-        "KNOWWORK_HOST_TOKEN": host_token, "KNOWWORK_HOST_BASE_URL": f"http://127.0.0.1:{HOST_PORT}",
-        "KNOWWORK_PUBLIC_HOST": "127.0.0.1", "KNOWWORK_PUBLIC_PORT": str(PUBLIC_PORT),
-        "KNOWWORK_INTERNAL_HOST": "127.0.0.1", "KNOWWORK_INTERNAL_PORT": str(INTERNAL_PORT),
-        "KNOWWORK_PUBLIC_BASE_URL": f"http://127.0.0.1:{WEB_PORT}", "KNOWWORK_COOKIE_SECURE": "false",
-        "KNOWWORK_BLOB_DIR": str(DEV / "blobs"),
+        "KNOWWORK_HOST_TOKEN": host_token, "KNOWWORK_BLOB_DIR": str(DEV / "blobs"),
         # 会话沙箱：用本机 Docker（Docker Desktop），镜像先构建：
         #   docker build -f deploy/docker/sandbox.Dockerfile -t knowwork-sandbox:dev .
         "KNOWWORK_SANDBOX_DOCKER_ENABLED": os.environ.get("KNOWWORK_SANDBOX_DOCKER_ENABLED", "true"),
-        "KNOWWORK_SANDBOX_IMAGE": os.environ.get("KNOWWORK_SANDBOX_IMAGE", "knowwork-sandbox:dev")})
+        "KNOWWORK_SANDBOX_IMAGE": os.environ.get("KNOWWORK_SANDBOX_IMAGE", "knowwork-sandbox:dev")}
+    server = start("server", [sys.executable, "-m", "knowwork_server"], cwd=ROOT / "server", env={
+        **app_env, "KNOWWORK_HOST_BASE_URL": f"http://127.0.0.1:{HOST_PORT}",
+        "KNOWWORK_PUBLIC_HOST": "127.0.0.1", "KNOWWORK_PUBLIC_PORT": str(PUBLIC_PORT),
+        "KNOWWORK_INTERNAL_HOST": "127.0.0.1", "KNOWWORK_INTERNAL_PORT": str(INTERNAL_PORT),
+        "KNOWWORK_PUBLIC_BASE_URL": f"http://127.0.0.1:{WEB_PORT}", "KNOWWORK_COOKIE_SECURE": "false"})
+    if not wait_healthy(f"http://127.0.0.1:{PUBLIC_PORT}/health", server):
+        print("业务服务没能起来，看 .dev/logs/server.log")
+    worker = start("worker", [sys.executable, "-m", "knowwork_server.ops.worker"], cwd=ROOT / "server", env=app_env)
     web = start("web", [str(ROOT / "web/node_modules/.bin/vite"), "--host", "127.0.0.1", "--port", str(WEB_PORT),
                         "--strictPort"], cwd=ROOT / "web", env=base_env)
-    processes = {"runtime-host": host, "server": server, "web": web}
+    processes = {"runtime-host": host, "server": server, "worker": worker, "web": web}
     print(f"\n前端：http://127.0.0.1:{WEB_PORT}  （首次打开进入初始化向导，创建管理员）\n")
 
     stop = False

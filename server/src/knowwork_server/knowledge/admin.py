@@ -1,4 +1,4 @@
-"""知识源的增删改查、连通测试与知识库列表（技术方案 5.2、5.5 节，第 8 章开头，8.4 节）。
+"""知识源的增删改查、连通测试与知识库列表。
 
 权限（2026-10-20 起知识源与知识库分开）：
 - 知识源是连接，资源 knowledge_source:<id> 只由空间角色的默认规则给（管理员默认 owner），不单独授权：
@@ -14,12 +14,14 @@ from dataclasses import dataclass
 
 from pydantic import SecretStr
 
+from ..access.vocab import WORKSPACE_RESOURCE
 from .bases import RESOURCE as BASE_RESOURCE
 from .bases import Grants, base_id
 from .connectors import SECRET_OF, AccessChecker, ConnectorFactory, EmailLookup, parse_config
 from .errors import AccessDenied, InvalidInput, KnowledgeError, NotFound, SourceUnavailable
 from .knowflow_mapping import AuthMode
 from .models import Caller
+from .provided import ProvidedSource, ProvidedSources
 from .schemas import (
     BaseView,
     ProbeResult,
@@ -66,11 +68,12 @@ def _secret_for(mode: AuthMode, service_key: SecretStr | None, account_key: Secr
 
 class SourceAdmin:
     def __init__(self, store: SourceStore, access: AccessChecker, connectors: ConnectorFactory,
-                 email_of: EmailLookup) -> None:
+                 email_of: EmailLookup, provided: ProvidedSources | None = None) -> None:
         self._store = store
         self._access = access
         self._connectors = connectors
         self._email_of = email_of
+        self._provided = provided or ProvidedSources()
 
     async def create(self, actor: str, workspace_id: str, body: SourceCreate) -> SourceDetail:
         if not self._access.check(actor, workspace_id, WORKSPACE, "edit"):
@@ -119,7 +122,8 @@ class SourceAdmin:
 
     # 下面两个返回 tuple：类里已有名为 list 的方法，注解里再写 list[...] 会取到它
     async def queryable(self, actor: str, workspace_id: str) -> tuple[QueryableSource, ...]:
-        """本人可查的知识源与知识库范围，只用授权与开放范围、不问知识源（给运行配置快照，技术方案 5.3 节）。"""
+        """本人可查的知识源与知识库范围，只用授权与开放范围、不问知识源（给运行配置快照）。
+        扩展提供的知识源排在后面，开放范围是它自己的全部知识库。"""
         grants = self._grants(actor, workspace_id)
         found = []
         for record in await self._store.list(workspace_id):
@@ -132,15 +136,21 @@ class SourceAdmin:
             if bases:
                 found.append(QueryableSource(id=record.id, name=record.name, kind=record.kind,
                                              enabled=record.enabled, bases=bases))
-        return tuple(found)
+        provided = [QueryableSource(id=p.id, name=p.name, kind=p.kind, enabled=True, bases=bases)
+                    for p in self._provided.all() if (bases := grants.within(p.id, ()))]
+        return (*found, *provided)
 
     async def catalog(self, actor: str, workspace_id: str) -> tuple[SourceBases, ...]:
         """可编辑的知识源下各有哪些知识库（给授权页与「管理 → 知识库」）。以操作者本人身份去列，
-        统一账号方式用那个账号；只列开放范围内的，开放范围里列不出来的也列上、名字用 id。"""
+        统一账号方式用那个账号；只列开放范围内的，开放范围里列不出来的也列上、名字用 id。
+        扩展提供的知识源不在知识源表里，排在后面，只给能授权的人（空间管理员）：
+        原来漏了它，授权页的知识库下拉里扩展的知识库一个都选不到。"""
         editable = self._access.visible_resources(actor, workspace_id, RESOURCE, "edit")
         records = [r for r in await self._store.list(workspace_id) if editable.allows(r.id)]
         caller = Caller(workspace_id=workspace_id, user_id=actor, email=await self._email_of(actor))
-        return tuple(await asyncio.gather(*(self._bases_of(caller, r) for r in records)))
+        provided = self._provided.all() if self._access.check(actor, workspace_id, WORKSPACE_RESOURCE, "edit") else ()
+        return tuple(await asyncio.gather(*(self._bases_of(caller, r) for r in records),
+                                          *(self._provided_bases(caller, p) for p in provided)))
 
     async def probe(self, actor: str, workspace_id: str, source_id: str) -> ProbeResult:
         """以操作者本人的身份发一个最小请求，验证地址、密钥与账号映射都通；统一账号方式另核对开放范围都读得到。"""
@@ -184,6 +194,19 @@ class SourceAdmin:
                            enabled=record.enabled, error=error,
                            bases=[BaseView(id=base_id(record.id, kb), kb_id=kb, name=names.get(kb, kb))
                                   for kb in ordered])
+
+    async def _provided_bases(self, caller: Caller, provided: ProvidedSource) -> SourceBases:
+        """扩展知识源的全部知识库，按操作者本人能看到的列（管理员看得到全部）。"""
+        try:
+            listed, error = await provided.source.list_bases(caller), None
+        except KnowledgeError as failure:
+            listed, error = (), str(failure)
+        except Exception:
+            log.exception("listing bases of provided knowledge source %s failed", provided.id)
+            listed, error = (), f"知识源「{provided.name}」暂时不可用"
+        return SourceBases(source_id=provided.id, source_name=provided.name, auth_mode=provided.kind, enabled=True,
+                           error=error, bases=[BaseView(id=base_id(provided.id, base.id), kb_id=base.id, name=base.name)
+                                               for base in listed])
 
     @staticmethod
     def _summary(record: SourceRecord) -> SourceSummary:

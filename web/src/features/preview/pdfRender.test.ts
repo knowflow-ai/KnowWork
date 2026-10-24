@@ -4,7 +4,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist';
 // jsdom 没有 canvas 绘图，pdf.js 换成替身：只看画页时怎么定尺寸、怎么挂文字层、怎么取消
 vi.mock('./pdfjs', () => ({}));
 const built = vi.hoisted(() => ({ layers: [] as { cancelled: boolean; options: unknown }[] }));
-vi.mock('pdfjs-dist/web/pdf_viewer.mjs', () => ({
+vi.mock('pdfjs-dist/legacy/web/pdf_viewer.mjs', () => ({
   TextLayerBuilder: class {
     div = document.createElement('div');
     record = { cancelled: false, options: undefined as unknown };

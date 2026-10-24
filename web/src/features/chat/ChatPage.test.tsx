@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '../../test/user';
 import { renderWithApp, jsonResponse } from '../../test/render';
-import { ev } from './events/fixtures';
+import { ev, wire } from './events/fixtures';
 import type { StreamHandlers } from '../../api/sse';
 import type { WireEvent } from './events/types';
+import { useAnswerMode } from '../../stores/answerMode';
 import { useReplyLanguage } from '../../stores/replyLanguage';
 
 const streams: StreamHandlers[] = [];
@@ -33,6 +34,7 @@ beforeEach(() => {
       if (url === '/api/conversations' && init?.method === 'POST')
         return jsonResponse({ id: 'c-new', title: 't' }, 201);
       if (url.endsWith('/attachments') && init?.method === 'POST') return jsonResponse(uploadReply, 201);
+      if (url === '/api/conversations/mention-options') return jsonResponse(MENTION_OPTIONS);
       return jsonResponse({ messageId: 'm1' }, 202);
     }),
   );
@@ -43,7 +45,32 @@ afterEach(() => {
   uploadReply = { items: [], failures: [] };
   window.localStorage.clear();
   useReplyLanguage.setState({ language: 'zh' });
+  useAnswerMode.setState({ mode: 'agent' });
 });
+
+const MENTION_OPTIONS = {
+  bases: [
+    {
+      id: 'builtin.kb1',
+      name: '报销制度',
+      description: '',
+      source: '扩展知识库',
+      path: ['财务'],
+      tags: [],
+      pinnable: true,
+    },
+    {
+      id: 'builtin.kb2',
+      name: '预算库',
+      description: '',
+      source: '扩展知识库',
+      path: ['财务'],
+      tags: [],
+      pinnable: true,
+    },
+  ],
+  skills: [],
+};
 
 const push = (event: WireEvent) => act(() => streams[streams.length - 1]?.onEvent(event));
 
@@ -59,7 +86,9 @@ describe('ChatPage', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     await waitFor(() => expect(screen.getByText('正在连接…')).toBeInTheDocument());
     expect(
-      calls.map((c) => c.url).filter((url) => !url.endsWith('/artifacts') && !url.endsWith('/skills')),
+      calls
+        .map((c) => c.url)
+        .filter((url) => !url.endsWith('/artifacts') && !url.endsWith('/mention-options')),
     ).toEqual(['/api/conversations', '/api/conversations/c-new/messages']);
     expect(screen.getByText('帮我写周报')).toBeInTheDocument();
   });
@@ -72,7 +101,21 @@ describe('ChatPage', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     await waitFor(() =>
       expect(calls.find((c) => c.url.endsWith('/messages'))?.body).toBe(
-        '{"text":"Zleap-AI/SAG-Wiki","mode":"followup","language":"en"}',
+        '{"text":"Zleap-AI/SAG-Wiki","mode":"followup","language":"en","answer_mode":"agent"}',
+      ),
+    );
+  });
+
+  it('回答方式：从输入框的「+」里选快速问答，之后的消息都带 quick', async () => {
+    renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    await userEvent.click(screen.getByRole('button', { name: '添加文件、快速问答' }));
+    await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: /快速问答/ }));
+    await userEvent.type(screen.getByRole('textbox'), '报销标准是多少');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() =>
+      expect(calls.find((c) => c.url.endsWith('/messages'))?.body).toBe(
+        '{"text":"报销标准是多少","mode":"followup","language":"zh","answer_mode":"quick"}',
       ),
     );
   });
@@ -91,7 +134,7 @@ describe('ChatPage', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     await waitFor(() =>
       expect(calls.find((c) => c.url.endsWith('/messages'))?.body).toBe(
-        '{"text":"改一下付款条款","mode":"followup","language":"zh","attachments":["att_1"]}',
+        '{"text":"改一下付款条款","mode":"followup","language":"zh","answer_mode":"agent","attachments":["att_1"]}',
       ),
     );
     const upload = calls.find((c) => c.url === '/api/conversations/c1/attachments');
@@ -113,6 +156,67 @@ describe('ChatPage', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     expect(await screen.findByText(/a\.exe：不支持这种文件/)).toBeInTheDocument();
     expect(calls.some((c) => c.url.endsWith('/messages'))).toBe(false);
+  });
+
+  it('撤掉回答上方的检索条件：用同一个问题重新回答，带上这一轮要去掉的条件', async () => {
+    renderWithApp(<ChatPage />, { route: '/chat/c3', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    push(ev.runStarted(1));
+    push(ev.asked(2, '财务部的报销标准', 1));
+    push(ev.toolStarted(3, 'k1', 'knowledge_search', '{"query":"报销标准"}'));
+    push(
+      wire({
+        id: '4',
+        type: 'item.completed',
+        run: 1,
+        item: 'k1',
+        kind: 'tool',
+        data: { text: '{}', search: { documents: ['b:d1'], conditions: ['部门 = 财务部'], removed: [] } },
+      }),
+    );
+    push(ev.message(5, '差旅按标准报销'));
+    push(ev.runCompleted(6));
+    await userEvent.click(await screen.findByRole('button', { name: '撤掉「部门 = 财务部」重新回答' }));
+    await waitFor(() =>
+      expect(calls.filter((c) => c.url.endsWith('/messages')).at(-1)?.body).toBe(
+        '{"text":"财务部的报销标准","mode":"followup","language":"zh","answer_mode":"agent","dropped_conditions":["部门 = 财务部"]}',
+      ),
+    );
+  });
+
+  it('提问 @ 过的东西显示在气泡上方；重新生成照原样带上，目录按路径重新展开', async () => {
+    renderWithApp(<ChatPage />, { route: '/chat/c4', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    push(ev.runStarted(1));
+    push(
+      wire({
+        id: '2',
+        type: 'item.completed',
+        run: 1,
+        item: 'u2',
+        kind: 'message',
+        data: {
+          role: 'user',
+          text: '报销标准',
+          mentions: [
+            { type: 'folder', id: '财务', name: '财务' },
+            { type: 'document', id: 'kb1/d1', name: '差旅办法', base: 'builtin.kb1', base_name: '报销制度' },
+          ],
+        },
+      }),
+    );
+    push(ev.message(3, '按标准报销'));
+    push(ev.runCompleted(4));
+    const shown = screen.getByRole('list', { name: '这条消息 @ 点名的范围与技能' });
+    expect(within(shown).getByText('差旅办法')).toBeInTheDocument();
+    expect(within(shown).getByText('目录')).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: '重新生成' }));
+    await waitFor(() => expect(calls.filter((c) => c.url.endsWith('/messages'))).toHaveLength(1));
+    const body = JSON.parse(String(calls.find((c) => c.url.endsWith('/messages'))?.body));
+    expect(body.mentions).toEqual([
+      { type: 'folder', id: '财务', name: '财务', bases: ['builtin.kb1', 'builtin.kb2'] },
+      { type: 'document', id: 'kb1/d1', name: '差旅办法', base: 'builtin.kb1', base_name: '报销制度' },
+    ]);
   });
 
   it('事件流里的提问带着附件时，消息上方显示文件', () => {
@@ -145,7 +249,7 @@ describe('ChatPage', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', metaKey: true });
     await waitFor(() =>
       expect(calls.find((c) => c.url.endsWith('/messages'))?.body).toBe(
-        '{"text":"顺便加上目录","mode":"steer","language":"zh"}',
+        '{"text":"顺便加上目录","mode":"steer","language":"zh","answer_mode":"agent"}',
       ),
     );
     expect(screen.getByText('顺便加上目录')).toBeInTheDocument();
@@ -163,7 +267,7 @@ describe('ChatPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '重新生成' }));
     await waitFor(() =>
       expect(calls.filter((c) => c.url.endsWith('/messages')).at(-1)?.body).toBe(
-        '{"text":"顺便加上目录","mode":"followup","language":"zh"}',
+        '{"text":"顺便加上目录","mode":"followup","language":"zh","answer_mode":"agent"}',
       ),
     );
   });

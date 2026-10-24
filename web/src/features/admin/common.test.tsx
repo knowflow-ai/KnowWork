@@ -3,7 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '../../test/user';
 import { renderWithApp } from '../../test/render';
 import { RowActions } from './common';
-import { routes } from '../../app/router';
+import { buildRoutes } from '../../app/router';
 
 describe('RowActions', () => {
   it('超过 3 个操作时收进「更多」，收进去的删除用对话框确认', async () => {
@@ -36,6 +36,7 @@ describe('RowActions', () => {
 
 describe('路由', () => {
   it('路由表：使用端与管理后台是两套外壳，各管理页都在管理后台下', () => {
+    const routes = buildRoutes();
     const top = routes.map((r) => r.path);
     expect(top).toEqual(['/login', '/invite', '/setup', '/', '/admin']);
     const app = routes[3]?.children?.map((r) => r.path ?? 'index') ?? [];

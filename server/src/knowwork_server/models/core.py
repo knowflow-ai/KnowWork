@@ -8,15 +8,13 @@ from typing import Protocol
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..access.engine import VisibleSet
 from ..access.rls import set_workspace
 from ..access.vocab import WORKSPACE_RESOURCE, InvalidInput, validate_id
 from .crypto import SecretBox
 from .errors import Conflict, Denied, Invalid
-from .schemas import GroupView, ModelView, ProviderView
-from .tables import Model, ModelGroup, ModelProvider
+from .schemas import ModelView, ProviderView
+from .tables import Model, ModelProvider
 
-RESOURCE_TYPE = "model_group"
 ADMIN_ACTION = "edit"  # 工作空间 edit = 空间 owner 与 admin
 
 
@@ -24,8 +22,6 @@ class Authorizer(Protocol):
     """access.AccessService 满足这个协议。"""
 
     def check(self, user_id: str, workspace_id: str, resource: str, action: str) -> bool: ...
-
-    def visible_resources(self, user_id: str, workspace_id: str, resource_type: str, action: str) -> VisibleSet: ...
 
 
 def new_id(prefix: str) -> str:
@@ -73,8 +69,5 @@ def model_view(row: Model) -> ModelView:
     return ModelView(id=row.id, provider_id=row.provider_id, alias=row.alias, name=row.name,
                      capabilities=tuple(row.capabilities or ()), context_length=row.context_length,
                      input_price_per_mtok=row.input_price_per_mtok, output_price_per_mtok=row.output_price_per_mtok,
-                     currency=row.currency, enabled=row.enabled)
+                     currency=row.currency, enabled=row.enabled, thinking=row.thinking)
 
-
-def group_view(row: ModelGroup, model_ids: tuple[str, ...]) -> GroupView:
-    return GroupView(id=row.id, name=row.name, description=row.description, model_ids=model_ids)

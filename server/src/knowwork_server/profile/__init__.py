@@ -1,4 +1,4 @@
-"""运行配置编译（技术方案 5.3 节）：按用户、空间角色、授权与本轮选择编出不可变快照，SHA-256 作版本号。
+"""运行配置编译：按用户、空间角色、授权与本轮选择编出不可变快照，SHA-256 作版本号。
 
 主线整合（不改本包以外的装配，见各函数文档）：
     clearance = ToolClearance(access, builtin=frozenset(t.spec.name for t in (KW_NOW, *knowledge.tools)))

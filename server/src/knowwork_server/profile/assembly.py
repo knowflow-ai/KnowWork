@@ -19,10 +19,11 @@ from .runtime import ConversationProfiles
 
 def build_profiles(sessionmaker: async_sessionmaker, registry: AuthorizedToolRegistry, clearance: ToolClearance, *,
                    skills: SkillSource, models: ModelSource, knowledge: SourceLister,
-                   role_of: RoleOf | None = None, host_denied: tuple[str, ...] = ()) -> ConversationProfiles:
+                   role_of: RoleOf | None = None, host_denied: tuple[str, ...] = (),
+                   bindings: ProfileBindings | None = None) -> ConversationProfiles:
     """sessionmaker 读写 kernel_binding 与 runtime_profile、查空间角色（每个事务自行声明工作空间）；
-    role_of 可替换空间角色的查法（默认查 workspace_member）。"""
+    role_of 可替换空间角色的查法（默认查 workspace_member）；bindings 传入时与检索工具共用同一份绑定。"""
     sources = ProfileSources(all_tools=registry.all_tools, clearance=clearance, skills=skills, models=models,
                              knowledge=knowledge_from_admin(knowledge),
                              role_of=role_of or member_role_lookup(sessionmaker), host_denied=host_denied)
-    return ConversationProfiles(ProfileCompiler(sources), ProfileBindings(sessionmaker))
+    return ConversationProfiles(ProfileCompiler(sources), bindings or ProfileBindings(sessionmaker))

@@ -3,8 +3,8 @@
 - 建会话先写库再在宿主上打开；打开失败就删掉刚写的记录，不留孤儿；
 - 宿主侧会话丢失时（宿主重启）发送方以恢复方式重新打开，并先补发模型令牌再发送；
   同一会话的恢复按会话串行，并发发送不会互相撞上 session_busy；
-- 每轮开始时重算运行配置（技术方案 5.3 节）；版本与会话记住的上一版不同，就在本轮开始前释放宿主会话、
-  以新策略恢复打开（带上已完成的历史），再发送。技术方案 3.3 节写的是「分叉出后继会话」，
+- 每轮开始时重算运行配置；版本与会话记住的上一版不同，就在本轮开始前释放宿主会话、
+  以新策略恢复打开（带上已完成的历史），再发送。本该「分叉出后继会话」，
   宿主还没有分叉接口，所以先用恢复代替：同一会话 id、历史完整、换上新的工具策略与令牌；
 - 回答提问时宿主侧会话不在（宿主重启过），同样先以恢复方式打开再交回答：官方把中断的提问记成未知结果，
   问题转入 continued，回答会开新一轮。回答不触发「配置变了就重开」：重开会把正在前台等待的提问取消掉；
@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from ..kernel.contract import (
     AgentKernel,
     CancelResult,
+    KnowledgeCatalog,
     PendingApproval,
     PendingQuestion,
     QuestionAnswer,
@@ -55,6 +56,9 @@ class ConversationPage:
 log = logging.getLogger(__name__)
 
 RESUME_RETRY_DELAYS = (0.1, 0.3, 1.0)
+CATALOG_TIMEOUT = 3.0  # 知识库目录最多等这么久（KnowFlow 要远程列库），超了这轮就不带，宿主沿用上一轮的
+# 本轮的知识库目录：按会话发起人与运行配置里的知识范围算
+KnowledgeCatalogOf = Callable[[Conversation, RuntimeProfile], Awaitable[KnowledgeCatalog]]
 
 T = TypeVar("T")
 
@@ -99,6 +103,7 @@ class ConversationService:
                  profiles: ProfileProvider | None = None,
                  grants: GrantRecorder | None = None,
                  attachments: AttachmentSource | None = None,
+                 knowledge_catalog: KnowledgeCatalogOf | None = None,
                  resume_retry_delays: tuple[float, ...] = RESUME_RETRY_DELAYS) -> None:
         self._kernel = kernel
         self._sessionmaker = sessionmaker
@@ -113,6 +118,7 @@ class ConversationService:
         self._profiles = profiles
         self._grants = grants
         self._attachments = attachments
+        self._knowledge_catalog = knowledge_catalog
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
     @staticmethod
@@ -212,6 +218,7 @@ class ConversationService:
                     and await self._profiles.bound_version(conversation) != profile.version):
                 await self._reopen(conversation, profile)
             await self._refresh_credentials(conversation)
+            turn = await self._with_catalog(conversation, turn, profile)
             try:
                 message_id = await self._kernel.send(conversation.id, turn)
             except SessionNotFound:
@@ -219,6 +226,18 @@ class ConversationService:
         await self._touch(conversation.id)
         self._pump.ensure(conversation.id, conversation.workspace_id)
         return message_id
+
+    async def _with_catalog(self, conversation: Conversation, turn: TurnInput,
+                            profile: RuntimeProfile | None) -> TurnInput:
+        """带上本轮的知识库目录。算不出来（知识源慢、出错）就不带，宿主沿用上一轮的，不挡这一轮。"""
+        if self._knowledge_catalog is None or profile is None:
+            return turn
+        try:
+            catalog = await asyncio.wait_for(self._knowledge_catalog(conversation, profile), CATALOG_TIMEOUT)
+        except Exception:
+            log.warning("knowledge catalog for conversation %s unavailable", conversation.id, exc_info=True)
+            return turn
+        return turn.model_copy(update={"knowledge": catalog})
 
     async def _refresh_credentials(self, conversation: Conversation) -> None:
         """每轮开始前把到期的令牌续上：电脑刚从睡眠醒来时，续期循环可能还没轮到，令牌却已按墙上时间过期。

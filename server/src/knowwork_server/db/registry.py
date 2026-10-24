@@ -25,6 +25,8 @@ MODEL_MODULES = (
     "knowwork_server.profile.models",
     "knowwork_server.workflows.models",
     "knowwork_server.approvals.models",
+    "knowwork_server.jobs.models",
+    "knowwork_server.docparse.models",
 )
 
 # 带 workspace_id 的业务表。identity 的表是全局的（账号跨空间），不在此列。
@@ -42,8 +44,6 @@ RLS_TABLES = (
     "run_event",
     "model_provider",
     "model",
-    "model_group",
-    "model_group_item",
     "usage_record",
     "usage_daily",
     "knowledge_source",
@@ -55,7 +55,6 @@ RLS_TABLES = (
     "skill_step_run",
     "audit_log",
     "attachment",
-    "attachment_parse_job",
     "artifact",
     "runtime_profile",
     "kernel_binding",
@@ -63,10 +62,14 @@ RLS_TABLES = (
     "workflow_step",
     "workflow_step_cache",
     "approval_grant",
+    "job",
+    "job_stage",
+    "document_parser",
 )
 
 
-def load_all_models():
-    for name in MODEL_MODULES:
+def load_all_models(extra_modules: tuple[str, ...] = ()):
+    """extra_modules 是扩展的模型模块（扩展的表走它自己的迁移分支）。"""
+    for name in (*MODEL_MODULES, *extra_modules):
         import_module(name)
     return Base.metadata

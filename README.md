@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.1-2b7de9" alt="Version: v0.0.1"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.2-2b7de9" alt="Version: v0.0.2"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -129,9 +129,8 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 | `runtime-host/` | 运行时宿主：DSH 配置档、插件组装（`cordis.patch.yml`）与 KnowWork 自己的插件 |
 | `web/` | 前端：React 19、TypeScript、Vite、Tailwind 4 |
 | `deploy/` | Docker Compose、各镜像的 Dockerfile、nginx 网关、`install.sh` |
-| `guide/` | 部署、配置、架构、开发、界面规范 |
+| `guide/` | 部署、配置、开发 |
 
-详见 [guide/architecture.md](guide/architecture.md)。
 
 ## 几个设计取舍
 
@@ -157,11 +156,14 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 
 | 能力 | 说明 |
 |---|---|
-| 执行过程可见 | 流式展示模型的每一步，调了哪个工具、参数和结果都能看到，默认收起，随时展开 |
+| 执行过程可见 | 流式展示模型的每一步，调了哪个工具、参数和结果都能看到，默认收起，随时展开；回答逐字输出 |
+| 快速问答 | 只检索知识库、按检索到的内容带出处作答，不走完整的智能体流程；会话中途可以在智能体和快速问答之间切换 |
+| 思考开关 | 对话模型可以开关思考，按各服务商自己的参数写法传 |
+| @ 点名 | 输入框里 @ 知识库，这一轮只查点到的库；@ 技能等于显式调用它 |
 | 插话与取消 | 回车把消息排到当前任务完成后发送，组合键补充给正在跑的任务；随时可以取消 |
 | 任务不中断 | 关掉浏览器，任务照样在服务端跑完；运行时宿主重启后会话自动恢复 |
 | DSH 原生能力 | 子 Agent、待办清单、后台任务、向用户提问，都在网页里展示和应答 |
-| 附件 | 上传的文件放进会话沙箱给模型读；PDF、Office 经 MinerU 解析成 Markdown |
+| 附件 | 上传的文件放进会话沙箱给模型读；PDF、Office 经 MinerU 解析成 Markdown，MinerU 在管理后台配置，改了不用重启 |
 | 引用溯源 | 回答里的引用编号只能指向工具实际返回过的证据，点开看原文 |
 | 技能调用 | 输入 `/技能名` 显式调用，或由模型按需加载 |
 | 回答语言 | 可指定中文或英文，不指定时按提问判断 |
@@ -181,7 +183,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 | 能力 | 说明 |
 |---|---|
 | 明确交付 | 只有模型用 DSH 官方的 `present` 交付的文件才进会话，过程中的临时文件不会混进来 |
-| 在线预览 | Word、Excel、PDF、Markdown、CSV 等在线预览，PDF 文字可选中、可缩放 |
+| 在线预览 | Word、Excel、PDF、Markdown、CSV 等在线预览；Word 直接渲染原件，表格行号与 Excel 一致；PDF 文字可选中、可缩放 |
 | 安全下载 | 下载时实时校验权限；导出的表格做了公式注入防护 |
 
 ### 技能
@@ -200,6 +202,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 | 能力 | 说明 |
 |---|---|
 | KnowFlow 知识库 | 按知识库授权，只检索提问人有权使用的库，引用落回原文 |
+| 对外检索 | 别的系统经 REST 接口或 MCP 检索知识库；API Key 要带 `knowledge:read` 范围，按 Key 所属用户的授权收窄 |
 | MCP | 管理员接入 MCP 服务，按人、用户组、部门授权 |
 | 审批 | 写入类和高风险的工具调用前由发起人批准，可以选「本会话内同类操作不再询问」 |
 | 动作回执 | 每次工具调用按动作唯一记录，重试不会重复执行写操作 |
@@ -210,7 +213,6 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 | 能力 | 说明 |
 |---|---|
 | 模型目录 | 接 OpenAI 兼容接口的模型（DeepSeek、通义千问、自建的 vLLM 等），带连通测试 |
-| 分组与授权 | 模型按分组授权给人、用户组、部门 |
 | 模型网关 | 运行时宿主带短期令牌经业务服务调用模型，密钥加密存储；单轮调用次数有上限，防止失控 |
 | 用量与费用 | 按人、按模型统计 token 与费用 |
 
@@ -219,7 +221,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 | 能力 | 说明 |
 |---|---|
 | 组织 | 成员、邀请、部门树、用户组 |
-| 角色与授权 | 空间内四档角色；技能、工具、知识库、模型分组可以授权给人、用户组、部门，沿部门树继承 |
+| 角色与授权 | 空间内四档角色；技能、工具、知识库可以授权给人、用户组、部门，沿部门树继承；登记的模型空间成员都能用 |
 | 数据隔离 | PostgreSQL 行级安全按工作空间隔离，应用账号不是表的所有者 |
 | 审计 | 人的写操作和 Agent 的工具调用分开记录，可以查询 |
 | 运行记录 | 管理员按时间、成员、状态查看全空间的每一轮；查看别人的运行会记进审计 |
@@ -241,12 +243,13 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 | 自动迁移 | 业务服务启动时自动升级数据库，带锁 |
 | 密钥自动生成 | 部署主密钥自动生成，其余凭证由它派生，不用手填 |
 | 健康检查 | `/ready` 报告数据库和运行时宿主是否正常 |
+| 运行面板 | 系统管理员看后台任务（附件解析等）的排队、执行和 worker 心跳 |
 
 </details>
 
 ## 现状与路线图
 
-当前版本 v0.0.1，是第一个公开版本，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 v0.0.2，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
 
 接下来要做：技能验证台（用例、结构断言、草稿版对比发布版）、场景包、固定工作流的界面、备份与恢复、修改密码与禁用账号。
 

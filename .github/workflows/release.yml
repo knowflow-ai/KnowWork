@@ -1,7 +1,13 @@
 name: release
 
-# 打 v* 标签发布：构建四个镜像推到阿里云容器镜像服务，同步 postgres、redis、rustfs，生成 SBOM 并建 GitHub Release。
-# 只在配了仓库变量 ACR_REGISTRY 的仓库里跑（公开仓库）；私有仓库打标签不会推镜像。
+# 打 v* 标签发布：构建镜像推到阿里云容器镜像服务，同步 postgres、redis、rustfs，生成 SBOM 并建 GitHub Release。
+# 只在公开仓库 knowflow-ai/KnowWork 里跑：开源镜像只从公开仓库的代码构建。
+#
+# 增量：每个镜像按自己的构建输入（Dockerfile 复制进去的路径，见 IMAGE_INPUTS）和上一个版本标签比，
+# 没变的不重新构建，把上一版直接打上这一版的标签；依赖镜像已经同步过的跳过。改版本号会改 server、runtime-host、
+# web 的版本字段，所以这三个每次都会重建，省下的主要是最大的沙箱镜像。
+# 每个构建出来的镜像带标签 io.knowwork.inputs（构建输入的指纹，git 树对象哈希算出来的，两个仓库里同样的文件算出来一样），
+# 别的构建以这些镜像为底座时，可以据此核对底座和自己手上的代码是不是同一份。
 #
 # 需要的配置：
 #   变量 ACR_REGISTRY   crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai（与 KnowFlow 同一个阿里云个人版实例，命名空间 knowflow-ai；地址加命名空间，与 deploy/.env.example 一致）
@@ -32,14 +38,28 @@ env:
     docker.io/library/postgres:17.6-alpine=postgres:17.6-alpine
     docker.io/library/redis:7.4.2-alpine=redis:7.4.2-alpine
     docker.io/rustfs/rustfs:1.0.0-beta.7=rustfs-rustfs:1.0.0-beta.7
+  # 每个镜像的构建输入：Dockerfile 复制进去的路径，加上 .dockerignore。改 Dockerfile 的 COPY 时同步改这里
+  IMAGE_INPUTS: |
+    server=.dockerignore deploy/docker/server.Dockerfile server/pyproject.toml server/uv.lock server/src
+    runtime-host=.dockerignore deploy/docker/runtime-host.Dockerfile runtime-host/package.json runtime-host/package-lock.json runtime-host/profile runtime-host/plugins deploy/runtime-host
+    gateway=.dockerignore deploy/docker/gateway.Dockerfile web deploy/gateway
+    sandbox=.dockerignore deploy/docker/sandbox.Dockerfile deploy/docker/sandbox-office
 
 jobs:
   check:
     name: 发布前检查
-    if: vars.ACR_REGISTRY != ''
+    if: github.repository == 'knowflow-ai/KnowWork' && vars.ACR_REGISTRY != ''
     runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      reuse: ${{ steps.plan.outputs.reuse }}
+      previous: ${{ steps.plan.outputs.previous }}
     steps:
+      # 手动触发时默认检出的是触发分支，要明确检出这次发布的标签
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0  # 要和上一个版本标签比
       - name: 标签与 VERSION 一致
         run: |
           test "$(cat VERSION)" = "$TAG" || { echo "标签 $TAG 与 VERSION（$(cat VERSION)）不一致"; exit 1; }
@@ -50,6 +70,23 @@ jobs:
             target="${pair#*=}"
             grep -q "/$target}" deploy/docker-compose.yml || { echo "docker-compose.yml 里没有 $target，同步列表过期了"; exit 1; }
           done
+      - name: 哪些镜像要重建
+        id: plan
+        run: |
+          previous="$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)"
+          build=(); reuse=()
+          while IFS='=' read -r name paths; do
+            [ -n "$name" ] || continue
+            # shellcheck disable=SC2086  # paths 是空格分开的路径列表
+            if [ -n "$previous" ] && git diff --quiet "$previous" "$TAG" -- $paths; then reuse+=("$name"); else build+=("$name"); fi
+          done <<< "$IMAGE_INPUTS"
+          as_json() { printf '%s\n' "$@" | jq -R . | jq -cs 'map(select(length > 0))'; }
+          echo "上一个版本：${previous:-无}；重建：${build[*]:-无}；复用：${reuse[*]:-无}"
+          {
+            echo "previous=$previous"
+            echo "build=$(as_json "${build[@]}")"
+            echo "reuse=$(as_json "${reuse[@]}")"
+          } >> "$GITHUB_OUTPUT"
       - name: 本版说明（取 CHANGELOG 里这一节）
         run: |
           awk -v tag="$TAG" '$0 ~ "^## \\[?" tag "\\]?" {found=1; next} found && /^## / {exit} found {print}' CHANGELOG.md > notes.md
@@ -62,6 +99,7 @@ jobs:
   images:
     name: 镜像 ${{ matrix.name }}
     needs: check
+    if: needs.check.outputs.build != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -70,14 +108,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [server, runtime-host, gateway, sandbox]
+        name: ${{ fromJSON(needs.check.outputs.build) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: docker/setup-buildx-action@v3
       - name: 取仓库主机名（ACR_REGISTRY 带命名空间，登录只要主机）
         run: echo "REGISTRY_HOST=${ACR_REGISTRY%%/*}" >> "$GITHUB_ENV"
         env:
           ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+      - name: 构建输入的指纹
+        run: |
+          paths="$(printf '%s\n' "$IMAGE_INPUTS" | sed -n "s/^${{ matrix.name }}=//p")"
+          # shellcheck disable=SC2086
+          echo "INPUTS_FINGERPRINT=$(for p in $paths; do git rev-parse "HEAD:$p"; done | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
       - name: 登录阿里云容器镜像服务
         uses: docker/login-action@v3
         with:
@@ -96,11 +141,57 @@ jobs:
           provenance: false
           sbom: false
           build-args: KNOWWORK_VERSION=${{ env.TAG }}
+          labels: |
+            org.opencontainers.image.version=${{ env.TAG }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            io.knowwork.inputs=${{ env.INPUTS_FINGERPRINT }}
           tags: |
             ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:${{ env.TAG }}
             ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:latest
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: 生成 SBOM（依赖与许可证清单）
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:${{ env.TAG }}
+          registry-username: ${{ secrets.ACR_USERNAME }}
+          registry-password: ${{ secrets.ACR_PASSWORD }}
+          format: spdx-json
+          output-file: knowwork-${{ matrix.name }}-${{ env.TAG }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.name }}
+          path: knowwork-${{ matrix.name }}-${{ env.TAG }}.spdx.json
+
+  reuse:
+    name: 复用上一版 ${{ matrix.name }}
+    needs: check
+    if: needs.check.outputs.reuse != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.check.outputs.reuse) }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: 取仓库主机名（ACR_REGISTRY 带命名空间，登录只要主机）
+        run: echo "REGISTRY_HOST=${ACR_REGISTRY%%/*}" >> "$GITHUB_ENV"
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+      - name: 登录阿里云容器镜像服务
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_HOST }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: 把上一版打上这一版的标签（在仓库里复制清单，不重新构建、不传镜像层）
+        run: |
+          image="${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}"
+          docker buildx imagetools create --tag "$image:$TAG" --tag "$image:latest" "$image:${{ needs.check.outputs.previous }}"
+          echo "构建输入和 ${{ needs.check.outputs.previous }} 一样：$image:$TAG 复用了上一版"
       - name: 生成 SBOM（依赖与许可证清单）
         uses: anchore/sbom-action@v0
         with:
@@ -132,10 +223,14 @@ jobs:
           registry: ${{ env.REGISTRY_HOST }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-      - name: 原样复制（只取 linux/amd64）
+      - name: 原样复制（只取 linux/amd64；已经同步过的跳过）
         run: |
           for pair in $MIRRORS; do
             source="${pair%%=*}"; target="${{ vars.ACR_REGISTRY }}/${pair#*=}"
+            if docker buildx imagetools inspect "$target" > /dev/null 2>&1; then
+              echo "已有 $target，跳过"
+              continue
+            fi
             digest="$(docker buildx imagetools inspect "$source" --format '{{json .Manifest}}' \
               | jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest')"
             docker buildx imagetools create --tag "$target" "${source%%:*}@${digest}"
@@ -144,7 +239,11 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [images, mirrors]
+    needs: [check, images, reuse, mirrors]
+    # images、reuse 有一个可能因为没有要做的而跳过，跳过不算失败；检查没过或任何一步失败都不建 Release
+    if: >-
+      always() && needs.check.result == 'success' && needs.mirrors.result == 'success'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-24.04
     steps:
       # 只取发布说明与 SBOM，不碰其他产物

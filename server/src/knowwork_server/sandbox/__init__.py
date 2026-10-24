@@ -1,4 +1,4 @@
-"""会话沙箱：一会话一个长驻 Docker 容器，工作区在 /workspace（技术方案第 9.1 节，做法照抄 WeKnora 的 Docker 后端）。
+"""会话沙箱：一会话一个长驻 Docker 容器，工作区在 /workspace（做法照抄 WeKnora 的 Docker 后端）。
 
 模型用的是宿主里 DSH 官方的 bash、文件工具与 present：它们经宿主的远程执行器回调本包的内部接口（internal_api）
 落到会话容器。装配：`build_sandbox(SandboxSettings())` 返回 SandboxModule；没有打开 KNOWWORK_SANDBOX_DOCKER_ENABLED

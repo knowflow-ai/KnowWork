@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from .listeners import Broadcaster, StoredEvent
+from .live import LiveEvent
 from .models import RunEvent
 from .writer import BatchWriter
 
@@ -46,9 +47,12 @@ def parse_cursor(last_event_id: str | None, after: int = 0) -> Cursor:
 
 @dataclass(frozen=True)
 class Outgoing:
-    sse_id: str
+    sse_id: str | None  # 逐字片段没有 id：不进库，Last-Event-ID 续传也不该停在它上面
     type: str
     payload: dict
+
+
+LIVE_TYPE = "live"
 
 
 def _expand(seq: int, ui: list | tuple, cursor: Cursor) -> list[Outgoing]:
@@ -64,11 +68,13 @@ def _expand(seq: int, ui: list | tuple, cursor: Cursor) -> list[Outgoing]:
 
 class EventFeed:
     def __init__(self, sessionmaker: async_sessionmaker, writer: BatchWriter, broadcaster: Broadcaster,
-                 produced_upto: Callable[[str], int | None], *, page_size: int = PAGE_SIZE) -> None:
+                 produced_upto: Callable[[str], int | None], *, page_size: int = PAGE_SIZE,
+                 live_snapshot: Callable[[str], dict | None] = lambda _conversation_id: None) -> None:
         self._sessionmaker = sessionmaker
         self._writer = writer
         self._broadcaster = broadcaster
         self._produced_upto = produced_upto
+        self._live_snapshot = live_snapshot
         self._page_size = page_size
 
     async def iterate(self, conversation_id: str, cursor: Cursor) -> AsyncIterator[Outgoing]:
@@ -76,16 +82,23 @@ class EventFeed:
             from_seq = cursor.seq - 1 if cursor.index != math.inf else cursor.seq
             pending = self._writer.pending(conversation_id, from_seq)
             bound = self._produced_upto(conversation_id)
+            # 和登记监听者在同一循环片里取：之后的逐字片段一定在监听者里，接得上
+            live = self._live_snapshot(conversation_id)
             position = cursor
             async for seq, ui in self._replay(conversation_id, from_seq, bound, pending):
                 for item in _expand(seq, ui, position):
                     yield item
                 position = max(position, Cursor(seq))
+            if live is not None:
+                yield Outgoing(sse_id=None, type=LIVE_TYPE, payload=live)
             while True:
                 batch = await listener.next_batch()
                 if batch is None:
                     return  # 跟不上被踢出：结束本次 SSE，浏览器带 Last-Event-ID 重连
                 for event in batch:
+                    if isinstance(event, LiveEvent):
+                        yield Outgoing(sse_id=None, type=LIVE_TYPE, payload=event.payload)
+                        continue
                     for item in _expand(event.seq, event.ui, position):
                         yield item
                     position = max(position, Cursor(event.seq))

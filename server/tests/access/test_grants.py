@@ -32,7 +32,6 @@ async def test_role_and_wildcard_grants(service, ws):
     assert not service.visible_resources("dave", ws, "skill", "use").all_
     assert service.check("bob", ws, "skill:x", "owner")  # admin 默认管理全部资源
     assert service.check("alice", ws, "knowledge_base:ks_a.x", "owner")
-    assert service.check("carol", ws, "model_group:m", "use")
     assert not service.check("carol", ws, "skill:x", "use")
 
 
@@ -53,6 +52,13 @@ async def test_tool_prefix_wildcard_covers_one_mcp_server(service, ws):
     assert service.check("carol", ws, "tool:mcp__gh__create_issue", "use"), "另一条同资源授权仍在"
     assert await service.reload()
     assert service.check("carol", ws, "tool:mcp__gh__x", "use"), "整体重载后判定不变"
+
+
+async def test_models_are_not_granted(service, ws):
+    """模型不按人授权（2026-10-23 去掉了模型分组）：没有这种资源，角色也不带模型的默认权限。"""
+    with pytest.raises(InvalidInput):
+        await service.grant("alice", ws, "user:dave", "model_group:m1", "use")
+    assert await service.list_grants("alice", ws) == ()
 
 
 async def test_prefix_wildcard_is_only_for_tools_and_knowledge_bases(service, ws):

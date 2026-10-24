@@ -45,7 +45,7 @@ def build_audit(sessionmaker: async_sessionmaker, *, default_workspace_id: str,
                 extra_sinks: tuple[AuditSink, ...] = ()) -> AuditModule:
     """sessionmaker 用不带工作空间的那个（主线的 global_sessionmaker）：写入与清理按事件逐组声明空间。
 
-    extra_sinks 留给商业版：写库之外再外发，任一路失败不影响其他路。
+    extra_sinks 留给扩展：写库之外再外发，任一路失败不影响其他路。
     """
     writer = AuditWriter(sessionmaker)
     database = DatabaseAuditSink(writer)

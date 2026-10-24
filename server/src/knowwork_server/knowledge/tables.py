@@ -61,8 +61,11 @@ class Citation(Base):
     span_ref: Mapped[str] = mapped_column(String(300))
     title: Mapped[str] = mapped_column(String(500))
     text: Mapped[str] = mapped_column(Text)
-    locator: Mapped[dict | None] = mapped_column(JSONB)
+    locator: Mapped[dict | None] = mapped_column(JSONB)  # models.Locator，带类型（迁移 0018 起）
+    locators: Mapped[list | None] = mapped_column(JSONB)  # 片段里每个版面块的 models.Locator（迁移 0018）
     open_url: Mapped[str | None] = mapped_column(String(1000))
+    images: Mapped[list | None] = mapped_column(JSONB)  # models.EvidenceImage 的列表
+    version_note: Mapped[str | None] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

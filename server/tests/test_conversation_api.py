@@ -71,7 +71,7 @@ async def test_non_ascii_token_is_401_not_500(sessionmaker):
 @pytest.mark.parametrize(("error", "status"), [
     (SessionNotFound("session_not_found", "宿主内部细节 /var/lib/x", 404), 404),
     (KernelError("internal", "宿主内部细节 /var/lib/x", 500), 502),
-    (httpx.ConnectError("connect to 10.1.2.3 failed"), 502),
+    (httpx.ConnectError("connect to 10.0.0.4 failed"), 502),
 ])
 @pytest.mark.parametrize(("method", "path"), [("POST", "cancel"), ("GET", "approvals")])
 async def test_cancel_and_approvals_map_errors(sessionmaker, conversation_id, error, status, method, path):
@@ -79,7 +79,7 @@ async def test_cancel_and_approvals_map_errors(sessionmaker, conversation_id, er
     async with client:
         response = await client.request(method, f"/api/conversations/{conversation_id}/{path}", headers=AUTH)
     assert response.status_code == status
-    assert "/var/lib" not in response.text and "10.1.2.3" not in response.text
+    assert "/var/lib" not in response.text and "10.0.0.4" not in response.text
     await pump.close()
 
 
@@ -141,7 +141,7 @@ async def test_answer_reaches_the_host(sessionmaker, conversation_id):
     (KernelError("reply_queued", "x", 409), 409, "reply_queued"),
     (SessionNotFound("session_not_found", "宿主内部细节 /var/lib/x", 404), 404, "session_not_running"),
     (KernelError("internal", "宿主内部细节 /var/lib/x", 500), 502, "runtime_unavailable"),
-    (httpx.ConnectError("connect to 10.1.2.3 failed"), 502, "runtime_unavailable"),
+    (httpx.ConnectError("connect to 10.0.0.4 failed"), 502, "runtime_unavailable"),
 ])
 async def test_answer_maps_host_errors(sessionmaker, conversation_id, error, status, code):
     client, pump = api(Failing(error), sessionmaker)
@@ -150,7 +150,7 @@ async def test_answer_maps_host_errors(sessionmaker, conversation_id, error, sta
                                      headers=AUTH)
     assert response.status_code == status
     assert response.json()["detail"]["code"] == code
-    assert "/var/lib" not in response.text and "10.1.2.3" not in response.text and "Word" not in response.text
+    assert "/var/lib" not in response.text and "10.0.0.4" not in response.text and "Word" not in response.text
     await pump.close()
 
 

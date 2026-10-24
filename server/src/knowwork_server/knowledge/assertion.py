@@ -1,4 +1,4 @@
-"""KnowFlow 身份透传用的短期签名断言（技术方案 8.4 节）。
+"""KnowFlow 身份透传用的短期签名断言。
 
 格式用标准 JWT（JWS Compact，HS256，joserfc 实现），KnowFlow 侧可直接用 PyJWT 校验：
 - 头：alg=HS256，kid=服务密钥指纹（便于轮换时并存两把密钥）；

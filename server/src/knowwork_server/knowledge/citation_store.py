@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..access.rls import set_workspace
 from .citations import DEFAULT_LIMIT, CitationCatalog, CitationCheck, CitationEntry
-from .models import Evidence, Locator
+from .models import Evidence, EvidenceImage, Locator
 from .tables import Citation, CitationCatalogRow
 
 
@@ -63,13 +63,19 @@ async def _load(session: AsyncSession, head: CitationCatalogRow) -> CitationCata
 
 def _evidence(row: Citation) -> Evidence:
     locator = Locator.model_validate(row.locator) if row.locator else None
+    locators = tuple(Locator.model_validate(item) for item in row.locators or ())
+    images = tuple(EvidenceImage.model_validate(item) for item in row.images or ())
     return Evidence(source_id=row.source_id, doc_ref=row.doc_ref, span_ref=row.span_ref, title=row.title,
-                    text=row.text, locator=locator, open_url=row.open_url)
+                    text=row.text, locator=locator, locators=locators, open_url=row.open_url, images=images,
+                    version_note=row.version_note)
 
 
 def _row(workspace_id: str, catalog_id: str, entry: CitationEntry) -> Citation:
     ev = entry.evidence
     return Citation(catalog_id=catalog_id, workspace_id=workspace_id, number=entry.number, source_id=ev.source_id,
                     doc_ref=ev.doc_ref[:300], span_ref=ev.span_ref[:300], title=ev.title[:500], text=ev.text,
-                    locator=ev.locator.model_dump(mode="json") if ev.locator else None,
-                    open_url=(ev.open_url or None) and ev.open_url[:1000])
+                    locator=ev.locator.model_dump(mode="json", exclude_defaults=True) if ev.locator else None,
+                    locators=[loc.model_dump(mode="json", exclude_defaults=True) for loc in ev.locators] or None,
+                    open_url=(ev.open_url or None) and ev.open_url[:1000],
+                    images=[image.model_dump(mode="json") for image in ev.images] or None,
+                    version_note=ev.version_note)

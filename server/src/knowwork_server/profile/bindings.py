@@ -51,16 +51,15 @@ class ProfileBindings:
             await set_workspace(session, workspace_id)
             await session.execute(delete(KernelBinding).where(KernelBinding.conversation_id == conversation_id))
 
-    async def bound_bases(self, ctx: ToolContext) -> tuple[str, ...] | None:
-        """给 knowledge_tools(bound_bases=...)：本轮明确选了知识库时返回它们，否则 None（全部可查的）。
+    async def for_tool(self, ctx: ToolContext) -> RuntimeProfile | None:
+        """给知识工具：这个对话本轮绑定的运行配置（选了的知识库、撤掉的条件、@ 点名的文件与标签都在里面）。
 
         子 Agent 的会话 id 与根会话不同，但工具令牌里的 session_id 是根会话，所以这里查得到。
-        会话还没有绑定配置时返回 None，与现状一致；查询出错时拒绝这次调用（失败关闭），
-        不能因为读不到绑定范围就放宽成全部知识库。
+        会话还没有绑定配置时返回 None（不限定）；查询出错时拒绝这次调用（失败关闭），
+        不能因为读不到绑定范围就放宽成全部知识库、或者丢掉用户点名的范围。
         """
         try:
-            profile = await self.current(ctx.workspace_id, ctx.session_id)
+            return await self.current(ctx.workspace_id, ctx.session_id)
         except Exception as error:
             log.exception("runtime profile lookup failed for %s", ctx.session_id)
             raise ToolFailure("暂时读不到本轮的知识范围，请稍后再试") from error
-        return None if profile is None else profile.bound_knowledge

@@ -1,4 +1,4 @@
-"""技能的安装、草稿、发布、启停与删除（技术方案 6.1、6.2 节）。
+"""技能的安装、草稿、发布、启停与删除。
 
 状态机：
 - 安装：新建技能，status = draft，draft_revision = 1，has_unpublished_changes = 真；
@@ -290,7 +290,7 @@ class SkillService:
             self._authorize(actor, row, "owner")
             await session.execute(delete(SkillRelease).where(SkillRelease.skill_id == row.id))
             await session.delete(row)
-            # 同一事务删掉指向它的授权，授权页不留孤儿（技术方案 5.2 节）
+            # 同一事务删掉指向它的授权，授权页不留孤儿
             change = await self._access.purge_grants(session, actor.workspace_id, resources=(f"skill:{row.id}",))
         await self._access.settle(change)
 

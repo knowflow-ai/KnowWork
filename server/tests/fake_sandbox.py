@@ -51,6 +51,18 @@ class FakeSandbox:
             raise self.fail_convert
         return b"%PDF-1.7 converted from " + data[:16]
 
+    async def convert_doc_to_docx(self, workspace_id, session_id, data, *, max_bytes, timeout_seconds):
+        self.conversions.append((session_id, "doc"))
+        if self.fail_convert is not None:
+            raise self.fail_convert
+        return b"PK converted from " + data[:16]
+
+    async def recalc_xlsx(self, workspace_id, session_id, data, *, max_bytes, timeout_seconds):
+        self.conversions.append((session_id, "recalc"))
+        if self.fail_convert is not None:
+            raise self.fail_convert
+        return data
+
     async def destroy(self, workspace_id, session_id):
         self.destroyed.append((workspace_id, session_id))
 

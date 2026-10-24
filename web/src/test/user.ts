@@ -13,3 +13,10 @@ export async function pickOption(scope: HTMLElement, group: string, option: stri
   await userEvent.click(within(within(scope).getByRole('group', { name: group })).getByRole('button'));
   await userEvent.click(await screen.findByRole('option', { name: option }));
 }
+
+/** 树形选择框（ui/TreeSelect）：点开表单项里的选择框，在树里点名字。树默认全部展开。 */
+export async function pickTreeNode(scope: HTMLElement, group: string, node: string | RegExp) {
+  await userEvent.click(within(within(scope).getByRole('group', { name: group })).getByRole('button'));
+  const tree = await screen.findByRole('tree', { name: group });
+  await userEvent.click(within(tree).getByRole('button', { name: node }));
+}

@@ -102,7 +102,8 @@ class ModelMixin(ProviderMixin):
             await self._provider(session, body.provider_id)
             row = Model(id=new_id("md"), workspace_id=workspace_id, provider_id=body.provider_id, alias=body.alias,
                         name=body.name.strip(), capabilities=[c.value for c in body.capabilities],
-                        context_length=body.context_length, input_price_per_mtok=body.input_price_per_mtok,
+                        context_length=body.context_length, thinking=body.thinking,
+                        input_price_per_mtok=body.input_price_per_mtok,
                         output_price_per_mtok=body.output_price_per_mtok, currency=body.currency,
                         enabled=body.enabled)
             session.add(row)
@@ -118,7 +119,7 @@ class ModelMixin(ProviderMixin):
         self._require_admin(actor_id, workspace_id)
         changes = body.model_dump(exclude_unset=True)
         if any(value is None for key, value in changes.items()
-               if key not in ("context_length", "input_price_per_mtok", "output_price_per_mtok")):
+               if key not in ("context_length", "thinking", "input_price_per_mtok", "output_price_per_mtok")):
             raise Invalid("该字段不能置空")
         async with self._tx(workspace_id) as session:
             row = await self._model(session, model_id)
@@ -141,6 +142,16 @@ class ModelMixin(ProviderMixin):
             raise NotFound("模型不存在")
         return row
 
+    async def capable_models(self, workspace_id: str, capability: str) -> tuple[ModelView, ...]:
+        """启用的、有这种能力的模型（厂商也要启用）。给后台任务挑模型用（知识库的嵌入、重排、看图）：
+        这些调用由 worker 按别名发起，不走个人的模型授权，所以不按分组收窄；判谁能看由调用方决定。"""
+        check_id(workspace_id, "workspace_id")
+        async with self._tx(workspace_id) as session:
+            rows = (await session.scalars(select(Model).join(ModelProvider, ModelProvider.id == Model.provider_id)
+                                          .where(Model.enabled.is_(True), ModelProvider.enabled.is_(True))
+                                          .order_by(Model.alias))).all()
+        return tuple(model_view(row) for row in rows if capability in (row.capabilities or ()))
+
     # ---- 网关用 ----
 
     async def resolve(self, workspace_id: str, alias: str) -> Route | None:
@@ -157,7 +168,24 @@ class ModelMixin(ProviderMixin):
         if not (model.enabled and provider.enabled):
             raise NotFound("模型不存在")
         return Route(model_id=model.id, alias=model.alias, upstream_model=model.name,
-                     base_url=provider.base_url, api_key=self._decrypt(provider))
+                     base_url=provider.base_url, api_key=self._decrypt(provider), thinking=model.thinking)
+
+    async def resolve_capable(self, workspace_id: str, alias: str, capability: str) -> Route:
+        """内部模型客户端用：按别名取路由并核对能力。没配置、找不到、停用、不支持这种能力都抛错，不回退到别的模型
+        （嵌入模型换了，向量就和已有的对不上）。default 的规则同 resolve，但只对对话、看图有意义。"""
+        check_id(workspace_id, "workspace_id")
+        async with self._tx(workspace_id) as session:
+            found = await _lookup(session, alias)
+        if found is None:
+            raise NotFound(f"模型「{alias}」不存在，请在「管理 → 模型」里添加")
+        model, provider = found
+        if not (model.enabled and provider.enabled):
+            raise NotFound(f"模型「{alias}」已停用")
+        if capability not in (model.capabilities or ()):
+            raise Invalid(f"模型「{alias}」没有标记「{capability}」能力")
+        return Route(model_id=model.id, alias=model.alias, upstream_model=model.name,
+                     base_url=provider.base_url, api_key=self._decrypt(provider), context_length=model.context_length,
+                     thinking=model.thinking)
 
     async def default_capabilities(self, workspace_id: str) -> frozenset[str] | None:
         """宿主请求的 default 实际落到的那个模型有哪些能力（规则同 resolve）。没配模型、找不到或已停用时
@@ -176,5 +204,5 @@ class ModelMixin(ProviderMixin):
             model = await self._model(session, model_id)
             provider = await self._provider(session, model.provider_id)
         route = Route(model_id=model.id, alias=model.alias, upstream_model=model.name,
-                      base_url=provider.base_url, api_key=self._decrypt(provider))
+                      base_url=provider.base_url, api_key=self._decrypt(provider), thinking=model.thinking)
         return route, model_view(model)

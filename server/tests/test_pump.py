@@ -224,3 +224,34 @@ async def test_observer_sees_every_frame_and_its_errors_do_not_stop_the_pump(ses
         await pump.close()
         await writer.close()
     assert seen == [(conversation_id, "default", "session/event"), (conversation_id, "default", "agent/status")]
+
+
+def live(cursor: int, data: dict) -> object:
+    return frame(cursor, "assistant/stream", data)
+
+
+async def test_live_pieces_are_pushed_but_never_stored_or_numbered(sessionmaker, conversation_id):
+    """逐字片段（官方 agent/assistant-stream 的临时帧）：推给正在看的浏览器，不落库、不分配序号、不推进续读位置；
+    泵记着这一步已出的字，给中途打开的页面补快照；agent 空闲后清掉。"""
+    kernel = FakeKernel([[session_event(1, "turn/start", {"turn": 1}), status(2, "running"),
+                          live(2, {"type": "start", "attemptId": "a1", "turn": 1, "step": 1}),
+                          live(2, {"type": "text", "attemptId": "a1", "text": "短剧"}),
+                          live(2, {"type": "text", "attemptId": "a1", "text": "规模增长"}), HOLD]])
+    async with Harness(kernel, sessionmaker) as h:
+        async with h.broadcaster.listen(conversation_id) as listener:
+            h.pump.ensure(conversation_id, "default")
+            await wait_until(lambda: (h.pump.live_snapshot(conversation_id) or {}).get("text") == "短剧规模增长")
+            pushed = [e for e in await listener.next_batch() if not hasattr(e, "seq")]
+        assert [e.payload.get("text") for e in pushed] == ["", "短剧", "规模增长"]
+        assert h.pump.produced_upto(conversation_id) == 2
+        rows = await h.rows(conversation_id)
+        assert [r.kind for r in rows] == ["session/event", "agent/status"], "片段不落库"
+
+    kernel = FakeKernel([[live(0, {"type": "start", "attemptId": "a1", "turn": 1, "step": 1}),
+                          live(0, {"type": "text", "attemptId": "a1", "text": "半截"}), status(1, "idle"), HOLD]])
+    async with Harness(kernel, sessionmaker) as h:
+        h.pump.ensure(conversation_id, "other")
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) is not None
+                         and h.pump.produced_upto(conversation_id) >= 3)
+        assert h.pump.live_snapshot(conversation_id) is None, "跑完了不再给新打开的页面补半截"
+

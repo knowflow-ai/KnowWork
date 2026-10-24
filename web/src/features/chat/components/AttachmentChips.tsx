@@ -6,8 +6,8 @@ import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { X } from '@openai/apps-sdk-ui/components/Icon';
 import type { AttachmentChip } from '../../../api/attachments';
 import { formatBytes } from '../../../utils/format';
-import { FILE_KINDS } from './fileKindStyles';
-import { fileKindOf } from './fileKind';
+import { FILE_KINDS } from '../../../ui/fileKindStyles';
+import { fileKindOf } from '../../../ui/fileKind';
 
 interface Props {
   readonly items: readonly AttachmentChip[];

@@ -7,7 +7,8 @@
 import { messageForStatus, NETWORK_MESSAGE } from './http';
 import { useSessionStore } from '../stores/session';
 import { compareCursor, parseCursor, parseV1Event } from '../features/chat/events/parse';
-import type { Cursor, WireEvent } from '../features/chat/events/types';
+import { parseLive } from '../features/chat/events/live';
+import type { Cursor, LivePiece, WireEvent } from '../features/chat/events/types';
 
 export interface SseMessage {
   readonly id?: string;
@@ -64,8 +65,18 @@ export function toWireEvent(message: SseMessage): WireEvent | undefined {
   return event ? { id: message.id, cursor, event } : undefined;
 }
 
+function liveOf(message: SseMessage): LivePiece | undefined {
+  try {
+    return parseLive(JSON.parse(message.data));
+  } catch {
+    return undefined;
+  }
+}
+
 export interface StreamHandlers {
   readonly onEvent: (event: WireEvent) => void;
+  /** 逐字片段（SSE 事件名 live，不带 id）：不进事件日志，也不改变续传位置。 */
+  readonly onLive?: (piece: LivePiece) => void;
   /** 连接状态变化：connected / reconnecting（附带可读原因）。 */
   readonly onStatus?: (status: 'connected' | 'reconnecting', reason?: string) => void;
   /** 不可恢复的失败（如未登录、会话不存在），之后不再重连。 */
@@ -119,6 +130,12 @@ async function readOnce(
     const { done, value } = await reader.read();
     if (done) return;
     for (const message of parse(value)) {
+      // 先按事件名分流：解析器在没有 id 的消息上会沿用上一条的 id，片段不能走下面落库事件那条路
+      if (message.event === 'live') {
+        const piece = liveOf(message);
+        if (piece) handlers.onLive?.(piece);
+        continue;
+      }
       const event = toWireEvent(message);
       // 坏帧丢弃；重连时服务端可能重发已收到的帧，也在这里挡掉（reducer 另有幂等兜底）
       if (!event || (position.cursor && compareCursor(event.cursor, position.cursor) <= 0)) continue;

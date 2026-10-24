@@ -42,6 +42,7 @@ export async function startHost(mock, env = {}, options = {}) {
     toolName: mock.toolName,
     toolArguments: mock.toolArguments,
     chunkDelayMs: mock.chunkDelayMs,
+    chunkSize: mock.chunkSize,
     successText: mock.successText,
   })
   const token = randomBytes(24).toString('hex')

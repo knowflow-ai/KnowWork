@@ -1,5 +1,5 @@
 /**
- * 向用户提问与待办（F-HITL-1、DSH 原生能力）：
+ * 向用户提问与待办（DSH 原生能力）：
  * - 官方 ask_user_question（timed 模式）经提问应答者转给业务服务，回答由宿主接口代用户提交；
  * - 前台等待到期或宿主重启后问题仍可答，迟到回答经官方 userQuestions.answer 开新一轮；
  * - 官方 todo_write 落成 todo/write 会话事件。
@@ -171,7 +171,7 @@ test('宿主在等待中被杀：恢复会话后没答完的问题仍可回答',
 })
 
 test('上游行为哨兵：宿主正常关闭时官方把前台等待中的提问记成已中止，恢复后不能再答', async () => {
-  // 失败了说明上游改了关闭语义，问题能跨正常重启保留了：同步更新 question-broker 注释、技术方案 7.6 节与提问卡片文案
+  // 失败了说明上游改了关闭语义，问题能跨正常重启保留了：同步更新 question-broker 注释与提问卡片文案
   const home = await askThenStop('SIGTERM')
   const second = await startQuestionHost([{ text: '收到' }], {}, { home })
   try {

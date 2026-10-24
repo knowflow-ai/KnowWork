@@ -1,4 +1,4 @@
-"""技能提供方的内部路由，只挂在内部端口（宿主回调用，技术方案 3.4、3.9 节第 4 条）。
+"""技能提供方的内部路由，只挂在内部端口（宿主回调用）。
 
 - `GET /internal/extensions/skills/catalog`：本会话可用技能清单（已发布版本）与每个技能的
   allowed-tools、completion-tools、unlocks；

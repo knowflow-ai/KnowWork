@@ -5,7 +5,7 @@
 ## 开始之前
 
 - 修 bug、补文档可以直接提 PR；新功能或较大的改动，请先开 issue 说清楚要解决什么问题，免得做完了方向对不上。
-- 开发环境、检查命令与代码约定见 [guide/development.md](guide/development.md)，写界面前先读 [guide/ui-guidelines.md](guide/ui-guidelines.md)。
+- 开发环境、检查命令与代码约定见 [guide/development.md](guide/development.md)。
 
 ## 提交 PR
 

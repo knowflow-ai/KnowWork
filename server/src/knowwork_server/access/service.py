@@ -31,7 +31,7 @@ class AccessService(GroupsMixin):
         """授权。同一主体对同一资源只保留一档动作，再次授权即改档。"""
         self._require(actor_id, workspace_id, Action.EDIT)
         sub = Subject.parse(subject)
-        obj = grantable(Resource.parse(resource))
+        obj = grantable(Resource.parse(resource, types=self.resource_types), self._hierarchy.resource_types)
         act = parse_action(action)
         async with self._tx(workspace_id) as tx:
             await self._require_subject(tx, sub)
@@ -46,7 +46,7 @@ class AccessService(GroupsMixin):
     async def revoke(self, actor_id: str, workspace_id: str, subject: str, resource: str) -> None:
         self._require(actor_id, workspace_id, Action.EDIT)
         sub = Subject.parse(subject)
-        obj = Resource.parse(resource)
+        obj = Resource.parse(resource, types=self.resource_types)
         async with self._tx(workspace_id) as tx:
             existing = await store.permissions_of(tx.session, workspace_id, sub.key, obj.key)
             if not existing:
@@ -58,7 +58,7 @@ class AccessService(GroupsMixin):
         """列出显式授权（不含空间角色的默认权限）。"""
         self._require(actor_id, workspace_id, Action.EDIT)
         sub = Subject.parse(subject).key if subject else None
-        obj = Resource.parse(resource).key if resource else None
+        obj = Resource.parse(resource, types=self.resource_types).key if resource else None
         defaults = set(R.default_role_policies(workspace_id))
         async with self._read(workspace_id) as session:
             rules = await store.permissions_of(session, workspace_id, sub, obj)
@@ -66,7 +66,7 @@ class AccessService(GroupsMixin):
 
     async def purge_grants(self, session: AsyncSession, workspace_id: str, *, resources: tuple[str, ...] = (),
                            prefixes: tuple[str, ...] = ()) -> RuleChange:
-        """删除资源时，在调用方的事务里删掉指向它的授权（技术方案 5.2 节）。
+        """删除资源时，在调用方的事务里删掉指向它的授权。
 
         session 由调用方开启并已声明工作空间（行级安全）；提交成功后调用方再把返回值交给 settle，
         回滚了就丢掉它，判定器不受影响。prefixes 按前缀匹配资源，例如 `knowledge_base:<知识源id>.`

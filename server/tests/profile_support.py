@@ -1,6 +1,5 @@
 """运行配置测试的公共替身：真实 Casbin 判定器（内存）与几个固定的事实来源。"""
 
-from dataclasses import dataclass
 
 from knowwork_server.access.engine import PolicyEngine
 from knowwork_server.access.rules import Rule, default_role_policies, member_role, permission, user_key
@@ -56,13 +55,6 @@ def skill(name: str, version: str = "1.0.0", digest: str = "a" * 64, description
     return CatalogEntry(skill_id=f"s_{name}", release_id=f"r_{name}", scope="workspace", name=name,
                         description=description, version=version, digest=digest, content_digest="c" * 64,
                         allowed_tools=(), completion_tools=(), unlocks=(), model_invocable=True, user_invocable=True)
-
-
-@dataclass(frozen=True)
-class Model:
-    id: str
-    alias: str
-    name: str
 
 
 async def ensure_profile_tables(sessionmaker):

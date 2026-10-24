@@ -10,6 +10,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from .live import LiveEvent
+
 DEFAULT_LISTENER_BACKLOG = 1000
 
 
@@ -27,11 +29,11 @@ class StoredEvent:
 class Listener:
     def __init__(self, backlog: int) -> None:
         self._backlog = backlog
-        self._items: deque[StoredEvent] = deque()
+        self._items: deque[StoredEvent | LiveEvent] = deque()
         self._signal = asyncio.Event()
         self.closed = False
 
-    def offer(self, event: StoredEvent) -> bool:
+    def offer(self, event: StoredEvent | LiveEvent) -> bool:
         """放入一条；积压超限时关闭自己并返回 False。"""
         if self.closed:
             return False
@@ -47,7 +49,7 @@ class Listener:
         self._items.clear()
         self._signal.set()
 
-    async def next_batch(self) -> list[StoredEvent] | None:
+    async def next_batch(self) -> list[StoredEvent | LiveEvent] | None:
         """等到有新事件；返回 None 表示已被关闭，调用方应结束推送。"""
         while not self._items and not self.closed:
             self._signal.clear()
@@ -80,6 +82,13 @@ class Broadcaster:
         for listener in list(self._listeners.get(event.conversation_id, ())):
             if not listener.offer(event):
                 self._discard(event.conversation_id, listener)
+
+    def publish_live(self, conversation_id: str, payload: dict) -> None:
+        """逐字片段：只推给正在看的浏览器，不落库（live.py）。跟不上的监听者照样踢出，重连后补快照。"""
+        event = LiveEvent(conversation_id, payload)
+        for listener in list(self._listeners.get(conversation_id, ())):
+            if not listener.offer(event):
+                self._discard(conversation_id, listener)
 
     def close_all(self) -> None:
         for listeners in self._listeners.values():

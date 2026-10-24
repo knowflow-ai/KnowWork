@@ -4,17 +4,19 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { chipsOf, uploadForTurn } from '../../api/attachments';
 import { createConversation, sendMessage, type QuestionAnswer, type SendMode } from '../../api/conversations';
+import type { Mention } from '../../api/mentions';
 import { ownRun, turnOfRun } from '../../api/debug';
 import { readableError } from '../../api/http';
+import { currentAnswerMode } from '../../stores/answerMode';
 import { currentReplyLanguage } from '../../stores/replyLanguage';
 import { truncate } from '../../utils/format';
 import { toast } from '../../ui/toastStore';
 import { CONVERSATIONS_KEY } from '../conversations/queries';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
-import { selectLastUserText, selectRunState } from './events/selectors';
-import { useConversation, type FirstMessage } from './hooks/useConversation';
-import { useSkillOptions } from './hooks/useSkillOptions';
+import { selectLastUserMessage, selectRunState } from './events/selectors';
+import { useConversation, type FirstMessage, type TurnExtras } from './hooks/useConversation';
+import { resolveMentions } from './mentions/resolve';
 
 // 运行详情（运行调试视图）不常用，点开时才加载
 const RunInspector = lazy(() => import('../debug/RunInspector'));
@@ -43,18 +45,22 @@ function ConnectionNotice({ state, message }: { readonly state: string; readonly
 function NewChat() {
   const navigate = useNavigate();
   const client = useQueryClient();
-  const skills = useSkillOptions();
 
-  const start = async (text: string, files: readonly File[]) => {
+  const start = async (text: string, files: readonly File[], mentions: readonly Mention[]) => {
     try {
       const { id } = await createConversation(truncate(text, 30));
       // 附件要先有会话才能传：建会话 → 把文件放进会话工作区 → 带着附件 id 发首条消息
       const attachments = await uploadForTurn(id, files);
-      await sendMessage(id, text, 'followup', currentReplyLanguage(), attachments);
+      await sendMessage(id, text, 'followup', {
+        language: currentReplyLanguage(),
+        answerMode: currentAnswerMode(),
+        attachments,
+        mentions,
+      });
       void client.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
-      // 事件流从头回放，进入会话页后能看到回答；首条消息由本页带过去，回显之前先摆上
+      // 事件流从头回放，进入会话页后能看到回答；首条消息由本页带过去，回显之前先摆上。@ 也带过去，输入框接着用
       navigate(`/chat/${encodeURIComponent(id)}`, {
-        state: { firstMessage: { text, attachments: chipsOf(files) } } satisfies NavigationState,
+        state: { firstMessage: { text, attachments: chipsOf(files), mentions } } satisfies NavigationState,
       });
     } catch (error) {
       throw new Error(readableError(error, '没能新建对话，请稍后重试'));
@@ -66,7 +72,7 @@ function NewChat() {
       <div className="kw-chat-welcome">
         <h1>有什么可以帮你？</h1>
         <div className="kw-composer-dock">
-          <Composer running={false} onSend={(text, _mode, files) => start(text, files)} skills={skills} />
+          <Composer running={false} onSend={(text, _mode, files, mentions) => start(text, files, mentions)} />
         </div>
       </div>
     </div>
@@ -74,7 +80,6 @@ function NewChat() {
 }
 
 function ExistingChat({ conversationId }: { readonly conversationId: string }) {
-  const skills = useSkillOptions();
   const location = useLocation();
   const client = useQueryClient();
   const firstMessage = (location.state as NavigationState | null)?.firstMessage;
@@ -87,24 +92,41 @@ function ExistingChat({ conversationId }: { readonly conversationId: string }) {
   const onInspect = useCallback((runId: string) => setInspecting(turnOfRun(runId)), []);
 
   const deliver = useCallback(
-    async (text: string, mode: SendMode, files: readonly File[] = []) => {
-      await send(text, mode, files);
+    async (text: string, mode: SendMode, extras: TurnExtras = {}) => {
+      await send(text, mode, extras);
       void client.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
     },
     [send, client],
   );
   const onSend = useCallback(
-    (text: string, mode: SendMode, files: readonly File[]) =>
-      deliver(text, running ? mode : 'followup', files),
+    (text: string, mode: SendMode, files: readonly File[], mentions: readonly Mention[]) =>
+      deliver(text, running ? mode : 'followup', { files, mentions }),
     [deliver, running],
   );
+  // 用同一个问题重新回答（重新生成、撤掉检索条件）：那一问 @ 的东西照原样带上，不然就悄悄放宽成全部知识库
+  const answerAgain = useCallback(
+    async (dropped: readonly string[] = []) => {
+      const last = selectLastUserMessage(state);
+      if (!last) return;
+      const mentions = await resolveMentions(client, last.mentions);
+      await deliver(last.text, 'followup', { mentions, dropped });
+    },
+    [client, deliver, state],
+  );
   const onRegenerate = useCallback(() => {
-    const last = selectLastUserText(state);
-    if (!last) return;
-    deliver(last, 'followup').catch((error: unknown) => {
+    answerAgain().catch((error: unknown) => {
       toast.error(error instanceof Error ? error.message : '没能重新生成，请稍后重试');
     });
-  }, [deliver, state]);
+  }, [answerAgain]);
+  // 回答上方撤掉检索条件：同一个问题重新回答，这一轮检索时去掉这些条件
+  const onDropConditions = useCallback(
+    (dropped: readonly string[]) => {
+      answerAgain(dropped).catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : '没能重新回答，请稍后重试');
+      });
+    },
+    [answerAgain],
+  );
   const onDecide = useCallback(
     async (approvalId: string, allow: boolean, remember?: boolean) => {
       try {
@@ -137,6 +159,7 @@ function ExistingChat({ conversationId }: { readonly conversationId: string }) {
           onDecide={onDecide}
           onAnswer={onAnswer}
           onRegenerate={onRegenerate}
+          onDropConditions={onDropConditions}
           onInspect={onInspect}
         />
       </div>
@@ -154,7 +177,7 @@ function ExistingChat({ conversationId }: { readonly conversationId: string }) {
           running={running}
           onSend={onSend}
           onStop={cancel}
-          skills={skills}
+          initialMentions={firstMessage?.mentions}
           disabled={connection === 'failed'}
         />
       </div>

@@ -8,6 +8,8 @@
     "./http-host": "./src/http-host.mjs",
     "./log-sink": "./src/log-sink.mjs",
     "./prompt-context": "./src/prompt-context.mjs",
+    "./answer-mode": "./src/answer-mode.mjs",
+    "./knowledge-catalog": "./src/knowledge-catalog.mjs",
     "./bundled-skills": "./src/bundled-skills.mjs",
     "./remote-fs": "./src/remote-fs.mjs",
     "./remote-subprocess": "./src/remote-subprocess.mjs",

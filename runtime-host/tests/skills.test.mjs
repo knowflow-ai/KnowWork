@@ -1,5 +1,5 @@
 /**
- * 技能交付与专业工具解锁（技术方案 6.1–6.3 节）：真实 DSH 组合 + 官方技能注册表与 `skill` 工具，
+ * 技能交付与专业工具解锁：真实 DSH 组合 + 官方技能注册表与 `skill` 工具，
  * 业务服务的技能接口与工具接口由桩扮演，模型由 openai-stub 按脚本扮演。断言落到模型请求与桩收到的调用上。
  */
 
@@ -221,6 +221,37 @@ test('用户显式调用 /技能名：官方注入正文，同样解锁专业工
     assert.equal(env.tools.executions().length, 1)
     assert.ok(frames.some(f => f.kind === 'skill/loaded' && f.data.mode === 'manual'))
     assert.ok(frames.some(f => f.kind === 'skill-gate/passed'))
+  } finally {
+    await env.stop()
+  }
+})
+
+test('@ 点名：说明块跟在原话后面，模型读得到点名的范围；点名的技能照官方 /技能名 手势注入；格式不对拒收', async () => {
+  const env = await startSkillHost([
+    { tool: 'extract_records', args: { q: '采购合同' } },
+    { text: '抽取完成' },
+  ])
+  try {
+    await env.open('sk-mention')
+    const mentions = [
+      { type: 'document', id: 'kb2/d1', name: '采购合同.pdf', base: 'builtin.kb2', baseName: '合同库' },
+      { type: 'skill', id: 'contract-extract', name: '合同抽取' },
+    ]
+    const sent = await env.host.call('POST', '/v1/sessions/sk-mention/messages', { text: '把合同抽成表', mentions })
+    assert.equal(sent.status, 202, JSON.stringify(sent.body))
+    const frames = await collectEvents(env.host, 'sk-mention', isTurnEnd)
+    const [first] = env.chat()
+    const text = messagesText(first)
+    assert.ok(text.includes('[用户这一轮 @ 点名的范围] '), '说明块没有写进消息')
+    assert.ok(text.includes('采购合同.pdf') && text.includes('knowledge_search 已由系统限定'))
+    assert.ok(text.includes('先调用 extract_records'), '@ 的技能没有注入技能正文')
+    assert.ok(frames.some(f => f.kind === 'skill/loaded' && f.data.mode === 'manual'))
+    for (const bad of [[{ type: 'x', id: 'a', name: 'a' }], [{ type: 'skill', id: '合同 抽取', name: 'x' }],
+      [{ type: 'tag', id: 't', name: 'a\nb' }], [{ type: 'tag', id: 't', name: 't', base: 'builtin.kb1' }],
+      Array.from({ length: 31 }, () => ({ type: 'skill', id: 't', name: 't' }))]) {
+      const refused = await env.host.call('POST', '/v1/sessions/sk-mention/messages', { text: 'x', mentions: bad })
+      assert.equal(refused.status, 400, JSON.stringify(bad))
+    }
   } finally {
     await env.stop()
   }

@@ -9,7 +9,6 @@ export const KEYS = {
   grants: ['admin', 'grants'],
   providers: ['admin', 'model-providers'],
   models: ['admin', 'models'],
-  modelGroups: ['admin', 'model-groups'],
   usage: ['admin', 'usage'],
   sources: ['knowledge-sources'],
   knowledgeBases: ['knowledge-bases'],

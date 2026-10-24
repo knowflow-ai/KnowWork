@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ..kernel.tokens import TokenError, TokenSigner
 from ..models.errors import NotFound, Unavailable
 from ..models.schemas import Route
+from ..models.thinking import with_thinking
 from .request_filter import InvalidRequest, parse_request
 
 log = logging.getLogger(__name__)
@@ -154,8 +155,9 @@ class _Forwarder:
                                                   timeout=timeout)
             return _Outgoing(self.upstream, request)
         headers = {"authorization": f"Bearer {route.api_key}"} if route.api_key else {}
-        request = self.http.build_request("POST", route.base_url + CHAT_PATH,
-                                          json={**body, "model": route.upstream_model}, headers=headers,
+        # 管理员给这个模型定了思考开、关时，按服务商的写法补上（Qwen3 等在自建服务上默认开着思考，回答慢）
+        payload = with_thinking({**body, "model": route.upstream_model}, route.thinking, route.base_url)
+        request = self.http.build_request("POST", route.base_url + CHAT_PATH, json=payload, headers=headers,
                                           timeout=timeout)
         return _Outgoing(self.http, request)
 

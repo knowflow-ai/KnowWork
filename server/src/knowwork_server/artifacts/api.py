@@ -19,7 +19,7 @@ from .service import ArtifactNotFound, ArtifactService, ArtifactUnavailable
 
 ARTIFACT_ID = Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
 ACTIVE_TYPES = frozenset({"html", "htm", "xhtml", "svg", "xml", "js", "mjs", "xsl", "shtml", "mht", "mhtml"})
-# 下载审计钩子（技术方案 11.1「产物下载」），由装配方接审计模块
+# 下载审计钩子（审计里的「产物下载」），由装配方接审计模块
 DownloadHook = Callable[[Actor, ArtifactView], Awaitable[None]]
 # 列表前等这个会话正在后台收的产物落库（ArtifactObserver.settle），由装配方接入
 SettleHook = Callable[[str], Awaitable[None]]

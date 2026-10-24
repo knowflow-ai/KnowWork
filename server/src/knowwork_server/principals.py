@@ -19,6 +19,7 @@ CONVERSATIONS_SCOPE = "conversations:use"
 WORKSPACE_SCOPE = "workspace:manage"
 MODELS_SCOPE = "models:manage"
 KNOWLEDGE_SCOPE = "knowledge:manage"
+KNOWLEDGE_READ_SCOPE = "knowledge:read"  # 对外检索接口与 MCP
 TOOLS_SCOPE = "tools:manage"
 NOT_A_MEMBER = "你还不是本工作空间的成员，请联系管理员"
 WRONG_WORKSPACE = "该 API Key 绑定的不是这个工作空间"
@@ -78,10 +79,27 @@ def conversation_actor(identity: Identity, access: AccessService):
     return dependency
 
 
+def knowledge_reader(identity: Identity, access: AccessService):
+    """对外检索与 MCP 的调用者：API Key 要带 knowledge:read，且是默认空间成员；能查哪些知识库再按授权收窄。"""
+    authenticate = identity.require_scopes(KNOWLEDGE_READ_SCOPE)
+
+    async def dependency(request: Request) -> Actor:
+        principal = await authenticate(request)
+        if _bound_elsewhere(principal, DEFAULT_WORKSPACE_ID):
+            raise HTTPException(status_code=403, detail=WRONG_WORKSPACE)
+        if not access.engine.healthy:
+            raise HTTPException(status_code=503, detail=ACCESS_UNAVAILABLE)
+        if not access.check(principal.user_id, DEFAULT_WORKSPACE_ID, WORKSPACE_RESOURCE, Action.USE):
+            raise HTTPException(status_code=403, detail=NOT_A_MEMBER)
+        return Actor(user_id=principal.user_id, workspace_id=DEFAULT_WORKSPACE_ID)
+
+    return dependency
+
+
 def workspace_admin(access: AccessService):
     """系统管理（邀请、撤销邀请）：开源版只有一个空间，由默认空间的 owner 与 admin 担任。
 
-    商业版多空间时，系统管理员要换成独立的判定口径，不能沿用某个空间的角色。
+    以后支持多个空间时，系统管理员要换成独立的判定口径，不能沿用某个空间的角色。
     """
 
     def check(principal: Principal) -> bool:

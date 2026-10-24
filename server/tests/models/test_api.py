@@ -33,7 +33,7 @@ class Provider:
         self.requests.append({"path": request.url.path, "auth": request.headers.get("authorization"),
                               "body": json.loads(request.content)})
         if self.mode == "connect":
-            raise httpx.ConnectError("refused 10.1.2.3")
+            raise httpx.ConnectError("refused 10.0.0.4")
         if self.mode == "timeout":
             raise httpx.ReadTimeout("slow")
         if self.mode == "html":
@@ -71,19 +71,14 @@ async def test_admin_crud_and_key_never_echoed(setup):
     http, _, _ = setup
     provider, model = await _create(http)
     assert provider["api_key_configured"] and provider["api_key_last4"] == "ZYXW"
-    for path in ("model-providers", "models", "model-groups"):
+    for path in ("model-providers", "models"):
         response = await http.get(f"{BASE}/{path}", headers=as_("alice"))
         assert response.status_code == 200 and KEY not in response.text
     patched = await http.patch(f"{BASE}/model-providers/{provider['id']}", headers=as_("bob"), json={"name": "DS"})
     assert patched.json()["name"] == "DS" and KEY not in patched.text
-    group = await http.post(f"{BASE}/model-groups", headers=as_("bob"), json={"name": "g", "model_ids": [model["id"]]})
-    assert group.status_code == 201
-    renamed = await http.patch(f"{BASE}/model-groups/{group.json()['id']}", headers=as_("bob"), json={"name": "g2"})
-    assert renamed.json()["model_ids"] == [model["id"]]
     assert (await http.patch(f"{BASE}/models/{model['id']}", headers=as_("bob"),
                              json={"enabled": False})).json()["enabled"] is False
     assert (await http.delete(f"{BASE}/model-providers/{provider['id']}", headers=as_("bob"))).status_code == 409
-    assert (await http.delete(f"{BASE}/model-groups/{group.json()['id']}", headers=as_("bob"))).status_code == 204
     assert (await http.delete(f"{BASE}/models/{model['id']}", headers=as_("bob"))).status_code == 204
     assert (await http.delete(f"{BASE}/models/{model['id']}", headers=as_("bob"))).status_code == 404
     assert (await http.delete(f"{BASE}/model-providers/{provider['id']}", headers=as_("bob"))).status_code == 204
@@ -104,8 +99,6 @@ async def test_validation_and_auth(setup):
     missing = await http.post(f"{BASE}/models", headers=as_("bob"),
                               json={"provider_id": "mp_x", "alias": "a", "name": "n"})
     assert missing.status_code == 404
-    assert (await http.post(f"{BASE}/model-groups", headers=as_("bob"),
-                            json={"name": "g", "model_ids": ["md_none"]})).status_code == 422
 
 
 @pytest.mark.parametrize(("mode", "ok", "status", "message"), [
@@ -127,7 +120,7 @@ async def test_connectivity_test(setup, mode, ok, status, message):
     assert response.status_code == 200
     assert (result["ok"], result["upstream_status"], result["message"], result["capability"]) == (ok, status,
                                                                                                   message, "chat")
-    assert KEY not in response.text and "10.1.2.3" not in response.text
+    assert KEY not in response.text and "10.0.0.4" not in response.text
     sent = provider.requests[-1]
     assert sent["path"] == "/v1/chat/completions" and sent["auth"] == f"Bearer {KEY}"
     assert sent["body"]["model"] == "deepseek-chat" and sent["body"]["max_tokens"] == 1
@@ -144,12 +137,11 @@ async def test_connectivity_test_by_capability(setup, capability, path):
 
 
 async def test_member_views(setup):
+    """模型不按人授权（2026-10-23 去掉了模型分组）：分组接口与「我能用的模型」接口都没有了；成员看得到自己的用量。"""
     http, _, models = setup
-    _, model = await _create(http)
-    assert (await http.get(f"{BASE}/usable-models", headers=as_("dave"))).json() == []
-    await http.post(f"{BASE}/model-groups", headers=as_("bob"), json={"name": "g", "model_ids": [model["id"]]})
-    usable = (await http.get(f"{BASE}/usable-models", headers=as_("dave"))).json()
-    assert usable == [{"alias": "default", "name": "deepseek-chat", "capabilities": ["chat"], "context_length": None}]
+    await _create(http)
+    for path in ("model-groups", "usable-models"):
+        assert (await http.get(f"{BASE}/{path}", headers=as_("bob"))).status_code == 404
     ctx = UsageContext(workspace_id="ws1", user_id="dave", conversation_id="c1", model_alias="default")
     data = {"turn": 0, "step": 0, "usage": {"inputTokens": 10, "outputTokens": 5}}
     await models.recorder.record(usage_from_event("assistant/message", data, ctx, datetime(2026, 10, 18, 4, tzinfo=UTC)))

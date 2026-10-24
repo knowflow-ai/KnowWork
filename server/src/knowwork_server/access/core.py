@@ -10,10 +10,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from . import store
 from .engine import NOTHING_VISIBLE, PolicyEngine, VisibleSet
 from .errors import AccessDenied, NotFound
+from .hierarchy import NO_HIERARCHY, ResourceHierarchy
 from .models import WorkspaceMember
 from .rls import set_workspace
 from .rules import Rule, RuleChange
-from .vocab import WORKSPACE_RESOURCE, Action, InvalidInput, Resource, parse_action, parse_resource_type, validate_id
+from .vocab import (
+    RESOURCE_TYPES,
+    TYPE_PATTERN,
+    WORKSPACE_RESOURCE,
+    Action,
+    InvalidInput,
+    Resource,
+    parse_action,
+    parse_resource_type,
+    validate_id,
+)
 
 log = logging.getLogger(__name__)
 
@@ -39,10 +50,26 @@ class AccessCore:
     def __init__(self, sessionmaker: async_sessionmaker, engine: PolicyEngine | None = None) -> None:
         self._sessionmaker = sessionmaker
         self._engine = engine or PolicyEngine()
+        self._hierarchy: ResourceHierarchy = NO_HIERARCHY
 
     @property
     def engine(self) -> PolicyEngine:
         return self._engine
+
+    @property
+    def resource_types(self) -> frozenset[str]:
+        """可授权、可判定的资源类型：内置的加上资源层级引入的。"""
+        return RESOURCE_TYPES | self._hierarchy.resource_types
+
+    def use_hierarchy(self, hierarchy: ResourceHierarchy) -> None:
+        """启动时装上资源层级（只有一个）。它引入的类型不能和内置类型重名。"""
+        types = frozenset(hierarchy.resource_types)
+        bad = [t for t in types if t in RESOURCE_TYPES or t == WORKSPACE_RESOURCE or not TYPE_PATTERN.fullmatch(t)]
+        if bad:
+            raise ValueError(f"resource hierarchy declares invalid types: {bad}")
+        if self._hierarchy is not NO_HIERARCHY:
+            raise ValueError("a resource hierarchy is already installed")
+        self._hierarchy = hierarchy
 
     async def reload(self) -> bool:
         """从数据库整体重建判定器。失败时判定器保持不可用（全部拒绝）。"""
@@ -98,18 +125,48 @@ class AccessCore:
             validate_id(user_id, "user_id")
             validate_id(workspace_id, "workspace_id")
             act = parse_action(action)
-            obj = resource if resource == WORKSPACE_RESOURCE else Resource.parse(resource, allow_wildcard=False).key
+            obj = resource if resource == WORKSPACE_RESOURCE else Resource.parse(
+                resource, allow_wildcard=False, types=self.resource_types).key
         except InvalidInput:
             return False
-        return self._engine.check(user_id, workspace_id, obj, act)
+        if self._engine.check(user_id, workspace_id, obj, act):
+            return True
+        return obj != WORKSPACE_RESOURCE and any(
+            self._engine.check(user_id, workspace_id, upper, act) for upper in self._ancestors(workspace_id, obj))
+
+    def _ancestors(self, workspace_id: str, obj: str) -> tuple[str, ...]:
+        try:
+            return tuple(self._hierarchy.ancestors(workspace_id, obj))
+        except Exception:
+            log.exception("resource hierarchy failed for %s; denying", obj)
+            return ()
 
     def visible_resources(self, user_id: str, workspace_id: str, resource_type: str, action: str) -> VisibleSet:
         """用户在空间内能以某档权限看到的某类资源。all_ 为真表示全部可见。"""
         try:
             validate_id(user_id, "user_id")
             validate_id(workspace_id, "workspace_id")
-            rtype = parse_resource_type(resource_type)
+            rtype = parse_resource_type(resource_type, self.resource_types)
             act = parse_action(action)
         except InvalidInput:
             return NOTHING_VISIBLE
-        return self._engine.visible(user_id, workspace_id, rtype, act)
+        direct = self._engine.visible(user_id, workspace_id, rtype, act)
+        if direct.all_ or not self._hierarchy.resource_types:
+            return direct
+        return VisibleSet(all_=False, ids=direct.ids | self._visible_below(user_id, workspace_id, rtype, act))
+
+    def _visible_below(self, user_id: str, workspace_id: str, rtype: str, act: Action) -> frozenset[str]:
+        """经上级授权看得到的资源：每种上级类型取出有权的上级，再问层级它们下面有哪些。"""
+        found: set[str] = set()
+        try:
+            for upper_type in self._hierarchy.resource_types:
+                granted = self._engine.visible(user_id, workspace_id, upper_type, act)
+                if granted.all_:
+                    found |= self._hierarchy.descendants(workspace_id, None, rtype)
+                elif granted.ids:
+                    keys = frozenset(f"{upper_type}:{ident}" for ident in granted.ids)
+                    found |= self._hierarchy.descendants(workspace_id, keys, rtype)
+        except Exception:
+            log.exception("resource hierarchy failed while listing %s; using direct grants only", rtype)
+            return frozenset()
+        return frozenset(found)

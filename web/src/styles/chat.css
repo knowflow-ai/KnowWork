@@ -200,6 +200,26 @@
   display: inline-block;
 }
 
+/* 回答里的知识库图片（[IMG:n:j]）：单独占一行，不超过正文宽，点开看原图 */
+.kw-markdown .kw-answer-image {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 8px 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: zoom-in;
+}
+
+.kw-answer-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  border: 1px solid var(--kw-border-secondary);
+  border-radius: var(--radius-md);
+}
+
 .kw-markdown > :first-child {
   margin-top: 0;
 }
@@ -287,6 +307,110 @@
   display: block;
   margin-top: 4px;
   font-size: var(--kw-font-xs);
+}
+
+/* 回答的来源面板（AnswerSources）：一条一份文件，标题、编号与页码、摘录，整条可点 */
+.kw-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kw-source-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: var(--kw-radius-card);
+  background: none;
+  color: var(--kw-text);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+}
+
+button.kw-source-item,
+a.kw-source-item {
+  cursor: pointer;
+}
+
+button.kw-source-item:hover,
+a.kw-source-item:hover {
+  background: var(--kw-hover-bg);
+}
+
+.kw-source-item:disabled {
+  cursor: progress;
+}
+
+.kw-source-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: var(--kw-font-sm);
+  font-weight: 500;
+}
+
+.kw-source-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--kw-text-secondary);
+}
+
+.kw-source-meta {
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-source-excerpt {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* 回答上方的检索条件：单色小标签，撤掉的划掉 */
+.kw-search-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-bottom: 8px;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-search-condition-list {
+  display: contents;
+}
+
+.kw-search-condition {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 22px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--kw-border-secondary);
+  border-radius: var(--kw-radius-control);
+  color: var(--kw-text);
+}
+
+.kw-search-condition-removed {
+  padding-right: 8px;
+  color: var(--kw-text-secondary);
+}
+
+.kw-search-condition-note {
+  margin-left: 4px;
 }
 
 .kw-process-toggle {
@@ -643,17 +767,6 @@
   color: var(--kw-text-secondary);
 }
 
-/* 输入框技能菜单：技能名下面一行浅色说明 */
-.kw-skill-option {
-  max-width: 320px;
-}
-
-.kw-skill-option-desc {
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
-  white-space: normal;
-}
-
 .kw-answer-actions {
   margin-top: 8px;
   display: flex;
@@ -722,6 +835,13 @@
 
 .kw-composer-spacer {
   flex: 1;
+}
+
+/* 选中的模式标签（照 ChatGPT 输入框里的「Deep research ×」）：按钮本身是胶囊形，叉号小一号、弱一档 */
+.kw-mode-chip .kw-mode-chip-close {
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-tertiary);
 }
 
 .kw-composer-hint {

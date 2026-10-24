@@ -7,7 +7,7 @@
  */
 import './pdfjs';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist';
-import { TextLayerBuilder } from 'pdfjs-dist/web/pdf_viewer.mjs';
+import { TextLayerBuilder } from 'pdfjs-dist/legacy/web/pdf_viewer.mjs';
 
 /** PDF 的长度单位是 1/72 英寸，屏幕按 96 DPI 算，100% 时乘这个比例。 */
 export const PAGE_SCALE = 96 / 72;

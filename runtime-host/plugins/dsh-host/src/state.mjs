@@ -55,6 +55,9 @@ const BUFFER_BYTES = 8 * 1024 * 1024
  * @property {readonly object[] | undefined} skillCatalog 本会话可用技能清单（已发布版本）
  * @property {Promise<readonly object[]> | undefined} skillCatalogPromise 清单拉取（只拉一次）
  * @property {'zh' | 'en' | undefined} language 最近一轮的交互语言，由业务服务随消息下发
+ * @property {{ bases: readonly object[], omitted: number } | undefined} knowledgeCatalog 最近一次下发的知识库目录
+ * @property {'agent' | 'quick'} answerMode 当前步骤按哪种回答方式（answer-mode）：随消息进入步骤切换
+ * @property {Map<string, 'agent' | 'quick'>} answerModes 已收下、还没进入步骤的消息各自的回答方式，键是消息 id
  */
 
 /** @type {Map<string, SessionState>} */
@@ -78,6 +81,9 @@ export function createSession(sessionId, policy) {
     skillCatalog: undefined,
     skillCatalogPromise: undefined,
     language: undefined,
+    knowledgeCatalog: undefined,
+    answerMode: 'agent',
+    answerModes: new Map(),
   }
   sessions.set(sessionId, state)
   return state
@@ -150,6 +156,20 @@ export function publish(sessionId, kind, data) {
     const dropped = buffer.frames.shift()
     buffer.bytes -= dropped.size
   }
+  for (const subscriber of [...state.subscribers]) {
+    if (!subscriber.write(frame)) subscriber.end()
+  }
+  return frame
+}
+
+/**
+ * 推一帧临时帧：只给当前订阅方，不进回放缓冲、不占新游标（带的是当前最后一个游标）。
+ * 用于官方逐字输出：片段量大、只对正在看的人有用，断线重连后由这一步的正式消息补齐。
+ */
+export function publishLive(sessionId, kind, data) {
+  const state = sessions.get(sessionId)
+  if (state === undefined || state.subscribers.size === 0) return undefined
+  const frame = { epoch: EPOCH, cursor: frameSeq, kind, time: Date.now(), data }
   for (const subscriber of [...state.subscribers]) {
     if (!subscriber.write(frame)) subscriber.end()
   }

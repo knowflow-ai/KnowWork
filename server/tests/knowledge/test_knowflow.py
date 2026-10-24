@@ -9,16 +9,29 @@ from knowwork_server.knowledge.knowflow import (
     SharedAccountIdentity,
 )
 from knowwork_server.knowledge.knowflow_mapping import KnowFlowConfig, locator_of, open_url
-from knowwork_server.knowledge.models import Caller, Cursor, Page, Scope
+from knowwork_server.knowledge.models import (
+    Caller,
+    Cursor,
+    Locator,
+    Page,
+    ReadRequest,
+    Scope,
+    SearchRequest,
+    clip_quote,
+)
 
 from .knowflow_stub import SERVICE_KEY, KnowFlowStub, StubUser, chunk
 
 pytestmark = pytest.mark.anyio
+
+
+def ask(query, scope, top_n):
+    return SearchRequest(query=query, scope=scope, top_n=top_n)
 ALICE = Caller("ws1", "u-alice", "alice@corp.com")
 BOB = Caller("ws1", "u-bob", "bob@corp.com")
 NOBODY = Caller("ws1", "u-x", "nobody@corp.com")
 CAROL = Caller("ws1", "u-c", "carol@corp.com")
-# 业务服务交进来的范围总是收窄过、非空的（技术方案 8.1 节）
+# 业务服务交进来的范围总是收窄过、非空的
 BOTH = Scope(dataset_ids=("ds1", "ds2"))
 
 
@@ -45,19 +58,19 @@ def source(stub, *, mode="assertion", datasets=("ds1", "ds2"), web=None, shared_
 async def test_two_users_with_different_permissions_see_different_evidence():
     stub = make_stub()
     kf = source(stub)
-    alice = await kf.search(ALICE, "条款", BOTH, 10)
-    bob = await kf.search(BOB, "条款", BOTH, 10)
+    alice = await kf.search(ALICE, ask("条款", BOTH, 10))
+    bob = await kf.search(BOB, ask("条款", BOTH, 10))
     assert {e.doc_ref for e in alice} == {"ds1/contract", "ds2/secret"}
     assert {e.doc_ref for e in bob} == {"ds1/contract"}, "bob 读不了 ds2，证据里不能有它"
     first = alice[0]
     assert first.source_id == "src1" and first.kb_id == "ds1" and first.span_ref == "contract-c1"
-    assert first.locator.page == 1 and first.locator.boxes[0].x1 == 200
+    assert first.locator == Locator(type="pdf", page=1, quote=clip_quote(first.text)), "版面坐标换算不成比例，不填框"
     assert first.open_url == "http://kf.local/document/contract?ext=pdf&prefix=document&page=1"
 
 
 async def test_every_request_carries_a_fresh_assertion_with_the_callers_email():
     stub = make_stub()
-    await source(stub).search(BOB, "条款", BOTH, 5)  # 第一次 403，去掉 ds2 后重试
+    await source(stub).search(BOB, ask("条款", BOTH, 5))  # 第一次 403，去掉 ds2 后重试
     assertions = [r.headers["x-knowflow-assertion"] for r in stub.requests]
     assert len(assertions) == 2 and assertions[0] != assertions[1]
     assert "authorization" not in stub.requests[0].headers
@@ -66,7 +79,7 @@ async def test_every_request_carries_a_fresh_assertion_with_the_callers_email():
 async def test_user_with_no_readable_dataset_is_refused_with_reason():
     stub = make_stub()
     with pytest.raises(ScopeDenied, match="都没有读取权限"):
-        await source(stub).search(CAROL, "条款", BOTH, 5)
+        await source(stub).search(CAROL, ask("条款", BOTH, 5))
     assert await source(stub, datasets=()).list_bases(CAROL) == ()
 
 
@@ -91,12 +104,12 @@ async def test_shared_account_mode_sees_one_account_for_everyone():
     """统一账号：不论谁来查，KnowFlow 看到的都是配置的那个账号；收窄只靠业务服务交进来的范围。"""
     stub = make_stub()
     kf = source(stub, mode="shared", shared_key="ragflow-alicekey")
-    assert {e.doc_ref for e in await kf.search(BOB, "q", BOTH, 5)} == {"ds1/contract", "ds2/secret"}
-    assert {e.doc_ref for e in await kf.search(BOB, "q", Scope(dataset_ids=("ds1",)), 5)} == {"ds1/contract"}
+    assert {e.doc_ref for e in await kf.search(BOB, ask("q", BOTH, 5))} == {"ds1/contract", "ds2/secret"}
+    assert {e.doc_ref for e in await kf.search(BOB, ask("q", Scope(dataset_ids=("ds1",)), 5))} == {"ds1/contract"}
     assert {r.headers["authorization"] for r in stub.requests} == {"Bearer ragflow-alicekey"}
     assert "x-knowflow-assertion" not in stub.requests[0].headers
     with pytest.raises(IdentityUnavailable, match="统一账号 Key 无效"):
-        await source(stub, mode="shared", shared_key="ragflow-revoked").search(ALICE, "q", BOTH, 5)
+        await source(stub, mode="shared", shared_key="ragflow-revoked").search(ALICE, ask("q", BOTH, 5))
 
 
 async def test_shared_account_probe_checks_every_open_base_is_readable():
@@ -114,11 +127,11 @@ async def test_shared_account_probe_checks_every_open_base_is_readable():
 async def test_user_without_knowflow_account_or_disabled_is_refused():
     stub = make_stub()
     with pytest.raises(IdentityUnavailable, match="没有对应账号"):
-        await source(stub).search(NOBODY, "x", BOTH, 5)
+        await source(stub).search(NOBODY, ask("x", BOTH, 5))
     with pytest.raises(IdentityUnavailable, match="已停用"):
-        await source(stub).search(Caller("ws1", "u-d", "dave@corp.com"), "x", BOTH, 5)
+        await source(stub).search(Caller("ws1", "u-d", "dave@corp.com"), ask("x", BOTH, 5))
     with pytest.raises(IdentityUnavailable, match="没有邮箱"):
-        await source(stub).search(Caller("ws1", "u-e"), "x", BOTH, 5)
+        await source(stub).search(Caller("ws1", "u-e"), ask("x", BOTH, 5))
 
 
 async def test_knowflow_without_assertion_support_is_an_identity_failure_not_an_empty_list():
@@ -126,7 +139,7 @@ async def test_knowflow_without_assertion_support_is_an_identity_failure_not_an_
     stub = make_stub()
     stub.assertion_supported = False
     kf = source(stub, datasets=())
-    for attempt in (kf.list_bases(ALICE), kf.probe(ALICE), kf.search(ALICE, "q", BOTH, 5)):
+    for attempt in (kf.list_bases(ALICE), kf.probe(ALICE), kf.search(ALICE, ask("q", BOTH, 5))):
         with pytest.raises(IdentityUnavailable, match="没有接受签名断言"):
             await attempt
 
@@ -135,7 +148,7 @@ async def test_expired_or_replayed_assertion_is_not_accepted_by_knowflow():
     stub = make_stub()
     stub.now = 10**10  # KnowFlow 时钟远在断言过期之后
     with pytest.raises(SourceUnavailable):
-        await source(stub).search(ALICE, "x", BOTH, 5)
+        await source(stub).search(ALICE, ask("x", BOTH, 5))
     stub = make_stub()
     kf = source(stub)
     await kf.probe(ALICE)
@@ -149,22 +162,22 @@ async def test_scope_outside_configuration_is_rejected_and_inside_is_narrowed():
     stub = make_stub()
     kf = source(stub)
     with pytest.raises(InvalidInput, match="开放范围"):
-        await kf.search(ALICE, "q", Scope(dataset_ids=("ds9",)), 5)
+        await kf.search(ALICE, ask("q", Scope(dataset_ids=("ds9",)), 5))
     with pytest.raises(ValueError):
         Scope(dataset_ids=())
-    hits = await kf.search(ALICE, "q", Scope(dataset_ids=("ds2",)), 5)
+    hits = await kf.search(ALICE, ask("q", Scope(dataset_ids=("ds2",)), 5))
     assert {e.doc_ref for e in hits} == {"ds2/secret"}
 
 
 async def test_read_pages_through_a_document_with_cursor():
     stub = make_stub()
     kf = source(stub)
-    first = await kf.read(ALICE, "ds1/contract", None, 70)
+    first = await kf.read(ALICE, ReadRequest(doc_ref="ds1/contract", max_chars=70))
     assert len(first.text) <= 70 and first.next_cursor is not None
     assert first.title == "contract.pdf" and first.spans[0].span_ref == "contract-c1"
     pieces, cursor = [first.text], first.next_cursor
     while cursor is not None:
-        part = await kf.read(ALICE, "ds1/contract", Cursor.decode(cursor.encode()), 70)
+        part = await kf.read(ALICE, ReadRequest(doc_ref="ds1/contract", cursor=Cursor.decode(cursor.encode()), max_chars=70))
         pieces.append(part.text)
         cursor = part.next_cursor
     assert "".join(pieces).count("甲") == 150, "续读不重不漏"
@@ -174,11 +187,11 @@ async def test_read_is_checked_against_scope_and_permissions():
     stub = make_stub()
     stub.documents["secret"] = [chunk("ds2", "secret", 1)]
     with pytest.raises(ScopeDenied):
-        await source(stub).read(BOB, "ds2/secret", None, 100)
+        await source(stub).read(BOB, ReadRequest(doc_ref="ds2/secret", max_chars=100))
     with pytest.raises(InvalidInput):
-        await source(stub, datasets=("ds1",)).read(ALICE, "ds2/secret", None, 100)
+        await source(stub, datasets=("ds1",)).read(ALICE, ReadRequest(doc_ref="ds2/secret", max_chars=100))
     with pytest.raises(InvalidInput):
-        await source(stub).read(ALICE, "no-slash", None, 100)
+        await source(stub).read(ALICE, ReadRequest(doc_ref="no-slash", max_chars=100))
 
 
 async def test_list_documents_walks_datasets():
@@ -197,13 +210,15 @@ async def test_transport_failure_is_reported_without_details():
     stub = make_stub()
     stub.down = True
     with pytest.raises(SourceUnavailable) as info:
-        await source(stub).search(ALICE, "q", BOTH, 5)
+        await source(stub).search(ALICE, ask("q", BOTH, 5))
     assert str(info.value) == "知识源「合同库」暂时不可用"
 
 
 def test_mapping_helpers():
     assert locator_of("bad") is None
-    assert locator_of([[2, 1, 2, 3, 4], ["x"], [None, 1, 2, 3, 4]]).page == 2
+    assert locator_of([["x"], [None, 1, 2, 3, 4], [0, 1, 2, 3, 4], [2, 1, 2, 3, 4]], " 付款\n期限 ") == Locator(
+        type="pdf", page=2, quote="付款 期限")
+    assert locator_of([[0, 1, 2, 3, 4]]) is None
     assert open_url("http://w", "d 1", "a", None) == "http://w/document/d%201?ext=&prefix=document"
     with pytest.raises(ValueError):
         KnowFlowConfig(dataset_ids=("bad id",))
@@ -219,7 +234,7 @@ async def test_datasets_with_different_embedding_models_are_searched_per_model_a
     """真实 KnowFlow 不允许一次检索混用不同嵌入模型（code 102）：按模型分组各查一次，再按名次融合。"""
     stub = make_stub()
     stub.embedding_models = {"ds1": "bge-m3", "ds2": "text-embedding-v4"}
-    hits = await source(stub).search(ALICE, "条款", BOTH, 10)
+    hits = await source(stub).search(ALICE, ask("条款", BOTH, 10))
     assert {e.doc_ref for e in hits} == {"ds1/contract", "ds2/secret"}
     assert [e.span_ref for e in hits[:2]] == ["contract-c1", "secret-c1"], "两组的第一名排在最前"
     assert len(retrieval_requests(stub)) == 3, "先合并查一次被拒，再按模型各查一次"
@@ -228,15 +243,15 @@ async def test_datasets_with_different_embedding_models_are_searched_per_model_a
 async def test_per_model_search_keeps_the_readable_groups_and_drops_the_denied():
     stub = make_stub()
     stub.embedding_models = {"ds1": "bge-m3", "ds2": "text-embedding-v4"}
-    hits = await source(stub, datasets=()).search(ALICE, "条款", BOTH, 10)  # 开放范围留空也一样
+    hits = await source(stub, datasets=()).search(ALICE, ask("条款", BOTH, 10))  # 开放范围留空也一样
     assert {e.doc_ref for e in hits} == {"ds1/contract", "ds2/secret"}
-    bob = await source(stub).search(BOB, "条款", BOTH, 10)  # bob 读不了 ds2：那一组整组去掉
+    bob = await source(stub).search(BOB, ask("条款", BOTH, 10))  # bob 读不了 ds2：那一组整组去掉
     assert {e.doc_ref for e in bob} == {"ds1/contract"}
 
 
 async def test_same_embedding_model_is_still_one_request():
     stub = make_stub()
-    await source(stub).search(ALICE, "条款", BOTH, 10)
+    await source(stub).search(ALICE, ask("条款", BOTH, 10))
     assert len(retrieval_requests(stub)) == 1
 
 
@@ -246,7 +261,7 @@ async def test_same_passage_from_several_datasets_is_returned_once():
     dup = chunk("ds2", "contract-copy", 1, "contract 第1段")
     stub.chunks = {"ds1": [chunk("ds1", "contract", 1), chunk("ds1", "contract", 2)], "ds2": [dup]}
     dup["document_keyword"] = "contract.pdf"
-    hits = await source(stub).search(ALICE, "条款", BOTH, 10)
+    hits = await source(stub).search(ALICE, ask("条款", BOTH, 10))
     assert [e.span_ref for e in hits] == ["contract-c1", "contract-c2"]
 
 
@@ -256,4 +271,4 @@ async def test_read_explains_when_knowflow_lists_no_chunks_for_a_parsed_document
     stub.documents = {"contract": []}
     stub.chunk_counts = {"contract": 16}
     with pytest.raises(SourceUnavailable, match="改用 knowledge_search"):
-        await source(stub).read(ALICE, "ds1/contract", None, 1000)
+        await source(stub).read(ALICE, ReadRequest(doc_ref="ds1/contract", max_chars=1000))

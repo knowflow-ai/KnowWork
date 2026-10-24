@@ -1,4 +1,4 @@
-"""技能：ZIP 包安装校验、SKILL.md 解析、草稿与发布、按会话交付给宿主、运行事实（技术方案第 6 节）。
+"""技能：ZIP 包安装校验、SKILL.md 解析、草稿与发布、按会话交付给宿主、运行事实。
 
 主线整合：
 - 建表：SKILL_TABLES（挂在 db.base.Base 上），行级安全：SKILL_RLS_TABLES；

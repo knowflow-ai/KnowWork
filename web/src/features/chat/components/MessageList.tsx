@@ -1,5 +1,6 @@
 /** 消息列表：按时间线渲染用户气泡与助手轮次，新内容出现时滚到底部。 */
 import { AttachmentChips } from './AttachmentChips';
+import { MentionChips } from '../mentions/MentionChips';
 import { useEffect, useRef } from 'react';
 import type { QuestionAnswer } from '../../../api/conversations';
 import { selectRunApprovals, selectRunQuestions, selectRunState, selectTimeline } from '../events/selectors';
@@ -14,19 +15,22 @@ interface Props {
   /** 返回是否提交成功（失败已由页面提示）。 */
   readonly onAnswer: (questionId: string, answers: readonly QuestionAnswer[]) => Promise<boolean>;
   readonly onRegenerate: () => void;
+  /** 撤掉最近一轮回答上方的检索条件、重新回答（参数是这一轮要去掉的全部条件）。 */
+  readonly onDropConditions?: (dropped: readonly string[]) => void;
   /** 打开某一轮的运行详情（参数是 events.v1 的 run_id）。 */
   readonly onInspect?: (runId: string) => void;
 }
 
-export function MessageList({ state, onDecide, onAnswer, onRegenerate, onInspect }: Props) {
+export function MessageList({ state, onDecide, onAnswer, onRegenerate, onDropConditions, onInspect }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const busy = selectRunState(state) !== 'idle';
   const timeline = selectTimeline(state);
   const lastRunId = state.runOrder[state.runOrder.length - 1];
 
+  const liveLength = state.live?.text.length ?? 0;
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
-  }, [state.lastId, state.sent.length]);
+  }, [state.lastId, state.sent.length, liveLength]);
 
   return (
     <div className="kw-chat-column">
@@ -36,6 +40,7 @@ export function MessageList({ state, onDecide, onAnswer, onRegenerate, onInspect
           return (
             <div key={`u-${entry.message.localId}`} className="kw-user-row">
               <AttachmentChips items={entry.message.attachments ?? []} label="这条消息带的附件" />
+              <MentionChips items={entry.message.mentions ?? []} label="这条消息 @ 点名的范围与技能" />
               {entry.message.text ? (
                 <div
                   className={`kw-user-bubble${sending ? ' is-pending' : ''}`}
@@ -63,8 +68,10 @@ export function MessageList({ state, onDecide, onAnswer, onRegenerate, onInspect
             onDecide={onDecide}
             onAnswer={onAnswer}
             onRegenerate={entry.runId === lastRunId ? onRegenerate : undefined}
+            onDropConditions={entry.runId === lastRunId && !busy ? onDropConditions : undefined}
             onInspect={onInspect ? () => onInspect(entry.runId) : undefined}
             busy={busy}
+            liveText={state.live?.runId === entry.runId ? state.live.text : undefined}
           />
         );
       })}

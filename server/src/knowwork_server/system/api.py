@@ -81,7 +81,8 @@ def build_router(brand: BrandService, info: SystemInfoService, principal) -> API
     @router.get("/api/system/info")
     async def get_info(_: Admin) -> dict:
         found = await info.info()
-        return {"knowwork": found.knowwork, "dsh": found.dsh, "database": found.database}
+        return {"knowwork": found.knowwork, "dsh": found.dsh, "database": found.database, "license": found.license,
+                "extensions": [{"name": e.name, "enabled": e.enabled, "reason": e.reason} for e in found.extensions]}
 
     @router.put("/api/system/brand")
     async def rename(body: NameBody, actor: Admin) -> dict:

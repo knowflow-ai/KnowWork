@@ -1,4 +1,5 @@
 /** 从界面状态推导显示用的值，均为纯函数。 */
+import type { Mention } from '../../../api/mentions';
 import { stepLabel } from './stepLabels';
 import type {
   ApprovalView,
@@ -7,6 +8,7 @@ import type {
   QuestionView,
   RunState,
   RunView,
+  SearchSummary,
   SentMessage,
   TimelineEntry,
 } from './types';
@@ -46,10 +48,10 @@ function unechoedSent(state: ChatState): readonly SentMessage[] {
 }
 
 function askedEntry(index: number, asked: AskedMessage): TimelineEntry {
-  const { id, text, attachments } = asked;
+  const { id, text, attachments, mentions } = asked;
   return {
     type: 'user',
-    message: { localId: id, text, mode: 'followup', afterRuns: index, status: 'sent', attachments },
+    message: { localId: id, text, mode: 'followup', afterRuns: index, status: 'sent', attachments, mentions },
   };
 }
 
@@ -72,15 +74,39 @@ export function selectTimeline(state: ChatState): readonly TimelineEntry[] {
   return entries;
 }
 
-/** 最近一条已发出的用户消息，「重新生成」用：本页还没回显的优先，其次是事件流里最近的提问。 */
-export function selectLastUserText(state: ChatState): string | undefined {
+/** 最近一条已发出的用户消息，「重新生成」用：本页还没回显的优先，其次是事件流里最近的提问。
+ * 连同那一问 @ 的东西一起给，重新回答时照原样再带上，不然就悄悄放宽成全部知识库了。 */
+export function selectLastUserMessage(
+  state: ChatState,
+): { readonly text: string; readonly mentions: readonly Mention[] } | undefined {
   const local = [...unechoedSent(state)].reverse().find((m) => m.status === 'sent');
-  if (local) return local.text;
+  if (local) return { text: local.text, mentions: local.mentions ?? [] };
   for (const runId of [...state.runOrder].reverse()) {
     const asked = state.runs[runId]?.asked ?? [];
-    if (asked.length > 0) return asked[asked.length - 1]?.text;
+    const last = asked[asked.length - 1];
+    if (last) return { text: last.text, mentions: last.mentions ?? [] };
   }
   return undefined;
+}
+
+export function selectLastUserText(state: ChatState): string | undefined {
+  return selectLastUserMessage(state)?.text;
+}
+
+/** 这一轮检索用上的条件、撤掉的条件与命中的文档数，回答上方列出来。没用条件也没撤条件时不显示，返回 undefined。 */
+export interface RunSearch {
+  readonly conditions: readonly string[];
+  readonly removed: readonly string[];
+  readonly documents: number;
+}
+
+export function selectRunSearch(run: RunView): RunSearch | undefined {
+  const searches = run.steps.flatMap((s) => (s.search ? [s.search] : []));
+  const unique = (pick: (s: SearchSummary) => readonly string[]) => [...new Set(searches.flatMap(pick))];
+  const removed = unique((s) => s.removed);
+  const conditions = unique((s) => s.conditions).filter((c) => !removed.includes(c));
+  if (conditions.length === 0 && removed.length === 0) return undefined;
+  return { conditions, removed, documents: unique((s) => s.documents).length };
 }
 
 export function formatDuration(ms: number): string {

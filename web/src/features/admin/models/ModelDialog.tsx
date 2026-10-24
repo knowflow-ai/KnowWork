@@ -1,4 +1,4 @@
-/** 新建或修改模型：所属厂商、调用别名、上游模型名、能力、上下文长度与单价。 */
+/** 新建或修改模型：所属厂商、调用别名、上游模型名、能力、对话模型的思考、上下文长度与单价。 */
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
 import { Select } from '@openai/apps-sdk-ui/components/Select';
@@ -11,6 +11,7 @@ import {
   type Model,
   type ModelInput,
   type Provider,
+  type Thinking,
 } from '../../../api/models';
 import { Dialog, DialogActions } from '../../../ui/Dialog';
 import { Field } from '../../../ui/Field';
@@ -24,6 +25,14 @@ interface Props {
   readonly providers: readonly Provider[];
   readonly onClose: () => void;
 }
+
+// 下拉框只认字符串：跟随服务默认存成 null
+const THINKING_OPTIONS = [
+  { value: 'default', label: '跟随服务默认' },
+  { value: 'on', label: '开启' },
+  { value: 'off', label: '关闭' },
+];
+const thinkingFrom = (value: string): Thinking => (value === 'on' || value === 'off' ? value : null);
 
 const RULES: Rules<ModelInput> = {
   providerId: rule.required('请选择厂商'),
@@ -44,6 +53,7 @@ export function ModelDialog({ model, providers, onClose }: Props) {
       name: model?.name ?? '',
       capabilities: [...(model?.capabilities ?? ['chat'])],
       contextLength: model?.contextLength ?? null,
+      thinking: model?.thinking ?? null,
       inputPrice: model?.inputPrice ?? null,
       outputPrice: model?.outputPrice ?? null,
       enabled: model?.enabled ?? true,
@@ -104,7 +114,23 @@ export function ModelDialog({ model, providers, onClose }: Props) {
           ))}
         </div>
       </Field>
-      <Field label="上下文长度（token）">
+      {values.capabilities.includes('chat') ? (
+        <Field
+          label="思考"
+          help="Qwen3 这类模型在自建服务上默认开着思考：每一步先想一段再动手，回答要多等几秒。关掉更快，复杂问题可能答得没那么周全。按服务商的写法下发，认不出的服务按 vLLM、SGLang 处理"
+        >
+          <Select
+            block
+            options={THINKING_OPTIONS}
+            value={values.thinking ?? 'default'}
+            onChange={(option) => set('thinking', thinkingFrom(option.value))}
+          />
+        </Field>
+      ) : null}
+      <Field
+        label="上下文长度（token）"
+        help="嵌入模型填它的最大输入长度：知识库按它定分块大小，超出的部分模型会直接截掉"
+      >
         {(id) => (
           <NumberInput
             id={id}

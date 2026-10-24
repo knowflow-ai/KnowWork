@@ -10,7 +10,7 @@ from knowwork_server.profile.errors import ProfileUnavailable
 from knowwork_server.profile.facts import ProfileCompiler, ProfileSources, knowledge_from_admin, member_role_lookup
 from knowwork_server.profile.snapshot import TurnSelection
 
-from .profile_support import WS, Grants, Model, registry, skill
+from .profile_support import WS, Grants, registry, skill
 
 pytestmark = pytest.mark.anyio
 
@@ -29,9 +29,6 @@ class Skills:
 class Models:
     def __init__(self, capabilities=frozenset({"chat"})):
         self.capabilities = capabilities
-
-    async def usable_models(self, user_id, workspace_id):
-        return (Model("m1", "default", "默认"),)
 
     async def default_capabilities(self, workspace_id):
         return self.capabilities
@@ -74,7 +71,6 @@ async def test_compiles_from_sources():
     assert [t.name for t in profile.tools] == ["kw_now"]
     assert profile.denied_tools == ("crm_write", "erp_read", "read_image"), "默认模型不能看图，看图工具一并收掉"
     assert [(s.name, s.selected) for s in profile.skills] == [("a", True)]
-    assert [m.alias for m in profile.models] == ["default"]
     assert [(k.id, k.bases) for k in profile.knowledge] == [("k1", ("ds1",))]
     assert admin.asked == [("ed", WS)], "知识库按调用者本人的授权过滤"
 

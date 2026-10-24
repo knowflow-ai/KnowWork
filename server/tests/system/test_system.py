@@ -153,4 +153,5 @@ async def test_system_info_is_admin_only(client):
     async with client:
         assert (await client.get("/api/system/info", headers={"x-user": "u2"})).status_code == 403
         info = (await client.get("/api/system/info", headers=ADMIN)).json()
-        assert info == {"knowwork": "1.0.0", "dsh": "0.2.1-rc.2", "database": None}
+        assert info == {"knowwork": "1.0.0", "dsh": "0.2.1-rc.2", "database": None,
+                        "license": "没有安装授权，只启用开源功能", "extensions": []}

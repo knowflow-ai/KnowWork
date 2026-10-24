@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent, { pickOption } from '../../../test/user';
 import { jsonResponse, ME, renderWithApp, routeFetch, type RecordedCall } from '../../../test/render';
-import { listUsableSkills, type Skill } from '../../../api/skills';
+import type { Skill } from '../../../api/skills';
 import SkillsPage from './SkillsPage';
 import { canPublish, filterSkills, skillState } from './skillsModel';
 import { reasonLabel, stageLabel, successRate } from './runsModel';
@@ -265,14 +265,5 @@ describe('技能显示规则', () => {
   it('按名称或说明搜索', () => {
     expect(filterSkills(skills, '  ')).toBe(skills);
     expect(filterSkills(skills, '标书').map((s) => s.name)).toEqual(['tender-diff']);
-  });
-
-  it('对话里能选的技能：已发布且启用，个人与空间同名时个人优先', async () => {
-    routeFetch({
-      [`GET ${B}/me/skills`]: jsonResponse({ skills: [raw({ id: 'mine', scope: 'personal' })] }),
-      [`GET ${B}/skills`]: jsonResponse({ skills: SKILLS }),
-    });
-    const usable = await listUsableSkills();
-    expect(usable.map((s) => s.id)).toEqual(['mine']);
   });
 });
