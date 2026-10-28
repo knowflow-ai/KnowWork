@@ -1,5 +1,8 @@
 """管理端的「运行记录」：全空间按时间列出每一轮，点开看与会话本人同样的运行详情（运行调试视图）。
 
+- 列表读每轮汇总（conversations.summaries），可按提问人、状态、信号（检索了却没引用、被点踩）、工具、知识库筛；
+  详情读原始帧；
+
 - 要空间 owner 或 admin（workspace:edit，同审计页）；
 - 运行详情里有用户的提问、文档内容与模型输出：管理员每次查看、导出别人的运行，都单独记一条审计
   （审计中间件只记写操作，这里是读，得自己记）。
@@ -15,7 +18,7 @@ from typing import Any, Protocol
 from ..audit.events import AuditEvent
 from ..audit.sink import AuditSink
 from ..conversations.models import Conversation
-from ..conversations.runlog import RunLog, TurnMark
+from ..conversations.summaries import SummaryQuery, SummaryRow
 from .context import StepInput
 from .digest import TurnDetail
 from .service import DebugService
@@ -62,12 +65,17 @@ class RunRow:
     user_name: str | None
     turn: int
     started_at: str
-    status: str  # 同 TurnSummary.status；还没收到结束的那一帧是 running
+    status: str  # running | completed | cancelled | failed
     duration_ms: int | None
     model_calls: int
     input_tokens: int
     output_tokens: int
     cost: str | None
+    question: str = ""
+    tools: tuple[str, ...] = ()
+    searches: int | None = None  # 这一轮检索知识库几次；没检索过为空
+    cited: int | None = None     # 回答引用了几条
+    rating: str | None = None    # like | dislike
 
 
 @dataclass(frozen=True)
@@ -77,9 +85,10 @@ class RunPage:
 
 
 class RunRecords:
-    def __init__(self, runlog: RunLog, usage: TurnTotals, debug: DebugService, conversations: ConversationFinder,
-                 access: AccessChecker, audit: AuditSink, profiles: ProfileLookup | None = None) -> None:
-        self._runlog = runlog
+    def __init__(self, summaries: SummaryQuery, usage: TurnTotals, debug: DebugService,
+                 conversations: ConversationFinder, access: AccessChecker, audit: AuditSink,
+                 profiles: ProfileLookup | None = None) -> None:
+        self._summaries = summaries
         self._usage = usage
         self._debug = debug
         self._conversations = conversations
@@ -89,18 +98,16 @@ class RunRecords:
 
     async def runs(self, actor: str, workspace_id: str, *, since: datetime, until: datetime,
                    before: datetime | None = None, user_id: str | None = None, status: str | None = None,
+                   signal: str | None = None, tool: str | None = None, base: str | None = None,
                    limit: int = 50) -> RunPage:
         self._require(actor, workspace_id)
         if until <= since or until - since > MAX_RANGE:
             raise Invalid(f"时间范围须在 {MAX_RANGE.days} 天以内")
         limit = max(1, min(limit, MAX_LIMIT))
-        # 按状态筛时多取几页再筛，免得一页只剩几条
-        starts = await self._runlog.turn_starts(workspace_id, since=since, until=until, before=before,
-                                                user_id=user_id, limit=limit * (5 if status else 1))
-        rows = await self._rows(workspace_id, starts)
-        picked = tuple(row for row in rows if status is None or row.status == status)[:limit]
-        more = len(starts) == limit * (5 if status else 1)
-        return RunPage(items=picked, next=picked[-1].started_at if picked and more else None)
+        found = await self._summaries.page(workspace_id, since=since, until=until, before=before, user_id=user_id,
+                                           status=status, signal=signal, tool=tool, base=base, limit=limit)
+        rows = await self._rows(workspace_id, found)
+        return RunPage(items=rows, next=rows[-1].started_at if rows and len(found) == limit else None)
 
     async def turn(self, actor: str, workspace_id: str, conversation_id: str, turn: int) -> TurnDetail | None:
         conversation = await self._viewed(actor, workspace_id, conversation_id, "run.view", turn=turn)
@@ -130,13 +137,12 @@ class RunRecords:
                 detail={**detail, "owner": conversation.user_id}))
         return conversation
 
-    async def _rows(self, workspace_id: str, starts: tuple[TurnMark, ...]) -> tuple[RunRow, ...]:
-        ids = tuple(dict.fromkeys(mark.conversation_id for mark in starts))
-        ends = {(m.conversation_id, m.turn): m for m in await self._runlog.turn_ends(workspace_id, ids)}
+    async def _rows(self, workspace_id: str, found: tuple[SummaryRow, ...]) -> tuple[RunRow, ...]:
+        ids = tuple(dict.fromkeys(row.summary.conversation_id for row in found))
         totals = await self._usage.turn_totals(workspace_id, ids)
-        names = await self._names(tuple(dict.fromkeys(mark.user_id for mark in starts)))
-        return tuple(_row(mark, ends.get((mark.conversation_id, mark.turn)),
-                          totals.get((mark.conversation_id, mark.turn)), names.get(mark.user_id)) for mark in starts)
+        names = await self._names(tuple(dict.fromkeys(row.summary.user_id for row in found)))
+        return tuple(_row(row, totals.get((row.summary.conversation_id, row.summary.turn)),
+                          names.get(row.summary.user_id)) for row in found)
 
     async def _names(self, user_ids: tuple[str, ...]) -> Mapping[str, str]:
         if self._profiles is None or not user_ids:
@@ -149,12 +155,16 @@ class RunRecords:
         return {uid: str(getattr(profile, "name", "") or getattr(profile, "email", "")) for uid, profile in found.items()}
 
 
-def _row(start: TurnMark, end: TurnMark | None, totals: Any, name: str | None) -> RunRow:
-    duration = int((end.at - start.at).total_seconds() * 1000) if end is not None else None
+def _row(found: SummaryRow, totals: Any, name: str | None) -> RunRow:
+    summary = found.summary
+    ended = summary.ended_at
+    duration = int((ended - summary.started_at).total_seconds() * 1000) if ended is not None else None
     cost = getattr(totals, "cost", None)
-    return RunRow(conversation_id=start.conversation_id, title=start.title, user_id=start.user_id, user_name=name,
-                  turn=start.turn, started_at=start.at.isoformat(),
-                  status=(end.reason or "ended") if end is not None else "running", duration_ms=duration,
-                  model_calls=getattr(totals, "calls", 0), input_tokens=getattr(totals, "input_tokens", 0),
-                  output_tokens=getattr(totals, "output_tokens", 0),
-                  cost=None if cost is None else format(Decimal(cost).normalize(), "f"))
+    knowledge = (summary.facts or {}).get("knowledge") or {}
+    return RunRow(conversation_id=summary.conversation_id, title=found.title, user_id=summary.user_id,
+                  user_name=name, turn=summary.turn, started_at=summary.started_at.isoformat(), status=summary.status,
+                  duration_ms=duration, model_calls=getattr(totals, "calls", 0),
+                  input_tokens=getattr(totals, "input_tokens", 0), output_tokens=getattr(totals, "output_tokens", 0),
+                  cost=None if cost is None else format(Decimal(cost).normalize(), "f"), question=summary.question,
+                  tools=tuple(summary.tools or ()), searches=knowledge.get("searches"), cited=knowledge.get("cited"),
+                  rating=found.rating)

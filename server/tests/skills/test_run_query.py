@@ -55,7 +55,7 @@ async def env(sessionmaker):
     assert await access.reload()
     await access.create_workspace(workspace_id=ws, name="最近运行", owner_user_id="alice")
     await access.add_member("alice", ws, "bob", "admin")
-    await access.add_member("alice", ws, "carol", "viewer")
+    await access.add_member("alice", ws, "carol", "editor")
     report, personal = skill_row(ws, "report"), skill_row(ws, "notes", "personal")
     chat = Conversation(id="c_" + uuid.uuid4().hex, workspace_id=ws, user_id="carol", title="周报")
     async with sessionmaker() as session:

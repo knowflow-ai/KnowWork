@@ -1,18 +1,19 @@
 """运行面板接口（系统设置里，只给系统管理员，API Key 一律拒绝）。
 
-- GET    /api/system/jobs/overview         → 各池统计、worker 心跳、下游闸门占用、任务类型的中文名
-- GET    /api/system/jobs                  → 任务列表（按状态、池、类型筛选，按创建时间倒序翻页）
-- GET    /api/system/jobs/{id}             → 单个任务与各阶段
-- POST   /api/system/jobs/{id}/cancel      → 取消（走业务的失败收尾）
-- POST   /api/system/jobs/{id}/retry       → 立即重跑
-- DELETE /api/system/jobs/{id}             → 删除失败或已取消的记录
+任务按空间存（行级安全），面板看的是路径里那个空间的任务；worker 心跳与下游闸门是全局的。路径前缀 /api/workspaces/{ws}/jobs：
+- GET    …/overview         → 各池统计、worker 心跳、下游闸门占用、任务类型的中文名
+- GET    …                  → 任务列表（按状态、池、类型筛选，按创建时间倒序翻页）
+- GET    …/{id}             → 单个任务与各阶段
+- POST   …/{id}/cancel      → 取消（走业务的失败收尾）
+- POST   …/{id}/retry       → 立即重跑
+- DELETE …/{id}             → 删除失败或已取消的记录
 """
 
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 
 from ..auth.principal import Principal
 from .admin import STATUSES, JobConflict, JobFilter, JobNotFound, JobRow, JobsAdmin
@@ -23,6 +24,7 @@ NOT_FOUND = "任务不存在，可能已经被清理"
 
 IsAdmin = Callable[[str], Awaitable[bool]]
 Status = Literal[STATUSES]  # type: ignore[valid-type]
+WorkspacePath = Annotated[str, Path(pattern=r"^[A-Za-z0-9_.\-]{1,64}$")]
 
 
 def _job(row: JobRow) -> dict:
@@ -30,7 +32,7 @@ def _job(row: JobRow) -> dict:
 
 
 def build_router(admin: JobsAdmin, principal, is_admin: IsAdmin) -> APIRouter:
-    router = APIRouter(prefix="/api/system/jobs", tags=["system"])
+    router = APIRouter(prefix="/api/workspaces/{workspace_id}/jobs", tags=["system"])
     Who = Annotated[Principal, Depends(principal)]
 
     async def system_admin(who: Who) -> str:
@@ -51,35 +53,41 @@ def build_router(admin: JobsAdmin, principal, is_admin: IsAdmin) -> APIRouter:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     @router.get("/overview")
-    async def overview(_: Admin) -> dict:
-        found = await admin.overview()
+    async def overview(workspace_id: WorkspacePath, _: Admin) -> dict:
+        """后台任务运行面板概况"""
+        found = await admin.overview(workspace_id)
         return {"pools": [asdict(p) for p in found.pools], "workers": [asdict(w) for w in found.workers],
                 "gates": [asdict(g) for g in found.gates], "kinds": [asdict(k) for k in found.kinds]}
 
     @router.get("")
-    async def list_jobs(_: Admin, status: Annotated[Status | None, Query()] = None,
+    async def list_jobs(workspace_id: WorkspacePath, _: Admin, status: Annotated[Status | None, Query()] = None,
                         pool: Annotated[str | None, Query(max_length=32)] = None,
                         kind: Annotated[str | None, Query(max_length=64)] = None,
                         cursor: Annotated[str | None, Query(max_length=500)] = None) -> dict:
-        page = await run(admin.jobs(JobFilter(status=status, pool=pool, kind=kind), cursor=cursor))
+        """列出后台任务"""
+        page = await run(admin.jobs(workspace_id, JobFilter(status=status, pool=pool, kind=kind), cursor=cursor))
         return {"items": [_job(row) for row in page.items], "next": page.next}
 
     @router.get("/{job_id}")
-    async def detail(job_id: str, _: Admin) -> dict:
-        job, stages = await run(admin.detail(job_id))
+    async def detail(workspace_id: WorkspacePath, job_id: str, _: Admin) -> dict:
+        """一个后台任务与各阶段"""
+        job, stages = await run(admin.detail(workspace_id, job_id))
         return {**_job(job), "stages": [asdict(stage) for stage in stages]}
 
     @router.post("/{job_id}/cancel")
-    async def cancel(job_id: str, actor: Admin) -> dict:
-        return _job(await run(admin.cancel(actor, job_id)))
+    async def cancel(workspace_id: WorkspacePath, job_id: str, actor: Admin) -> dict:
+        """取消后台任务"""
+        return _job(await run(admin.cancel(workspace_id, actor, job_id)))
 
     @router.post("/{job_id}/retry")
-    async def retry(job_id: str, _: Admin) -> dict:
-        return _job(await run(admin.retry(job_id)))
+    async def retry(workspace_id: WorkspacePath, job_id: str, _: Admin) -> dict:
+        """立即重跑后台任务"""
+        return _job(await run(admin.retry(workspace_id, job_id)))
 
     @router.delete("/{job_id}", status_code=204)
-    async def remove(job_id: str, _: Admin) -> Response:
-        await run(admin.delete(job_id))
+    async def remove(workspace_id: WorkspacePath, job_id: str, _: Admin) -> Response:
+        """删除失败或已取消的任务记录"""
+        await run(admin.delete(workspace_id, job_id))
         return Response(status_code=204)
 
     return router

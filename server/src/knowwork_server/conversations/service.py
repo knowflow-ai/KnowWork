@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from ..kernel.contract import (
     AgentKernel,
     CancelResult,
+    KernelError,
     KnowledgeCatalog,
     PendingApproval,
     PendingQuestion,
@@ -41,6 +42,7 @@ from ..profile.snapshot import NO_SELECTION, RuntimeProfile, TurnSelection
 from .models import Conversation, RunEvent
 from .pump import EventPump
 from .replay import Cursor, EventFeed, Outgoing
+from .search import SearchHit, search_conversations
 from .tool_credentials import ToolCredentials
 
 # 删除会话时一并清掉的关联数据（引用目录、动作回执等），由装配方按模块给出
@@ -56,6 +58,8 @@ class ConversationPage:
 log = logging.getLogger(__name__)
 
 RESUME_RETRY_DELAYS = (0.1, 0.3, 1.0)
+# 宿主「接着记录」打开失败的错误码：DSH 第一轮跑起来才写会话记录，一轮都没开始过的会话也是这个错
+OPEN_FAILED = "session_open_failed"
 CATALOG_TIMEOUT = 3.0  # 知识库目录最多等这么久（KnowFlow 要远程列库），超了这轮就不带，宿主沿用上一轮的
 # 本轮的知识库目录：按会话发起人与运行配置里的知识范围算
 KnowledgeCatalogOf = Callable[[Conversation, RuntimeProfile], Awaitable[KnowledgeCatalog]]
@@ -268,6 +272,10 @@ class ConversationService:
         page = rows[:limit]
         return ConversationPage(items=page, next=page[-1].updated_at if len(rows) > limit else None)
 
+    async def search(self, *, workspace_id: str, user_id: str, query: str) -> tuple[SearchHit, ...]:
+        """搜本人的对话：标题与每轮问的话（search.py）。"""
+        return await search_conversations(self._sessionmaker, workspace_id=workspace_id, user_id=user_id, query=query)
+
     async def rename(self, conversation: Conversation, title: str) -> Conversation:
         clean = " ".join(title.split())[:200]
         await self._touch(conversation.id, title=clean)
@@ -300,9 +308,28 @@ class ConversationService:
             await self._kernel.dispose(conversation.id)
         except SessionNotFound:
             pass
-        await self._kernel.open_session(await self._spec(conversation, resume=True, profile=profile))
+        await self._open_resumed(conversation, profile)
         self._opened(conversation)
         await self._bind(conversation, profile)
+
+    async def _open_resumed(self, conversation: Conversation, profile: RuntimeProfile | None) -> None:
+        """以恢复方式打开宿主会话。DSH 第一轮跑起来才写会话记录，一轮都没开始过的会话恢复不了
+        （宿主日志里是 SessionPersistenceNotFoundError）：这时新开，宿主那边本来就没有东西可丢。
+        新会话第一条消息就 @ 文件、选技能时配置版本会变、要重开，原来这里必然失败（2026-10-26）。
+        跑过回合的会话打不开照旧报错，不悄悄新开、丢掉前面的上下文。"""
+        try:
+            await self._kernel.open_session(await self._spec(conversation, resume=True, profile=profile))
+        except KernelError as error:
+            if error.code != OPEN_FAILED or await self._has_turns(conversation.id):
+                raise
+            log.info("host has no record of %s yet (no turn has started); opening it fresh", conversation.id)
+            await self._kernel.open_session(await self._spec(conversation, resume=False, profile=profile))
+
+    async def _has_turns(self, conversation_id: str) -> bool:
+        async with self._sessionmaker() as session:
+            found = await session.scalar(select(RunEvent.seq).where(
+                RunEvent.conversation_id == conversation_id, RunEvent.data["type"].astext == "turn/start").limit(1))
+        return found is not None
 
     async def _resume_and_send(self, conversation: Conversation, turn: TurnInput,
                                profile: RuntimeProfile | None = None) -> str:
@@ -311,10 +338,9 @@ class ConversationService:
     async def _resume_then(self, conversation: Conversation, profile: RuntimeProfile | None,
                            action: Callable[[], Awaitable[T]]) -> T:
         """宿主侧会话不在：以恢复方式打开再执行 action；宿主上仍找不到会话时按退避重试。"""
-        spec = await self._spec(conversation, resume=True, profile=profile)
         for delay in (*self._resume_retry_delays, None):
             try:
-                await self._kernel.open_session(spec)
+                await self._open_resumed(conversation, profile)
                 self._opened(conversation)
                 await self._bind(conversation, profile)
                 await self._host_restarted()

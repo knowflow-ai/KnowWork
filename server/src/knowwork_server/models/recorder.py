@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from ..access.members import PLATFORM_WORKSPACE_ID
 from ..access.rls import set_workspace
 from .core import check_id
 from .errors import Invalid
@@ -85,10 +86,12 @@ class UsageRecorder:
             raise Invalid("occurred_at 必须带时区")
         day = entry.occurred_at.astimezone(self._tz).date()
         async with self._sessionmaker() as session, session.begin():
-            await set_workspace(session, entry.workspace_id)
+            # 价格从平台配置取（模型全平台共用），用量记在调用者自己的空间：同一事务里先后切两次行级安全变量
+            await set_workspace(session, PLATFORM_WORKSPACE_ID)
             model = (await session.execute(select(Model.id, Model.input_price_per_mtok, Model.output_price_per_mtok)
                                            .where(Model.alias == entry.model_alias))).first()
             model_id, cost = (None, None) if model is None else (model[0], estimate_cost(entry, model[1], model[2]))
+            await set_workspace(session, entry.workspace_id)
             inserted = await session.scalar(self._insert_record(entry, model_id, cost, day))
             if inserted is None:
                 return False

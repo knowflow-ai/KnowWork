@@ -44,11 +44,11 @@ def as_(user):
 async def test_members_endpoints(client):
     base = "/api/workspaces/ws1/members"
     assert (await client.get(base)).status_code == 401
-    created = await client.post(base, json={"user_id": "erin", "role": "viewer"}, headers=as_("bob"))
-    assert created.status_code == 201 and created.json() == {"user_id": "erin", "role": "viewer"}
-    assert (await client.post(base, json={"user_id": "erin", "role": "viewer"}, headers=as_("bob"))).status_code == 409
+    created = await client.post(base, json={"user_id": "erin", "role": "editor"}, headers=as_("bob"))
+    assert created.status_code == 201 and created.json() == {"user_id": "erin", "role": "editor"}
+    assert (await client.post(base, json={"user_id": "erin", "role": "editor"}, headers=as_("bob"))).status_code == 409
     assert (await client.post(base, json={"user_id": "x", "role": "god"}, headers=as_("bob"))).status_code == 422
-    assert (await client.post(base, json={"user_id": "x", "role": "viewer"}, headers=as_("dave"))).status_code == 403
+    assert (await client.post(base, json={"user_id": "x", "role": "editor"}, headers=as_("dave"))).status_code == 403
     patched = await client.patch(f"{base}/erin", json={"role": "editor"}, headers=as_("bob"))
     assert patched.json()["role"] == "editor"
     assert (await client.delete(f"{base}/erin", headers=as_("bob"))).status_code == 204
@@ -110,8 +110,8 @@ async def test_grant_endpoints_and_guard(client):
 
 
 class _Profile:
-    def __init__(self, name: str, email: str) -> None:
-        self.name, self.email = name, email
+    def __init__(self, name: str, email: str, kind: str = "person") -> None:
+        self.name, self.email, self.kind = name, email, kind
 
 
 async def _client_with(service, profiles):
@@ -125,13 +125,15 @@ async def test_member_list_carries_name_and_email_when_profiles_are_wired(servic
 
     async def profiles(ids):
         asked.append(tuple(ids))
-        return {"alice": _Profile("爱丽丝", "alice@corp.cn")}
+        return {"alice": _Profile("爱丽丝", "alice@corp.cn"), "carol": _Profile("行政助手", "x@channel.invalid", "channel")}
 
     async with await _client_with(service, profiles) as http:
         listed = (await http.get("/api/workspaces/ws1/members", headers=as_("dave"))).json()
     assert asked == [("alice", "bob", "carol", "dave")]
-    assert listed[0] == {"user_id": "alice", "role": "owner", "name": "爱丽丝", "email": "alice@corp.cn"}
-    assert listed[1] == {"user_id": "bob", "role": "admin", "name": None, "email": None}
+    assert listed[0] == {"user_id": "alice", "role": "owner", "name": "爱丽丝", "email": "alice@corp.cn",
+                         "kind": "person"}
+    assert listed[1] == {"user_id": "bob", "role": "admin", "name": None, "email": None, "kind": "person"}
+    assert listed[2]["kind"] == "channel"  # 渠道账号带上种类，前端从成员页滤掉
 
 
 async def test_member_list_survives_a_failing_profile_lookup(service, ws):
@@ -141,7 +143,7 @@ async def test_member_list_survives_a_failing_profile_lookup(service, ws):
     async with await _client_with(service, broken) as http:
         response = await http.get("/api/workspaces/ws1/members", headers=as_("dave"))
     assert response.status_code == 200
-    assert response.json()[0] == {"user_id": "alice", "role": "owner", "name": None, "email": None}
+    assert response.json()[0] == {"user_id": "alice", "role": "owner", "name": None, "email": None, "kind": "person"}
 
 
 async def test_member_list_without_profiles_keeps_the_old_shape(client, ws):

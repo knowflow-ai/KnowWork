@@ -1,9 +1,11 @@
 /**
  * 运行面板接口（server/src/knowwork_server/jobs/api.py）：后台任务各池的统计、worker 心跳、下游闸门占用，
  * 任务列表与单个任务的阶段；对单个任务取消、立即重跑、删除记录。只给系统管理员，只能在网页上用。
+ * 任务按空间存，看的是当前空间的任务；worker 与闸门是全局的。
  */
 import { request, seg, withQuery } from './http';
 import { bool, isRecord, listOf, num, str } from './parse';
+import { workspacePath } from './workspace';
 
 export type JobStatus = 'queued' | 'retrying' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
@@ -201,10 +203,10 @@ function requireJob(value: unknown): JobRow {
   return job;
 }
 
-const BASE = '/api/system/jobs';
+const base = (path = '') => workspacePath(`/jobs${path}`);
 
 export async function getJobsOverview(): Promise<JobsOverview> {
-  const body = await request<unknown>(`${BASE}/overview`);
+  const body = await request<unknown>(base('/overview'));
   const record = isRecord(body) ? body : {};
   return {
     pools: listOf(record.pools, poolOf),
@@ -215,25 +217,25 @@ export async function getJobsOverview(): Promise<JobsOverview> {
 }
 
 export async function listJobs(query: JobQuery, cursor: string | null): Promise<JobPage> {
-  const body = await request<unknown>(withQuery(BASE, { ...query, cursor }));
+  const body = await request<unknown>(withQuery(base(), { ...query, cursor }));
   const record = isRecord(body) ? body : {};
   return { items: listOf(record.items, jobOf), next: str(record.next) ?? null };
 }
 
 export async function getJob(id: string): Promise<JobDetail> {
-  const body = await request<unknown>(`${BASE}/${seg(id)}`);
+  const body = await request<unknown>(base(`/${seg(id)}`));
   const record = isRecord(body) ? body : {};
   return { ...requireJob(body), stages: listOf(record.stages, stageOf) };
 }
 
 export async function cancelJob(id: string): Promise<JobRow> {
-  return requireJob(await request<unknown>(`${BASE}/${seg(id)}/cancel`, { method: 'POST' }));
+  return requireJob(await request<unknown>(base(`/${seg(id)}/cancel`), { method: 'POST' }));
 }
 
 export async function retryJob(id: string): Promise<JobRow> {
-  return requireJob(await request<unknown>(`${BASE}/${seg(id)}/retry`, { method: 'POST' }));
+  return requireJob(await request<unknown>(base(`/${seg(id)}/retry`), { method: 'POST' }));
 }
 
 export async function deleteJob(id: string): Promise<void> {
-  await request<unknown>(`${BASE}/${seg(id)}`, { method: 'DELETE' });
+  await request<unknown>(base(`/${seg(id)}`), { method: 'DELETE' });
 }

@@ -12,6 +12,7 @@ import { request, seg } from './http';
 import { isRecord, listOf, num, text } from './parse';
 import { locateOf, type PreviewLocate } from '../features/preview/locate';
 import { mergeLocators } from '../features/preview/mergeLocate';
+import { workspacePath } from './workspace';
 
 function safeUrl(value: unknown): string | undefined {
   const url = text(value);
@@ -54,6 +55,7 @@ function parseCitation(value: unknown): readonly [number, CitationSource] | unde
       locate: whole ?? locateOf(value.locator),
       ...(spots.length ? { spots } : {}),
       ...(images.length ? { images } : {}),
+      ...(text(value.versionNote) ? { versionNote: text(value.versionNote) } : {}),
     },
   ];
 }
@@ -62,7 +64,9 @@ export async function listCitations(
   conversationId: string,
   signal?: AbortSignal,
 ): Promise<Readonly<Record<number, CitationSource>>> {
-  const body = await request<unknown>(`/api/conversations/${seg(conversationId)}/citations`, { signal });
+  const body = await request<unknown>(workspacePath(`/conversations/${seg(conversationId)}/citations`), {
+    signal,
+  });
   const entries = listOf(isRecord(body) ? body.items : undefined, parseCitation);
   return Object.fromEntries(entries);
 }

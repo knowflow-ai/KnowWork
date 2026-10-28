@@ -25,11 +25,11 @@ class Upstream:
 
 
 async def setup(catalog):
-    provider = await catalog.create_provider("bob", "ws1", ProviderCreate(name="硅基", base_url="https://up/v1",
+    provider = await catalog.create_provider("root", ProviderCreate(name="硅基", base_url="https://up/v1",
                                                                           api_key=KEY))
     for alias, name, capabilities in (("emb", "bge-m3", ["embedding"]), ("rr", "bge-reranker", ["rerank"]),
                                       ("vl", "qwen-vl", ["chat", "vision"]), ("chat", "ds", ["chat"])):
-        await catalog.create_model("bob", "ws1", ModelCreate(provider_id=provider.id, alias=alias, name=name,
+        await catalog.create_model("root", ModelCreate(provider_id=provider.id, alias=alias, name=name,
                                                              capabilities=capabilities))
 
 
@@ -55,8 +55,8 @@ async def test_embeddings_are_batched_and_kept_in_order(catalog):
 
 async def test_input_limit_is_the_context_length_of_the_embedding_model(catalog):
     await setup(catalog)
-    provider = (await catalog.list_providers("bob", "ws1"))[0]
-    await catalog.create_model("bob", "ws1", ModelCreate(provider_id=provider.id, alias="emb-zh", name="bge-large-zh",
+    provider = (await catalog.list_providers("root"))[0]
+    await catalog.create_model("root", ModelCreate(provider_id=provider.id, alias="emb-zh", name="bge-large-zh",
                                                          capabilities=["embedding"], context_length=512))
     models, _ = client(catalog, embeddings)
     assert await models.input_limit("ws1", "emb-zh") == 512
@@ -90,12 +90,23 @@ async def test_image_description_goes_through_chat_completions(catalog):
 async def test_chat_follows_the_models_thinking_setting(catalog):
     """后台调对话模型（自动打标等）和对话一样按模型的思考设置补参数。"""
     await setup(catalog)
-    [chat] = [m for m in await catalog.list_models("bob", "ws1") if m.alias == "chat"]
-    await catalog.update_model("bob", "ws1", chat.id, ModelUpdate(thinking="off"))
+    [chat] = [m for m in await catalog.list_models("root") if m.alias == "chat"]
+    await catalog.update_model("root", chat.id, ModelUpdate(thinking="off"))
     models, upstream = client(catalog, lambda path, body: httpx.Response(200, json={
         "choices": [{"message": {"content": "好"}}]}))
     assert await models.chat("ws1", "chat", [{"role": "user", "content": "打个标签"}]) == "好"
     assert upstream.requests[0]["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+async def test_chat_passes_the_requested_output_format_and_nothing_by_default(catalog):
+    """要结构化输出的调用方（扩展部署的抽取服务）可以带 response_format；不带时请求里没有这一项。"""
+    await setup(catalog)
+    models, upstream = client(catalog, lambda path, body: httpx.Response(200, json={
+        "choices": [{"message": {"content": "{}"}}]}))
+    await models.chat("ws1", "chat", [{"role": "user", "content": "抽事件"}], response_format={"type": "json_object"})
+    await models.chat("ws1", "chat", [{"role": "user", "content": "打个标签"}])
+    assert upstream.requests[0]["body"]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in upstream.requests[1]["body"]
 
 
 async def test_models_must_exist_be_enabled_and_carry_the_capability(catalog):

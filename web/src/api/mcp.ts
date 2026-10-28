@@ -1,9 +1,9 @@
 /** MCP 服务（server/src/knowwork_server/tools/mcp/api.py）。字段是 camelCase；响应里没有请求头明文。 */
 import { request, seg } from './http';
 import { bool, isRecord, listOf, num, str, text } from './parse';
-import { WORKSPACE_ID } from './workspace';
+import { workspacePath } from './workspace';
 
-const base = (path = '') => `/api/workspaces/${seg(WORKSPACE_ID)}/mcp-servers${path}`;
+const base = (path = '') => workspacePath(`/mcp-servers${path}`);
 
 export type ToolRisk = 'read' | 'write' | 'dangerous';
 export type ToolApproval = 'ask' | 'never';

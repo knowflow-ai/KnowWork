@@ -28,13 +28,14 @@ async def test_conversation_delete_runs_both_erasers(files_db, tmp_path):
     sandbox.write_output("default", conv.id, "b.txt", b"out")
     await artifacts.collector.collect("default", conv.id)
 
-    from knowwork_server.db.base import make_workspace_sessionmaker
-    scoped = make_workspace_sessionmaker(sessionmaker.kw["bind"], "default")
+    from knowwork_server.db.base import in_workspace, make_workspace_sessionmaker
+    scoped = make_workspace_sessionmaker(sessionmaker.kw["bind"])
     kernel, writer, broadcaster = FakeKernel(), BatchWriter(scoped), Broadcaster()
     pump = EventPump(kernel, scoped, writer, broadcaster)
     service = ConversationService(kernel, scoped, pump, EventFeed(scoped, writer, broadcaster, pump.produced_upto),
                                   erasers=(attachments.service.erase, artifacts.service.erase))
-    await service.delete(conv)
+    with in_workspace("default"):
+        await service.delete(conv)
     await pump.close()
     assert await attachments.service.list(conv) == () and await artifacts.service.list(conv) == ()
     assert not any((tmp_path / "default" / conv.id).rglob("*.*"))

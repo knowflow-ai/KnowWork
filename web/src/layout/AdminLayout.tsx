@@ -7,14 +7,14 @@ import { NavLink, Outlet } from 'react-router';
 import { RequireAdmin } from '../features/auth/RequireAdmin';
 import { BrandMark } from '../features/brand/BrandMark';
 import { useBrandHead, useIsSystemAdmin } from '../features/brand/queries';
-import { adminNav, linkClass, SYSTEM_NAV } from './nav';
+import { adminNav, linkClass, systemNav } from './nav';
 import { UserMenu } from './UserMenu';
 
 function AdminSidebar() {
   useBrandHead();
   const systemAdmin = useIsSystemAdmin();
   const nav = adminNav();
-  const groups = systemAdmin.data ? [...nav, SYSTEM_NAV] : nav;
+  const groups = systemAdmin.data ? [...nav, systemNav()] : nav;
   return (
     <nav className="kw-sidebar" aria-label="管理导航">
       <div className="kw-admin-brand">

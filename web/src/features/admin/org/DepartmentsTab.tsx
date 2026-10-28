@@ -1,8 +1,8 @@
 /** 部门树：左侧树、右侧选中部门的详情。 */
 import { useMemo, useState } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
-import { Plus } from '@openai/apps-sdk-ui/components/Icon';
-import { createDepartment, findDepartment } from '../../../api/workspace';
+import { Groups, Plus, Users, Warning } from '@openai/apps-sdk-ui/components/Icon';
+import { createDepartment, findDepartment, peopleOnly } from '../../../api/workspace';
 import { Empty } from '../../../ui/Empty';
 import { Skeleton } from '../../../ui/Skeleton';
 import { Tree } from '../../../ui/Tree';
@@ -38,7 +38,11 @@ export function DepartmentsTab() {
         }
       />
       {tree.length === 0 ? (
-        <Empty description={departments.isError ? '部门加载失败，请刷新重试' : '还没有部门'} />
+        <Empty
+          area
+          icon={departments.isError ? <Warning /> : <Groups />}
+          description={departments.isError ? '部门加载失败，请刷新重试' : '还没有部门'}
+        />
       ) : (
         <div className="kw-org-layout">
           <Tree
@@ -51,11 +55,11 @@ export function DepartmentsTab() {
           {current ? (
             <DepartmentPanel
               department={current}
-              members={members.data ?? []}
+              members={peopleOnly(members.data ?? [])}
               onDeleted={() => setSelected(undefined)}
             />
           ) : (
-            <Empty description="选择左侧的部门查看成员" />
+            <Empty area icon={<Users />} description="选择左侧的部门查看成员" />
           )}
         </div>
       )}

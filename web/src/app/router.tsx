@@ -17,6 +17,7 @@ const InvitePage = lazy(() => import('../features/auth/InvitePage'));
 const SetupPage = lazy(() => import('../features/auth/SetupPage'));
 const SettingsPage = lazy(() => import('../features/settings/SettingsPage'));
 const SkillsPage = lazy(() => import('../features/admin/skills/SkillsPage'));
+const ChannelsPage = lazy(() => import('../features/admin/channels/ChannelsPage'));
 const MembersPage = lazy(() => import('../features/admin/members/MembersPage'));
 const OrgPage = lazy(() => import('../features/admin/org/OrgPage'));
 const GrantsPage = lazy(() => import('../features/admin/grants/GrantsPage'));
@@ -25,6 +26,7 @@ const KnowledgePage = lazy(() => import('../features/admin/knowledge/KnowledgePa
 const UsagePage = lazy(() => import('../features/admin/UsagePage'));
 const AuditPage = lazy(() => import('../features/admin/audit/AuditPage'));
 const RunsPage = lazy(() => import('../features/admin/runs/RunsPage'));
+const InsightsPage = lazy(() => import('../features/admin/insights/InsightsPage'));
 const ToolsPage = lazy(() => import('../features/admin/tools/ToolsPage'));
 const SystemPage = lazy(() => import('../features/admin/system/SystemPage'));
 const JobsPage = lazy(() => import('../features/admin/jobs/JobsPage'));
@@ -41,9 +43,11 @@ const adminRoutes = (): RouteObject[] => [
   { path: 'grants', element: page(<GrantsPage />) },
   { path: 'models', element: page(<ModelsPage />) },
   { path: 'knowledge', element: page(<KnowledgePage />) },
+  { path: 'insights', element: page(<InsightsPage />) },
   { path: 'usage', element: page(<UsagePage />) },
   { path: 'skills', element: page(<SkillsPage />) },
   { path: 'tools', element: page(<ToolsPage />) },
+  { path: 'channels', element: page(<ChannelsPage />) },
   { path: 'runs', element: page(<RunsPage />) },
   { path: 'audit', element: page(<AuditPage />) },
   { path: 'system', element: page(<SystemPage />) },
@@ -56,6 +60,7 @@ export const buildRoutes = (): RouteObject[] => [
   { path: '/login', element: page(<LoginPage />) },
   { path: '/invite', element: page(<InvitePage />) },
   { path: '/setup', element: page(<SetupPage />) },
+  // 企业微信等机器人发来的绑定链接：要登录，不进主界面（不带侧栏）
   {
     path: '/',
     element: (

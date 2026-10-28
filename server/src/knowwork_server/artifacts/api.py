@@ -42,11 +42,12 @@ def media_type(item: ArtifactView) -> str:
 
 def build_router(service: ArtifactService, conversations: ConversationLookup, current_actor: ActorDependency, *,
                  on_download: DownloadHook | None = None, settle: SettleHook | None = None) -> APIRouter:
-    router = APIRouter(prefix="/api/conversations")
+    router = APIRouter(prefix="/api/workspaces/{workspace_id}/conversations")
     Who = Annotated[Actor, Depends(current_actor)]
 
     @router.get("/{conversation_id}/artifacts")
     async def list_artifacts(conversation_id: str, who: Who):
+        """对话里的产物文件"""
         conversation = await owned_conversation(conversations, conversation_id, who)
         if settle is not None:
             await settle(conversation_id)
@@ -54,6 +55,7 @@ def build_router(service: ArtifactService, conversations: ConversationLookup, cu
 
     @router.get("/{conversation_id}/artifacts/{artifact_id}")
     async def download(conversation_id: str, who: Who, artifact_id: Annotated[str, ARTIFACT_ID]):
+        """下载产物文件"""
         conversation = await owned_conversation(conversations, conversation_id, who)
         try:
             content = await service.open(conversation, artifact_id)

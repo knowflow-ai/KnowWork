@@ -9,6 +9,7 @@ from knowwork_server.identity import IdentityConfig, build_identity
 from knowwork_server.identity.api import build_router as identity_router
 from knowwork_server.principals import WORKSPACE_SCOPE, scoped_principal
 
+BOUND = {"workspaceId": "ws3"}
 pytestmark = pytest.mark.anyio
 PASSWORD = "correct horse battery"
 
@@ -36,8 +37,8 @@ async def test_human_operations_are_queryable(env):
     http, audit, owner = env["http"], env["audit"], env["owner"]
     assert (await http.post("/api/auth/login", json={"email": "owner@corp.com", "password": "wrong"})).status_code == 401
     assert (await http.post("/api/auth/login", json={"email": "Owner@corp.com", "password": PASSWORD})).status_code == 200
-    created = (await http.post("/api/auth/api-keys", json={"name": "审计", "scopes": [AUDIT_SCOPE]})).json()
-    added = await http.post("/api/workspaces/ws3/members", json={"user_id": "bob", "role": "viewer"})
+    created = (await http.post("/api/auth/api-keys", json={"name": "审计", "scopes": [AUDIT_SCOPE], **BOUND})).json()
+    added = await http.post("/api/workspaces/ws3/members", json={"user_id": "bob", "role": "editor"})
     assert added.status_code == 201
     await http.post("/api/workspaces/ws3/grants", json={"subject": "user:bob", "resource": "skill:s1", "action": "use"})
     assert (await http.delete(f"/api/auth/api-keys/{created['id']}")).status_code == 204
@@ -45,7 +46,7 @@ async def test_human_operations_are_queryable(env):
 
     http.cookies.clear()
     key = (await http.post("/api/auth/login", json={"email": "owner@corp.com", "password": PASSWORD}))
-    other = (await http.post("/api/auth/api-keys", json={"name": "读", "scopes": [AUDIT_SCOPE]})).json()["key"]
+    other = (await http.post("/api/auth/api-keys", json={"name": "读", "scopes": [AUDIT_SCOPE], **BOUND})).json()["key"]
     http.cookies.clear()
     await audit.writer.flush()
     response = await http.get("/api/workspaces/ws3/audit-logs", headers={"authorization": f"Bearer {other}"})
@@ -57,7 +58,7 @@ async def test_human_operations_are_queryable(env):
     made = items[("api_key.create", "success")]
     assert made["resourceId"] == created["id"] and made["credentialType"] == "session" and made["credentialId"]
     assert created["key"] not in str(response.json())  # 明文 Key 绝不进审计
-    assert items[("member.add", "success")]["detail"]["role"] == "viewer"
+    assert items[("member.add", "success")]["detail"]["role"] == "editor"
     assert items[("grant.create", "success")]["detail"]["subject"] == "user:bob"
     assert items[("api_key.revoke", "success")]["resourceId"] == created["id"]
     assert all(i["actorType"] == "human" for i in response.json()["items"])
@@ -67,7 +68,7 @@ async def test_human_operations_are_queryable(env):
 async def test_api_key_without_audit_scope_cannot_read(env):
     http = env["http"]
     await http.post("/api/auth/login", json={"email": "owner@corp.com", "password": PASSWORD})
-    key = (await http.post("/api/auth/api-keys", json={"name": "无审计", "scopes": [WORKSPACE_SCOPE]})).json()["key"]
+    key = (await http.post("/api/auth/api-keys", json={"name": "无审计", "scopes": [WORKSPACE_SCOPE], **BOUND})).json()["key"]
     http.cookies.clear()
     response = await http.get("/api/workspaces/ws3/audit-logs", headers={"authorization": f"Bearer {key}"})
     assert response.status_code == 403

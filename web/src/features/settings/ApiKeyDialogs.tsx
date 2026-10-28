@@ -1,11 +1,11 @@
-/** 创建 API Key：明文只在创建成功后显示这一次。 */
+/** 创建 API Key：明文只在创建成功后显示这一次。Key 只在当前空间里有效（对外检索与 MCP 按它判在哪个空间）。 */
 import { useState } from 'react';
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
 import { Select } from '@openai/apps-sdk-ui/components/Select';
 import { API_KEY_SCOPES, createApiKey, validateApiKeyInput, type IssuedApiKey } from '../../api/identity';
 import { readableError } from '../../api/http';
-import { WORKSPACE_ID } from '../../api/workspace';
+import { currentWorkspaceId } from '../../stores/workspace';
 import { Dialog, DialogActions } from '../../ui/Dialog';
 import { Field } from '../../ui/Field';
 import { rule, useForm, type Rules } from '../../ui/form';
@@ -17,7 +17,6 @@ interface Values {
   readonly name: string;
   readonly scopes: readonly string[];
   readonly days: number;
-  readonly bind: boolean;
 }
 
 const RULES: Rules<Values> = {
@@ -48,7 +47,7 @@ export function CreateApiKeyDialog({
   readonly onCreated: () => void;
   readonly onClose: () => void;
 }) {
-  const form = useForm<Values>({ name: '', scopes: ['conversations:use'], days: 90, bind: true }, RULES);
+  const form = useForm<Values>({ name: '', scopes: ['conversations:use'], days: 90 }, RULES);
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<IssuedApiKey | null>(null);
   if (issued) return <IssuedKey issued={issued} onClose={onClose} />;
@@ -60,7 +59,7 @@ export function CreateApiKeyDialog({
       name: values.name,
       scopes: [...values.scopes],
       expiresAt: expiryFrom(values.days),
-      workspaceId: values.bind ? WORKSPACE_ID : null,
+      workspaceId: currentWorkspaceId(),
     };
     const problem = validateApiKeyInput(input);
     if (problem) {
@@ -111,11 +110,6 @@ export function CreateApiKeyDialog({
           block
         />
       </Field>
-      <Checkbox
-        label="只允许在默认空间使用"
-        checked={values.bind}
-        onCheckedChange={(checked) => set('bind', checked)}
-      />
     </Dialog>
   );
 }

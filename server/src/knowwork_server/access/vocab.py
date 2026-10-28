@@ -6,10 +6,11 @@ from enum import StrEnum
 
 
 class Role(StrEnum):
+    """空间角色。界面上叫所有者、管理员、成员；原来还有「只读成员」（viewer），权限和成员一直一样，迁移 0020 并进了成员。"""
+
     OWNER = "owner"
     ADMIN = "admin"
     EDITOR = "editor"
-    VIEWER = "viewer"
 
 
 class Action(StrEnum):
@@ -67,7 +68,7 @@ def parse_role(value: str) -> Role:
     try:
         return Role(value)
     except ValueError as error:
-        raise InvalidInput("角色只能是 owner、admin、editor、viewer") from error
+        raise InvalidInput("角色只能是 owner、admin、editor") from error
 
 
 @dataclass(frozen=True)

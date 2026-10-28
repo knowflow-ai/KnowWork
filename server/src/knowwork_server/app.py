@@ -8,14 +8,15 @@ from dataclasses import dataclass
 from functools import partial
 
 import httpx
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from starlette.routing import Route
 
 from .access.api import build_router as access_router
-from .access.members import DEFAULT_WORKSPACE_ID
+from .access.members import PLATFORM_WORKSPACE_ID
 from .access.service import AccessService
 from .access.vocab import WORKSPACE_RESOURCE, Action
+from .apidocs import install as install_api_docs
 from .approvals import SessionGrants
 from .artifacts import Artifacts, build_artifacts
 from .artifacts.api import build_router as artifacts_router
@@ -25,8 +26,11 @@ from .attachments.api import build_router as attachments_router
 from .attachments.turns import TurnAttachments
 from .audit import AUDIT_SCOPE, AuditModule, build_audit
 from .audit import build_router as audit_router
+from .channels import Channels, build_channels
+from .channels import build_router as channels_router
 from .config import Settings
 from .conversations.api import build_router as conversation_router
+from .conversations.feedback import FeedbackStore
 from .conversations.listeners import Broadcaster
 from .conversations.mention_api import MentionSources
 from .conversations.mention_api import build_router as mention_router
@@ -35,6 +39,7 @@ from .conversations.observers import fan_out
 from .conversations.pump import EventPump
 from .conversations.replay import EventFeed
 from .conversations.service import ConversationService
+from .conversations.summaries import RunSummaries
 from .conversations.tool_credentials import ToolCredentials, require_membership
 from .conversations.writer import BatchWriter
 from .db.base import Base, make_engine, make_sessionmaker, make_workspace_sessionmaker
@@ -53,6 +58,8 @@ from .gateway.model_gateway import build_router as gateway_router
 from .identity.api import build_router as identity_router
 from .identity.config import IdentityConfig, OidcConfig
 from .identity.container import Identity, build_identity
+from .insights import InsightsService, build_insights
+from .insights import build_router as insights_router
 from .jobs.admin import JobsAdmin
 from .jobs.api import build_router as jobs_router
 from .kernel.contract import KnowledgeCatalog
@@ -69,6 +76,7 @@ from .knowledge.mcp_server import KnowledgeMcp
 from .knowledge.mentionables import mentionable_bases, mentionable_documents
 from .knowledge.reader import KnowledgeReader
 from .knowledge.reader_api import build_router as reader_router
+from .knowledge.service import KnowledgeService
 from .models import ModelClient, ModelsService, build_models_service
 from .models.api import build_router as models_router
 from .models.observer import UsageObserver
@@ -82,6 +90,8 @@ from .principals import (
     bound_principal,
     conversation_actor,
     knowledge_reader,
+    path_workspace,
+    place_new_user,
     scoped_principal,
     workspace_admin,
     workspace_member,
@@ -93,6 +103,7 @@ from .sandbox.internal_api import build_internal_router as sandbox_internal_rout
 from .sandbox.unavailable import UnavailableSandbox
 from .setup import build_setup_service
 from .setup.api import build_router as setup_router
+from .setup.service import current_system_admin
 from .skills import Skills, build_skills
 from .skills import build_runs_router as skill_runs_router
 from .skills.api import build_router as skills_router
@@ -136,6 +147,7 @@ class Runtime:
     previews: PreviewService
     artifact_observer: ArtifactObserver
     citation_observer: CitationObserver
+    summaries: RunSummaries  # 每轮汇总（运行记录的列表读它）
     skill_runs: SkillRunProjector
     workflows: Workflows
     grants: SessionGrants
@@ -147,11 +159,14 @@ class Runtime:
     knowledge: KnowledgeModule
     knowledge_reader: KnowledgeReader  # 对外检索（REST 与 MCP 共用）
     mention_sources: MentionSources  # 输入框 @ 菜单的候选
+    feedback: FeedbackStore  # 对每轮回答的赞、踩
     links: LinkSigner  # 站内链接签名：知识库图片在回答、引用里显示要带签名
     knowledge_mcp: KnowledgeMcp
     mcp: McpModule
     debug: DebugService
     runs: RunRecords
+    insights: InsightsService  # 问答大盘（空间所有者、管理员）
+    channels: Channels  # 渠道：企业微信等机器人
     jobs: JobsAdmin  # 运行面板
     parsers: DocumentParsers  # 文档解析服务的配置
     # 不声明工作空间：只能读写全局表（账号、工作空间等）；读行级安全表一行都看不到，要用声明空间的工厂
@@ -162,9 +177,10 @@ class Runtime:
     routed_http: httpx.AsyncClient
     host_http: httpx.AsyncClient  # 就绪探针查宿主 /health 用
     oidc_http: httpx.AsyncClient | None
-    # 按授权启用的扩展与它们的路由（装配失败的已从启用里去掉、记下原因）
+    # 按授权启用的扩展与它们的路由（装配失败的已从启用里去掉、记下原因）；内部端口的单独一份
     extensions: Extensions
     extension_routers: tuple[APIRouter, ...]
+    extension_internal_routers: tuple[APIRouter, ...] = ()
 
     async def start(self, *, create_schema: bool = False) -> None:
         if create_schema or self.settings.create_schema:
@@ -179,6 +195,8 @@ class Runtime:
         await self.workflows.engine.reconcile(STALE_AFTER)  # 上次没跑完的运行标为中断，可续跑
         if not await self.access.reload():
             raise RuntimeError("权限规则加载失败，拒绝启动")
+        # 系统管理员能进任何空间：从初始化记录读回来交给权限模块（还没初始化时为空）
+        self.access.set_system_admin(await current_system_admin(self.global_sessionmaker))
         for extension in self.extensions.active:
             await extension.start()
         await self.knowledge_mcp.start()
@@ -189,8 +207,10 @@ class Runtime:
         await self.rotator.start()
         self.tool_credentials.start()
         self.skill_credentials.start()
+        await self.channels.supervisor.start()  # 机器人长连接放最后：会话要用到的都已就绪
 
     async def stop(self) -> None:
+        await self.channels.supervisor.stop()
         await self.knowledge_mcp.stop()
         await self.workflows.engine.aclose()
         await self.tool_credentials.stop()
@@ -200,6 +220,7 @@ class Runtime:
         await self.usage.drain()
         await self.artifact_observer.drain()
         await self.citation_observer.drain()
+        await self.summaries.drain()
         await self.skill_runs.drain()  # 它等本轮的帧落库，要在关落库器之前
         self.broadcaster.close_all()
         await self.writer.close()
@@ -262,12 +283,24 @@ def _session_credentials(kernel: HostKernel, tools: ToolService, skills: Skills,
     return tool_credentials, skill_credentials
 
 
-def _usage_observer(kernel: HostKernel, scoped: async_sessionmaker, models: ModelsService,
-                    settings: Settings) -> UsageObserver:
+async def _base_names(service: KnowledgeService, workspace_id: str, user_id: str) -> dict[str, str]:
+    """问答大盘里知识库的名字：按查看者能查的列（全局 id → 名字）。"""
+    listing = await service.bases(await service.caller(workspace_id, user_id))
+    return {base.id: base.info.name or base.id for base in listing.bases}
+
+
+def _owner_lookup(scoped: async_sessionmaker):
     async def owner_of(conversation_id: str) -> str | None:
         async with scoped() as session:
             conversation = await session.get(Conversation, conversation_id)
         return conversation.user_id if conversation is not None else None
+
+    return owner_of
+
+
+def _usage_observer(kernel: HostKernel, scoped: async_sessionmaker, models: ModelsService,
+                    settings: Settings) -> UsageObserver:
+    owner_of = _owner_lookup(scoped)
 
     async def cancel_turn(conversation_id: str) -> None:
         await kernel.cancel(conversation_id)
@@ -282,13 +315,14 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     master_key = settings.master_key.get_secret_value()
     engine = make_engine(settings.database_url)
     global_sessionmaker = make_sessionmaker(engine)
-    # 开源版只有默认空间：对话与工具回执的每个事务都声明它，行级安全据此放行
-    scoped = make_workspace_sessionmaker(engine, DEFAULT_WORKSPACE_ID)
+    # 对话、工具回执、产物、附件等的每个事务都声明当前空间（请求路径、回调令牌、会话所在的空间），行级安全据此放行
+    scoped = make_workspace_sessionmaker(engine)
     kernel = HostKernel(settings.host_base_url, settings.host_token.get_secret_value())
     signer = TokenSigner(derive_key(master_key, "host-callback"))
 
     def issue_model_token() -> str:
-        return signer.issue(audience=MODEL_AUDIENCE, workspace_id=DEFAULT_WORKSPACE_ID,
+        # 宿主只有一份模型凭据，所有空间的会话共用；模型是平台级的，令牌就记平台配置所在的空间
+        return signer.issue(audience=MODEL_AUDIENCE, workspace_id=PLATFORM_WORKSPACE_ID,
                             ttl_seconds=settings.model_token_ttl_seconds)
 
     rotator = CredentialRotator(kernel.rotate_model_credential, issue_model_token,
@@ -305,8 +339,14 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
         return TurnScope(bases=profile.bound_knowledge, dropped=frozenset(profile.dropped_conditions),
                          pins=tuple(Pinned(base=p.base, documents=p.documents, tags=p.tags) for p in profile.pins))
 
-    knowledge = build_knowledge(master_key, global_sessionmaker, access, turn_scope=turn_scope)
+    # 每轮汇总：回合开始、结束时各写一次；检索记录从它知道这一轮是第几轮，回合结束时把知识这一项事实交回给它
+    summaries = RunSummaries(scoped, _owner_lookup(scoped))
     sandbox = build_sandbox(SandboxSettings())
+    # 知识工具要会话沙箱放取来的图与文件（knowledge_fetch）；没开 Docker 沙箱时不提供这个工具
+    knowledge = build_knowledge(master_key, global_sessionmaker, access, turn_scope=turn_scope,
+                                current_turn=summaries.current_turn,
+                                sandbox=sandbox.sandbox if sandbox is not None else None)
+    summaries.contribute("knowledge", knowledge.search_log.close_turn)
     # 内置工具（时间、知识检索、沙箱）只要求是空间成员；MCP 工具要 tool:<名字> 授权（默认只有 owner、admin）。
     # 执行时注册表按当前授权再判一次，权限收回立即生效。内置工具排在前面，外部工具不能顶替同名的内置工具。
     builtin_tools = (KW_NOW, *knowledge.tools)
@@ -314,7 +354,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     mcp = build_mcp(master_key, global_sessionmaker, access)
     registry = AuthorizedToolRegistry(CompositeToolRegistry(StaticToolRegistry.of(builtin_tools), mcp.registry),
                                       clearance)
-    audit = build_audit(global_sessionmaker, default_workspace_id=DEFAULT_WORKSPACE_ID)
+    # 路径里没有空间的写操作（登录、建 Key、接受邀请）记在平台配置所在的空间
+    audit = build_audit(global_sessionmaker, default_workspace_id=PLATFORM_WORKSPACE_ID)
     tools = build_tool_service(master_key, scoped, registry=registry, token_ttl_seconds=settings.tool_token_ttl_seconds,
                                audit=audit.tool_hook)
     blobs = blob_store(settings)
@@ -341,10 +382,12 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                    writer.pending, artifact_observer.settle)
     broadcaster = Broadcaster()
     pump = EventPump(kernel, scoped, writer, broadcaster, on_host_restart=rotator.rotate_now,
-                     observer=fan_out(usage, artifact_observer, citation_observer, skill_runs))
+                     observer=fan_out(usage, artifact_observer, citation_observer, skill_runs,
+                                      knowledge.turns, summaries))
     feed = EventFeed(scoped, writer, broadcaster, pump.produced_upto, live_snapshot=pump.live_snapshot)
-    async def erase_citations(conversation: Conversation) -> None:
+    async def erase_knowledge(conversation: Conversation) -> None:
         await knowledge.citations.discard(conversation.workspace_id, conversation.id)
+        await knowledge.search_log.discard(conversation.workspace_id, conversation.id)
 
     async def erase_receipts(conversation: Conversation) -> None:
         await tools.discard_session(conversation.id)
@@ -373,7 +416,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                   grants=grants, attachments=TurnAttachments(attachments.service),
                                   knowledge_catalog=knowledge_catalog,
                                   tool_credentials=tool_credentials, skill_credentials=skill_credentials,
-                                  erasers=(erase_citations, erase_receipts,
+                                  erasers=(erase_knowledge, erase_receipts,
                                            attachments.service.erase, artifacts.service.erase,
                                            *((sandbox.eraser(),) if sandbox else ())))
     oidc_http = httpx.AsyncClient(timeout=10.0) if config.oidc is not None else None
@@ -386,8 +429,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     routed_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=300.0))
     host_http = httpx.AsyncClient(base_url=settings.host_base_url, timeout=3.0)
     identity = build_identity(global_sessionmaker, config, oidc_http=oidc_http,
-                              on_user_created=access.join_default_workspace)
-    debug = build_debugview(scoped, models.recorder)
+                              on_user_created=place_new_user(access))
+    debug = build_debugview(scoped, models.recorder, knowledge.search_log)
     links = LinkSigner(derive_key(master_key, "knowledge-links"))
     knowledge_reader_ = KnowledgeReader(knowledge.service, links)
     knowledge_mcp = KnowledgeMcp(knowledge_reader_, knowledge_reader(identity, access))
@@ -395,42 +438,61 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          global_sessionmaker=global_sessionmaker, access=access,
                          models=ModelClient(models.catalog, routed_http),
                          stores_for=lambda namespace: namespaced_stores(settings, namespace),
-                         knowledge_sources=knowledge.provided, links=links,
+                         knowledge_sources=knowledge.provided, links=links, profiles=identity.users.get_many,
                          principal=lambda scope: scoped_principal(identity, scope) if scope else bound_principal(identity))
-    extensions, extension_routers = _setup_extensions(extensions or installed_extensions(), context)
+    extensions, extension_routers, extension_internal = _setup_extensions(extensions or installed_extensions(),
+                                                                          context)
     return Runtime(settings=settings, kernel=kernel, signer=signer, writer=writer, broadcaster=broadcaster,
                    pump=pump, service=service, rotator=rotator, tool_credentials=tool_credentials,
                    skill_credentials=skill_credentials, skills=skills, blobs=blobs, audit=audit, sandbox=sandbox, attachments=attachments,
                    artifacts=artifacts, previews=previews, artifact_observer=artifact_observer,
-                   citation_observer=citation_observer, skill_runs=skill_runs, workflows=workflows,
+                   citation_observer=citation_observer, summaries=summaries, skill_runs=skill_runs,
+                   workflows=workflows,
                    grants=grants, tools=tools,
                    identity=identity,
                    access=access, models=models, usage=usage, knowledge=knowledge, mcp=mcp,
                    knowledge_reader=knowledge_reader_, links=links, knowledge_mcp=knowledge_mcp,
-                   mention_sources=mention_sources,
+                   mention_sources=mention_sources, feedback=FeedbackStore(scoped),
                    debug=debug,
                    runs=build_run_records(scoped, models.recorder, debug, service, access, audit.sink,
                                           identity.users.get_many),
-                   jobs=JobsAdmin(global_sessionmaker, DEFAULT_WORKSPACE_ID), parsers=parsers,
+                   insights=build_insights(scoped, access, timezone=settings.usage_timezone,
+                                           base_names=partial(_base_names, knowledge.service)),
+                   channels=build_channels(master_key, scoped, global_sessionmaker, engine, access, service,
+                                           accounts=identity.users, catalogs=knowledge.citations, sign=links.sign),
+                   jobs=JobsAdmin(global_sessionmaker), parsers=parsers,
                    global_sessionmaker=global_sessionmaker,
                    engine=engine, upstream=upstream, routed_http=routed_http, host_http=host_http,
-                   oidc_http=oidc_http, extensions=extensions, extension_routers=extension_routers)
+                   oidc_http=oidc_http, extensions=extensions, extension_routers=extension_routers,
+                   extension_internal_routers=extension_internal)
 
 
-def _setup_extensions(extensions: Extensions, context: ApiContext) -> tuple[Extensions, tuple[APIRouter, ...]]:
-    """逐个装配启用的扩展；某个扩展装配报错只去掉它并记下原因，开源功能与别的扩展照常。"""
-    routers: list[APIRouter] = []
+Routers = tuple[APIRouter, ...]
+
+
+def _setup_extensions(extensions: Extensions, context: ApiContext) -> tuple[Extensions, Routers, Routers]:
+    """逐个装配启用的扩展：公开路由，以及可选的内部端口路由（setup_internal）。某个扩展装配报错只去掉它并记下
+    原因（两种路由都不挂，不留半截），开源功能与别的扩展照常。"""
+    public: list[APIRouter] = []
+    internal: list[APIRouter] = []
     for extension in extensions.active:
         try:
-            routers.extend(extension.setup_api(context))
+            mine = tuple(extension.setup_api(context))
+            setup_internal = getattr(extension, "setup_internal", None)
+            hidden = tuple(setup_internal(context)) if setup_internal is not None else ()
         except Exception:
             log.exception("setting up extension %s failed", extension.name)
             extensions = extensions.without(extension, "扩展装配失败，详情见业务服务日志")
-    return extensions, tuple(routers)
+            continue
+        public.extend(mine)
+        internal.extend(hidden)
+    return extensions, tuple(public), tuple(internal)
 
 
 def create_public_app(runtime: Runtime) -> FastAPI:
-    app = FastAPI(title="KnowWork", version=runtime.settings.version)
+    # 接口文档挂在 /api/docs、/api/openapi.json（apidocs），不用 FastAPI 默认的 /docs：网关只转发 /api
+    app = FastAPI(title="KnowWork", version=runtime.settings.version, dependencies=[Depends(path_workspace)],
+                  docs_url=None, redoc_url=None, openapi_url=None)
     identity, access = runtime.identity, runtime.access
     app.include_router(identity_router(identity, is_admin=workspace_admin(access),
                                        can_bind_workspace=workspace_member(access)))
@@ -450,10 +512,12 @@ def create_public_app(runtime: Runtime) -> FastAPI:
     app.include_router(mcp_router(runtime.mcp.admin, scoped_principal(identity, TOOLS_SCOPE)))
     actor = conversation_actor(identity, access)
     app.include_router(mention_router(runtime.mention_sources, actor))  # 排在会话路由前，见 mention_api
-    app.include_router(conversation_router(runtime.service, actor))
+    app.include_router(conversation_router(runtime.service, actor, runtime.feedback))
     app.include_router(citations_router(runtime.knowledge.citations, runtime.service, actor, runtime.links))
     app.include_router(debug_router(runtime.debug, runtime.service, actor))
     app.include_router(build_admin_router(runtime.runs, scoped_principal(identity, WORKSPACE_SCOPE)))
+    app.include_router(insights_router(runtime.insights, scoped_principal(identity, WORKSPACE_SCOPE)))
+    app.include_router(channels_router(runtime.channels.admin, scoped_principal(identity, WORKSPACE_SCOPE)))
     app.include_router(attachments_router(runtime.attachments.service, runtime.service, actor))
     app.include_router(artifacts_router(runtime.artifacts.service, runtime.service, actor,
                                         settle=runtime.artifact_observer.settle))
@@ -469,7 +533,9 @@ def create_public_app(runtime: Runtime) -> FastAPI:
     app.include_router(health_router((database_check(runtime.engine), host_check(runtime.host_http))))
     for router in runtime.extension_routers:
         app.include_router(router)
+    install_api_docs(app)  # 路由都挂好以后：文档里要有扩展的接口
     runtime.audit.install(app)  # 最后挂：记全部写接口
+    runtime.channels.bind_app(app)  # 机器人回答里的图在进程内经这些接口取
     return app
 
 
@@ -488,4 +554,6 @@ def create_internal_app(runtime: Runtime) -> FastAPI:
         membership = ToolClearance(runtime.access, builtin=frozenset())
         app.include_router(sandbox_internal_router(runtime.sandbox.sandbox, runtime.tools, membership.member,
                                                    max_timeout_seconds=runtime.sandbox.max_timeout_seconds))
+    for router in runtime.extension_internal_routers:
+        app.include_router(router)
     return app

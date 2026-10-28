@@ -162,21 +162,19 @@ def _pool_key(pool: str) -> tuple[int, str]:
 
 
 class JobsAdmin:
-    def __init__(self, sessionmaker: async_sessionmaker, workspace_id: str, *,
-                 clock: Callable[[], datetime] = _now) -> None:
+    def __init__(self, sessionmaker: async_sessionmaker, *, clock: Callable[[], datetime] = _now) -> None:
         self._sessionmaker = sessionmaker
-        self._workspace_id = workspace_id
         self._clock = clock
 
     @asynccontextmanager
-    async def _tx(self) -> AsyncIterator[AsyncSession]:
+    async def _tx(self, workspace_id: str) -> AsyncIterator[AsyncSession]:
         async with self._sessionmaker() as session, session.begin():
-            await set_workspace(session, self._workspace_id)
+            await set_workspace(session, workspace_id)
             yield session
 
-    async def overview(self) -> Overview:
+    async def overview(self, workspace_id: str) -> Overview:
         now = self._clock()
-        async with self._tx() as session:
+        async with self._tx(workspace_id) as session:
             counts = (await session.execute(_pool_counts(now))).all()
             workers = (await session.scalars(select(JobWorker).order_by(JobWorker.started_at))).all()
         infos = tuple(_worker(w, now) for w in workers)
@@ -194,19 +192,19 @@ class JobsAdmin:
             for pool in sorted({*stats, *slots}, key=_pool_key))
         return Overview(pools=pools, workers=infos, gates=_gates(alive), kinds=_kinds(workers))
 
-    async def jobs(self, where: JobFilter, *, cursor: str | None = None, limit: int = PAGE) -> JobPage:
+    async def jobs(self, workspace_id: str, where: JobFilter, *, cursor: str | None = None, limit: int = PAGE) -> JobPage:
         query = select(Job).where(*_conditions(where)).order_by(Job.created_at.desc(), Job.id.desc()).limit(limit + 1)
         if cursor:
             created, job_id = _decode(cursor)
             query = query.where(or_(Job.created_at < created, and_(Job.created_at == created, Job.id < job_id)))
-        async with self._tx() as session:
+        async with self._tx(workspace_id) as session:
             rows = (await session.scalars(query)).all()
         items = tuple(_row(job) for job in rows[:limit])
         more = len(rows) > limit
         return JobPage(items=items, next=_encode(rows[limit - 1].created_at, rows[limit - 1].id) if more else None)
 
-    async def detail(self, job_id: str) -> tuple[JobRow, tuple[StageRow, ...]]:
-        async with self._tx() as session:
+    async def detail(self, workspace_id: str, job_id: str) -> tuple[JobRow, tuple[StageRow, ...]]:
+        async with self._tx(workspace_id) as session:
             job = await self._get(session, job_id)
             stages = (await session.scalars(select(JobStage).where(JobStage.job_id == job_id)
                                             .order_by(JobStage.started_at, JobStage.id))).all()
@@ -214,9 +212,9 @@ class JobsAdmin:
                                          detail=dict(s.detail or {}), started_at=s.started_at,
                                          finished_at=s.finished_at) for s in stages)
 
-    async def cancel(self, actor: str, job_id: str) -> JobRow:
+    async def cancel(self, workspace_id: str, actor: str, job_id: str) -> JobRow:
         now = self._clock()
-        async with self._tx() as session:
+        async with self._tx(workspace_id) as session:
             job = await self._get(session, job_id, lock=True)
             if job.status not in (QUEUED, RUNNING):
                 raise JobConflict("任务已经结束，不用取消")
@@ -233,9 +231,9 @@ class JobsAdmin:
             await session.refresh(job)  # 刷新库里算的列（updated_at 等），免得在事务外懒加载
             return _row(job)
 
-    async def retry(self, job_id: str) -> JobRow:
+    async def retry(self, workspace_id: str, job_id: str) -> JobRow:
         now = self._clock()
-        async with self._tx() as session:
+        async with self._tx(workspace_id) as session:
             job = await self._get(session, job_id, lock=True)
             if job.status == RUNNING:
                 raise JobConflict("任务正在运行")
@@ -251,8 +249,8 @@ class JobsAdmin:
             await session.refresh(job)  # 刷新库里算的列（updated_at 等），免得在事务外懒加载
             return _row(job)
 
-    async def delete(self, job_id: str) -> None:
-        async with self._tx() as session:
+    async def delete(self, workspace_id: str, job_id: str) -> None:
+        async with self._tx(workspace_id) as session:
             job = await self._get(session, job_id, lock=True)
             if job.status not in (FAILED, CANCELED):
                 raise JobConflict("只能删除失败或已取消的任务记录")

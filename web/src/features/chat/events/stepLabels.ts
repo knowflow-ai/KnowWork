@@ -9,6 +9,9 @@ import type { StepView } from './types';
 const LABELS: Readonly<Record<string, string>> = {
   knowledge_search: '检索知识库',
   knowledge_read: '阅读文档',
+  knowledge_gap: '记下知识库缺口',
+  knowledge_fetch: '取知识库的图与文件',
+  read_image: '看图',
   bash: '运行命令',
   read: '读取文件',
   write: '写入文件',
@@ -27,6 +30,7 @@ const LABELS: Readonly<Record<string, string>> = {
 const TARGET_KEY: Readonly<Record<string, string>> = {
   knowledge_search: 'query',
   knowledge_read: 'doc_ref',
+  knowledge_gap: 'missing',
   bash: 'description', // 官方 bash 必带一句说明，比命令本身好读
   read: 'file_path',
   write: 'file_path',

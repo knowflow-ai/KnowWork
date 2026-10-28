@@ -115,6 +115,26 @@ def test_no_sandbox_drops_overlay_and_sandbox_image(sandbox, ready_server):
     assert "docker-compose.sandbox.yml" not in calls and "sandbox-image" not in calls
 
 
+def test_no_sandbox_keeps_other_overlays(sandbox, ready_server):
+    """只去掉沙箱那一份，用户自己加的覆盖文件（扩展的叠加文件也是这样加的）要留着。"""
+    deploy = sandbox[0]
+    _run(sandbox, port=ready_server)
+    (deploy / ".env").write_text((deploy / ".env").read_text().replace(
+        "COMPOSE_FILE=docker-compose.yml:docker-compose.sandbox.yml",
+        "COMPOSE_FILE=docker-compose.yml:docker-compose.sandbox.yml:docker-compose.local.yml"))
+    result, _ = _run(sandbox, "--no-sandbox", port=ready_server)
+    assert result.returncode == 0, result.stderr
+    assert _env(deploy)["COMPOSE_FILE"] == "docker-compose.yml:docker-compose.local.yml"
+
+
+def test_utf8_locale_does_not_break_variables_next_to_chinese(sandbox, ready_server):
+    """macOS 自带的 sh（bash 3.2）在 UTF-8 下会把紧跟变量的全角字符当成变量名的一部分，set -u 报 unbound variable。
+    Linux 的 dash、bash 不受影响，这条只在 macOS 上起作用。"""
+    result, _ = _run(sandbox, port=ready_server, LC_ALL="en_US.UTF-8")
+    assert result.returncode == 0, result.stderr
+    assert "等待服务就绪" in result.stdout
+
+
 def test_url_option_sets_public_address(sandbox, ready_server):
     result, _ = _run(sandbox, "--url", "http://117.50.180.59:8080/", port=ready_server)
     assert result.returncode == 0, result.stderr
@@ -165,6 +185,9 @@ def test_pull_gives_up_after_three_attempts(sandbox, ready_server):
     assert result.returncode != 0
     assert calls.count(" pull --quiet\n") == 3 and "sandbox-image" not in calls
     assert "up -d" not in calls
+    # 私有仓库没登录也只报拉取失败：提示登录命令，只带主机、不带命名空间
+    registry = _env(sandbox[0])["KNOWWORK_REGISTRY"]
+    assert f"docker login {registry.split('/')[0]}\n" in result.stderr
 
 
 def test_no_pull_flag(sandbox, ready_server):

@@ -7,7 +7,7 @@
  */
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { ButtonLink } from '@openai/apps-sdk-ui/components/Button';
-import { Download } from '@openai/apps-sdk-ui/components/Icon';
+import { Download, FileBlank } from '@openai/apps-sdk-ui/components/Icon';
 import { useQuery } from '@tanstack/react-query';
 import { readableError, requestBytes } from '../../api/http';
 import { Empty } from '../../ui/Empty';
@@ -182,7 +182,8 @@ function PreviewContent({
 }) {
   const kind = kindOf(file);
   const bytes = useBytes(file, kind);
-  if (kind === 'none') return <Empty description="这种文件不支持预览，请下载后查看" />;
+  if (kind === 'none')
+    return <Empty area icon={<FileBlank />} description="这种文件不支持预览，请下载后查看" />;
   if (bytes.isPending) return <Skeleton rows={8} className="kw-preview-state" />;
   if (bytes.isError)
     return (

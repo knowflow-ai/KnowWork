@@ -29,6 +29,7 @@ export class BridgeError extends Error {}
  * @property {'read' | 'write' | 'dangerous'} risk 真实风险等级，审计与展示用
  * @property {'ask' | 'never'} approval 执行前是否走官方人工审批
  * @property {string} [guidance] 写进系统提示的使用规则
+ * @property {true} [concurrent] 业务服务声明可与同一步里的其它调用同时执行（只读、无状态）
  */
 
 /** @returns {BridgeTool} */
@@ -48,7 +49,12 @@ function toolOf(raw) {
   if (guidance !== undefined && (typeof guidance !== 'string' || guidance.length === 0 || guidance.length > MAX_GUIDANCE)) {
     throw new BridgeError(`工具 ${name} 的使用规则为空或过长`)
   }
-  return guidance === undefined ? { name, description, inputSchema, risk, approval } : { name, description, inputSchema, risk, approval, guidance }
+  if (raw.concurrent !== undefined && typeof raw.concurrent !== 'boolean') throw new BridgeError(`工具 ${name} 的 concurrent 必须是布尔值`)
+  return {
+    name, description, inputSchema, risk, approval,
+    ...(guidance === undefined ? {} : { guidance }),
+    ...(raw.concurrent === true ? { concurrent: true } : {}),
+  }
 }
 
 /** 校验业务服务返回的工具清单：数量上限、名称不重复。 */

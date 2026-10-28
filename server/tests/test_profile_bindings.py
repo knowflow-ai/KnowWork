@@ -55,7 +55,7 @@ async def test_bind_and_rebind(db, conversation_id):
 async def test_same_snapshot_is_stored_once(db, conversation_id):
     bindings = bindings_for(db)
     before = await count(db, tables()[1])
-    shared = profile(role="viewer")
+    shared = profile(role="owner")  # 和别的测试存过的快照都不一样
     await bindings.bind("default", conversation_id, shared)
     await bindings.bind("default", conversation_id, shared)
     assert await count(db, tables()[1]) == before + 1

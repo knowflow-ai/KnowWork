@@ -18,11 +18,14 @@ from .api import build_router
 from .citation_store import CitationStore
 from .connectors import AccessChecker, ConnectorFactory, EmailLookup, user_email_lookup
 from .crypto import SecretBox
+from .fetch_tool import SessionInput
 from .provided import ProvidedSource, ProvidedSources
+from .search_log import CurrentTurn, SearchLog
 from .service import KnowledgeService, Pinned
 from .store import SourceStore
 from .tables import KNOWLEDGE_RLS_TABLES, KNOWLEDGE_TABLES
 from .tools import CatalogOf, TurnScope, TurnScopeOf, knowledge_tools
+from .turn_ledger import TurnLedger
 
 __all__ = ["KNOWLEDGE_RLS_TABLES", "KNOWLEDGE_TABLES", "KnowledgeModule", "Pinned", "ProvidedSource", "ProvidedSources",
            "TurnScope", "build_knowledge", "build_router"]
@@ -36,6 +39,8 @@ class KnowledgeModule:
     tools: tuple[BuiltinTool, ...]
     client: httpx.AsyncClient
     provided: ProvidedSources  # 扩展提供的知识源在业务服务启动时登记进来
+    turns: TurnLedger  # 这一轮给过原文的片段；要挂到事件泵的观察者上才知道轮次边界
+    search_log: SearchLog  # 检索记录；close_turn 登记到每轮汇总上，删会话时 discard
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -44,8 +49,11 @@ class KnowledgeModule:
 def build_knowledge(master_key: str, sessionmaker: async_sessionmaker, access: AccessChecker, *,
                     email_of: EmailLookup | None = None, client: httpx.AsyncClient | None = None,
                     catalog_of: CatalogOf | None = None, turn_scope: TurnScopeOf | None = None,
-                    citation_limit: int = 500) -> KnowledgeModule:
-    """组装知识模块。client 默认不跟随重定向；email_of 默认查账号表；catalog_of 默认按会话 ID 划分引用目录。"""
+                    current_turn: CurrentTurn | None = None, citation_limit: int = 500,
+                    sandbox: SessionInput | None = None) -> KnowledgeModule:
+    """组装知识模块。client 默认不跟随重定向；email_of 默认查账号表；catalog_of 默认按会话 ID 划分引用目录；
+    current_turn 告诉检索记录这个会话正在跑第几轮（每轮汇总给），不给时收尾时再补；
+    sandbox 是会话沙箱，给了才有 knowledge_fetch（没开 Docker 沙箱时不给）。"""
     http = client or httpx.AsyncClient(follow_redirects=False, timeout=httpx.Timeout(15.0))
     store = SourceStore(sessionmaker, SecretBox.from_master_key(master_key))
     connectors = ConnectorFactory(store, http)
@@ -54,6 +62,9 @@ def build_knowledge(master_key: str, sessionmaker: async_sessionmaker, access: A
     service = KnowledgeService(store, access, connectors, lookup, provided)
     citations = CitationStore(sessionmaker, limit=citation_limit)
     options = {k: v for k, v in (("catalog_of", catalog_of), ("turn_scope", turn_scope)) if v is not None}
-    tools = knowledge_tools(service, citations, **options)
+    turns = TurnLedger()
+    search_log = SearchLog(sessionmaker, current_turn) if current_turn else SearchLog(sessionmaker)
+    tools = knowledge_tools(service, citations, ledger=turns, search_log=search_log, sandbox=sandbox, **options)
     return KnowledgeModule(admin=SourceAdmin(store, access, connectors, lookup, provided), service=service,
-                           citations=citations, tools=tools, client=http, provided=provided)
+                           citations=citations, tools=tools, client=http, provided=provided, turns=turns,
+                           search_log=search_log)

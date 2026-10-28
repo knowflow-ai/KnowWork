@@ -31,10 +31,11 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, method: init?.method, body: init?.body as string | FormData | undefined });
-      if (url === '/api/conversations' && init?.method === 'POST')
+      if (url === '/api/workspaces/default/conversations' && init?.method === 'POST')
         return jsonResponse({ id: 'c-new', title: 't' }, 201);
       if (url.endsWith('/attachments') && init?.method === 'POST') return jsonResponse(uploadReply, 201);
-      if (url === '/api/conversations/mention-options') return jsonResponse(MENTION_OPTIONS);
+      if (url === '/api/workspaces/default/conversations/mention-options')
+        return jsonResponse(MENTION_OPTIONS);
       return jsonResponse({ messageId: 'm1' }, 202);
     }),
   );
@@ -88,8 +89,12 @@ describe('ChatPage', () => {
     expect(
       calls
         .map((c) => c.url)
-        .filter((url) => !url.endsWith('/artifacts') && !url.endsWith('/mention-options')),
-    ).toEqual(['/api/conversations', '/api/conversations/c-new/messages']);
+        // 进会话后台自动拉的（产物、@ 候选、每轮的赞踩）不算
+        .filter((url) => !/\/(artifacts|mention-options|feedback)$/.test(url)),
+    ).toEqual([
+      '/api/workspaces/default/conversations',
+      '/api/workspaces/default/conversations/c-new/messages',
+    ]);
     expect(screen.getByText('帮我写周报')).toBeInTheDocument();
   });
 
@@ -137,7 +142,7 @@ describe('ChatPage', () => {
         '{"text":"改一下付款条款","mode":"followup","language":"zh","answer_mode":"agent","attachments":["att_1"]}',
       ),
     );
-    const upload = calls.find((c) => c.url === '/api/conversations/c1/attachments');
+    const upload = calls.find((c) => c.url === '/api/workspaces/default/conversations/c1/attachments');
     expect((upload?.body as FormData).getAll('files').map((f) => (f as File).name)).toEqual(['合同.docx']);
     expect(
       within(screen.getByRole('list', { name: '这条消息带的附件' })).getByText('合同.docx'),
@@ -241,7 +246,9 @@ describe('ChatPage', () => {
     expect(screen.getByText('等待批准：write_file')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '批准' }));
     await waitFor(() =>
-      expect(calls.find((c) => c.url === '/api/conversations/c1/approvals/ap1')?.body).toBe('{"allow":true}'),
+      expect(
+        calls.find((c) => c.url === '/api/workspaces/default/conversations/c1/approvals/ap1')?.body,
+      ).toBe('{"allow":true}'),
     );
 
     push(ev.approvalResolved(5, 'ap1', 'allowed-once'));
@@ -255,7 +262,9 @@ describe('ChatPage', () => {
     expect(screen.getByText('顺便加上目录')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: '停止' }));
-    await waitFor(() => expect(calls.some((c) => c.url === '/api/conversations/c1/cancel')).toBe(true));
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === '/api/workspaces/default/conversations/c1/cancel')).toBe(true),
+    );
 
     push(ev.toolCompleted(6, 'c9', '已写入'));
     push(ev.message(7, '报告已生成[ID:1]'));
@@ -306,8 +315,10 @@ describe('ChatPage', () => {
     expect(turns[1]).toHaveTextContent('2025年度团队工作总结.docx');
     expect(turns[1]).toHaveTextContent('Word 文档 · 20 KB');
     const download = screen.getByRole('link', { name: '下载 2025年度团队工作总结.docx' });
-    expect(download).toHaveAttribute('href', '/api/conversations/c5/artifacts/art_new');
-    expect(calls.filter((c) => c.url === '/api/conversations/c5/artifacts').length).toBeLessThanOrEqual(3);
+    expect(download).toHaveAttribute('href', '/api/workspaces/default/conversations/c5/artifacts/art_new');
+    expect(
+      calls.filter((c) => c.url === '/api/workspaces/default/conversations/c5/artifacts').length,
+    ).toBeLessThanOrEqual(3);
   });
 
   it('提问：卡片作答后提交到提问接口；回答回来后显示回答，待办随轮次显示', async () => {
@@ -329,9 +340,9 @@ describe('ChatPage', () => {
     await userEvent.click(screen.getByRole('radio', { name: 'PDF' }));
     await userEvent.click(screen.getByRole('button', { name: '提交回答' }));
     await waitFor(() =>
-      expect(calls.find((c) => c.url === '/api/conversations/c6/questions/call_1')?.body).toBe(
-        '{"answers":[{"id":"fmt","selected":["PDF"]}]}',
-      ),
+      expect(
+        calls.find((c) => c.url === '/api/workspaces/default/conversations/c6/questions/call_1')?.body,
+      ).toBe('{"answers":[{"id":"fmt","selected":["PDF"]}]}'),
     );
     push(ev.questionAnswered(5, 'call_1', [{ id: 'fmt', selected: ['PDF'] }]));
     expect(await screen.findByText('你的回答：PDF')).toBeInTheDocument();

@@ -8,6 +8,7 @@ import type { ChatState } from '../events/types';
 import { ApprovalCard } from './ApprovalCard';
 import { AssistantTurn } from './AssistantTurn';
 import { QuestionCard } from './QuestionCard';
+import type { FeedbackControls } from '../hooks/useFeedback';
 
 interface Props {
   readonly state: ChatState;
@@ -19,9 +20,19 @@ interface Props {
   readonly onDropConditions?: (dropped: readonly string[]) => void;
   /** 打开某一轮的运行详情（参数是 events.v1 的 run_id）。 */
   readonly onInspect?: (runId: string) => void;
+  /** 每轮回答的赞、踩；没有会话时不给，回答下面就不显示赞、踩。 */
+  readonly feedback?: FeedbackControls;
 }
 
-export function MessageList({ state, onDecide, onAnswer, onRegenerate, onDropConditions, onInspect }: Props) {
+export function MessageList({
+  state,
+  onDecide,
+  onAnswer,
+  onRegenerate,
+  onDropConditions,
+  onInspect,
+  feedback,
+}: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const busy = selectRunState(state) !== 'idle';
   const timeline = selectTimeline(state);
@@ -72,6 +83,9 @@ export function MessageList({ state, onDecide, onAnswer, onRegenerate, onDropCon
             onInspect={onInspect ? () => onInspect(entry.runId) : undefined}
             busy={busy}
             liveText={state.live?.runId === entry.runId ? state.live.text : undefined}
+            feedback={feedback?.byRun[entry.runId]?.rating ?? null}
+            onFeedback={feedback ? (input) => feedback.submit(entry.runId, input) : undefined}
+            onRetract={feedback ? () => feedback.retract(entry.runId) : undefined}
           />
         );
       })}

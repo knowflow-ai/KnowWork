@@ -8,7 +8,7 @@ import { messageLabel, prettyJson, statusLabel, statusTone } from './format';
 
 afterEach(() => vi.unstubAllGlobals());
 
-const B = '/api/conversations/c1/debug';
+const B = '/api/workspaces/default/conversations/c1/debug';
 const step = (n: number, extra = {}) => ({
   step: n,
   durationMs: 1200,
@@ -45,7 +45,30 @@ function api() {
         durationMs: 4200,
         startedMs: 1,
       },
-      steps: [step(1, { failures: ['模型调用失败：504 超时'] }), step(2, { text: '已生成' })],
+      steps: [
+        step(1, { failures: ['模型调用失败：504 超时'] }),
+        step(2, {
+          text: '已生成',
+          toolCalls: [
+            {
+              callId: 'k2',
+              name: 'knowledge_search',
+              arguments: '{"query":"流程图"}',
+              result: '{"documents":[]}',
+              isError: false,
+              durationMs: 300,
+              trace: [
+                {
+                  label: '视觉检索',
+                  summary: '查了 1 个知识库，命中 1 页',
+                  lines: ['手册 第 3 页，分数 12.41，展开 2 块，进了结果第 1 名'],
+                  source: '扩展知识库',
+                },
+              ],
+            },
+          ],
+        }),
+      ],
       subagents: [],
       events: ['审批 write：批准本次'],
     }),
@@ -76,9 +99,15 @@ describe('RunInspector', () => {
     const first = screen.getByRole('article', { name: '第 1 步详情' });
     expect(within(first).getByText('模型调用失败：504 超时')).toBeInTheDocument();
     expect(within(first).getByText(/"cmd": "ls"/)).toBeInTheDocument();
-    await userEvent.click(within(steps()).getByText('write'));
+    await userEvent.click(within(steps()).getByText('knowledge_search'));
     const second = screen.getByRole('article', { name: '第 2 步详情' });
     expect(within(second).getByText('已生成')).toBeInTheDocument();
+    // 知识检索的过程按调用挂上，写明没有交给模型
+    expect(within(second).getByText('检索过程（没有交给模型）')).toBeInTheDocument();
+    expect(
+      within(second).getByText(/视觉检索 · 扩展知识库：查了 1 个知识库，命中 1 页\s+手册 第 3 页/),
+    ).toBeInTheDocument();
+    expect(within(first).queryByText('检索过程（没有交给模型）')).not.toBeInTheDocument();
   });
 
   it('逐步回放：上一步只剩第一步，下一步再出现第二步并选中它', async () => {
@@ -96,7 +125,7 @@ describe('RunInspector', () => {
   it('查看某一步的输入：系统提示、工具与消息，宿主塞进去的上下文标明来源', async () => {
     api();
     renderWithApp(<RunInspector source={ownRun('c1')} turn={3} onClose={() => undefined} />);
-    await userEvent.click(await screen.findByText('write'));
+    await userEvent.click(await screen.findByText('knowledge_search'));
     await userEvent.click(await screen.findByRole('button', { name: '查看这一步的输入' }));
     const dialog = await screen.findByRole('dialog', { name: '第 2 步的输入' });
     expect(await within(dialog).findByText('按会话日志还原')).toBeInTheDocument();

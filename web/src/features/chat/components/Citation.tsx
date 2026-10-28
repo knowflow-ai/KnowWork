@@ -38,6 +38,7 @@ function SourceContent({
         <>
           <div className="kw-citation-title">{source.title}</div>
           {source.page !== undefined ? <div className="kw-citation-page">第 {source.page} 页</div> : null}
+          {source.versionNote ? <div className="kw-citation-note">{source.versionNote}</div> : null}
           {source.excerpt ? <p className="kw-citation-excerpt">{source.excerpt}</p> : null}
           {onPreview ? (
             <Button color="secondary" variant="outline" size="sm" loading={opening} onClick={onPreview}>

@@ -51,6 +51,11 @@ class AccessCore:
         self._sessionmaker = sessionmaker
         self._engine = engine or PolicyEngine()
         self._hierarchy: ResourceHierarchy = NO_HIERARCHY
+        # 系统管理员（初始化向导建的那一个账号）：在任何空间里都按所有者处理，不必是成员。
+        # 由应用在启动时、初始化完成时告诉这里（权限模块不去查初始化记录，免得和 setup 互相依赖）
+        self._system_admin: str | None = None
+        # 关闭了的空间：规则不加载，判定一律拒绝（系统管理员也一样）。整体重载时从空间表读
+        self._closed: frozenset[str] = frozenset()
 
     @property
     def engine(self) -> PolicyEngine:
@@ -71,10 +76,22 @@ class AccessCore:
             raise ValueError("a resource hierarchy is already installed")
         self._hierarchy = hierarchy
 
+    def set_system_admin(self, user_id: str | None) -> None:
+        self._system_admin = user_id or None
+
+    def is_system_admin(self, user_id: str) -> bool:
+        return self._system_admin is not None and user_id == self._system_admin
+
+    def is_open(self, workspace_id: str) -> bool:
+        """空间没被关闭（软删除）。不查空间存不存在。"""
+        return workspace_id not in self._closed
+
     async def reload(self) -> bool:
         """从数据库整体重建判定器。失败时判定器保持不可用（全部拒绝）。"""
         try:
+            closed = await store.closed_workspaces(self._sessionmaker)
             self._engine.replace(await store.load_all(self._sessionmaker))
+            self._closed = closed
             return True
         except Exception:
             self._engine.invalidate()
@@ -103,6 +120,10 @@ class AccessCore:
             await self.reload()
 
     def _require(self, actor_id: str, workspace_id: str, action: Action) -> None:
+        if workspace_id in self._closed:
+            raise AccessDenied()
+        if self.is_system_admin(actor_id) and self._engine.healthy:
+            return
         if not self._engine.check(actor_id, workspace_id, WORKSPACE_RESOURCE, action):
             raise AccessDenied()
 
@@ -129,6 +150,10 @@ class AccessCore:
                 resource, allow_wildcard=False, types=self.resource_types).key
         except InvalidInput:
             return False
+        if workspace_id in self._closed:
+            return False
+        if self.is_system_admin(user_id) and self._engine.healthy:
+            return True
         if self._engine.check(user_id, workspace_id, obj, act):
             return True
         return obj != WORKSPACE_RESOURCE and any(
@@ -150,6 +175,10 @@ class AccessCore:
             act = parse_action(action)
         except InvalidInput:
             return NOTHING_VISIBLE
+        if workspace_id in self._closed:
+            return NOTHING_VISIBLE
+        if self.is_system_admin(user_id) and self._engine.healthy:
+            return VisibleSet(all_=True, ids=frozenset())
         direct = self._engine.visible(user_id, workspace_id, rtype, act)
         if direct.all_ or not self._hierarchy.resource_types:
             return direct

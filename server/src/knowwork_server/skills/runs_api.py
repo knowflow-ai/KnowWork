@@ -54,6 +54,7 @@ def build_runs_router(query: SkillRunQuery, access: AccessService,
                    version: Annotated[str | None, Query(max_length=64)] = None,
                    before: Annotated[str | None, Query(max_length=200)] = None,
                    limit: Annotated[int, Query(ge=1, le=100)] = 20):
+        """技能的调用记录"""
         _readable(who)
         page = await _call(query.recent(workspace_id, skill_id, RunFilter(since=_since(since), status=status,
                                                                            version=version),
@@ -62,6 +63,7 @@ def build_runs_router(query: SkillRunQuery, access: AccessService,
 
     @router.get("/summary")
     async def summary(workspace_id: IdPath, skill_id: IdPath, who: Admin, since: datetime | None = None):
+        """技能调用的汇总"""
         _readable(who)
         versions = await _call(query.summary(workspace_id, skill_id, _since(since)))
         return {"versions": [item.to_json() for item in versions]}

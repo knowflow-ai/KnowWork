@@ -16,12 +16,14 @@ from knowwork_server.app import build_runtime, create_internal_app, create_publi
 from knowwork_server.config import Settings
 from knowwork_server.conversations.models import RunEvent
 from knowwork_server.conversations.replay import parse_cursor
-from knowwork_server.db.base import make_workspace_sessionmaker
+from knowwork_server.db.base import in_workspace, make_workspace_sessionmaker
 from knowwork_server.models.tables import UsageRecord
 
 from .mcp_stub import TOKEN as MCP_TOKEN
 from .mcp_stub import McpStub
 from .support import HostProcess, Served, UpstreamStub, free_port
+
+CONV = "/api/workspaces/default/conversations"
 
 pytestmark = pytest.mark.anyio
 
@@ -133,23 +135,24 @@ async def api_key_for(runtime, *, member: bool) -> dict:
 
 async def stored_rows(runtime, cid):
     await runtime.writer.flush()
-    async with make_workspace_sessionmaker(runtime.engine, "default")() as session:
-        return (await session.execute(select(RunEvent).where(RunEvent.conversation_id == cid)
-                                      .order_by(RunEvent.seq))).scalars().all()
+    with in_workspace("default"):
+        async with make_workspace_sessionmaker(runtime.engine)() as session:
+            return (await session.execute(select(RunEvent).where(RunEvent.conversation_id == cid)
+                                          .order_by(RunEvent.seq))).scalars().all()
 
 
 async def test_message_round_trip_and_reconnect(app_db):
     async with stack(app_db, ["这是来自上游模型的回答", "第二轮的回答"]) as s:
         client, headers = s["client"], s["headers"]
-        assert (await client.post("/api/conversations", json={}, headers={})).status_code == 401
-        assert (await client.post("/api/conversations", json={}, headers=s["outsider"])).status_code == 403
-        created = await client.post("/api/conversations", json={"title": "测试"}, headers=headers)
+        assert (await client.post(CONV, json={}, headers={})).status_code == 401
+        assert (await client.post(CONV, json={}, headers=s["outsider"])).status_code == 403
+        created = await client.post(CONV, json={"title": "测试"}, headers=headers)
         assert created.status_code == 201, created.text
         cid = created.json()["id"]
-        url = f"/api/conversations/{cid}/events"
+        url = f"{CONV}/{cid}/events"
 
         async with SseReader(client, url, headers) as sse:  # 先连 SSE，再发消息
-            sent = await client.post(f"/api/conversations/{cid}/messages", json={"text": "你好"}, headers=headers)
+            sent = await client.post(f"{CONV}/{cid}/messages", json={"text": "你好"}, headers=headers)
             assert sent.status_code == 202, sent.text
             events = await sse.until(run_ended())
 
@@ -183,7 +186,7 @@ async def test_message_round_trip_and_reconnect(app_db):
         async with SseReader(client, url, {**headers, "last-event-id": resume_from["id"]}) as again:
             replayed = await again.until(run_ended("run-1"))
             assert [e["id"] for e in replayed] == [e["id"] for e in events[2:]]
-            await client.post(f"/api/conversations/{cid}/messages", json={"text": "再问一次"}, headers=headers)
+            await client.post(f"{CONV}/{cid}/messages", json={"text": "再问一次"}, headers=headers)
             live = await again.until(run_ended("run-2"))
         assert live[0]["event"] == "run.started" and live[0]["data"]["run_id"] == "run-2"
         assert ordering_key(live[0]) > ordering_key(replayed[-1])
@@ -198,8 +201,9 @@ async def test_message_round_trip_and_reconnect(app_db):
 
         # 用量来自宿主事件流：两轮各一条，归到发起对话的账号，只存数字
         await s["runtime"].usage.drain()
-        async with make_workspace_sessionmaker(s["runtime"].engine, "default")() as session:
-            usage = (await session.execute(select(UsageRecord).order_by(UsageRecord.turn))).scalars().all()
+        with in_workspace("default"):
+            async with make_workspace_sessionmaker(s["runtime"].engine)() as session:
+                usage = (await session.execute(select(UsageRecord).order_by(UsageRecord.turn))).scalars().all()
         assert [(u.conversation_id, u.turn) for u in usage] == [(cid, 1), (cid, 2)]
         assert all(u.input_tokens == 7 and u.output_tokens == 3 for u in usage)
         assert len({u.user_id for u in usage}) == 1
@@ -216,10 +220,10 @@ async def test_send_recovers_after_host_restart(app_db):
     host_port = free_port()
     async with stack(app_db, ["重启前", "重启后的回答"], host_port=host_port) as s:
         client, headers, host = s["client"], s["headers"], s["host"]
-        cid = (await client.post("/api/conversations", json={}, headers=headers)).json()["id"]
-        url = f"/api/conversations/{cid}/events"
+        cid = (await client.post(CONV, json={}, headers=headers)).json()["id"]
+        url = f"{CONV}/{cid}/events"
         async with SseReader(client, url, headers) as sse:
-            await client.post(f"/api/conversations/{cid}/messages", json={"text": "第一轮"}, headers=headers)
+            await client.post(f"{CONV}/{cid}/messages", json={"text": "第一轮"}, headers=headers)
             await sse.until(run_ended())
 
         host.keep_home = True
@@ -228,7 +232,7 @@ async def test_send_recovers_after_host_restart(app_db):
                                 port=host_port, home=host.home, extra_env=host.extra_env)
         async with restarted:
             async with SseReader(client, url, headers) as sse:
-                sent = await client.post(f"/api/conversations/{cid}/messages", json={"text": "重启后继续"},
+                sent = await client.post(f"{CONV}/{cid}/messages", json={"text": "重启后继续"},
                                          headers=headers)
                 assert sent.status_code == 202, sent.text
                 events = await sse.until(lambda e: e["event"] in ("run.completed", "run.failed")
@@ -239,6 +243,21 @@ async def test_send_recovers_after_host_restart(app_db):
             rows = await stored_rows(s["runtime"], cid)
             assert len({r.host_epoch for r in rows}) == 2, "应当看到两个宿主实例的事件"
             assert [r.seq for r in rows] == list(range(1, len(rows) + 1))
+
+
+async def test_first_message_with_a_mention_runs_in_a_brand_new_conversation(app_db):
+    """新会话第一条消息就 @ 了文件：运行配置和建会话时不同要重开，宿主那边还没有会话记录（DSH 第一轮才落盘），
+    「接着记录」打不开，改成新开（2026-10-26 这里必然报「运行时暂时不可用」）。"""
+    mention = {"type": "document", "id": "kb2/d1", "name": "合同模板", "base": "builtin.kb2", "base_name": "合同库"}
+    async with stack(app_db, ["合同模板里有标的、价款和交付"]) as s:
+        client, headers = s["client"], s["headers"]
+        cid = (await client.post(CONV, json={"title": "合同"}, headers=headers)).json()["id"]
+        async with SseReader(client, f"{CONV}/{cid}/events", headers) as sse:
+            sent = await client.post(f"{CONV}/{cid}/messages", headers=headers,
+                                     json={"text": "合同模板有哪些内容", "mentions": [mention]})
+            assert sent.status_code == 202, sent.text
+            events = await sse.until(run_ended(), timeout=60)
+        assert events[-1]["event"] == "run.completed", events[-1]
 
 
 def skill_package(name: str, body: str) -> bytes:
@@ -265,12 +284,12 @@ async def test_published_skill_reaches_the_model(app_db):
                                       headers={**headers, "if-match": str(skill["draftRevision"])})
         assert published.status_code == 201, published.text
 
-        cid = (await client.post("/api/conversations", json={"title": "周报"}, headers=headers)).json()["id"]
-        async with SseReader(client, f"/api/conversations/{cid}/events", headers) as sse:
-            await client.post(f"/api/conversations/{cid}/messages", json={"text": "/weekly-report 写本周周报"},
+        cid = (await client.post(CONV, json={"title": "周报"}, headers=headers)).json()["id"]
+        async with SseReader(client, f"{CONV}/{cid}/events", headers) as sse:
+            await client.post(f"{CONV}/{cid}/messages", json={"text": "/weekly-report 写本周周报"},
                               headers=headers)
             await sse.until(run_ended("run-1"))
-            await client.post(f"/api/conversations/{cid}/messages", json={"text": "再写一份"}, headers=headers)
+            await client.post(f"{CONV}/{cid}/messages", json={"text": "再写一份"}, headers=headers)
             events = await sse.until(run_ended("run-2"))
 
         explicit = json.dumps(upstream.requests[0]["body"]["messages"], ensure_ascii=False)
@@ -299,13 +318,13 @@ async def test_mcp_tools_run_through_the_bridge_with_approval(app_db):
         assert server["headers"] == [{"name": "Authorization", "last4": "1234"}]
         assert server["grantPattern"] == "mcp__demo__*" and len(server["tools"]) == 4
 
-        cid = (await client.post("/api/conversations", json={"title": "MCP"}, headers=headers)).json()["id"]
-        async with SseReader(client, f"/api/conversations/{cid}/events", headers) as sse:
-            await client.post(f"/api/conversations/{cid}/messages", json={"text": "算一下再建个工单"}, headers=headers)
+        cid = (await client.post(CONV, json={"title": "MCP"}, headers=headers)).json()["id"]
+        async with SseReader(client, f"{CONV}/{cid}/events", headers) as sse:
+            await client.post(f"{CONV}/{cid}/messages", json={"text": "算一下再建个工单"}, headers=headers)
             waiting = await sse.until(lambda e: e["event"] == "run.waiting")
             approval_id = waiting[-1]["data"]["item_id"]
             assert mcp.calls == [("add", {"a": 20, "b": 22})], "写入工具在批准前不执行"
-            decided = await client.post(f"/api/conversations/{cid}/approvals/{approval_id}", json={"allow": True},
+            decided = await client.post(f"{CONV}/{cid}/approvals/{approval_id}", json={"allow": True},
                                         headers=headers)
             assert decided.status_code in (200, 202, 204), decided.text
             events = await sse.until(run_ended())
@@ -333,10 +352,10 @@ async def test_agent_keeps_todos_and_asks_the_user(app_db):
               "已按 PDF 导出台账"]
     async with stack(app_db, script) as s:
         client, headers = s["client"], s["headers"]
-        cid = (await client.post("/api/conversations", json={}, headers=headers)).json()["id"]
-        url = f"/api/conversations/{cid}/events"
+        cid = (await client.post(CONV, json={}, headers=headers)).json()["id"]
+        url = f"{CONV}/{cid}/events"
         async with SseReader(client, url, headers) as sse:
-            await client.post(f"/api/conversations/{cid}/messages", json={"text": "导出合同台账"}, headers=headers)
+            await client.post(f"{CONV}/{cid}/messages", json={"text": "导出合同台账"}, headers=headers)
             asked = await sse.until(item("input_request", "item.started"))
             assert [e["data"]["data"] for e in asked if item("todo")(e)] == [{"items": todos}]
             question = asked[-1]["data"]
@@ -345,9 +364,9 @@ async def test_agent_keeps_todos_and_asks_the_user(app_db):
             waiting = await sse.until(lambda e: e["event"] == "run.waiting")
             assert waiting[-1]["data"]["data"] == {"reason": "input"}
 
-            listed = await client.get(f"/api/conversations/{cid}/questions", headers=headers)
+            listed = await client.get(f"{CONV}/{cid}/questions", headers=headers)
             assert [(q["id"], q["state"]) for q in listed.json()] == [(question_id, "open")]
-            answer_url = f"/api/conversations/{cid}/questions/{question_id}"
+            answer_url = f"{CONV}/{cid}/questions/{question_id}"
             outsider = await client.post(answer_url, json={"answers": [{"id": "fmt", "selected": ["PDF"]}]},
                                          headers=s["outsider"])
             assert outsider.status_code in (403, 404), "不是本会话发起人不能回答"
@@ -381,10 +400,10 @@ async def test_question_survives_host_crash(app_db):
     script = [{"tool": "ask_user_question", "args": {"questions": questions}}, "收到，按 PDF 导出"]
     async with stack(app_db, script, host_port=host_port) as s:
         client, headers, host = s["client"], s["headers"], s["host"]
-        cid = (await client.post("/api/conversations", json={}, headers=headers)).json()["id"]
-        url = f"/api/conversations/{cid}/events"
+        cid = (await client.post(CONV, json={}, headers=headers)).json()["id"]
+        url = f"{CONV}/{cid}/events"
         async with SseReader(client, url, headers) as sse:
-            await client.post(f"/api/conversations/{cid}/messages", json={"text": "导出台账"}, headers=headers)
+            await client.post(f"{CONV}/{cid}/messages", json={"text": "导出台账"}, headers=headers)
             asked = await sse.until(item("input_request", "item.started"))
         question_id = asked[-1]["data"]["item_id"]
 
@@ -395,7 +414,7 @@ async def test_question_survives_host_crash(app_db):
         restarted = HostProcess(model_base_url=host.model_base_url, model_name="default", token=host.token,
                                 port=host_port, home=host.home, extra_env=host.extra_env)
         async with restarted, SseReader(client, url, headers) as sse:
-            answered = await client.post(f"/api/conversations/{cid}/questions/{question_id}",
+            answered = await client.post(f"{CONV}/{cid}/questions/{question_id}",
                                          json={"answers": [{"id": "fmt", "selected": ["PDF"]}]}, headers=headers)
             assert answered.status_code == 200, answered.text
             events = await sse.until(lambda e: e["event"] in ("run.completed", "run.failed")
@@ -416,12 +435,12 @@ async def test_session_grant_skips_repeated_approvals(app_db):
         created = await client.post("/api/workspaces/default/mcp-servers", headers=headers, json={
             "name": "demo", "title": "演示服务", "url": mcp.url, "headers": {"Authorization": MCP_TOKEN}})
         assert created.status_code == 201, created.text
-        cid = (await client.post("/api/conversations", json={"title": "授权"}, headers=headers)).json()["id"]
-        async with SseReader(client, f"/api/conversations/{cid}/events", headers) as sse:
-            await client.post(f"/api/conversations/{cid}/messages", json={"text": "建两张工单"}, headers=headers)
+        cid = (await client.post(CONV, json={"title": "授权"}, headers=headers)).json()["id"]
+        async with SseReader(client, f"{CONV}/{cid}/events", headers) as sse:
+            await client.post(f"{CONV}/{cid}/messages", json={"text": "建两张工单"}, headers=headers)
             waiting = await sse.until(lambda e: e["event"] == "run.waiting")
             approval_id = waiting[-1]["data"]["item_id"]
-            decided = await client.post(f"/api/conversations/{cid}/approvals/{approval_id}", headers=headers,
+            decided = await client.post(f"{CONV}/{cid}/approvals/{approval_id}", headers=headers,
                                         json={"allow": True, "scope": "session"})
             assert decided.status_code == 200, decided.text
             events = await sse.until(run_ended())

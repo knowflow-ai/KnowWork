@@ -1,21 +1,43 @@
 /**
  * 工作空间成员、部门、用户组、资源授权与权限判定（server/src/knowwork_server/access/api.py）。
- * 开源版只有默认空间。
+ * 路径都带当前空间（stores/workspace）。
  */
+import { currentWorkspaceId } from '../stores/workspace';
 import { request, seg } from './http';
 import { bool, isRecord, listOf, strings, text } from './parse';
 
-export const WORKSPACE_ID = 'default';
+/** 当前空间下的接口路径：`/api/workspaces/<当前空间><path>`。各资源的接口文件都用它拼路径。 */
+export function workspacePath(path = ''): string {
+  return `/api/workspaces/${seg(currentWorkspaceId())}${path}`;
+}
 
-const base = (path = '') => `/api/workspaces/${seg(WORKSPACE_ID)}${path}`;
+const base = workspacePath;
 
-export type Role = 'owner' | 'admin' | 'editor' | 'viewer';
+export type Role = 'owner' | 'admin' | 'editor';
 export const ROLES: readonly { readonly value: Role; readonly label: string }[] = [
   { value: 'owner', label: '所有者' },
   { value: 'admin', label: '管理员' },
   { value: 'editor', label: '成员' },
-  { value: 'viewer', label: '只读成员' },
 ];
+
+export interface WorkspaceSummary {
+  readonly id: string;
+  readonly name: string;
+  /** 我在这个空间里的角色（系统管理员按所有者） */
+  readonly role: Role;
+}
+
+function parseWorkspace(value: unknown): WorkspaceSummary | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = text(value.id);
+  if (!id || !isRole(value.role)) return undefined;
+  return { id, name: text(value.name) ?? id, role: value.role };
+}
+
+/** 我能进的空间（不需要先选定空间）。 */
+export async function listMyWorkspaces(): Promise<readonly WorkspaceSummary[]> {
+  return listOf(await request<unknown>('/api/workspaces'), parseWorkspace);
+}
 
 export function roleLabel(role: string): string {
   return ROLES.find((r) => r.value === role)?.label ?? role;
@@ -30,14 +52,26 @@ export interface Member {
   readonly role: Role;
   readonly name: string | null;
   readonly email: string | null;
+  /** channel：渠道账号（IM 机器人回答时用的身份），不是人 */
+  readonly kind: 'person' | 'channel';
 }
 
 function parseMember(value: unknown): Member | undefined {
   if (!isRecord(value)) return undefined;
   const userId = text(value.user_id);
   if (!userId || !isRole(value.role)) return undefined;
-  return { userId, role: value.role, name: text(value.name) ?? null, email: text(value.email) ?? null };
+  return {
+    userId,
+    role: value.role,
+    name: text(value.name) ?? null,
+    email: text(value.email) ?? null,
+    kind: value.kind === 'channel' ? 'channel' : 'person',
+  };
 }
+
+/** 只留人：成员页、加进部门或用户组、授权时选人都用这个；渠道账号的授权由渠道页同步，不在这些地方出现。 */
+export const peopleOnly = (members: readonly Member[]): readonly Member[] =>
+  members.filter((member) => member.kind !== 'channel');
 
 /** 成员显示名：有姓名用姓名，否则邮箱，都没有用 id。 */
 export function memberLabel(member: Pick<Member, 'userId' | 'name' | 'email'>): string {

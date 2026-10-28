@@ -21,6 +21,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from ..db.base import enter_workspace
 from ..kernel.contract import (
     GAP_FRAME_KIND,
     LIVE_FRAME_KIND,
@@ -141,6 +142,8 @@ class EventPump:
 
     async def _run(self, stream: _Stream) -> None:
         me = asyncio.current_task()
+        # 泵的任务可能由别的请求或宿主重启时拉起，不能沿用拉起方的空间：以会话所在的空间读写，观察者也跟着它
+        enter_workspace(stream.workspace_id)
         try:
             await self._loop(stream)
         finally:

@@ -1,6 +1,7 @@
 /** 会话附件（server/src/knowwork_server/attachments/api.py）：上传后原件在沙箱 /workspace/input，发消息时带上 id。 */
 import { ApiError, request, seg } from './http';
 import { isRecord, listOf, num, str, text } from './parse';
+import { workspacePath } from './workspace';
 
 export interface UploadedAttachment {
   readonly id: string;
@@ -39,7 +40,7 @@ export async function uploadAttachments(
 ): Promise<{ items: readonly UploadedAttachment[]; failures: readonly AttachmentFailure[] }> {
   const form = new FormData();
   for (const file of files) form.append('files', file, file.name);
-  const body = await request<unknown>(`/api/conversations/${seg(conversationId)}/attachments`, {
+  const body = await request<unknown>(workspacePath(`/conversations/${seg(conversationId)}/attachments`), {
     method: 'POST',
     form,
   });

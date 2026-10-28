@@ -171,6 +171,7 @@ jobs:
     needs: check
     if: needs.check.outputs.reuse != '[]'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -211,6 +212,8 @@ jobs:
     name: 同步依赖镜像
     needs: check
     runs-on: ubuntu-24.04
+    # 跨仓库复制镜像挂住过半个多小时；不设超时会一直等到默认的 6 小时
+    timeout-minutes: 30
     steps:
       - uses: docker/setup-buildx-action@v3
       - name: 取仓库主机名（ACR_REGISTRY 带命名空间，登录只要主机）

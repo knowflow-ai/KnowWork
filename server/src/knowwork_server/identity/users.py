@@ -1,4 +1,4 @@
-"""用户：建号、按密码认证、禁用。"""
+"""用户：建号、按密码认证、禁用；渠道账号（IM 机器人回答时用的身份）也在这里建。"""
 
 import re
 from collections.abc import Sequence
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .credentials import Clock, new_id, utcnow
 from .errors import EmailTaken, InvalidInput
-from .models import USER_ACTIVE, USER_DISABLED, AuthSession, User
+from .models import USER_ACTIVE, USER_CHANNEL, USER_DISABLED, USER_PERSON, AuthSession, User
 from .passwords import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, hash_password, needs_rehash, verify_password
 
 _EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]+$")
@@ -26,6 +26,7 @@ class UserInfo:
     email: str
     name: str
     status: str
+    kind: str = USER_PERSON
 
     @property
     def active(self) -> bool:
@@ -33,7 +34,7 @@ class UserInfo:
 
 
 def to_info(user: User) -> UserInfo:
-    return UserInfo(id=user.id, email=user.email, name=user.name, status=user.status)
+    return UserInfo(id=user.id, email=user.email, name=user.name, status=user.status, kind=user.kind)
 
 
 def _escape_like(text: str) -> str:
@@ -100,7 +101,7 @@ class UserService:
             return ()
         pattern = "%" + _escape_like(term) + "%"
         statement = (select(User)
-                     .where(User.status == USER_ACTIVE,
+                     .where(User.status == USER_ACTIVE, User.kind == USER_PERSON,
                             or_(User.email.ilike(pattern, escape="\\"), User.name.ilike(pattern, escape="\\")))
                      .order_by(User.email).limit(limit))
         async with self._sessionmaker() as session:
@@ -123,7 +124,7 @@ class UserService:
             stored = user.password_hash if user else None
             if not verify_password(stored, password[:MAX_PASSWORD_LENGTH]) or user is None:
                 return None
-            if user.status != USER_ACTIVE:
+            if user.status != USER_ACTIVE or user.kind != USER_PERSON:
                 return None
             if needs_rehash(stored):
                 user.password_hash = hash_password(password)
@@ -142,3 +143,18 @@ class UserService:
                                       .where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))
                                       .values(revoked_at=now))
             return True
+
+    async def ensure_channel_account(self, user_id: str, name: str) -> UserInfo:
+        """建或更新一个渠道账号：没有密码，邮箱用保留域名 .invalid（不会撞上真人，单点登录也不会给出这种邮箱）。
+        渠道删掉后账号只禁用不删，运行记录、用量里还能看到是哪个机器人答的；同一个渠道重建时重新启用。"""
+        async with self._sessionmaker() as session, session.begin():
+            user = await session.get(User, user_id, with_for_update=True)
+            if user is None:
+                user = User(id=user_id, email=f"{user_id.lower()}@channel.invalid", kind=USER_CHANNEL,
+                            password_hash=None)
+                session.add(user)
+            elif user.kind != USER_CHANNEL:
+                raise InvalidInput("这个 id 已经是一个人的账号")
+            user.name, user.status = name.strip()[:200], USER_ACTIVE
+            await session.flush()
+            return to_info(user)

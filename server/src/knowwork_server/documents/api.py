@@ -1,4 +1,4 @@
-"""预览接口：GET /api/conversations/{会话}/artifacts/{产物}/preview 返回 PDF（Word、PPT 转换后的，或 PDF 原件）。
+"""预览接口：GET …/conversations/{会话}/artifacts/{产物}/preview 返回 PDF（Word、PPT 转换后的，或 PDF 原件）。
 
 - 每次请求都按当前登录用户确认会话是本人的，与下载同一口径；预览也能看到全文，所以同样记审计；
 - 响应头同下载：附件方式、nosniff、CSP sandbox、不缓存。前端用 fetch 取字节交给 PDF 阅读器，不直接打开；
@@ -20,11 +20,12 @@ from .preview import PreviewService, PreviewUnsupported
 
 def build_router(preview: PreviewService, conversations: ConversationLookup, current_actor: ActorDependency, *,
                  on_view: DownloadHook | None = None) -> APIRouter:
-    router = APIRouter(prefix="/api/conversations")
+    router = APIRouter(prefix="/api/workspaces/{workspace_id}/conversations")
     Who = Annotated[Actor, Depends(current_actor)]
 
     @router.get("/{conversation_id}/artifacts/{artifact_id}/preview")
     async def preview_pdf(conversation_id: str, who: Who, artifact_id: Annotated[str, ARTIFACT_ID]):
+        """预览产物文件"""
         conversation = await owned_conversation(conversations, conversation_id, who)
         try:
             artifact, pdf = await preview.pdf(conversation, artifact_id)

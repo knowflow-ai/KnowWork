@@ -27,6 +27,7 @@ from knowwork_server.setup import (
     build_router,
     build_setup_service,
 )
+from knowwork_server.setup.service import current_system_admin
 
 pytestmark = pytest.mark.anyio
 
@@ -85,6 +86,7 @@ async def test_initialize_creates_admin_and_default_workspace(ctx):
     assert await service.is_system_admin(result.admin_user_id) is True
     assert await service.is_system_admin("someone-else") is False
     assert access.check(result.admin_user_id, "default", WORKSPACE_RESOURCE, "owner") is True
+    assert access.is_system_admin(result.admin_user_id), "初始化完成就告诉权限模块：系统管理员能进任何空间"
     user = await UserService(sessionmaker).authenticate("admin@example.com", PASSWORD)
     assert user is not None and user.id == result.admin_user_id
 
@@ -148,3 +150,14 @@ async def test_half_initialized_state_fails_closed(ctx):
     assert response.status_code == 503
     assert "orphan" not in response.text
     assert (await service.status()).initialized is False
+
+
+async def test_system_admin_is_restored_into_access_on_startup(ctx):
+    """重启以后权限模块是新的：从初始化记录里读回系统管理员（Runtime.start 调用）。"""
+    sessionmaker, _, service = ctx
+    result = await service.initialize(email="admin@example.com", name="管理员", password=PASSWORD)
+    fresh = AccessService(sessionmaker)
+    assert await fresh.reload()
+    assert not fresh.is_system_admin(result.admin_user_id)
+    fresh.set_system_admin(await current_system_admin(sessionmaker))
+    assert fresh.is_system_admin(result.admin_user_id)

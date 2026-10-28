@@ -130,6 +130,7 @@ async def test_execute_writes_receipt_and_replays_without_rerunning(env):
     assert len(env["handler"].calls) == 1, "同一调用被执行了两次"
     ctx = env["handler"].contexts[0]
     assert (ctx.workspace_id, ctx.session_id, ctx.user_id) == ("ws1", env["session_id"], "u1")
+    assert ctx.call_id == "call-1", "工具拿得到这次调用的编号（检索记录据此对上运行详情）"
     async with env["sessionmaker"]() as session:
         rows = (await session.execute(select(ActionReceipt).where(ActionReceipt.session_id == env["session_id"]))).scalars().all()
     assert len(rows) == 1

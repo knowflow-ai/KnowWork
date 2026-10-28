@@ -7,7 +7,8 @@
 import { createServer } from 'node:http'
 
 /**
- * @param {{ script?: Array<{ text: string } | { tool: string, args: object }>, pick?: (body: object) => ({ text: string } | { tool: string, args: object }), token?: () => string }} options
+ * @param {{ script?: Array<{ text: string } | { tool: string, args: object } | { calls: Array<{ tool: string, args: object }> }>, pick?: (body: object) => ({ text: string } | { tool: string, args: object }), token?: () => string }} options
+ *   calls 是一步里同时发几个工具调用。
  *   token 返回当前有效的 API Key；不匹配返回 401。
  *   pick 按请求内容选回答（多个 Agent 并发请求时按到达顺序不确定，用它按角色分别编排）；给了就不用 script。
  */
@@ -43,7 +44,13 @@ export async function startOpenAiStub(options) {
       }
       send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
     } else {
-      send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call_${next}`, type: 'function', function: { name: step.tool, arguments: JSON.stringify(step.args) } }] }, finish_reason: null }] })
+      const calls = step.calls ?? [{ tool: step.tool, args: step.args }]
+      calls.forEach((call, index) => {
+        // 单个调用的编号照旧是 call_<第几次请求>（提问等测试按它找），一步多个时才加序号
+        const id = step.calls === undefined ? `call_${next}` : `call_${next}_${index}`
+        const toolCall = { index, id, type: 'function', function: { name: call.tool, arguments: JSON.stringify(call.args) } }
+        send({ ...base, choices: [{ index: 0, delta: { tool_calls: [toolCall] }, finish_reason: null }] })
+      })
       send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
     }
     send({ ...base, choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } })

@@ -39,11 +39,12 @@ async def read_limited(upload: UploadFile, limit: int) -> IncomingFile:
 
 def build_router(service: AttachmentService, conversations: ConversationLookup,
                  current_actor: ActorDependency) -> APIRouter:
-    router = APIRouter(prefix="/api/conversations")
+    router = APIRouter(prefix="/api/workspaces/{workspace_id}/conversations")
     Who = Annotated[Actor, Depends(current_actor)]
 
     @router.post("/{conversation_id}/attachments")
     async def upload(conversation_id: str, who: Who, files: Annotated[list[UploadFile], File()]):
+        """上传附件"""
         conversation = await owned_conversation(conversations, conversation_id, who)
         if len(files) > service.max_files:
             raise HTTPException(status_code=400, detail={"code": "too_many_files",
@@ -60,6 +61,7 @@ def build_router(service: AttachmentService, conversations: ConversationLookup,
 
     @router.get("/{conversation_id}/attachments")
     async def list_attachments(conversation_id: str, who: Who):
+        """列出附件"""
         conversation = await owned_conversation(conversations, conversation_id, who)
         return {"items": [attachment_view(i) for i in await service.list(conversation)]}
 

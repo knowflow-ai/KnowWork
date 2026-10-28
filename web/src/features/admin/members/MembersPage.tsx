@@ -2,7 +2,7 @@
 import { useMemo, useState } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { Plus } from '@openai/apps-sdk-ui/components/Icon';
-import { removeMember, roleLabel, type Member } from '../../../api/workspace';
+import { peopleOnly, removeMember, roleLabel, type Member } from '../../../api/workspace';
 import { useMe } from '../../auth/queries';
 import { AdminPage, Toolbar } from '../AdminPage';
 import { RowActions } from '../common';
@@ -29,7 +29,7 @@ export default function MembersPage() {
   });
   const rows = useMemo(
     () =>
-      (members.data ?? []).filter((m) =>
+      peopleOnly(members.data ?? []).filter((m) =>
         includesText([m.name, m.email, m.userId, roleLabel(m.role)], keyword),
       ),
     [members.data, keyword],

@@ -9,11 +9,13 @@ from fastapi import FastAPI
 from knowwork_server.conversations.api import Actor
 from knowwork_server.conversations.models import Conversation
 from knowwork_server.conversations.service import ConversationNotFound
-from knowwork_server.knowledge.citation_api import EXCERPT_LIMIT, build_router
+from knowwork_server.knowledge.citation_api import EXCERPT_LIMIT, build_router, citation_view
 from knowwork_server.knowledge.citation_observer import CitationObserver
 from knowwork_server.knowledge.links import LinkSigner
 from knowwork_server.knowledge.models import Box, Evidence, EvidenceImage, Locator
 from knowwork_server.knowledge.tools import CITATION_GUIDANCE
+
+CONV = "/api/workspaces/default/conversations"
 
 pytestmark = pytest.mark.anyio
 
@@ -48,7 +50,7 @@ def evidence(i, text="付款期限 30 天", page=3):
 async def test_lists_the_sources_of_a_conversation_for_its_owner(env):
     await env.knowledge.citations.register("ws1", "c1", [evidence(1), evidence(2, text="甲" * 2000, page=7)])
     async with client(env) as http:
-        body = (await http.get("/api/conversations/c1/citations")).json()
+        body = (await http.get(f"{CONV}/c1/citations")).json()
     first, second = body["items"]
     assert first == {"number": 1, "title": "合同1.pdf", "excerpt": "付款期限 30 天", "page": 3,
                      "openUrl": "http://kf.local/document/doc1?page=3", "sourceId": "src1", "docRef": "doc1",
@@ -70,7 +72,7 @@ async def test_images_come_with_signed_urls_for_the_answer(env):
     app = FastAPI()
     app.include_router(build_router(env.knowledge.citations, Lookup(), actor_for("alice"), LinkSigner(b"k" * 32)))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://kw") as http:
-        [item] = (await http.get("/api/conversations/c1/citations")).json()["items"]
+        [item] = (await http.get(f"{CONV}/c1/citations")).json()["items"]
     [image] = item["images"]
     assert image["caption"] == "付款流程图" and image["url"].startswith("/api/workspaces/ws1/library/bases/kb1/images/d1?")
     assert "uid=alice" in image["url"] and "sig=" in image["url"]
@@ -79,19 +81,20 @@ async def test_images_come_with_signed_urls_for_the_answer(env):
 async def test_other_users_and_unknown_conversations_get_404(env):
     await env.knowledge.citations.register("ws1", "c1", [evidence(1)])
     async with client(env, user="bob") as http:
-        assert (await http.get("/api/conversations/c1/citations")).status_code == 404
+        assert (await http.get(f"{CONV}/c1/citations")).status_code == 404
     async with client(env) as http:
-        assert (await http.get("/api/conversations/nope/citations")).status_code == 404
+        assert (await http.get(f"{CONV}/nope/citations")).status_code == 404
 
 
 async def test_a_conversation_without_evidence_has_no_sources(env):
     async with client(env) as http:
-        assert (await http.get("/api/conversations/c1/citations")).json() == {"items": [], "truncated": False,
+        assert (await http.get(f"{CONV}/c1/citations")).json() == {"items": [], "truncated": False,
                                                                               "dropped": 0}
 
 
 async def test_knowledge_tools_carry_the_citation_rule(env):
-    """产出可引用证据的检索、阅读带引用规则；只列知识库与字段的 knowledge_bases、只列文档的 knowledge_documents 不带。"""
+    """产出可引用证据的检索、阅读带引用规则；只列知识库与字段的 knowledge_bases、只列文档的 knowledge_documents 不带。
+    没有让智能体自报缺口的工具：答上没有由回合结束后的判断来定（answer_check）。"""
     guidance = {tool.spec.name: tool.spec.guidance for tool in env.knowledge.tools}
     assert guidance == {"knowledge_search": CITATION_GUIDANCE, "knowledge_read": CITATION_GUIDANCE,
                         "knowledge_bases": None, "knowledge_documents": None}
@@ -137,6 +140,7 @@ async def test_stored_citations_keep_locator_images_and_version_note(env):
     [entry] = (await env.knowledge.citations.load("ws1", "c1")).entries
     assert (entry.evidence.locator, entry.evidence.images, entry.evidence.version_note) == (
         original.locator, original.images, original.version_note)
+    assert citation_view(entry)["versionNote"] == "这份文档已有更新版本", "引用卡片照原样显示"
 
 
 def block(page, quote, y=0.2):
@@ -153,7 +157,7 @@ async def test_each_block_of_the_passage_comes_with_its_place(env):
     [first, second] = (await env.knowledge.citations.load("ws1", "c1")).entries
     assert first.evidence.locators == blocks and second.evidence.locators == ()
     async with client(env) as http:
-        body = (await http.get("/api/conversations/c1/citations")).json()
+        body = (await http.get(f"{CONV}/c1/citations")).json()
     assert [b["quote"] for b in body["items"][0]["locators"]] == ["说明", "注意 可动部位不可把手指伸入。"]
     assert body["items"][0]["locators"][1]["boxes"][0]["y0"] == 0.5 and body["items"][1]["locators"] == []
 

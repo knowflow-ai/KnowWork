@@ -12,14 +12,14 @@ describe('成员', () => {
     routeFetch({
       [`GET ${B}/members`]: jsonResponse([
         { user_id: 'u1', role: 'owner', name: '李雷', email: 'li@corp.cn' },
-        { user_id: 'u2', role: 'viewer' },
+        { user_id: 'u2', role: 'editor', kind: 'channel' },
         { user_id: 'u3', role: 'god' },
       ]),
     });
     const members = await ws.listMembers();
     expect(members).toEqual([
-      { userId: 'u1', role: 'owner', name: '李雷', email: 'li@corp.cn' },
-      { userId: 'u2', role: 'viewer', name: null, email: null },
+      { userId: 'u1', role: 'owner', name: '李雷', email: 'li@corp.cn', kind: 'person' },
+      { userId: 'u2', role: 'editor', name: null, email: null, kind: 'channel' },
     ]);
     expect(members.map(ws.memberLabel)).toEqual(['李雷', 'u2']);
     expect(ws.memberLabel({ userId: 'u', name: null, email: 'e@x.cn' })).toBe('e@x.cn');

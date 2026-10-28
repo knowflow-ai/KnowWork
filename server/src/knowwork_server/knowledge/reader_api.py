@@ -30,14 +30,17 @@ def build_router(reader: KnowledgeReader, actor: Any) -> APIRouter:
 
     @router.get("/knowledge-bases")
     async def list_bases(who: Who, knowledge_bases: Annotated[list[str] | None, Query(max_length=50)] = None) -> dict:
+        """列出能查的知识库"""
         return await guarded(reader.bases(await caller_of(who), knowledge_bases))
 
     @router.post("/knowledge/search")
     async def search(body: SearchBody, who: Who) -> dict:
+        """检索知识库"""
         return await guarded(reader.search(await caller_of(who), body))
 
     @router.post("/knowledge/read")
     async def read(body: ReadBody, who: Who) -> dict:
+        """阅读文档原文"""
         return await guarded(reader.read(await caller_of(who), body))
 
     return router

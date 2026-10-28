@@ -25,6 +25,7 @@ def add_oidc_routes(router: APIRouter, identity: Identity, set_session_cookie: C
 
     @router.get("/oidc/login")
     async def oidc_login():
+        """跳转到单点登录"""
         try:
             started = await service().start()
         except OidcFailure as error:
@@ -38,6 +39,7 @@ def add_oidc_routes(router: APIRouter, identity: Identity, set_session_cookie: C
 
     @router.get("/oidc/callback")
     async def oidc_callback(request: Request, code: str = "", state: str = ""):
+        """单点登录回调"""
         annotate(record=True)  # 登录走 GET，也要进审计
         login = service()
         try:

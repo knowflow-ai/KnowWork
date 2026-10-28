@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.2-2b7de9" alt="Version: v0.0.2"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.3-2b7de9" alt="Version: v0.0.3"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -242,7 +242,7 @@ communication with the host are not available for now.
 | Feature | Description |
 |---|---|
 | Organization | Members, invitations, a department tree, user groups |
-| Roles and grants | Four roles per workspace; skills, tools and knowledge bases can be granted to users, groups and departments, inherited down the department tree; registered models are available to every workspace member |
+| Roles and grants | Three roles per workspace (owner, admin, member); skills, tools and knowledge bases can be granted to users, groups and departments, inherited down the department tree; registered models are available to every workspace member |
 | Data isolation | PostgreSQL row-level security per workspace; the application account does not own the tables |
 | Audit | Human write operations and agent tool calls are recorded separately and can be searched |
 | Run history | Administrators browse every turn in the workspace by time, member and status; viewing someone else's run is itself audited |
@@ -270,7 +270,7 @@ communication with the host are not available for now.
 
 ## Status and roadmap
 
-The current version is v0.0.2. APIs and data structures may still change before 1.0. Known
+The current version is v0.0.3. APIs and data structures may still change before 1.0. Known
 limitations are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Next up: a skill test bench (cases, structural assertions, draft versus published comparison), scenario packs, a UI for

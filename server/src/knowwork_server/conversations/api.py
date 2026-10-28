@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from ..audit.context import annotate
@@ -28,7 +28,8 @@ from ..kernel.contract import (
     TurnInput,
 )
 from ..profile.errors import ProfileUnavailable
-from ..profile.snapshot import MAX_DROPPED, MAX_SELECTED, TurnSelection
+from ..profile.snapshot import MAX_DROPPED, MAX_SELECTED, NO_SELECTION, TurnSelection
+from .feedback import MAX_NOTE, RUN_ID, Feedback, FeedbackStore
 from .mentions import MAX_MENTIONS, Mention, mentioned, turn_mentions
 from .models import Conversation
 from .replay import parse_cursor
@@ -52,9 +53,6 @@ class Actor(BaseModel):
 ActorDependency = Callable[..., Awaitable[Actor]]
 
 
-class CreateConversation(BaseModel):
-    title: str = Field(default="", max_length=200)
-
 
 class RenameConversation(BaseModel):
     title: str = Field(max_length=200)
@@ -73,13 +71,10 @@ KnowledgeBaseName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}\.([A-Za-
 ConditionLabel = Annotated[str, Field(min_length=1, max_length=500)]
 
 
-class SendMessage(BaseModel):
-    text: str = Field(min_length=1, max_length=200_000)
-    mode: str = Field(default="followup", pattern="^(followup|steer)$")
-    # 聊天页选的回答语言；不传时按提问里有没有汉字判断
-    language: Literal["zh", "en"] | None = None
-    # 本轮带的附件 id（先经附件接口上传到这个会话）；文件已在沙箱 /workspace/input 里，模型按需读
-    attachments: list[SelectionName] | None = Field(default=None, max_length=20)
+class TurnChoice(BaseModel):
+    """一轮的选择：技能、知识库、撤掉的检索条件、@，以及回答方式。发消息时带；新建会话时也可以带上第一条消息的，
+    建会话就按它定运行配置，第一条消息不用先开再重开。"""
+
     # 本轮选择的技能与知识库；不传表示没有选（技能不标选中、知识用全部可查的）
     skills: list[SelectionName] | None = Field(default=None, max_length=MAX_SELECTED)
     knowledge_bases: list[KnowledgeBaseName] | None = Field(default=None, max_length=MAX_SELECTED)
@@ -89,13 +84,6 @@ class SendMessage(BaseModel):
     mentions: list[Mention] = Field(default_factory=list, max_length=MAX_MENTIONS)
     # 回答方式：智能体，或只检索知识库的快速问答（宿主只放行 knowledge_search）；用户在输入框里随时切换
     answer_mode: Literal["agent", "quick"] = "agent"
-
-    @model_validator(mode="after")
-    def _quick_has_no_files(self) -> "SendMessage":
-        # 快速问答没有读文件的工具，附件放进会话容器也没人读
-        if self.answer_mode == "quick" and self.attachments:
-            raise ValueError("快速问答只检索知识库，不能带附件；要处理附件请切换到智能体")
-        return self
 
     def _scoped(self) -> tuple[list[str] | None, list[Mention]]:
         """这一轮算数的技能与 @：快速问答用不了技能（宿主拦下 skill），选了也不算，免得技能目录把它标成选中。"""
@@ -109,6 +97,28 @@ class SendMessage(BaseModel):
                                knowledge_bases=None if self.knowledge_bases is None else tuple(self.knowledge_bases),
                                dropped_conditions=tuple(self.dropped_conditions))
         return mentioned(chosen, mentions)
+
+
+class CreateConversation(BaseModel):
+    title: str = Field(default="", max_length=200)
+    # 第一条消息的选择（可选）：带了就按它绑定运行配置
+    first_turn: TurnChoice | None = None
+
+
+class SendMessage(TurnChoice):
+    text: str = Field(min_length=1, max_length=200_000)
+    mode: str = Field(default="followup", pattern="^(followup|steer)$")
+    # 聊天页选的回答语言；不传时按提问里有没有汉字判断
+    language: Literal["zh", "en"] | None = None
+    # 本轮带的附件 id（先经附件接口上传到这个会话）；文件已在沙箱 /workspace/input 里，模型按需读
+    attachments: list[SelectionName] | None = Field(default=None, max_length=20)
+
+    @model_validator(mode="after")
+    def _quick_has_no_files(self) -> "SendMessage":
+        # 快速问答没有读文件的工具，附件放进会话容器也没人读
+        if self.answer_mode == "quick" and self.attachments:
+            raise ValueError("快速问答只检索知识库，不能带附件；要处理附件请切换到智能体")
+        return self
 
     def turn(self) -> TurnInput:
         # 插话进行中的回合，新的选择留到下一轮才生效（service.send），@ 也就不写进这条消息，免得模型以为已经限定了
@@ -178,8 +188,23 @@ def credential_error(error: Exception) -> HTTPException:
                                                   "message": "工具服务暂时不可用，请稍后重试"})
 
 
-def build_router(service: ConversationService, current_actor: ActorDependency) -> APIRouter:
-    router = APIRouter(prefix="/api/conversations")
+class FeedbackBody(BaseModel):
+    """对一轮回答的评分（照 DSH 官方的消息反馈）：赞或踩必填，分类与说明可选。"""
+
+    model_config = ConfigDict(extra="forbid")
+    rating: Literal["like", "dislike"]
+    category: Literal["task-result", "instruction-following", "product-interaction", "service-stability",
+                      "resource-cost", "security-privacy-permission", "other"] | None = None
+    note: str | None = Field(default=None, max_length=MAX_NOTE)
+
+
+def feedback_view(item: Feedback) -> dict:
+    return {"runId": item.run_id, "rating": item.rating, "category": item.category, "note": item.note}
+
+
+def build_router(service: ConversationService, current_actor: ActorDependency,
+                 feedback: FeedbackStore | None = None) -> APIRouter:
+    router = APIRouter(prefix="/api/workspaces/{workspace_id}/conversations")
     Who = Annotated[Actor, Depends(current_actor)]
 
     async def owned(conversation_id: str, who: Actor) -> Conversation:
@@ -190,8 +215,11 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
 
     @router.post("", status_code=201)
     async def create(body: CreateConversation, who: Who):
+        """新建对话"""
         try:
-            conversation = await service.create(workspace_id=who.workspace_id, user_id=who.user_id, title=body.title)
+            selection = body.first_turn.selection() if body.first_turn else NO_SELECTION
+            conversation = await service.create(workspace_id=who.workspace_id, user_id=who.user_id, title=body.title,
+                                                selection=selection)
         except CREDENTIAL_ERRORS as error:
             raise credential_error(error) from error
         except HOST_ERRORS as error:
@@ -201,17 +229,26 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
     @router.get("")
     async def list_conversations(who: Who, limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 30,
                                  before: datetime | None = None):
+        """列出我的对话"""
         page = await service.list_page(workspace_id=who.workspace_id, user_id=who.user_id, limit=limit, before=before)
         return {"items": [conversation_view(c) for c in page.items],
                 "next": page.next.isoformat() if page.next else None}
 
+    @router.get("/search")
+    async def search(who: Who, q: Annotated[str, Query(min_length=1, max_length=100)]):
+        """侧栏的搜索：标题与每轮问的话里有 q 的对话，最近有动静的在前；snippet 是命中的那句问话的一段。"""
+        hits = await service.search(workspace_id=who.workspace_id, user_id=who.user_id, query=q)
+        return {"items": [{**conversation_view(h.conversation), "snippet": h.snippet} for h in hits]}
+
     @router.patch("/{conversation_id}")
     async def rename(conversation_id: str, body: RenameConversation, who: Who):
+        """对话改名"""
         conversation = await owned(conversation_id, who)
         return conversation_view(await service.rename(conversation, body.title))
 
     @router.delete("/{conversation_id}", status_code=204)
     async def remove(conversation_id: str, who: Who):
+        """删除对话"""
         conversation = await owned(conversation_id, who)
         try:
             await service.delete(conversation)
@@ -221,6 +258,7 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
 
     @router.post("/{conversation_id}/messages", status_code=202)
     async def send(conversation_id: str, body: SendMessage, who: Who):
+        """发消息（提问或插话）"""
         conversation = await owned(conversation_id, who)
         try:
             message_id = await service.send(conversation, body.turn(), body.selection(),
@@ -233,8 +271,30 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
             raise upstream_error(error, "send") from error
         return {"messageId": message_id}
 
+    if feedback is not None:
+        RunId = Annotated[str, Path(pattern=RUN_ID.pattern)]
+
+        @router.get("/{conversation_id}/feedback")
+        async def list_feedback(conversation_id: str, who: Who):
+            """我对回答的评价"""
+            conversation = await owned(conversation_id, who)
+            return {"items": [feedback_view(item) for item in await feedback.list(conversation)]}
+
+        @router.put("/{conversation_id}/feedback/{run_id}")
+        async def put_feedback(conversation_id: str, run_id: RunId, body: FeedbackBody, who: Who):
+            """评价一次回答"""
+            conversation = await owned(conversation_id, who)
+            return feedback_view(await feedback.put(conversation, run_id, body.rating, body.category, body.note))
+
+        @router.delete("/{conversation_id}/feedback/{run_id}", status_code=204)
+        async def delete_feedback(conversation_id: str, run_id: RunId, who: Who):
+            """撤回评价"""
+            await feedback.delete(await owned(conversation_id, who), run_id)
+            return Response(status_code=204)
+
     @router.post("/{conversation_id}/cancel")
     async def cancel(conversation_id: str, who: Who):
+        """停止正在进行的回答"""
         conversation = await owned(conversation_id, who)
         try:
             result = await service.cancel(conversation)
@@ -244,6 +304,7 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
 
     @router.get("/{conversation_id}/approvals")
     async def approvals(conversation_id: str, who: Who):
+        """待审批的操作"""
         conversation = await owned(conversation_id, who)
         try:
             pending = await service.approvals(conversation)
@@ -253,6 +314,7 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
 
     @router.post("/{conversation_id}/approvals/{approval_id}")
     async def decide(conversation_id: str, body: Decision, who: Who, approval_id: Annotated[str, APPROVAL_ID]):
+        """批准或拒绝一个操作"""
         conversation = await owned(conversation_id, who)
         annotate(allow=body.allow, scope=body.scope)
         try:
@@ -267,6 +329,7 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
 
     @router.get("/{conversation_id}/questions")
     async def questions(conversation_id: str, who: Who):
+        """智能体在等我回答的问题"""
         conversation = await owned(conversation_id, who)
         try:
             pending = await service.questions(conversation)
@@ -277,6 +340,7 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
 
     @router.post("/{conversation_id}/questions/{question_id}")
     async def answer(conversation_id: str, body: Answer, who: Who, question_id: Annotated[str, QUESTION_ID]):
+        """回答智能体的问题"""
         conversation = await owned(conversation_id, who)
         annotate(answers=len(body.answers))  # 回答内容可能敏感，审计只记题数
         try:
@@ -296,6 +360,7 @@ def build_router(service: ConversationService, current_actor: ActorDependency) -
     @router.get("/{conversation_id}/events")
     async def events(conversation_id: str, who: Who, after: int = 0,
                      last_event_id: Annotated[str | None, Header()] = None):
+        """对话事件流（SSE）"""
         conversation = await owned(conversation_id, who)
         feed = service.events(conversation, parse_cursor(last_event_id, after))
 

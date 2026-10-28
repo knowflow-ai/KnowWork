@@ -25,6 +25,8 @@ export interface Directory {
   readonly resources: Readonly<Record<string, string>>;
   /** 按知识源分组的知识库，给授权时的选择树。 */
   readonly knowledge: readonly SourceBases[];
+  /** 知识库列表取到了：只有取到了，才能说某个知识库已经不在了（取不到时照原样显示编号）。 */
+  readonly knowledgeLoaded: boolean;
   /** MCP 服务与它们的工具，给授权时的选择树。 */
   readonly tools: readonly McpServer[];
   /** 资源类型的中文名：内置的加上扩展树里出现的（插槽 grants.knowledge）。 */
@@ -48,11 +50,26 @@ export function subjectLabel(key: string, dir: Directory): { readonly kind: stri
   return { kind: kindText, name: id };
 }
 
-export function resourceLabel(key: string, dir: Directory): { readonly type: string; readonly name: string } {
+export interface ResourceLabel {
+  readonly type: string;
+  readonly name: string;
+  /** 资源已经不在了（知识库删了、共享撤销了）：授权还留着，但不再起作用 */
+  readonly stale?: boolean;
+}
+
+export function resourceLabel(key: string, dir: Directory): ResourceLabel {
   const { kind, id } = splitKey(key);
   const type = dir.typeLabels[kind] ?? RETIRED_TYPES[kind] ?? kind;
   if (id === '*') return { type, name: `全部${type}` };
-  return { type, name: dir.resources[key] ?? id };
+  const known = dir.resources[key];
+  if (known) return { type, name: known };
+  // 知识库列表是管理员能看到的全部（含别的空间共享进来的）。知识源取到了、里面却没有这个库，说明库删了或共享撤销了；
+  // 原来直接显示 builtin.kb_xxx 这样的编号，看不懂是什么。知识源取不到时不下结论，照原样显示编号。
+  if (kind === 'knowledge_base' && dir.knowledgeLoaded) {
+    const source = dir.knowledge.find((s) => id.startsWith(`${s.sourceId}.`));
+    if (source && !source.error) return { type, name: `${source.sourceName} · 已失效的知识库`, stale: true };
+  }
+  return { type, name: id };
 }
 
 export function actionLabel(action: string): string {

@@ -56,26 +56,28 @@ describe('API Key', () => {
 
   it('创建返回缺明文时报错', async () => {
     routeFetch({ 'POST /api/auth/api-keys': jsonResponse(KEY, 201) });
-    await expect(createApiKey({ name: 'k', scopes: ['a'] })).rejects.toThrow('服务返回的数据不完整');
+    await expect(createApiKey({ name: 'k', scopes: ['a'], workspaceId: 'default' })).rejects.toThrow(
+      '服务返回的数据不完整',
+    );
   });
 });
 
 describe('邀请与用户搜索', () => {
   it('邀请返回链接', async () => {
     routeFetch({
-      'POST /api/auth/invitations': jsonResponse(
+      'POST /api/workspaces/default/invitations': jsonResponse(
         { id: 'i', email: 'a@b.cn', url: 'https://kw/invite?token=x', expiresAt: 'e' },
         201,
       ),
     });
     await expect(inviteUser(' a@b.cn ')).resolves.toMatchObject({ url: 'https://kw/invite?token=x' });
-    routeFetch({ 'POST /api/auth/invitations': jsonResponse({}, 201) });
+    routeFetch({ 'POST /api/workspaces/default/invitations': jsonResponse({}, 201) });
     await expect(inviteUser('a@b.cn')).rejects.toThrow();
   });
 
   it('搜索：空关键词不请求，结果逐项解析', async () => {
     const api = routeFetch({
-      'GET /api/auth/users': jsonResponse([{ id: 'u', email: 'a@b.cn', name: '甲' }, {}]),
+      'GET /api/workspaces/default/users': jsonResponse([{ id: 'u', email: 'a@b.cn', name: '甲' }, {}]),
     });
     await expect(searchUsers('  ')).resolves.toEqual([]);
     expect(api.calls).toHaveLength(0);

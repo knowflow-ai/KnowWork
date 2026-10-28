@@ -1,4 +1,4 @@
-"""工作空间与成员管理。成员角色以 g 规则 user -> role:<角色> 写进 Casbin。"""
+"""空间成员管理。成员角色以 g 规则 user -> role:<角色> 写进 Casbin。空间本身的建、改名、关闭见 workspaces.py。"""
 
 from dataclasses import dataclass
 
@@ -7,13 +7,13 @@ from sqlalchemy.exc import IntegrityError
 
 from . import rules as R
 from . import store
-from .core import AccessCore, Tx
+from .core import Tx
 from .errors import Conflict, NotFound
 from .models import DepartmentMember, UserGroupMember, Workspace, WorkspaceMember
-from .vocab import Action, Role, clean_name, parse_role, validate_id
+from .vocab import Action, Role, parse_role, validate_id
+from .workspaces import DEFAULT_WORKSPACE_ID, PLATFORM_WORKSPACE_ID, WorkspacesMixin
 
-DEFAULT_WORKSPACE_ID = "default"
-
+__all__ = ["DEFAULT_WORKSPACE_ID", "PLATFORM_WORKSPACE_ID", "MemberView", "MembersMixin"]
 
 @dataclass(frozen=True)
 class MemberView:
@@ -21,55 +21,29 @@ class MemberView:
     role: str
 
 
-class MembersMixin(AccessCore):
-    async def create_workspace(self, *, workspace_id: str, name: str, owner_user_id: str) -> None:
-        """建空间并设置首个所有者。属于系统操作，调用方自行决定谁能建（开源版只建默认空间）。"""
-        validate_id(workspace_id, "workspace_id")
-        validate_id(owner_user_id, "user_id")
-        name = clean_name(name)
-        try:
-            async with self._tx(workspace_id) as tx:
-                tx.session.add(Workspace(id=workspace_id, name=name))
-                await tx.session.flush()
-                tx.session.add(WorkspaceMember(workspace_id=workspace_id, user_id=owner_user_id, role=Role.OWNER))
-                await tx.session.flush()
-                await tx.add_rules(*R.default_role_policies(workspace_id),
-                                   R.member_role(owner_user_id, Role.OWNER, workspace_id))
-        except IntegrityError as error:
-            raise Conflict("工作空间已存在") from error
+class MembersMixin(WorkspacesMixin):
+    async def join_workspace(self, user_id: str, workspace_id: str, role: str = Role.EDITOR) -> bool:
+        """系统操作：新注册的账号加入某个空间（凭邀请注册的进邀请所在的空间）。已是成员或空间不存在时什么也不做。
 
-    async def ensure_default_workspace(self, owner_user_id: str) -> str:
-        """开源版的默认空间；已存在则不动。"""
-        async with self._sessionmaker() as session:
-            exists = await session.get(Workspace, DEFAULT_WORKSPACE_ID)
-        if exists is None:
-            try:
-                await self.create_workspace(workspace_id=DEFAULT_WORKSPACE_ID, name="默认空间",
-                                            owner_user_id=owner_user_id)
-            except Conflict:
-                pass  # 并发创建，另一方已建好
-        return DEFAULT_WORKSPACE_ID
-
-    async def join_default_workspace(self, user_id: str, role: str = Role.VIEWER) -> bool:
-        """系统操作：新注册的账号加入默认空间（开源版）。已是成员或默认空间还没建好时什么也不做。
-
-        只在建号时调用一次；管理员之后把人移出，不会因为再次登录被加回来。
+        只在建号时调用一次；管理员之后把人移出，不会因为再次登录被加回来。所有者不能这样加（由现任所有者任命）。
         """
         validate_id(user_id, "user_id")
+        validate_id(workspace_id, "workspace_id")
         new_role = parse_role(role)
         if new_role == Role.OWNER:
             raise ValueError("不能以所有者身份自动加入")
         async with self._sessionmaker() as session:
-            if await session.get(Workspace, DEFAULT_WORKSPACE_ID) is None:
+            if await session.get(Workspace, workspace_id) is None:
                 return False
         try:
-            async with self._tx(DEFAULT_WORKSPACE_ID) as tx:
-                tx.session.add(WorkspaceMember(workspace_id=DEFAULT_WORKSPACE_ID, user_id=user_id, role=new_role))
+            async with self._tx(workspace_id) as tx:
+                tx.session.add(WorkspaceMember(workspace_id=workspace_id, user_id=user_id, role=new_role))
                 await tx.session.flush()
-                await tx.add_rules(R.member_role(user_id, new_role, DEFAULT_WORKSPACE_ID))
+                await tx.add_rules(R.member_role(user_id, new_role, workspace_id))
         except IntegrityError:
             return False  # 已是成员
         return True
+
 
     async def list_members(self, actor_id: str, workspace_id: str) -> tuple[MemberView, ...]:
         self._require(actor_id, workspace_id, Action.USE)

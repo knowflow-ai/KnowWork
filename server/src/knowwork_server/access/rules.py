@@ -84,7 +84,6 @@ _DEFAULTS: tuple[tuple[str, str, str], ...] = (
     (Role.ADMIN, "knowledge_base:*", Action.OWNER),
     (Role.ADMIN, "knowledge_source:*", Action.OWNER),
     (Role.EDITOR, WORKSPACE_RESOURCE, Action.USE),
-    (Role.VIEWER, WORKSPACE_RESOURCE, Action.USE),
 )
 
 

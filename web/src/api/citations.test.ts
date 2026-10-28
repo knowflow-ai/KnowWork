@@ -7,7 +7,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe('citations api', () => {
   it('按编号收成出处表，坏的条目丢掉', async () => {
     const api = routeFetch({
-      'GET /api/conversations/*/citations': jsonResponse({
+      'GET /api/workspaces/default/conversations/*/citations': jsonResponse({
         items: [
           {
             number: 1,
@@ -16,7 +16,8 @@ describe('citations api', () => {
             page: 3,
             openUrl: 'http://kf/doc?page=3',
           },
-          { number: 2, title: '无页码.md', excerpt: '', page: null, openUrl: null },
+          { number: 2, title: '无页码.md', excerpt: '', page: null, openUrl: null, versionNote: null },
+          { number: 4, title: '旧版.md', excerpt: '', versionNote: '已被新版《新版》替代' },
           { number: 'x', title: '编号不对' },
           { number: 3 },
         ],
@@ -24,16 +25,23 @@ describe('citations api', () => {
       }),
     });
     const sources = await listCitations('a/b');
-    expect(api.calls[0]?.path).toBe('/api/conversations/a%2Fb/citations');
+    expect(api.calls[0]?.path).toBe('/api/workspaces/default/conversations/a%2Fb/citations');
     expect(sources).toEqual({
       1: { title: '合同.pdf', excerpt: '付款期限 30 天', page: 3, url: 'http://kf/doc?page=3' },
       2: { title: '无页码.md', excerpt: undefined, page: undefined, url: undefined },
+      4: {
+        title: '旧版.md',
+        excerpt: undefined,
+        page: undefined,
+        url: undefined,
+        versionNote: '已被新版《新版》替代',
+      },
     });
   });
 
   it('一条引用就是一块：定位用这一块的全部位置合起来，点开整块高亮', async () => {
     routeFetch({
-      'GET /api/conversations/*/citations': jsonResponse({
+      'GET /api/workspaces/default/conversations/*/citations': jsonResponse({
         items: [
           {
             number: 1,
@@ -60,7 +68,7 @@ describe('citations api', () => {
 
   it('图片只认站内地址与 http(s)，别的协议丢掉', async () => {
     routeFetch({
-      'GET /api/conversations/*/citations': jsonResponse({
+      'GET /api/workspaces/default/conversations/*/citations': jsonResponse({
         items: [
           {
             number: 1,
@@ -83,7 +91,7 @@ describe('citations api', () => {
 
   it('只接受 http(s) 的原文链接，别的协议当作没有', async () => {
     routeFetch({
-      'GET /api/conversations/*/citations': jsonResponse({
+      'GET /api/workspaces/default/conversations/*/citations': jsonResponse({
         items: [{ number: 1, title: 't', openUrl: 'javascript:alert(1)' }],
       }),
     });

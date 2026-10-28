@@ -27,7 +27,7 @@ x-logging: &logging
     max-file: "5"
 
 x-server-image: &server-image
-  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.0.2}
+  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.0.3}
   pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
 
 x-hardening: &hardening
@@ -65,7 +65,7 @@ x-server-env: &server-env
 # 并把含 ca.pem、cert.pem、key.pem 的证书目录挂进来、填到 TLS_CERT_PATH。
 x-sandbox-env: &sandbox-env
   KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-false}
-  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.2}}
+  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.3}}
   KNOWWORK_SANDBOX_DOCKER_HOST: ${KNOWWORK_SANDBOX_DOCKER_HOST:-}
   KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH: ${KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH:-}
   KNOWWORK_SANDBOX_ALLOW_INTERNET: ${KNOWWORK_SANDBOX_ALLOW_INTERNET:-true}
@@ -155,7 +155,7 @@ services:
     logging: *logging
 
   runtime-host:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.0.2}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.0.3}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped
@@ -165,6 +165,9 @@ services:
       KNOWWORK_MODEL_BASE_URL: http://api:8001/internal/model/v1
       KNOWWORK_TOOLS_BASE_URL: http://api:8001/internal/extensions/tools
       KNOWWORK_SKILLS_BASE_URL: http://api:8001/internal/extensions/skills
+      # 会话沙箱：模型的文件读写与命令经它落到会话容器。不配时插件退回 127.0.0.1:8001（本机开发的默认值），
+      # 在容器里连的是宿主自己，写文件、执行命令都报「沙箱服务暂时不可用」
+      KNOWWORK_SANDBOX_BASE_URL: http://api:8001/internal/extensions/sandbox
       # 宿主向模型网关请求时用的模型名，与 api 的 KNOWWORK_HOST_MODEL_ALIAS 一致
       KNOWWORK_MODEL: ${KNOWWORK_HOST_MODEL_ALIAS:-default}
       KNOWWORK_MODEL_CONTEXT_WINDOW: ${KNOWWORK_MODEL_CONTEXT_WINDOW:-131072}
@@ -280,7 +283,7 @@ services:
   sandbox-image:
     # 会话沙箱镜像：只用于拉取或本地构建，不常驻（WeKnora 的 sandbox 服务同此）；api 按会话用它创建容器。
     # 拉取：docker compose --profile sandbox pull sandbox-image（install.sh 会做）；本地构建：把 pull 换成 build。
-    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.2}}
+    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.3}}
     build:
       context: ..
       dockerfile: deploy/docker/sandbox.Dockerfile
@@ -291,7 +294,7 @@ services:
     logging: *logging
 
   gateway:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.0.2}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.0.3}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped

@@ -16,6 +16,7 @@ import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
 import { selectLastUserMessage, selectRunState } from './events/selectors';
 import { useConversation, type FirstMessage, type TurnExtras } from './hooks/useConversation';
+import { useFeedback } from './hooks/useFeedback';
 import { resolveMentions } from './mentions/resolve';
 
 // 运行详情（运行调试视图）不常用，点开时才加载
@@ -48,12 +49,14 @@ function NewChat() {
 
   const start = async (text: string, files: readonly File[], mentions: readonly Mention[]) => {
     try {
-      const { id } = await createConversation(truncate(text, 30));
+      const answerMode = currentAnswerMode();
+      // @ 一起带给建会话：第一条就 @ 时不用先开再重开宿主会话
+      const { id } = await createConversation(truncate(text, 30), { answerMode, mentions });
       // 附件要先有会话才能传：建会话 → 把文件放进会话工作区 → 带着附件 id 发首条消息
       const attachments = await uploadForTurn(id, files);
       await sendMessage(id, text, 'followup', {
         language: currentReplyLanguage(),
-        answerMode: currentAnswerMode(),
+        answerMode,
         attachments,
         mentions,
       });
@@ -80,6 +83,7 @@ function NewChat() {
 }
 
 function ExistingChat({ conversationId }: { readonly conversationId: string }) {
+  const feedback = useFeedback(conversationId);
   const location = useLocation();
   const client = useQueryClient();
   const firstMessage = (location.state as NavigationState | null)?.firstMessage;
@@ -161,6 +165,7 @@ function ExistingChat({ conversationId }: { readonly conversationId: string }) {
           onRegenerate={onRegenerate}
           onDropConditions={onDropConditions}
           onInspect={onInspect}
+          feedback={feedback}
         />
       </div>
       {inspecting !== undefined ? (

@@ -7,6 +7,7 @@ import { AppLayout } from './AppLayout';
 import { flattenPages } from '../features/conversations/queries';
 import { useReplyLanguage } from '../stores/replyLanguage';
 import { useSidebar } from '../stores/sidebar';
+import { useWorkspaceStore } from '../stores/workspace';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -34,7 +35,8 @@ function api(admin: boolean, extra = {}) {
   return routeFetch({
     'GET /api/auth/me': jsonResponse(ME),
     'GET /api/workspaces/default/me/check': jsonResponse({ allowed: admin }),
-    'GET /api/conversations': (call) => jsonResponse(call.query.get('before') ? page2 : page1),
+    'GET /api/workspaces/default/conversations': (call) =>
+      jsonResponse(call.query.get('before') ? page2 : page1),
     'POST /api/auth/logout': new Response(null, { status: 204 }),
     ...extra,
   });
@@ -89,17 +91,7 @@ describe('AppLayout 与侧栏', () => {
     renderWithApp(<AdminLayout />, { route: '/admin/members', path: '*' });
     expect(await screen.findByRole('navigation', { name: '管理导航' })).toBeInTheDocument();
     for (const name of ['组织与权限', '能力接入', '运营']) expect(screen.getByText(name)).toBeInTheDocument();
-    for (const name of [
-      '成员',
-      '部门与用户组',
-      '资源授权',
-      '模型',
-      '知识源',
-      '技能',
-      '工具与 MCP',
-      '用量',
-      '审计',
-    ]) {
+    for (const name of ['成员', '部门与用户组', '资源授权', '知识源', '技能', '工具与 MCP', '用量', '审计']) {
       expect(screen.getByRole('link', { name })).toBeInTheDocument();
     }
     expect(screen.getByRole('link', { name: /返回工作台/ })).toHaveAttribute('href', '/chat');
@@ -118,6 +110,35 @@ describe('AppLayout 与侧栏', () => {
     fireEvent.click(await screen.findByRole('menuitemradio', { name: 'English' }));
     await waitFor(() => expect(useReplyLanguage.getState().language).toBe('en'));
     expect(window.localStorage.getItem('kw.replyLanguage')).toBe('en');
+  });
+
+  it('能进两个以上空间时用户菜单里能切换：换成新空间、回到首页、按新空间重新取数据', async () => {
+    const calls = api(false, {
+      'GET /api/workspaces': jsonResponse([
+        { id: 'default', name: '默认空间', role: 'editor' },
+        { id: 'ws2', name: '财务部', role: 'admin' },
+      ]),
+      'GET /api/workspaces/ws2/me/check': jsonResponse({ allowed: true }),
+      'GET /api/workspaces/ws2/conversations': jsonResponse({ items: [], next: null }),
+    });
+    renderWithApp(<AppLayout />, { route: '/chat', path: '*' });
+    await screen.findByRole('link', { name: /季度总结/ });
+    await userEvent.click(screen.getByRole('button', { name: '账号菜单' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /工作空间/ }));
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: '财务部' }));
+    await waitFor(() => expect(useWorkspaceStore.getState().id).toBe('ws2'));
+    expect(window.localStorage.getItem('kw.workspace')).toBe('ws2');
+    await waitFor(() => expect(calls.find('GET', '/api/workspaces/ws2/conversations')).toHaveLength(1));
+  });
+
+  it('只在一个空间里时没有切换空间这一项', async () => {
+    api(false, {
+      'GET /api/workspaces': jsonResponse([{ id: 'default', name: '默认空间', role: 'editor' }]),
+    });
+    renderWithApp(<AppLayout />, { route: '/chat', path: '*' });
+    await userEvent.click(await screen.findByRole('button', { name: '账号菜单' }));
+    expect(await screen.findByText('个人设置')).toBeInTheDocument();
+    expect(screen.queryByText('工作空间')).not.toBeInTheDocument();
   });
 
   it('管理后台的用户菜单里没有回答语言', async () => {
@@ -149,7 +170,7 @@ describe('AppLayout 与侧栏', () => {
 
   it('没有会话时显示提示；列表失败时说明', async () => {
     routeFetch({
-      'GET /api/conversations': jsonResponse({ items: [], next: null }),
+      'GET /api/workspaces/default/conversations': jsonResponse({ items: [], next: null }),
       'GET /api/auth/me': jsonResponse(ME),
       'GET /api/workspaces/default/me/check': jsonResponse({ allowed: false }),
     });
@@ -159,13 +180,13 @@ describe('AppLayout 与侧栏', () => {
 
   it('会话可以改名与删除（删除需确认，删掉当前会话回到新对话）', async () => {
     const calls = api(false, {
-      'PATCH /api/conversations/*': jsonResponse({
+      'PATCH /api/workspaces/default/conversations/*': jsonResponse({
         id: 'c1',
         title: '年度总结',
         createdAt: null,
         updatedAt: null,
       }),
-      'DELETE /api/conversations/*': new Response(null, { status: 204 }),
+      'DELETE /api/workspaces/default/conversations/*': new Response(null, { status: 204 }),
     });
     renderWithApp(<AppLayout />, { route: '/chat/c1', path: '*' });
     await userEvent.click(await screen.findByRole('button', { name: '更多操作：季度总结' }));
@@ -178,14 +199,18 @@ describe('AppLayout 与侧栏', () => {
     await userEvent.type(input, '年度总结');
     await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
     await waitFor(() =>
-      expect(calls.find('PATCH', '/api/conversations/c1')[0]?.body).toEqual({ title: '年度总结' }),
+      expect(calls.find('PATCH', '/api/workspaces/default/conversations/c1')[0]?.body).toEqual({
+        title: '年度总结',
+      }),
     );
 
     await userEvent.click(screen.getByRole('button', { name: '更多操作：季度总结' }));
     await userEvent.click(await screen.findByText('删除'));
     const confirmDialog = await screen.findByRole('dialog', { name: '删除对话「季度总结」？' });
     await userEvent.click(within(confirmDialog).getByRole('button', { name: '删除' }));
-    await waitFor(() => expect(calls.find('DELETE', '/api/conversations/c1')).toHaveLength(1));
+    await waitFor(() =>
+      expect(calls.find('DELETE', '/api/workspaces/default/conversations/c1')).toHaveLength(1),
+    );
   });
 
   it('flattenPages 去重并容忍空值', () => {
@@ -205,6 +230,7 @@ describe('品牌与系统设置入口', () => {
     expect(await screen.findByRole('img', { name: 'KnowWork' })).toHaveTextContent('nowWork');
     expect(document.querySelector('.kw-wordmark-k')).toHaveAttribute('src', '/brand/knowwork-k.svg');
     expect(await screen.findByRole('link', { name: '系统设置' })).toHaveAttribute('href', '/admin/system');
+    expect(screen.getByRole('link', { name: '模型' })).toHaveAttribute('href', '/admin/models');
     await waitFor(() => expect(document.title).toBe('KnowWork'));
   });
 

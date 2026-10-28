@@ -200,7 +200,7 @@ async def env(workflows_db, tmp_path):
     access = AccessService(sessionmaker)
     assert await access.reload()
     await access.create_workspace(workspace_id="ws1", name="空间一", owner_user_id="alice")
-    for user, role in (("dave", "viewer"), ("erin", "viewer")):
+    for user, role in (("dave", "editor"), ("erin", "editor")):
         await access.add_member("alice", "ws1", user, role)
     skills = build_skills(MASTER, sessionmaker, access, LocalBlobStore(tmp_path / "blobs"))
     box = ToolBox()

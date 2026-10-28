@@ -7,7 +7,7 @@ import { providerInput } from './providerForm';
 
 afterEach(() => vi.unstubAllGlobals());
 
-const B = '/api/workspaces/default';
+const B = '/api/system';
 const ok = () => new Response(null, { status: 204 });
 const PROVIDER = {
   id: 'p1',
@@ -42,6 +42,7 @@ function api(extra = {}) {
     [`PATCH ${B}/models/*`]: jsonResponse({}),
     [`DELETE ${B}/models/*`]: ok(),
     [`POST ${B}/models/*/test`]: jsonResponse({ ok: true, latency_ms: 85, message: '' }),
+    [`GET ${B}/check`]: jsonResponse({ allowed: true }),
     ...extra,
   });
 }
@@ -50,6 +51,13 @@ const fill = (dialog: HTMLElement, label: string, value: string) =>
   fireEvent.change(within(dialog).getByLabelText(label), { target: { value } });
 
 describe('模型', () => {
+  it('全平台共用：不是系统管理员时不显示配置，也不去取', async () => {
+    const calls = api({ [`GET ${B}/check`]: jsonResponse({ allowed: false }) });
+    renderWithApp(<ModelsPage />);
+    expect(await screen.findByText('没有权限')).toBeInTheDocument();
+    expect(calls.find('GET', `${B}/models`)).toHaveLength(0);
+  });
+
   it('模型不按人授权：只有模型、厂商、文档解析三个标签页，没有分组', async () => {
     api();
     renderWithApp(<ModelsPage />);

@@ -31,10 +31,12 @@ def build_router(service: SetupService, *, prefix: str = "/api/setup") -> APIRou
 
     @router.get("")
     async def status() -> dict:
+        """是否还要初始化"""
         return {"initialized": (await service.status()).initialized}
 
     @router.post("", status_code=201)
     async def initialize(body: SetupBody) -> dict:
+        """初始化：创建第一个管理员"""
         try:
             result = await service.initialize(email=body.email, name=body.name, password=body.password)
         except AlreadyInitialized as error:

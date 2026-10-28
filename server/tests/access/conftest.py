@@ -64,8 +64,8 @@ async def service(access_db):
 
 @pytest.fixture
 async def ws(service):
-    """一个默认空间：owner 为 alice，另有 admin bob、editor carol、viewer dave。"""
+    """一个默认空间：owner 为 alice，另有 admin bob、editor carol、editor dave。"""
     await service.create_workspace(workspace_id="ws1", name="空间一", owner_user_id="alice")
-    for user, role in (("bob", "admin"), ("carol", "editor"), ("dave", "viewer")):
+    for user, role in (("bob", "admin"), ("carol", "editor"), ("dave", "editor")):
         await service.add_member("alice", "ws1", user, role)
     return "ws1"

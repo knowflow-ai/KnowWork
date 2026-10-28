@@ -59,34 +59,41 @@ def build_router(service: WorkflowService, access: AccessService,
 
     @router.post("", status_code=202)
     async def start(workspace_id: IdPath, body: StartBody, who: Who):
+        """运行工作流"""
         run = await _call(service.start(_actor(who, workspace_id), body.skill_id, body.inputs,
                                         session_id=body.session_id))
         return run.to_json()
 
     @router.get("")
     async def list_runs(workspace_id: IdPath, who: Who, limit: Annotated[int, Query(ge=1, le=MAX_LIST)] = 20):
+        """列出工作流运行"""
         runs = await _call(service.list(_actor(who, workspace_id), limit))
         return {"items": [run.to_json() for run in runs]}
 
     @router.get("/{run_id}")
     async def detail(workspace_id: IdPath, run_id: IdPath, who: Who):
+        """一次工作流运行的详情"""
         return (await _call(service.get(_actor(who, workspace_id), run_id))).to_json()
 
     @router.post("/{run_id}/steps/{step_key}/decision")
     async def decide(workspace_id: IdPath, run_id: IdPath, step_key: StepPath, body: DecisionBody, who: Who):
+        """工作流审批步骤的决定"""
         return (await _call(service.decide(_actor(who, workspace_id), run_id, step_key, body.allow))).to_json()
 
     @router.post("/{run_id}/resume")
     async def resume(workspace_id: IdPath, run_id: IdPath, who: Who):
+        """继续暂停的工作流"""
         return (await _call(service.resume(_actor(who, workspace_id), run_id))).to_json()
 
     @router.post("/{run_id}/cancel")
     async def cancel(workspace_id: IdPath, run_id: IdPath, who: Who):
+        """取消工作流运行"""
         return (await _call(service.cancel(_actor(who, workspace_id), run_id))).to_json()
 
     @router.get("/{run_id}/events")
     async def events(workspace_id: IdPath, run_id: IdPath, who: Who, after: Annotated[int, Query(ge=0)] = 0,
                      last_event_id: Annotated[str | None, Header()] = None):
+        """工作流运行的事件流（SSE）"""
         stream = await _call(service.events(_actor(who, workspace_id), run_id, parse_after(last_event_id, after)))
         return EventSourceResponse(stream, ping=15)
 

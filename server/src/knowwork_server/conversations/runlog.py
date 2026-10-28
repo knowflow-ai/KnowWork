@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from .models import Conversation, RunEvent
+from .models import RunEvent
 
 PAGE_SIZE = 500
 MAX_EVENTS = 20_000
@@ -30,29 +30,10 @@ class RunLogPage:
     truncated: bool  # 超过 MAX_EVENTS 帧，只取了前面这些
 
 
-@dataclass(frozen=True)
-class TurnMark:
-    """某一轮开始或结束的那一帧（管理端「运行记录」列表用）。"""
-
-    conversation_id: str
-    turn: int
-    at: datetime
-    title: str = ""
-    user_id: str = ""
-    reason: str | None = None  # 结束的原因（completed、cancelled……），开始的那一帧为空
-
-
 def _turn(data: Any) -> int | None:
     inner = data.get("data") if isinstance(data, dict) else None
     value = inner.get("turn") if isinstance(inner, dict) else None
     return value if type(value) is int else None
-
-
-def _reason(data: Any) -> str | None:
-    inner = data.get("data") if isinstance(data, dict) else None
-    reason = inner.get("reason") if isinstance(inner, dict) else None
-    kind = reason.get("kind") if isinstance(reason, dict) else None
-    return kind if isinstance(kind, str) else None
 
 
 class RunLog:
@@ -98,33 +79,3 @@ class RunLog:
                 return RunLogPage(events=tuple(events), truncated=False)
             after = rows[-1].seq
         return RunLogPage(events=tuple(events[:self._max_events]), truncated=True)
-
-    async def turn_starts(self, workspace_id: str, *, since: datetime, until: datetime, before: datetime | None = None,
-                          user_id: str | None = None, limit: int = 50) -> tuple[TurnMark, ...]:
-        """时间段内开始的轮次，新的在前，带上会话标题与所属用户。按 JSON 字段筛选、没有专门索引，量大了再加。"""
-        statement = (select(RunEvent.conversation_id, RunEvent.data, RunEvent.created_at, Conversation.title,
-                            Conversation.user_id)
-                     .join(Conversation, Conversation.id == RunEvent.conversation_id)
-                     .where(RunEvent.workspace_id == workspace_id, RunEvent.kind == "session/event",
-                            RunEvent.data["type"].astext == "turn/start",
-                            RunEvent.created_at >= since, RunEvent.created_at < until))
-        if before is not None:
-            statement = statement.where(RunEvent.created_at < before)
-        if user_id is not None:
-            statement = statement.where(Conversation.user_id == user_id)
-        statement = statement.order_by(RunEvent.created_at.desc()).limit(limit)
-        async with self._sessionmaker() as session:
-            rows = (await session.execute(statement)).all()
-        return tuple(TurnMark(conversation_id=row.conversation_id, turn=turn, at=row.created_at, title=row.title or "",
-                              user_id=row.user_id) for row in rows if (turn := _turn(row.data)) is not None)
-
-    async def turn_ends(self, workspace_id: str, conversation_ids: tuple[str, ...]) -> tuple[TurnMark, ...]:
-        if not conversation_ids:
-            return ()
-        statement = (select(RunEvent.conversation_id, RunEvent.data, RunEvent.created_at)
-                     .where(RunEvent.workspace_id == workspace_id, RunEvent.conversation_id.in_(conversation_ids),
-                            RunEvent.kind == "session/event", RunEvent.data["type"].astext == "turn/end"))
-        async with self._sessionmaker() as session:
-            rows = (await session.execute(statement)).all()
-        return tuple(TurnMark(conversation_id=row.conversation_id, turn=turn, at=row.created_at,
-                              reason=_reason(row.data)) for row in rows if (turn := _turn(row.data)) is not None)

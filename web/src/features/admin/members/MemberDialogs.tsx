@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
 import { Select } from '@openai/apps-sdk-ui/components/Select';
-import { inviteUser, type Invitation } from '../../../api/identity';
+import { inviteUser, type Invitation, type InviteRole } from '../../../api/identity';
 import { validateEmail } from '../../../api/auth';
 import { readableError } from '../../../api/http';
 import { addMember, memberLabel, ROLES, setMemberRole, type Member, type Role } from '../../../api/workspace';
@@ -15,6 +15,8 @@ import { KEYS } from '../queries';
 import { UserPicker } from './UserPicker';
 
 const ROLE_OPTIONS = ROLES.map((r) => ({ value: r.value, label: r.label }));
+// 邀请只能定成员或管理员：所有者由现任所有者在成员列表里任命
+const INVITE_ROLE_OPTIONS = ROLE_OPTIONS.filter((r) => r.value !== 'owner');
 
 function RoleSelect({ value, onChange }: { readonly value: Role; readonly onChange: (role: Role) => void }) {
   return (
@@ -105,6 +107,7 @@ export function RoleDialog({ member, onClose }: { readonly member: Member; reado
 
 export function InviteDialog({ onClose }: { readonly onClose: () => void }) {
   const [email, setEmail] = useState('');
+  const [role, setRole] = useState<InviteRole>('editor');
   const [problem, setProblem] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<Invitation | null>(null);
@@ -112,7 +115,7 @@ export function InviteDialog({ onClose }: { readonly onClose: () => void }) {
     return (
       <Dialog
         title="邀请新用户"
-        description={`把链接发给 ${issued.email}。链接只显示这一次，对方注册后会自动加入默认空间。`}
+        description={`把链接发给 ${issued.email}。链接只显示这一次，对方注册后会以邀请时选的角色加入这个空间。`}
         onClose={onClose}
         closeOnOutside={false}
         footer={<DialogActions okText="完成" onOk={onClose} />}
@@ -127,7 +130,7 @@ export function InviteDialog({ onClose }: { readonly onClose: () => void }) {
     if (invalid) return;
     setBusy(true);
     try {
-      setIssued(await inviteUser(email));
+      setIssued(await inviteUser(email, role));
     } catch (error) {
       toast.error(readableError(error, '邀请没有成功，请稍后重试'));
     } finally {
@@ -153,6 +156,14 @@ export function InviteDialog({ onClose }: { readonly onClose: () => void }) {
             autoFocus
           />
         )}
+      </Field>
+      <Field label="角色">
+        <Select
+          block
+          options={INVITE_ROLE_OPTIONS}
+          value={role}
+          onChange={(option) => setRole(option.value as InviteRole)}
+        />
       </Field>
     </Dialog>
   );

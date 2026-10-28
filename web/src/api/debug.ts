@@ -1,10 +1,10 @@
 /**
  * 运行调试视图（server/src/knowwork_server/debugview）：一轮的步骤时间线、每步按日志还原的输入、原始日志导出；
- * 管理端的「运行记录」列表。会话本人走 /api/conversations/…/debug，管理员走 /api/workspaces/…/runs（会记审计）。
+ * 管理端的「运行记录」列表。会话本人走 /api/workspaces/…/conversations/…/debug，管理员走 /api/workspaces/…/runs（会记审计）。
  */
 import { request, seg } from './http';
 import { bool, isRecord, listOf, num, str, strings } from './parse';
-import { WORKSPACE_ID } from './workspace';
+import { workspacePath } from './workspace';
 
 /** 从哪里取一轮的运行详情：会话本人，或管理员看全空间的。 */
 export interface RunSource {
@@ -14,12 +14,12 @@ export interface RunSource {
 
 export const ownRun = (conversationId: string): RunSource => ({
   key: ['debug', conversationId],
-  turnPath: (turn) => `/api/conversations/${seg(conversationId)}/debug/turns/${turn}`,
+  turnPath: (turn) => workspacePath(`/conversations/${seg(conversationId)}/debug/turns/${turn}`),
 });
 
 export const workspaceRun = (conversationId: string): RunSource => ({
   key: ['admin', 'runs', conversationId],
-  turnPath: (turn) => `/api/workspaces/${seg(WORKSPACE_ID)}/runs/${seg(conversationId)}/turns/${turn}`,
+  turnPath: (turn) => workspacePath(`/runs/${seg(conversationId)}/turns/${turn}`),
 });
 
 export interface DebugUsage {
@@ -38,6 +38,16 @@ export interface DebugToolCall {
   readonly isError: boolean;
   readonly durationMs: number | null;
   readonly truncated: boolean;
+  /** 业务另记的过程（知识检索的各路召回、重排……），模型没看到 */
+  readonly trace: readonly DebugTrace[];
+}
+
+/** 过程里的一项：哪一路或哪一步、一句结论、几行明细，哪个知识源。 */
+export interface DebugTrace {
+  readonly label: string;
+  readonly summary: string;
+  readonly lines: readonly string[];
+  readonly source: string;
 }
 
 export interface DebugStep {
@@ -128,6 +138,17 @@ function parseCall(value: unknown): DebugToolCall | undefined {
     isError: bool(value.isError),
     durationMs: nullable(value.durationMs),
     truncated: bool(value.truncated),
+    trace: listOf(value.trace, parseTrace),
+  };
+}
+
+function parseTrace(value: unknown): DebugTrace | undefined {
+  if (!isRecord(value) || !str(value.label)) return undefined;
+  return {
+    label: str(value.label) ?? '',
+    summary: str(value.summary) ?? '',
+    lines: strings(value.lines),
+    source: str(value.source) ?? '',
   };
 }
 
@@ -244,13 +265,34 @@ export interface RunRow {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cost: string | null;
+  /** 用户这一轮亲自发的第一条消息 */
+  readonly question: string;
+  /** 这一轮调过的工具，按第一次调用的先后 */
+  readonly tools: readonly string[];
+  /** 检索知识库几次、回答引用了几条；没检索过都为空 */
+  readonly searches: number | null;
+  readonly cited: number | null;
+  readonly rating: 'like' | 'dislike' | null;
 }
+
+/** 运行记录的信号筛选：检索了知识库却没引用（答完的才算）、被点了踩、没答上来（回合结束后模型判断知识库没答上或
+ *  只答了一部分，每小时一批，刚答完的还没判） */
+export const RUN_SIGNALS = [
+  { value: 'uncited', label: '检索了没引用' },
+  { value: 'disliked', label: '被点踩' },
+  { value: 'unanswered', label: '没答上来' },
+] as const;
 
 export interface RunFilter {
   readonly since?: string;
   readonly until?: string;
   readonly user?: string;
   readonly status?: string;
+  readonly signal?: string;
+  /** 用过这个工具 */
+  readonly tool?: string;
+  /** 检索到这个知识库（全局 id） */
+  readonly base?: string;
 }
 
 function parseRow(value: unknown): RunRow | undefined {
@@ -271,6 +313,11 @@ function parseRow(value: unknown): RunRow | undefined {
     inputTokens: num(value.inputTokens) ?? 0,
     outputTokens: num(value.outputTokens) ?? 0,
     cost: textOrNull(value.cost),
+    question: str(value.question) ?? '',
+    tools: strings(value.tools),
+    searches: nullable(value.searches),
+    cited: nullable(value.cited),
+    rating: value.rating === 'like' || value.rating === 'dislike' ? value.rating : null,
   };
 }
 
@@ -282,7 +329,7 @@ export async function listRuns(
   for (const [key, value] of Object.entries(filter)) if (value) params.set(key, value);
   if (before) params.set('before', before);
   const query = params.toString();
-  const body = await request<unknown>(`/api/workspaces/${seg(WORKSPACE_ID)}/runs${query ? `?${query}` : ''}`);
+  const body = await request<unknown>(workspacePath(`/runs${query ? `?${query}` : ''}`));
   const value = isRecord(body) ? body : {};
   return { items: listOf(value.items, parseRow), next: textOrNull(value.next) };
 }

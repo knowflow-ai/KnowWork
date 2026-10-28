@@ -52,11 +52,11 @@ async def test_search_limits(identity, people):
 
 
 async def test_search_endpoint_requires_admin(client, people, admins):
-    assert (await client.get("/api/auth/users", params={"q": "bob"})).status_code == 401
+    assert (await client.get("/api/workspaces/ws1/users", params={"q": "bob"})).status_code == 401
     await login(client)
-    assert (await client.get("/api/auth/users", params={"q": "bob"})).status_code == 403
+    assert (await client.get("/api/workspaces/ws1/users", params={"q": "bob"})).status_code == 403
     admins.add(people["alice"].id)
-    response = await client.get("/api/auth/users", params={"q": "bob"})
+    response = await client.get("/api/workspaces/ws1/users", params={"q": "bob"})
     assert response.status_code == 200
     assert response.json() == [{"id": people["bob"].id, "email": "bob@example.com", "name": "王小波"}]
 
@@ -66,14 +66,15 @@ async def test_search_endpoint_requires_admin(client, people, admins):
 async def test_search_endpoint_validates_input(client, people, admins, params):
     admins.add(people["alice"].id)
     await login(client)
-    assert (await client.get("/api/auth/users", params=params)).status_code == 422
+    assert (await client.get("/api/workspaces/ws1/users", params=params)).status_code == 422
 
 
 async def test_search_endpoint_rejects_api_keys(client, people, admins):
     admins.add(people["alice"].id)
     await login(client)
-    issued = (await client.post("/api/auth/api-keys", json={"name": "k", "scopes": ["workspace:manage"]})).json()
+    issued = (await client.post("/api/auth/api-keys", json={"name": "k", "scopes": ["workspace:manage"],
+                                                                  "workspaceId": "ws1"})).json()
     client.cookies.clear()
-    response = await client.get("/api/auth/users", params={"q": "bob"},
+    response = await client.get("/api/workspaces/ws1/users", params={"q": "bob"},
                                 headers={"Authorization": f"Bearer {issued['key']}"})
     assert response.status_code == 403

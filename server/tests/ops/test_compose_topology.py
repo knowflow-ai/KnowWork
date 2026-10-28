@@ -5,6 +5,7 @@
 """
 
 import json
+import re
 import shutil
 import subprocess
 from functools import cache
@@ -195,3 +196,16 @@ def test_host_and_api_agree_on_callback_and_model_alias():
     assert host["KNOWWORK_TOOLS_BASE_URL"] == "http://api:8001/internal/extensions/tools"
     assert host["KNOWWORK_MODEL_BASE_URL"] == "http://api:8001/internal/model/v1"
     assert host["KNOWWORK_MODEL"] == api["KNOWWORK_HOST_MODEL_ALIAS"]
+
+
+def test_every_callback_the_host_reads_is_configured():
+    """宿主插件读的每个回调地址（KNOWWORK_*_BASE_URL）编排里都要配，指向 api 的内部端口。没配时插件退回
+    127.0.0.1:8001，在容器里连的是宿主自己，那一类回调全部失败：v0.0.1、v0.0.2 漏了沙箱那个，
+    写文件、执行命令都报「沙箱服务暂时不可用」，本机开发时进程都在一台机器上，默认地址恰好能用，没暴露出来。"""
+    sources = (REPO / "runtime-host" / "plugins").rglob("*.mjs")
+    read = {name for path in sources
+            for name in re.findall(r"process\.env\.(KNOWWORK_[A-Z_]*BASE_URL)", path.read_text("utf-8"))}
+    assert {"KNOWWORK_SANDBOX_BASE_URL", "KNOWWORK_TOOLS_BASE_URL"} <= read, "插件读地址的写法变了，这条测试跟着改"
+    host = _services()["runtime-host"]["environment"]
+    missing = sorted(name for name in read if not host.get(name, "").startswith("http://api:8001/internal/"))
+    assert missing == [], f"宿主读这些回调地址，编排里没配或没指向 api 的内部端口：{missing}"

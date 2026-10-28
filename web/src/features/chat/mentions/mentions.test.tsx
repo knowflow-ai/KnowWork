@@ -24,8 +24,8 @@ const OPTIONS = {
 
 function setup(onSend = vi.fn(async () => undefined)) {
   const api = routeFetch({
-    'GET /api/conversations/mention-options': jsonResponse(OPTIONS),
-    'GET /api/conversations/mention-options/documents': jsonResponse({
+    'GET /api/workspaces/default/conversations/mention-options': jsonResponse(OPTIONS),
+    'GET /api/workspaces/default/conversations/mention-options/documents': jsonResponse({
       documents: [{ id: 'kb1/d1', title: '差旅办法', base: 'builtin.kb1', base_name: '报销制度' }],
     }),
   });
@@ -57,7 +57,9 @@ describe('输入框 @', () => {
     await userEvent.type(input, '@差旅');
     const file = await screen.findByRole('option', { name: '文件 差旅办法' });
     expect(within(menu()).getByText('文件 · 只在选中的文件里找')).toBeInTheDocument();
-    expect(api.calls.some((c) => c.path === '/api/conversations/mention-options/documents')).toBe(true);
+    expect(
+      api.calls.some((c) => c.path === '/api/workspaces/default/conversations/mention-options/documents'),
+    ).toBe(true);
     await userEvent.click(file);
     await userEvent.type(input, '报销要多久');
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -113,7 +115,10 @@ describe('文件组', () => {
     expect(await within(menu()).findByRole('option', { name: '文件 差旅办法' })).toBeInTheDocument();
     expect(within(menu()).getByText('这里是最近更新的文件，接着打字按名字查找')).toBeInTheDocument();
     expect(
-      api.calls.some((c) => c.path === '/api/conversations/mention-options/documents' && !c.query.has('q')),
+      api.calls.some(
+        (c) =>
+          c.path === '/api/workspaces/default/conversations/mention-options/documents' && !c.query.has('q'),
+      ),
     ).toBe(true);
   });
 });

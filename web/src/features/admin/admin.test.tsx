@@ -57,7 +57,7 @@ describe('MembersPage', () => {
 
   it('添加成员：搜索账号，已是成员的不出现', async () => {
     const api = members({
-      'GET /api/auth/users': jsonResponse([
+      'GET /api/workspaces/default/users': jsonResponse([
         { id: 'u2', email: 'han@corp.cn', name: '韩梅梅' },
         { id: 'u3', email: 'wei@corp.cn', name: '魏华' },
       ]),
@@ -80,7 +80,7 @@ describe('MembersPage', () => {
 
   it('邀请新用户：生成的链接只显示这一次', async () => {
     const api = members({
-      'POST /api/auth/invitations': jsonResponse(
+      'POST /api/workspaces/default/invitations': jsonResponse(
         { id: 'i1', email: 'new@corp.cn', url: 'https://kw/invite?token=abc', expiresAt: 'x' },
         201,
       ),
@@ -92,7 +92,10 @@ describe('MembersPage', () => {
     await userEvent.type(within(dialog).getByPlaceholderText('name@company.com'), 'new@corp.cn');
     await userEvent.click(within(dialog).getByRole('button', { name: '生成邀请链接' }));
     expect(await screen.findByText('https://kw/invite?token=abc')).toBeInTheDocument();
-    expect(api.find('POST', '/api/auth/invitations')[0]?.body).toEqual({ email: 'new@corp.cn' });
+    expect(api.find('POST', '/api/workspaces/default/invitations')[0]?.body).toEqual({
+      email: 'new@corp.cn',
+      role: 'editor',
+    });
     await userEvent.click(within(dialog).getByRole('button', { name: '完成' }));
   });
 

@@ -2,6 +2,7 @@
 import { request, seg } from './http';
 import { mentionBody, type Mention } from './mentions';
 import { isRecord, listOf, str, text } from './parse';
+import { workspacePath } from './workspace';
 
 export type SendMode = 'followup' | 'steer';
 
@@ -47,19 +48,52 @@ function parseSummary(value: unknown): ConversationSummary | undefined {
 }
 
 export async function listConversations(before?: string | null): Promise<ConversationPage> {
-  const body = await request<unknown>('/api/conversations', {
+  const body = await request<unknown>(workspacePath('/conversations'), {
     query: { limit: PAGE_SIZE, before: before ?? undefined },
   });
   const record = isRecord(body) ? body : {};
   return { items: listOf(record.items, parseSummary), next: text(record.next) ?? null };
 }
 
+/** 搜索命中的对话：snippet 是命中的那句问话的一段，只有标题命中时为空。 */
+export interface ConversationHit extends ConversationSummary {
+  readonly snippet: string;
+}
+
+/** 侧栏的搜索：标题与每轮问的话里有 query 的对话，最近有动静的在前（回答正文不搜）。 */
+export async function searchConversations(query: string): Promise<readonly ConversationHit[]> {
+  const body = await request<unknown>(workspacePath('/conversations/search'), { query: { q: query } });
+  const record = isRecord(body) ? body : {};
+  return listOf(record.items, (value) => {
+    const summary = parseSummary(value);
+    return summary && isRecord(value) ? { ...summary, snippet: str(value.snippet) ?? '' } : undefined;
+  });
+}
+
+/** 新建会话时带上第一条消息的 @ 与回答方式：服务端建会话就按它定运行配置，第一条消息不用先开再重开。 */
+export interface FirstTurn {
+  readonly answerMode?: AnswerMode;
+  readonly mentions?: readonly Mention[];
+}
+
 export async function createConversation(
   title: string,
+  first: FirstTurn = {},
 ): Promise<{ readonly id: string; readonly title: string }> {
-  const body = await request<unknown>('/api/conversations', {
+  const { answerMode, mentions = [] } = first;
+  const body = await request<unknown>(workspacePath('/conversations'), {
     method: 'POST',
-    body: { title: title.slice(0, MAX_TITLE_LENGTH) },
+    body: {
+      title: title.slice(0, MAX_TITLE_LENGTH),
+      ...(mentions.length > 0
+        ? {
+            first_turn: {
+              ...(answerMode ? { answer_mode: answerMode } : {}),
+              mentions: mentions.map(mentionBody),
+            },
+          }
+        : {}),
+    },
   });
   const id = isRecord(body) ? text(body.id) : undefined;
   if (!id) throw new Error('服务返回的数据不完整，请稍后重试');
@@ -67,14 +101,14 @@ export async function createConversation(
 }
 
 export function renameConversation(conversationId: string, title: string): Promise<unknown> {
-  return request(`/api/conversations/${seg(conversationId)}`, {
+  return request(workspacePath(`/conversations/${seg(conversationId)}`), {
     method: 'PATCH',
     body: { title: title.trim().slice(0, MAX_TITLE_LENGTH) },
   });
 }
 
 export function deleteConversation(conversationId: string): Promise<void> {
-  return request(`/api/conversations/${seg(conversationId)}`, { method: 'DELETE' });
+  return request(workspacePath(`/conversations/${seg(conversationId)}`), { method: 'DELETE' });
 }
 
 /** 回答语言（服务端 kernel/locale.py）：不传时服务端按提问里有没有汉字判断。 */
@@ -117,7 +151,7 @@ export function sendMessage(
   extras: SendExtras = {},
 ): Promise<{ messageId: string }> {
   const { language, answerMode, attachments = [], droppedConditions = [], mentions = [] } = extras;
-  return request(`/api/conversations/${seg(conversationId)}/messages`, {
+  return request(workspacePath(`/conversations/${seg(conversationId)}/messages`), {
     method: 'POST',
     body: {
       text: value,
@@ -132,7 +166,7 @@ export function sendMessage(
 }
 
 export function cancelRun(conversationId: string): Promise<unknown> {
-  return request(`/api/conversations/${seg(conversationId)}/cancel`, { method: 'POST' });
+  return request(workspacePath(`/conversations/${seg(conversationId)}/cancel`), { method: 'POST' });
 }
 
 /** 审批只有批准与拒绝；「本会话内不再询问」后端暂不支持。 */
@@ -143,7 +177,7 @@ export function decideApproval(
   allow: boolean,
   remember = false,
 ): Promise<unknown> {
-  return request(`/api/conversations/${seg(conversationId)}/approvals/${seg(approvalId)}`, {
+  return request(workspacePath(`/conversations/${seg(conversationId)}/approvals/${seg(approvalId)}`), {
     method: 'POST',
     body: allow && remember ? { allow, scope: 'session' } : { allow },
   });
@@ -164,12 +198,12 @@ export function answerQuestion(
   questionId: string,
   answers: readonly QuestionAnswer[],
 ): Promise<unknown> {
-  return request(`/api/conversations/${seg(conversationId)}/questions/${seg(questionId)}`, {
+  return request(workspacePath(`/conversations/${seg(conversationId)}/questions/${seg(questionId)}`), {
     method: 'POST',
     body: { answers },
   });
 }
 
 export function eventsUrl(conversationId: string): string {
-  return `/api/conversations/${seg(conversationId)}/events`;
+  return workspacePath(`/conversations/${seg(conversationId)}/events`);
 }

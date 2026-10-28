@@ -14,13 +14,15 @@ from knowwork_server.access.members import DEFAULT_WORKSPACE_ID
 from knowwork_server.app import build_runtime, create_public_app
 from knowwork_server.config import Settings
 from knowwork_server.conversations.models import Conversation
-from knowwork_server.db.base import make_workspace_sessionmaker
+from knowwork_server.db.base import in_workspace, make_workspace_sessionmaker
 from knowwork_server.db.migrate import upgrade_to_head
 from knowwork_server.knowledge import ProvidedSource
 from knowwork_server.knowledge.models import BaseInfo, DocumentInfo, DocumentPage, Evidence, FieldInfo
 from knowwork_server.profile.bindings import ProfileBindings
 from knowwork_server.profile.snapshot import RuntimeProfile
 from knowwork_server.tools.registry import ToolContext
+
+CONV = "/api/workspaces/default/conversations"
 
 pytestmark = pytest.mark.anyio
 
@@ -68,8 +70,9 @@ async def test_search_follows_the_turns_selection(fresh_url):
         await runtime.access.ensure_default_workspace(owner.id)
         source = Recording()
         runtime.knowledge.provided.add(ProvidedSource(id="builtin", name="扩展知识库", kind="builtin", source=source))
-        async with make_workspace_sessionmaker(runtime.engine, DEFAULT_WORKSPACE_ID)() as session, session.begin():
-            session.add(Conversation(id="c1", workspace_id=DEFAULT_WORKSPACE_ID, user_id=owner.id))
+        with in_workspace(DEFAULT_WORKSPACE_ID):
+            async with make_workspace_sessionmaker(runtime.engine)() as session, session.begin():
+                session.add(Conversation(id="c1", workspace_id=DEFAULT_WORKSPACE_ID, user_id=owner.id))
         profile = RuntimeProfile(workspace_id=DEFAULT_WORKSPACE_ID, user_id=owner.id, role="owner", member=True,
                                  bound_knowledge=("builtin.kb1",), dropped_conditions=("部门 = 财务部",))
         await ProfileBindings(runtime.global_sessionmaker).bind(DEFAULT_WORKSPACE_ID, "c1", profile)
@@ -100,13 +103,13 @@ async def test_mention_menu_lists_what_can_really_be_mentioned(fresh_url):
         login = await client.post("/api/auth/login", json={"email": "owner@example.com",
                                                           "password": "correct horse battery"})
         assert login.status_code == 200, login.text
-        options = (await client.get("/api/conversations/mention-options")).json()
+        options = (await client.get(f"{CONV}/mention-options")).json()
         assert [(b["id"], b["path"], b["tags"], b["pinnable"]) for b in options["bases"]] == [
             ("builtin.kb1", ["财务"], ["简报", "制度"], True), ("builtin.kb2", [], [], True)]
         assert options["skills"] == []
-        found = (await client.get("/api/conversations/mention-options/documents", params={"q": "差旅"})).json()
+        found = (await client.get(f"{CONV}/mention-options/documents", params={"q": "差旅"})).json()
         assert found["documents"] == [{"id": "kb1/d1", "title": "差旅办法", "base": "builtin.kb1", "base_name": "制度库"}]
-        recent = (await client.get("/api/conversations/mention-options/documents")).json()
+        recent = (await client.get(f"{CONV}/mention-options/documents")).json()
         assert [d["title"] for d in recent["documents"]] == ["差旅办法", "采购合同"], "没给名字时列最近的文件"
     finally:
         await client.aclose()

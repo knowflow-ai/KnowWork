@@ -1,6 +1,7 @@
 """文档解析服务（MinerU）的运行时配置：管理员在「模型 → 文档解析」里填，保存后几秒内生效，不用重启。
 
-- 读配置（current）：这个空间有配置行就以它为准（停用即「没配」），没有就用部署时的环境变量；按空间缓存 5 秒，
+- 全平台共用一份：存在平台配置所在的空间（PLATFORM_WORKSPACE_ID）名下，系统管理员在「系统设置」里改，所有空间都用它；
+- 读配置（current）：有配置行就以它为准（停用即「没配」），没有就用部署时的环境变量；缓存 5 秒，
   业务服务与 worker 每次解析前都来取，管理员改完不用重启；
 - 令牌：MinerU 前面有网关要令牌时才填，加密存（同模型厂商的密钥），只回显末四位；
 - 测试连接：取 MinerU 的 /openapi.json，核对有解析接口，分清「连不上」「令牌不对」「不是 MinerU」；
@@ -23,6 +24,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ..access.members import PLATFORM_WORKSPACE_ID
 from ..access.rls import set_workspace
 from ..attachments.mineru import HTTP_CLIENT_BACKENDS
 from ..attachments.settings import AttachmentSettings
@@ -124,24 +126,28 @@ class DocumentParsers:
         self._env = env or AttachmentSettings()
         self._http = http
         self._clock = clock
-        self._cache: dict[str, tuple[float, ParserConfig | None]] = {}
+        self._cache: tuple[float, ParserConfig | None] | None = None
 
     @asynccontextmanager
-    async def _tx(self, workspace_id: str) -> AsyncIterator[AsyncSession]:
+    async def _tx(self) -> AsyncIterator[AsyncSession]:
         async with self._sessionmaker() as session, session.begin():
-            await set_workspace(session, workspace_id)
+            await set_workspace(session, PLATFORM_WORKSPACE_ID)
             yield session
 
+    async def _row(self, session: AsyncSession, *, lock: bool = False) -> DocumentParserRow | None:
+        return await session.get(DocumentParserRow, PLATFORM_WORKSPACE_ID, with_for_update=lock)
+
     async def current(self, workspace_id: str) -> ParserConfig | None:
-        """解析前取配置；None 是没配（或界面里停用了）。按空间缓存几秒，改完很快生效。"""
-        cached = self._cache.get(workspace_id)
+        """解析前取配置；None 是没配（或界面里停用了）。缓存几秒，改完很快生效。
+        workspace_id 是调用者所在的空间：现在所有空间用同一份平台配置，参数留着给以后按空间区分用。"""
+        cached = self._cache
         now = self._clock()
         if cached and now - cached[0] < CACHE_SECONDS:
             return cached[1]
-        async with self._tx(workspace_id) as session:
-            row = await session.get(DocumentParserRow, workspace_id)
+        async with self._tx() as session:
+            row = await self._row(session)
             config = self._config(row) if row is not None else self._from_env()
-        self._cache = {**self._cache, workspace_id: (now, config)}
+        self._cache = (now, config)
         return config
 
     def _config(self, row: DocumentParserRow) -> ParserConfig | None:
@@ -167,9 +173,9 @@ class DocumentParsers:
         except SecretError:  # 换了主密钥：当作没有令牌，测试连接时会提示令牌不对
             return None
 
-    async def view(self, workspace_id: str) -> ParserView:
-        async with self._tx(workspace_id) as session:
-            row = await session.get(DocumentParserRow, workspace_id)
+    async def view(self) -> ParserView:
+        async with self._tx() as session:
+            row = await self._row(session)
         if row is not None:
             return ParserView(source="settings", enabled=row.enabled, base_url=row.base_url,
                               server_url=row.server_url or "", backend=row.backend or AUTO,
@@ -181,26 +187,26 @@ class DocumentParsers:
                           api_key_set=False, api_key_last4=None, lang=env.mineru_lang,
                           max_concurrency=env.mineru_max_concurrency, updated_at=None)
 
-    async def save(self, actor: str, workspace_id: str, body: ParserSave) -> ParserView:
-        async with self._tx(workspace_id) as session:
-            row = await session.get(DocumentParserRow, workspace_id, with_for_update=True)
+    async def save(self, actor: str, body: ParserSave) -> ParserView:
+        async with self._tx() as session:
+            row = await self._row(session, lock=True)
             if row is None:
-                row = DocumentParserRow(workspace_id=workspace_id, kind="mineru")
+                row = DocumentParserRow(workspace_id=PLATFORM_WORKSPACE_ID, kind="mineru")
                 session.add(row)
             row.enabled, row.base_url, row.lang = body.enabled, body.base_url, body.lang
             row.server_url, row.backend = body.server_url or None, body.backend
             row.max_concurrency, row.updated_by = body.max_concurrency, actor
             if body.api_key is not None:
                 key = body.api_key.strip()
-                row.api_key_ciphertext = self._box.encrypt(key, workspace_id=workspace_id,
+                row.api_key_ciphertext = self._box.encrypt(key, workspace_id=row.workspace_id,
                                                            provider_id=SECRET_SCOPE) if key else None
                 row.api_key_last4 = last4(key) if key else None
-        self._cache = {k: v for k, v in self._cache.items() if k != workspace_id}
-        return await self.view(workspace_id)
+        self._cache = None
+        return await self.view()
 
-    async def probe(self, workspace_id: str, body: ParserTest) -> ProbeView:
+    async def probe(self, body: ParserTest) -> ProbeView:
         """取 /openapi.json：连得上、令牌对、有 MinerU 的解析接口才算通。"""
-        api_key = body.api_key.strip() if body.api_key else await self._saved_key(workspace_id)
+        api_key = body.api_key.strip() if body.api_key else await self._saved_key()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         started = self._clock()
         try:
@@ -227,9 +233,9 @@ class DocumentParsers:
                              elapsed)
         return ProbeView(True, "连接正常", elapsed)
 
-    async def _saved_key(self, workspace_id: str) -> str | None:
-        async with self._tx(workspace_id) as session:
-            row = await session.get(DocumentParserRow, workspace_id)
+    async def _saved_key(self) -> str | None:
+        async with self._tx() as session:
+            row = await self._row(session)
         return self._secret(row) if row is not None else None
 
     def _elapsed(self, started: float) -> int:

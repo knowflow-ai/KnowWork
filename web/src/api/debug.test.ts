@@ -4,7 +4,7 @@ import { jsonResponse, routeFetch } from '../test/render';
 
 afterEach(() => vi.unstubAllGlobals());
 
-const B = '/api/conversations/c1/debug';
+const B = '/api/workspaces/default/conversations/c1/debug';
 
 describe('运行调试接口', () => {
   it('解析一轮的步骤、工具调用、用量与子 Agent', async () => {
@@ -67,7 +67,9 @@ describe('运行调试接口', () => {
     const input = await d.getStepInput(d.ownRun('c1'), 2, 3);
     expect(input.messages[0]).toMatchObject({ role: 'user', source: 'runtime-context', toolCallId: null });
     expect(input.tools).toEqual([{ name: 'bash', description: '执行命令' }]);
-    expect(d.exportUrl(d.ownRun('c 1'), 2)).toBe('/api/conversations/c%201/debug/turns/2/export');
+    expect(d.exportUrl(d.ownRun('c 1'), 2)).toBe(
+      '/api/workspaces/default/conversations/c%201/debug/turns/2/export',
+    );
     expect(d.exportUrl(d.workspaceRun('c1'), 2)).toBe('/api/workspaces/default/runs/c1/turns/2/export');
     expect(d.turnOfRun('run-12')).toBe(12);
     expect(d.turnOfRun('pending')).toBeUndefined();

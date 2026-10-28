@@ -4,12 +4,12 @@
  */
 import { request, seg } from './http';
 import { bool, isRecord, listOf, num, str, strings, text } from './parse';
-import { WORKSPACE_ID } from './workspace';
+import { workspacePath } from './workspace';
 
 export type SkillScope = 'workspace' | 'personal';
 
 const base = (scope: SkillScope, path = '') =>
-  `/api/workspaces/${seg(WORKSPACE_ID)}${scope === 'personal' ? '/me/skills' : '/skills'}${path}`;
+  workspacePath(`${scope === 'personal' ? '/me/skills' : '/skills'}${path}`);
 
 export interface SkillEnv {
   readonly name: string;

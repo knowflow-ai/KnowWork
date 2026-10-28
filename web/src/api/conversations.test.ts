@@ -28,12 +28,12 @@ describe('conversations api', () => {
 
   it('按接口约定调用', async () => {
     const api = routeFetch({
-      'POST /api/conversations': jsonResponse({ id: 'c1', title: 't' }, 201),
-      'POST /api/conversations/*/messages': jsonResponse({ messageId: 'm' }, 202),
-      'POST /api/conversations/*/cancel': jsonResponse({ settled: true }),
-      'POST /api/conversations/*/approvals/*': jsonResponse({}),
-      'PATCH /api/conversations/*': jsonResponse({}),
-      'DELETE /api/conversations/*': new Response(null, { status: 204 }),
+      'POST /api/workspaces/default/conversations': jsonResponse({ id: 'c1', title: 't' }, 201),
+      'POST /api/workspaces/default/conversations/*/messages': jsonResponse({ messageId: 'm' }, 202),
+      'POST /api/workspaces/default/conversations/*/cancel': jsonResponse({ settled: true }),
+      'POST /api/workspaces/default/conversations/*/approvals/*': jsonResponse({}),
+      'PATCH /api/workspaces/default/conversations/*': jsonResponse({}),
+      'DELETE /api/workspaces/default/conversations/*': new Response(null, { status: 204 }),
     });
     await expect(createConversation('标'.repeat(300))).resolves.toEqual({ id: 'c1', title: 't' });
     await sendMessage('a/b', 'hi', 'steer');
@@ -51,7 +51,7 @@ describe('conversations api', () => {
     const [create, send, resend, cancel, decide, rename, remove] = api.calls;
     expect((create?.body as { title: string }).title).toHaveLength(200);
     expect(send).toMatchObject({
-      path: '/api/conversations/a%2Fb/messages',
+      path: '/api/workspaces/default/conversations/a%2Fb/messages',
       body: { text: 'hi', mode: 'steer' },
     });
     expect(send?.body).not.toHaveProperty('dropped_conditions');
@@ -65,16 +65,19 @@ describe('conversations api', () => {
         { type: 'document', id: 'kb1/d1', name: '差旅办法.pdf', base: 'builtin.kb1', base_name: '制度库' },
       ],
     });
-    expect(cancel?.path).toBe('/api/conversations/c1/cancel');
-    expect(decide).toMatchObject({ path: '/api/conversations/c1/approvals/ap%201', body: { allow: true } });
+    expect(cancel?.path).toBe('/api/workspaces/default/conversations/c1/cancel');
+    expect(decide).toMatchObject({
+      path: '/api/workspaces/default/conversations/c1/approvals/ap%201',
+      body: { allow: true },
+    });
     expect(rename).toMatchObject({ method: 'PATCH', body: { title: '新名' } });
     expect(remove?.method).toBe('DELETE');
-    expect(eventsUrl('c 1')).toBe('/api/conversations/c%201/events');
+    expect(eventsUrl('c 1')).toBe('/api/workspaces/default/conversations/c%201/events');
   });
 
   it('列表分页：带游标、解析下一页，坏数据丢弃', async () => {
     const api = routeFetch({
-      'GET /api/conversations': jsonResponse({
+      'GET /api/workspaces/default/conversations': jsonResponse({
         items: [
           { id: 'c1', title: '周报', updatedAt: '2026-10-19T00:00:00+00:00' },
           { title: '没有 id' },
@@ -92,10 +95,37 @@ describe('conversations api', () => {
     expect(api.calls[0]?.query.get('limit')).toBe('30');
   });
 
+  it('新建会话带上第一条消息的 @ 与回答方式（没有 @ 时不带）', async () => {
+    const api = routeFetch({
+      'POST /api/workspaces/default/conversations': jsonResponse({ id: 'c1', title: 't' }, 201),
+    });
+    const mention = {
+      type: 'document',
+      id: 'kb1/d1',
+      name: '合同模板',
+      base: 'builtin.kb1',
+      baseName: '合同库',
+    } as const;
+    await createConversation('合同模板有哪些内容', { answerMode: 'agent', mentions: [mention] });
+    await createConversation('你好', { answerMode: 'agent' });
+    expect(api.calls.map((c) => c.body)).toEqual([
+      {
+        title: '合同模板有哪些内容',
+        first_turn: {
+          answer_mode: 'agent',
+          mentions: [
+            { type: 'document', id: 'kb1/d1', name: '合同模板', base: 'builtin.kb1', base_name: '合同库' },
+          ],
+        },
+      },
+      { title: '你好' },
+    ]);
+  });
+
   it('创建会话返回不完整时报错', async () => {
-    routeFetch({ 'POST /api/conversations': jsonResponse({}, 201) });
+    routeFetch({ 'POST /api/workspaces/default/conversations': jsonResponse({}, 201) });
     await expect(createConversation('x')).rejects.toThrow('服务返回的数据不完整');
-    routeFetch({ 'GET /api/conversations': jsonResponse('bad') });
+    routeFetch({ 'GET /api/workspaces/default/conversations': jsonResponse('bad') });
     await expect(listConversations()).resolves.toEqual({ items: [], next: null });
   });
 });

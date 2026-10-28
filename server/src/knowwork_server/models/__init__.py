@@ -1,4 +1,4 @@
-"""模型接入：厂商、模型、连通测试与用量。模型对空间成员一律可用（不按人授权）。
+"""模型接入：厂商、模型、连通测试与用量。厂商与模型全平台共用，系统管理员管理，所有空间的成员都能用（不按人授权）。
 
 装配入口：
 - build_models_service(sessionmaker, authorizer, master_key) -> ModelsService；
@@ -32,6 +32,9 @@ class _NoAdmin:
     """worker 进程不管理模型，只取路由：任何管理判定都不成立。"""
 
     def check(self, user_id: str, workspace_id: str, resource: str, action: str) -> bool:
+        return False
+
+    def is_system_admin(self, user_id: str) -> bool:
         return False
 
 

@@ -30,6 +30,12 @@ describe('官方工具的步骤说明', () => {
     expect(stepLabel(s)).toBe('交付文件');
     expect(stepTarget(s)).toBe('报告.docx、明细.xlsx');
   });
+
+  it('记下知识库缺口显示缺什么', () => {
+    const s = step('knowledge_gap', { missing: '会员续费的退款规则' });
+    expect(stepLabel(s)).toBe('记下知识库缺口');
+    expect(stepTarget(s)).toBe('会员续费的退款规则');
+  });
 });
 
 describe('外部工具的步骤说明', () => {

@@ -18,6 +18,11 @@ _MARK = re.compile(r"\[(\d{1,6})\](?!\()")
 IMAGE_MARK = re.compile(r"\[IMG:(\d{1,6}):(\d{1,3})\]")
 
 
+def marked_numbers(answer: str) -> frozenset[int]:
+    """回答里用到的引用编号：[n] 与放图的 [IMG:n:j] 都算用到了第 n 条（不管目录里有没有）。"""
+    return frozenset(int(match.group(1)) for pattern in (_MARK, IMAGE_MARK) for match in pattern.finditer(answer))
+
+
 @dataclass(frozen=True)
 class CitationEntry:
     number: int

@@ -6,6 +6,8 @@ export interface ConfirmOptions {
   readonly title: ReactNode;
   readonly description?: ReactNode;
   readonly okText: string;
+  /** 取消按钮的字，默认「取消」；「取消」容易被理解成撤销整件事时换成说清后果的动词（例如「跳过这 1 个」） */
+  readonly cancelText?: string;
   readonly danger?: boolean;
 }
 

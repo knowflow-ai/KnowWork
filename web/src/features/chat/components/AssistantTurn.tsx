@@ -14,6 +14,7 @@ import { SearchConditions } from './SearchConditions';
 import { TodoList } from './TodoList';
 import { hasProcess, selectRunSearch } from '../events/selectors';
 import { FilePreview, type PreviewFile } from '../../preview/FilePreview';
+import type { FeedbackInput, Rating } from '../../../api/feedback';
 
 interface Props {
   readonly run: RunView;
@@ -30,6 +31,10 @@ interface Props {
   readonly onDropConditions?: (dropped: readonly string[]) => void;
   /** 打开这一轮的运行详情；没给就不显示入口。 */
   readonly onInspect?: () => void;
+  /** 这一轮已记下的评分与评分、撤回的处理（见 AnswerActions）。 */
+  readonly feedback?: Rating | null;
+  readonly onFeedback?: (input: FeedbackInput) => Promise<boolean>;
+  readonly onRetract?: () => Promise<boolean>;
   readonly busy: boolean;
   /** 正在逐字输出、还没成为正式消息的文字（events/live.ts），接在已有回答后面临时显示。 */
   readonly liveText?: string;
@@ -57,6 +62,9 @@ export function AssistantTurn({
   onInspect,
   busy,
   liveText,
+  feedback,
+  onFeedback,
+  onRetract,
 }: Props) {
   const [previewing, setPreviewing] = useState<PreviewFile | undefined>();
   // 和正式消息的拼法一致（onMessage 用空行分隔），正式消息到了整段替换时位置不跳
@@ -117,6 +125,9 @@ export function AssistantTurn({
           onRegenerate={onRegenerate}
           regenerateDisabled={busy}
           onInspect={onInspect}
+          feedback={feedback}
+          onFeedback={onFeedback}
+          onRetract={onRetract}
           // 引用目录拉到了才列：没拉到时不知道哪些编号有效
           trailing={sources ? <AnswerSources files={citedFiles(run.answer, sources)} /> : null}
         />

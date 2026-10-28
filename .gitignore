@@ -6,3 +6,4 @@ deploy/.env
 # 没配 KNOWWORK_BLOB_DIR 时，在 server/ 下跑服务或测试，文件默认存到这里
 server/data/
 __pycache__/
+.gstack/

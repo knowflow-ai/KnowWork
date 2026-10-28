@@ -4,7 +4,7 @@
  */
 import { request, seg } from './http';
 import { isRecord, listOf, num, str, text } from './parse';
-import { WORKSPACE_ID } from './workspace';
+import { workspacePath } from './workspace';
 
 export type SkillRunStatus = 'succeeded' | 'failed' | 'cancelled';
 
@@ -48,8 +48,7 @@ export interface SkillRunFilter {
 
 const STATUSES: readonly SkillRunStatus[] = ['succeeded', 'failed', 'cancelled'];
 
-const base = (skillId: string, path = '') =>
-  `/api/workspaces/${seg(WORKSPACE_ID)}/skills/${seg(skillId)}/runs${path}`;
+const base = (skillId: string, path = '') => workspacePath(`/skills/${seg(skillId)}/runs${path}`);
 
 const orNull = (value: unknown) => text(value) ?? null;
 

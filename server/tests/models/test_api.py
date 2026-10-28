@@ -1,4 +1,4 @@
-"""HTTP 接口：管理接口要求空间 admin；密钥不回显；连通测试成功与各类失败；成员看自己能用的模型与用量。"""
+"""HTTP 接口：厂商与模型的管理接口只给系统管理员（空间管理员也不行）；密钥不回显；连通测试成功与各类失败；成员看自己能用的模型与用量。"""
 
 import json
 from datetime import UTC, datetime
@@ -15,6 +15,7 @@ from knowwork_server.models.usage import UsageContext, usage_from_event
 pytestmark = pytest.mark.anyio
 KEY = "sk-live-api-key-9876ZYXW"
 BASE = "/api/workspaces/ws1"
+SYS = "/api/system"
 
 
 async def principal(x_user: Annotated[str | None, Header()] = None) -> Principal:
@@ -59,9 +60,9 @@ def as_(user):
 
 
 async def _create(http):
-    provider = (await http.post(f"{BASE}/model-providers", headers=as_("bob"), json={
+    provider = (await http.post(f"{SYS}/model-providers", headers=as_("root"), json={
         "name": "DeepSeek", "base_url": "https://api.deepseek.example/v1", "api_key": KEY})).json()
-    model = (await http.post(f"{BASE}/models", headers=as_("bob"), json={
+    model = (await http.post(f"{SYS}/models", headers=as_("root"), json={
         "provider_id": provider["id"], "alias": "default", "name": "deepseek-chat",
         "input_price_per_mtok": "2"})).json()
     return provider, model
@@ -72,31 +73,31 @@ async def test_admin_crud_and_key_never_echoed(setup):
     provider, model = await _create(http)
     assert provider["api_key_configured"] and provider["api_key_last4"] == "ZYXW"
     for path in ("model-providers", "models"):
-        response = await http.get(f"{BASE}/{path}", headers=as_("alice"))
+        response = await http.get(f"{SYS}/{path}", headers=as_("root"))
         assert response.status_code == 200 and KEY not in response.text
-    patched = await http.patch(f"{BASE}/model-providers/{provider['id']}", headers=as_("bob"), json={"name": "DS"})
+    patched = await http.patch(f"{SYS}/model-providers/{provider['id']}", headers=as_("root"), json={"name": "DS"})
     assert patched.json()["name"] == "DS" and KEY not in patched.text
-    assert (await http.patch(f"{BASE}/models/{model['id']}", headers=as_("bob"),
+    assert (await http.patch(f"{SYS}/models/{model['id']}", headers=as_("root"),
                              json={"enabled": False})).json()["enabled"] is False
-    assert (await http.delete(f"{BASE}/model-providers/{provider['id']}", headers=as_("bob"))).status_code == 409
-    assert (await http.delete(f"{BASE}/models/{model['id']}", headers=as_("bob"))).status_code == 204
-    assert (await http.delete(f"{BASE}/models/{model['id']}", headers=as_("bob"))).status_code == 404
-    assert (await http.delete(f"{BASE}/model-providers/{provider['id']}", headers=as_("bob"))).status_code == 204
+    assert (await http.delete(f"{SYS}/model-providers/{provider['id']}", headers=as_("root"))).status_code == 409
+    assert (await http.delete(f"{SYS}/models/{model['id']}", headers=as_("root"))).status_code == 204
+    assert (await http.delete(f"{SYS}/models/{model['id']}", headers=as_("root"))).status_code == 404
+    assert (await http.delete(f"{SYS}/model-providers/{provider['id']}", headers=as_("root"))).status_code == 204
 
 
 async def test_validation_and_auth(setup):
     http, _, _ = setup
-    assert (await http.get(f"{BASE}/models")).status_code == 401
-    for user in ("carol", "dave", "mallory"):
-        assert (await http.get(f"{BASE}/models", headers=as_(user))).status_code == 403
-        assert (await http.post(f"{BASE}/model-providers", headers=as_(user),
+    assert (await http.get(f"{SYS}/models")).status_code == 401
+    for user in ("alice", "bob", "carol", "dave", "mallory"):
+        assert (await http.get(f"{SYS}/models", headers=as_(user))).status_code == 403
+        assert (await http.post(f"{SYS}/model-providers", headers=as_(user),
                                 json={"name": "x", "base_url": "https://h/v1"})).status_code == 403
-    bad = await http.post(f"{BASE}/model-providers", headers=as_("bob"), json={"name": "x", "base_url": "ftp://h"})
+    bad = await http.post(f"{SYS}/model-providers", headers=as_("root"), json={"name": "x", "base_url": "ftp://h"})
     assert bad.status_code == 422
-    unknown = await http.post(f"{BASE}/model-providers", headers=as_("bob"),
+    unknown = await http.post(f"{SYS}/model-providers", headers=as_("root"),
                               json={"name": "x", "base_url": "https://h/v1", "extra": 1})
     assert unknown.status_code == 422
-    missing = await http.post(f"{BASE}/models", headers=as_("bob"),
+    missing = await http.post(f"{SYS}/models", headers=as_("root"),
                               json={"provider_id": "mp_x", "alias": "a", "name": "n"})
     assert missing.status_code == 404
 
@@ -115,7 +116,7 @@ async def test_connectivity_test(setup, mode, ok, status, message):
     http, provider, _ = setup
     _, model = await _create(http)
     provider.mode = mode
-    response = await http.post(f"{BASE}/models/{model['id']}/test", headers=as_("bob"))
+    response = await http.post(f"{SYS}/models/{model['id']}/test", headers=as_("root"))
     result = response.json()
     assert response.status_code == 200
     assert (result["ok"], result["upstream_status"], result["message"], result["capability"]) == (ok, status,
@@ -130,10 +131,10 @@ async def test_connectivity_test(setup, mode, ok, status, message):
 async def test_connectivity_test_by_capability(setup, capability, path):
     http, provider, _ = setup
     _, model = await _create(http)
-    response = await http.post(f"{BASE}/models/{model['id']}/test", params={"capability": capability},
-                               headers=as_("bob"))
+    response = await http.post(f"{SYS}/models/{model['id']}/test", params={"capability": capability},
+                               headers=as_("root"))
     assert response.json()["ok"] and provider.requests[-1]["path"] == path
-    assert (await http.post(f"{BASE}/models/{model['id']}/test", headers=as_("dave"))).status_code == 403
+    assert (await http.post(f"{SYS}/models/{model['id']}/test", headers=as_("dave"))).status_code == 403
 
 
 async def test_member_views(setup):

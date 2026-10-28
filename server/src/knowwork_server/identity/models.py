@@ -9,6 +9,9 @@ from ..db.base import Base
 
 USER_ACTIVE = "active"
 USER_DISABLED = "disabled"
+# 账号种类：person 是人；channel 是渠道账号（IM 机器人用它的身份回答，没有密码、不能登录、不在成员与选人列表里）
+USER_PERSON = "person"
+USER_CHANNEL = "channel"
 
 
 class User(Base):
@@ -16,6 +19,7 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("email = lower(email)", name="ck_user_email_lower"),
         CheckConstraint("status in ('active', 'disabled')", name="ck_user_status"),
+        CheckConstraint("kind in ('person', 'channel')", name="ck_user_kind"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -23,6 +27,7 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(200), default="")
     status: Mapped[str] = mapped_column(String(16), default=USER_ACTIVE)
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), default=USER_PERSON, server_default=USER_PERSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -49,6 +54,9 @@ class Invitation(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     email: Mapped[str] = mapped_column(String(320))
     invited_by: Mapped[str] = mapped_column(String(32))
+    # 接受后进哪个空间、当什么角色（身份模块不解释它们，建号后交给装配方）
+    workspace_id: Mapped[str] = mapped_column(String(64))
+    role: Mapped[str] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

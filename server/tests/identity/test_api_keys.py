@@ -16,7 +16,8 @@ pytestmark = pytest.mark.anyio
 
 
 async def _create(client, scopes=("conversations:write",), **extra):
-    return await client.post("/api/auth/api-keys", json={"name": "ci", "scopes": list(scopes), **extra})
+    return await client.post("/api/auth/api-keys", json={"name": "ci", "scopes": list(scopes), "workspaceId": "ws1",
+                                                         **extra})
 
 
 def _bearer(key: str) -> dict:
@@ -120,15 +121,16 @@ async def test_api_key_cannot_manage_keys(logged_in):
     logged_in.cookies.clear()
     assert (await logged_in.get("/api/auth/api-keys", headers=_bearer(key))).status_code == 403
     assert (await logged_in.post("/api/auth/api-keys", headers=_bearer(key),
-                                 json={"name": "x", "scopes": ["a:b"]})).status_code == 403
+                                 json={"name": "x", "scopes": ["a:b"], "workspaceId": "ws1"})).status_code == 403
 
 
 @pytest.mark.parametrize("payload", [
-    {"name": "x", "scopes": ["Bad Scope"]},
-    {"name": "x", "scopes": []},
-    {"name": "x", "scopes": ["a:b"], "expiresAt": "2020-01-01T00:00:00+00:00"},
-    {"name": "x", "scopes": ["a:b"], "expiresAt": "2030-01-01T00:00:00"},
-    {"name": "x", "scopes": ["a:b"], "extra": 1},
+    {"name": "x", "scopes": ["Bad Scope"], "workspaceId": "ws1"},
+    {"name": "x", "scopes": [], "workspaceId": "ws1"},
+    {"name": "x", "scopes": ["a:b"], "workspaceId": "ws1", "expiresAt": "2020-01-01T00:00:00+00:00"},
+    {"name": "x", "scopes": ["a:b"], "workspaceId": "ws1", "expiresAt": "2030-01-01T00:00:00"},
+    {"name": "x", "scopes": ["a:b"], "workspaceId": "ws1", "extra": 1},
+    {"name": "x", "scopes": ["a:b"]},  # Key 必须绑定一个工作空间
 ])
 async def test_create_validates_input(logged_in, payload):
     assert (await logged_in.post("/api/auth/api-keys", json=payload)).status_code == 422

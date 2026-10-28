@@ -6,6 +6,7 @@ import {
   addGroupMember,
   createGroup,
   deleteGroup,
+  peopleOnly,
   removeGroupMember,
   renameGroup,
   type Member,
@@ -188,7 +189,11 @@ export function GroupsTab() {
         />
       ) : null}
       {dialog?.type === 'members' && current ? (
-        <GroupMembers group={current} members={members.data ?? []} onClose={() => setDialog(null)} />
+        <GroupMembers
+          group={current}
+          members={peopleOnly(members.data ?? [])}
+          onClose={() => setDialog(null)}
+        />
       ) : null}
     </>
   );

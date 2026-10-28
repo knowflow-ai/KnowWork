@@ -1,9 +1,11 @@
-/** 模型厂商、模型、分组、连通测试与用量（server/src/knowwork_server/models/api.py）。 */
+/** 模型厂商、模型、连通测试与用量（server/src/knowwork_server/models/api.py）。
+ * 厂商与模型全平台共用，接口在 /api/system 下、只给系统管理员；用量按空间。 */
 import { request, seg } from './http';
 import { bool, isRecord, listOf, num, str, strings, text } from './parse';
-import { WORKSPACE_ID } from './workspace';
+import { workspacePath } from './workspace';
 
-const base = (path: string) => `/api/workspaces/${seg(WORKSPACE_ID)}${path}`;
+const base = (path: string) => workspacePath(path);
+const system = (path: string) => `/api/system${path}`;
 
 export const CAPABILITIES = [
   { value: 'chat', label: '对话' },
@@ -43,7 +45,7 @@ function parseProvider(value: unknown): Provider | undefined {
 }
 
 export async function listProviders(): Promise<readonly Provider[]> {
-  return listOf(await request<unknown>(base('/model-providers')), parseProvider);
+  return listOf(await request<unknown>(system('/model-providers')), parseProvider);
 }
 
 export interface ProviderInput {
@@ -65,7 +67,7 @@ export function validateBaseUrl(value: string): string | null {
 }
 
 export function createProvider(input: ProviderInput): Promise<unknown> {
-  return request(base('/model-providers'), {
+  return request(system('/model-providers'), {
     method: 'POST',
     body: {
       name: input.name.trim(),
@@ -83,11 +85,11 @@ export function updateProvider(id: string, input: ProviderInput): Promise<unknow
     enabled: input.enabled,
   };
   if (input.apiKey !== undefined) body.api_key = input.apiKey;
-  return request(base(`/model-providers/${seg(id)}`), { method: 'PATCH', body });
+  return request(system(`/model-providers/${seg(id)}`), { method: 'PATCH', body });
 }
 
 export function deleteProvider(id: string): Promise<void> {
-  return request(base(`/model-providers/${seg(id)}`), { method: 'DELETE' });
+  return request(system(`/model-providers/${seg(id)}`), { method: 'DELETE' });
 }
 
 /** 对话模型的思考：开、关；null 是跟随服务默认（不补参数） */
@@ -130,7 +132,7 @@ function parseModel(value: unknown): Model | undefined {
 }
 
 export async function listModels(): Promise<readonly Model[]> {
-  return listOf(await request<unknown>(base('/models')), parseModel);
+  return listOf(await request<unknown>(system('/models')), parseModel);
 }
 
 export interface ModelInput {
@@ -161,18 +163,18 @@ function modelBody(input: ModelInput): Record<string, unknown> {
 }
 
 export function createModel(input: ModelInput): Promise<unknown> {
-  return request(base('/models'), {
+  return request(system('/models'), {
     method: 'POST',
     body: { provider_id: input.providerId, ...modelBody(input) },
   });
 }
 
 export function updateModel(id: string, input: ModelInput): Promise<unknown> {
-  return request(base(`/models/${seg(id)}`), { method: 'PATCH', body: modelBody(input) });
+  return request(system(`/models/${seg(id)}`), { method: 'PATCH', body: modelBody(input) });
 }
 
 export function deleteModel(id: string): Promise<void> {
-  return request(base(`/models/${seg(id)}`), { method: 'DELETE' });
+  return request(system(`/models/${seg(id)}`), { method: 'DELETE' });
 }
 
 export interface ProbeResult {
@@ -182,7 +184,7 @@ export interface ProbeResult {
 }
 
 export async function testModel(id: string): Promise<ProbeResult> {
-  const body = await request<unknown>(base(`/models/${seg(id)}/test`), { method: 'POST' });
+  const body = await request<unknown>(system(`/models/${seg(id)}/test`), { method: 'POST' });
   if (!isRecord(body)) return { ok: false, latencyMs: null, message: '测试结果不完整' };
   return {
     ok: bool(body.ok),

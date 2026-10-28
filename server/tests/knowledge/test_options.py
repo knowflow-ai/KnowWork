@@ -14,6 +14,7 @@ from knowwork_server.knowledge.service import Pinned, ReadOptions, SearchOptions
 from knowwork_server.knowledge.tools import TurnScope, knowledge_tools
 from knowwork_server.tools.registry import ToolContext, ToolFailure
 
+from .conftest import flat
 from .knowflow_stub import SERVICE_KEY
 
 pytestmark = pytest.mark.anyio
@@ -126,7 +127,7 @@ async def test_tools_pass_options_and_turn_chunk_refs_into_passages(env):
     assert any("不支持" in note for note in found["notes"])
     with pytest.raises(ToolFailure, match="filters 不合法"):
         await tools["knowledge_search"].handler(ctx, {"query": "条款", "filters": [{"field": "年份", "op": "in"}]})
-    ref_of = {hit["doc_ref"]: hit["ref"] for hit in found["results"]}
+    ref_of = {hit["doc_ref"]: hit["ref"] for hit in flat(found)}
     read = json.loads(await tools["knowledge_read"].handler(ctx, {
         "source_id": source.id, "doc_ref": "ds1/contract", "chunk": ref_of["ds1/contract"], "context": 2}))
     assert read["passages"] and "不支持从指定片段读" in read["notes"][0]
@@ -199,7 +200,7 @@ async def test_plain_searches_carry_no_condition_lists(env):
     env.knowledge.provided.add(ProvidedSource(id="builtin", name="扩展知识库", kind="builtin", source=source))
     payload = json.loads(await tools_of(env.knowledge)["knowledge_search"].handler(
         ToolContext("ws1", "conv-p", "alice"), {"query": "报销"}))
-    assert payload["results"] and not {"conditions", "conditions_removed"} & set(payload)
+    assert payload["documents"] and not {"conditions", "conditions_removed"} & set(payload)
     with_one = json.loads(await tools_of(env.knowledge)["knowledge_search"].handler(
         ToolContext("ws1", "conv-p", "alice"), {"query": "报销", "filters": [{"field": "部门", "op": "ne", "value": "人事"}]}))
     assert with_one["conditions"] == ["部门 ≠ 人事"] and "conditions_removed" not in with_one

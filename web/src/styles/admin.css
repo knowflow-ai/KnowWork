@@ -333,3 +333,61 @@
   border-radius: var(--radius-lg);
   object-fit: contain;
 }
+
+/* ---------- 问答大盘 ---------- */
+.kw-insights {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  margin-top: 16px;
+  transition: opacity 150ms;
+}
+
+.kw-insights.is-refreshing {
+  opacity: 0.6;
+}
+
+.kw-insights h2 {
+  margin: 0 0 12px;
+  font-size: var(--font-text-md-size);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* 趋势、工具与知识库两两并排，窄了上下排 */
+.kw-insights-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 24px;
+}
+
+.kw-insights-concerns {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kw-insights-concern {
+  display: grid;
+  grid-template-columns: 180px 90px 170px 1fr;
+  gap: 16px;
+  align-items: baseline;
+  padding: 10px 0;
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-insights-concern + .kw-insights-concern {
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.kw-insights-concern-title {
+  color: var(--color-text-secondary);
+}
+
+/* 渠道表的状态格：状态点下面一行灰字写出错原因，长了换行不撑宽表格 */
+.kw-admin-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

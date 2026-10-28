@@ -33,8 +33,9 @@ def main_line_only(monkeypatch):
     """这里测开源主线的迁移合同。装着扩展的环境里也只升级主线：扩展的分支有它自己的合同测试。"""
     monkeypatch.setattr(migrate, "_installed_branches", lambda: migrate.MAIN_LINE)
 
-# 带 workspace_id 但有意不做行级安全的表：API Key 跨空间归属于用户，按 user_id 判定。
-RLS_EXEMPT = {"api_key"}
+# 带 workspace_id 但有意不做行级安全的表（身份模块的全局表）：API Key 归属于用户、按 user_id 判定；
+# 邀请凭链接接受，那时还没进任何空间。workspace_id 只是记下 Key 绑定、邀请去往的空间。
+RLS_EXEMPT = {"api_key", "auth_invitation"}
 # pg_policies 里规范化后的策略条件（USING 与 WITH CHECK 都应如此）
 ISOLATION_CONDITION = "((workspace_id)::text = current_setting('app.workspace_id'::text, true))"
 
@@ -211,23 +212,27 @@ async def app_role_url(app_db):
 
 async def test_workspace_sessionmaker_passes_row_level_security(app_role_url):
     from knowwork_server.conversations.models import Conversation
-    from knowwork_server.db.base import make_engine, make_sessionmaker, make_workspace_sessionmaker
+    from knowwork_server.db.base import in_workspace, make_engine, make_sessionmaker, make_workspace_sessionmaker
 
     engine = make_engine(app_role_url)
     try:
-        scoped = make_workspace_sessionmaker(engine, "default")
-        async with scoped() as session:
-            session.add(Conversation(id="c_rls", workspace_id="default", user_id="u1", title=""))
-            await session.commit()
-        async with scoped() as session:
-            assert await session.get(Conversation, "c_rls") is not None
-
-        other = make_workspace_sessionmaker(engine, "other")
-        async with other() as session:
-            assert await session.get(Conversation, "c_rls") is None, "别的空间读不到"
-            session.add(Conversation(id="c_cross", workspace_id="default", user_id="u1", title=""))
-            with pytest.raises(Exception, match="row-level security"):
+        scoped = make_workspace_sessionmaker(engine)
+        with in_workspace("default"):
+            async with scoped() as session:
+                session.add(Conversation(id="c_rls", workspace_id="default", user_id="u1", title=""))
                 await session.commit()
+            async with scoped() as session:
+                assert await session.get(Conversation, "c_rls") is not None
+
+        with in_workspace("other"):
+            async with scoped() as session:
+                assert await session.get(Conversation, "c_rls") is None, "别的空间读不到"
+                session.add(Conversation(id="c_cross", workspace_id="default", user_id="u1", title=""))
+                with pytest.raises(Exception, match="row-level security"):
+                    await session.commit()
+
+        async with scoped() as session:
+            assert await session.get(Conversation, "c_rls") is None, "没有当前空间时什么都不声明，一行都读不到"
 
         async with make_sessionmaker(engine)() as session:
             assert await session.get(Conversation, "c_rls") is None, "不声明空间时一行都读不到"
@@ -304,7 +309,7 @@ async def test_0014_rewrites_knowledge_source_grants_as_knowledge_base_grants(fr
                     {"w": workspace_id, "s": subject, "o": obj, "a": act})
     finally:
         await engine.dispose()
-    await upgrade_to_head(fresh_url)
+    await _alembic(fresh_url, command.upgrade, "0014")  # 只测 0014：之后的 0020 会把 role:viewer 并进 role:editor
     assert await _rules(fresh_url) == {
         ("w1", "role:admin", "knowledge_source:*", "owner"), ("w1", "user:u1", "knowledge_base:ks_a.*", "use"),
         ("w1", "group:g", "knowledge_base:ks_b.*", "use"), ("w1", "role:viewer", "knowledge_base:*", "use"),
@@ -504,3 +509,117 @@ async def test_0019_brings_a_v001_database_up_to_the_current_models(owner_db, fr
     snapshot = await _execute(fresh_url, "SELECT snapshot FROM runtime_profile WHERE version = 'v-old'")
     assert "models" not in snapshot
     RuntimeProfile.model_validate(snapshot)
+
+
+async def test_0024_backfills_a_summary_for_every_turn_from_the_frames(owner_db, fresh_url):
+    """已有的回合按原始帧回填每轮汇总：提问取事件投影里用户那条，工具按第一次调用的先后，结束原因归成四种状态，
+    没收到结束帧的是进行中。迁移账号不是超级用户，要逐个空间声明（同 0019）。"""
+    await _alembic(owner_db.url, command.upgrade, "0023")
+
+    def session_frame(kind, data, ui=()):
+        return "session/event", {"type": kind, "data": data}, list(ui)
+
+    asked = {"type": "item.completed", "run_id": "run-1", "kind": "message", "data": {"role": "user", "text": "合同期限多久"}}
+    frames = {
+        ("c1", "w1"): [session_frame("turn/start", {"turn": 1}),
+                       session_frame("user/message", {"source": {"kind": "user"}}, [asked]),
+                       session_frame("tool/call", {"turn": 1, "name": "knowledge_search"}),
+                       session_frame("tool/call", {"turn": 1, "name": "bash"}),
+                       session_frame("tool/call", {"turn": 1, "name": "knowledge_search"}),
+                       session_frame("turn/end", {"turn": 1, "reason": {"kind": "aborted"}}),
+                       session_frame("turn/start", {"turn": 2})],
+        ("c2", "w2"): [session_frame("turn/start", {"turn": 1}),
+                       session_frame("turn/end", {"turn": 1, "reason": {"kind": "max-tokens"}})],
+    }
+    engine = create_async_engine(fresh_url)  # 超级用户，造数据不受行级安全限制
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("INSERT INTO workspace (id, name) VALUES ('w1', 'W1'), ('w2', 'W2')"))
+            await connection.execute(text("INSERT INTO conversation (id, workspace_id, user_id, title)"
+                                          " VALUES ('c1', 'w1', 'alice', ''), ('c2', 'w2', 'bob', '')"))
+            for (conversation, workspace), events in frames.items():
+                for seq, (kind, data, ui) in enumerate(events, start=1):
+                    await connection.execute(text(
+                        "INSERT INTO run_event (conversation_id, seq, workspace_id, host_epoch, host_cursor, kind, data,"
+                        " ui) VALUES (:c, :s, :w, 'e', :s, :k, CAST(:d AS jsonb), CAST(:u AS jsonb))"),
+                        {"c": conversation, "s": seq, "w": workspace, "k": kind, "d": json.dumps(data),
+                         "u": json.dumps(ui)})
+    finally:
+        await engine.dispose()
+
+    await upgrade_to_head(owner_db.url)
+    rows = await _execute(fresh_url, "SELECT json_agg(json_build_array(conversation_id, turn, user_id, question, status,"
+                                     " end_reason, tools, ended_at IS NULL) ORDER BY conversation_id, turn)"
+                                     " FROM run_summary")
+    assert rows == [["c1", 1, "alice", "合同期限多久", "cancelled", "aborted", ["knowledge_search", "bash"], False],
+                    ["c1", 2, "alice", "", "running", None, [], True],
+                    ["c2", 1, "bob", "", "completed", "max-tokens", [], False]]
+
+
+async def test_0020_merges_read_only_members_into_members(owner_db, fresh_url):
+    """「只读成员」（viewer）和「成员」（editor）权限一直一样，合并成「成员」：成员表、角色归属、授给 role:viewer 的授权
+    都改到 role:editor，同一资源两边都有授权时留更高的一档。迁移账号不是超级用户，要逐个空间声明（同 0019）。"""
+    await _alembic(owner_db.url, command.upgrade, "0019")
+    members = {("w1", "alice", "owner"), ("w1", "carol", "editor"), ("w1", "dave", "viewer"), ("w2", "erin", "viewer")}
+    rules = {
+        ("w1", "g", "user:alice", "role:owner", "w1", ""), ("w1", "g", "user:carol", "role:editor", "w1", ""),
+        ("w1", "g", "user:dave", "role:viewer", "w1", ""), ("w2", "g", "user:erin", "role:viewer", "w2", ""),
+        ("w1", "p", "role:editor", "w1", "workspace", "use"), ("w1", "p", "role:viewer", "w1", "workspace", "use"),
+        ("w2", "p", "role:viewer", "w2", "workspace", "use"),
+        ("w1", "p", "role:viewer", "w1", "knowledge_base:builtin.kb1", "use"),
+        ("w1", "p", "role:editor", "w1", "knowledge_base:builtin.kb1", "edit"),
+        ("w1", "p", "role:viewer", "w1", "tool:t1", "owner"), ("w1", "p", "role:editor", "w1", "tool:t1", "use"),
+        ("w1", "p", "role:viewer", "w1", "skill:s1", "use"), ("w1", "p", "user:dave", "w1", "skill:s2", "use"),
+    }
+    engine = create_async_engine(fresh_url)  # 超级用户，造数据不受行级安全限制
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("INSERT INTO workspace (id, name) VALUES ('w1', 'W1'), ('w2', 'W2')"))
+            for workspace_id, user_id, role in members:
+                await connection.execute(text("INSERT INTO workspace_member (workspace_id, user_id, role) VALUES (:w, :u, :r)"),
+                                         {"w": workspace_id, "u": user_id, "r": role})
+            for workspace_id, *values in rules:
+                await connection.execute(text(
+                    "INSERT INTO casbin_rule (workspace_id, ptype, v0, v1, v2, v3) VALUES (:w, :t, :a, :b, :c, :d)"),
+                    {"w": workspace_id, "t": values[0], "a": values[1], "b": values[2], "c": values[3], "d": values[4]})
+    finally:
+        await engine.dispose()
+
+    await upgrade_to_head(owner_db.url)
+    assert await _execute(fresh_url, "SELECT json_agg(json_build_array(user_id, role) ORDER BY user_id) FROM workspace_member") \
+        == [["alice", "owner"], ["carol", "editor"], ["dave", "editor"], ["erin", "editor"]]
+    engine = create_async_engine(fresh_url)
+    try:
+        async with engine.connect() as connection:
+            after = {tuple(row) for row in await connection.execute(
+                text("SELECT workspace_id, ptype, v0, v1, v2, v3 FROM casbin_rule"))}
+    finally:
+        await engine.dispose()
+    assert not any("role:viewer" in row for row in after)
+    assert after == {
+        ("w1", "g", "user:alice", "role:owner", "w1", ""), ("w1", "g", "user:carol", "role:editor", "w1", ""),
+        ("w1", "g", "user:dave", "role:editor", "w1", ""), ("w2", "g", "user:erin", "role:editor", "w2", ""),
+        ("w1", "p", "role:editor", "w1", "workspace", "use"), ("w2", "p", "role:editor", "w2", "workspace", "use"),
+        ("w1", "p", "role:editor", "w1", "knowledge_base:builtin.kb1", "edit"),
+        ("w1", "p", "role:editor", "w1", "tool:t1", "owner"),
+        ("w1", "p", "role:editor", "w1", "skill:s1", "use"), ("w1", "p", "user:dave", "w1", "skill:s2", "use"),
+    }, "同一资源取更高的一档；直接授给个人的不动"
+
+
+async def test_0029_binds_unbound_api_keys_to_the_default_workspace(fresh_url):
+    """v0.0.2 可以建不绑空间的 Key（那时只有默认空间）；升级后绑到默认空间，绑了别的空间的不动。"""
+    await _alembic(fresh_url, command.upgrade, "0028")
+    engine = create_async_engine(fresh_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("""INSERT INTO "user" (id, email, name, status) VALUES ('u1', 'u1@x', 'U1', 'active')"""))
+            for key_id, workspace_id in (("k1", None), ("k2", "w2")):
+                await connection.execute(text(
+                    "INSERT INTO api_key (id, user_id, name, prefix, secret_hash, scopes, workspace_id, created_at)"
+                    " VALUES (:k, 'u1', :k, :k, 'h', ARRAY['knowledge:read'], :w, now())"),
+                    {"k": key_id, "w": workspace_id})
+    finally:
+        await engine.dispose()
+    await upgrade_to_head(fresh_url)
+    assert await _execute(fresh_url, "SELECT json_agg(json_build_array(id, workspace_id) ORDER BY id) FROM api_key") \
+        == [["k1", "default"], ["k2", "w2"]]

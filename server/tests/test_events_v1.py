@@ -100,6 +100,23 @@ def test_knowledge_search_results_carry_a_summary_for_the_conditions_bar():
         assert "search" not in event["data"], other
 
 
+def test_grouped_search_results_are_summarised_and_listed_documents_are_not():
+    """检索结果按文档分组后照样摘；knowledge_documents 的结果也有 documents，但顶层是 knowledge_base，不算检索。"""
+    docs = [{"source_id": "builtin", "doc_ref": f"kb1/d{i}", "title": "t", "results": [{"ref": i, "text": "x"}]}
+            for i in range(2)]
+    grouped = json.dumps({"documents": docs, "notes": [], "conditions": ["年度 = 2025"]}, ensure_ascii=False)
+    listed = json.dumps({"knowledge_base": "builtin.kb1", "source_id": "builtin",
+                         "documents": [{"doc_ref": "kb1/d0", "title": "t"}], "notes": []})
+    empty = json.dumps({"documents": [], "notes": ["在可读的知识范围内没有找到相关内容"]}, ensure_ascii=False)
+    summaries = []
+    for text in (grouped, listed, empty):
+        found = {"turn": 1, "message": {"toolCallId": "c3", "content": [{"type": "text", "text": text}]}}
+        _, [event] = one(S0, "session/event", session("tool/result", found))
+        summaries.append(event["data"].get("search"))
+    assert summaries == [{"documents": ["builtin:kb1/d0", "builtin:kb1/d1"], "conditions": ["年度 = 2025"], "removed": []},
+                         None, {"documents": [], "conditions": [], "removed": []}]
+
+
 def test_approval_resolved_and_subagent():
     _, resolved = one(S0, "approval/resolved", {"id": "a1", "outcome": "rejected"})
     assert (resolved[0]["type"], resolved[0]["kind"], resolved[0]["data"]) == ("item.completed", "approval",

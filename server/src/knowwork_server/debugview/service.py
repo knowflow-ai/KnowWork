@@ -1,12 +1,17 @@
-"""运行调试视图的服务：读会话日志与用量，交给纯函数整理（events、digest、context）。只读，不新存任何东西。"""
+"""运行调试视图的服务：读会话日志与用量，交给纯函数整理（events、digest、context）。只读，不新存任何东西。
 
-from dataclasses import dataclass
+工具调用的过程（例如知识检索是怎么查的）不在会话日志里，由业务按 callId 另记；给了 traces 就按这一轮的 callId 取来
+挂到对应的调用上（knowledge.search_log 满足它）。
+"""
+
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from ..conversations.models import Conversation
 from ..conversations.runlog import RawEvent, RunLog
 from .context import StepInput, step_input
-from .digest import TurnDetail, TurnSummary, detail, summarize
+from .digest import StepView, TurnDetail, TurnSummary, detail, summarize
 from .events import TurnSlice, main_events, slice_turns
 
 
@@ -16,6 +21,13 @@ class UsageSource(Protocol):
     async def steps(self, workspace_id: str, conversation_id: str) -> tuple[Any, ...]: ...
 
 
+class CallTraces(Protocol):
+    """knowledge.search_log.SearchLog 满足它。"""
+
+    async def traces(self, workspace_id: str, conversation_id: str,
+                     call_ids: Sequence[str]) -> dict[str, list[dict]]: ...
+
+
 @dataclass(frozen=True)
 class TurnList:
     turns: tuple[TurnSummary, ...]
@@ -23,9 +35,10 @@ class TurnList:
 
 
 class DebugService:
-    def __init__(self, runlog: RunLog, usage: UsageSource) -> None:
+    def __init__(self, runlog: RunLog, usage: UsageSource, traces: CallTraces | None = None) -> None:
         self._runlog = runlog
         self._usage = usage
+        self._traces = traces
 
     async def turns(self, conversation: Conversation) -> TurnList:
         page = await self._runlog.read(conversation.id)
@@ -34,7 +47,24 @@ class DebugService:
 
     async def turn(self, conversation: Conversation, turn: int) -> TurnDetail | None:
         found = await self._slice(conversation, turn)
-        return None if found is None else detail(found, await self._usage_map(conversation))
+        if found is None:
+            return None
+        return await self._with_traces(conversation, detail(found, await self._usage_map(conversation)))
+
+    async def _with_traces(self, conversation: Conversation, turn: TurnDetail) -> TurnDetail:
+        if self._traces is None:
+            return turn
+        call_ids = [c.call_id for s in (*turn.steps, *(s for a in turn.subagents for s in a.steps)) for c in s.tool_calls]
+        found = await self._traces.traces(conversation.workspace_id, conversation.id, call_ids)
+        if not found:
+            return turn
+
+        def steps(items: tuple[StepView, ...]) -> tuple[StepView, ...]:
+            return tuple(replace(s, tool_calls=tuple(replace(c, trace=tuple(found.get(c.call_id, ())))
+                                                     for c in s.tool_calls)) for s in items)
+
+        return replace(turn, steps=steps(turn.steps),
+                       subagents=tuple(replace(a, steps=steps(a.steps)) for a in turn.subagents))
 
     async def step_input(self, conversation: Conversation, turn: int, step: int) -> StepInput | None:
         page = await self._runlog.read(conversation.id)

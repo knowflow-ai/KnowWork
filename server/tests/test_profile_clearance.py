@@ -11,7 +11,7 @@ pytestmark = pytest.mark.anyio
 
 
 def setup(members=None):
-    grants = Grants(members or {"owner1": "owner", "admin1": "admin", "ed": "editor", "view": "viewer"})
+    grants = Grants(members or {"owner1": "owner", "admin1": "admin", "ed": "editor", "view": "editor"})
     clearance = ToolClearance(grants, builtin=frozenset({"kw_now"}))
     return grants, clearance, AuthorizedToolRegistry(registry(), clearance)
 

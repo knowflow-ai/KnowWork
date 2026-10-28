@@ -106,7 +106,9 @@ prepare_env() {
     log "访问地址设为 ${public_url%/}"
   fi
   if [ "$no_sandbox" -eq 1 ]; then
-    set_env COMPOSE_FILE docker-compose.yml
+    # 只去掉沙箱那一份：整个重置成 docker-compose.yml 会冲掉用户自己加的覆盖文件和扩展的叠加文件
+    files="$(compose_files | grep -vx "$SANDBOX_FILE" | paste -s -d: -)"
+    set_env COMPOSE_FILE "${files:-docker-compose.yml}"
     log "不启用会话沙箱：模型不能执行命令，也生成不了 Word、Excel"
   fi
   case "$(env_value KNOWWORK_PUBLIC_BASE_URL)" in
@@ -143,7 +145,13 @@ pull_images() {
     if compose pull --quiet && { ! sandbox_enabled || compose --profile sandbox pull --quiet sandbox-image; }; then
       return 0
     fi
-    [ "$attempt" -ge "$PULL_ATTEMPTS" ] && die "镜像拉取连续 ${PULL_ATTEMPTS} 次失败，请检查网络或镜像仓库地址（KNOWWORK_REGISTRY）"
+    if [ "$attempt" -ge "$PULL_ATTEMPTS" ]; then
+      # 私有镜像仓库没登录时 pull 也只报拉取失败，提示里带上登录命令（docker login 只要主机，不要命名空间）
+      registry="$(env_value KNOWWORK_REGISTRY)"
+      hint=""
+      [ -z "$registry" ] || hint="；镜像仓库需要登录的，先执行 docker login ${registry%%/*}"
+      die "镜像拉取连续 ${PULL_ATTEMPTS} 次失败，请检查网络或镜像仓库地址（KNOWWORK_REGISTRY）${hint}"
+    fi
     sleep $((attempt * PULL_RETRY_DELAY))
     attempt=$((attempt + 1))
   done
@@ -163,7 +171,8 @@ wait_ready() {
   port="$(env_value KNOWWORK_PORT)"
   url="http://127.0.0.1:${port:-8080}/ready"
   deadline=$(( $(date +%s) + timeout ))
-  log "等待服务就绪：$url（最多 ${timeout} 秒）"
+  # 紧挨中文的变量要写成 ${url}：macOS 自带的 bash 3.2 在 UTF-8 下会把后面的全角字符当成变量名的一部分
+  log "等待服务就绪：${url}（最多 ${timeout} 秒）"
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if [ "$(http_status "$url")" = "200" ]; then
       log "KnowWork 已就绪。浏览器打开 $(env_value KNOWWORK_PUBLIC_BASE_URL) ，按初始化向导创建管理员，再到「管理 → 模型」添加模型。"

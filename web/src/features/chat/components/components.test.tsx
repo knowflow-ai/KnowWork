@@ -332,6 +332,19 @@ describe('Markdown 与引用', () => {
     expect(screen.getByRole('img', { name: '报销流程图' })).toBe(image);
   });
 
+  it('知识源给了版本提示时，出处卡片上照原样显示', async () => {
+    renderWithApp(
+      <Markdown
+        text="住宿每晚不超过 500 元[1]"
+        sources={{
+          1: { title: '差旅管理办法2023版', versionNote: '可能已有新版《差旅管理办法（2025版）》（待确认）' },
+        }}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '查看出处 1' }));
+    expect(await screen.findByText('可能已有新版《差旅管理办法（2025版）》（待确认）')).toBeInTheDocument();
+  });
+
   it('没有出处数据时说明暂不可用，不渲染原始 HTML', async () => {
     const { container } = renderWithApp(<Markdown text={'<script>x</script>\n\n见[^2]'} />);
     expect(container.querySelector('script')).toBeNull();
@@ -472,20 +485,42 @@ describe('FileCard 与 AnswerActions', () => {
     expect(writeText).toHaveBeenCalledWith('报销分三步[1]。\n\n先填单。');
   });
 
-  it('复制、反馈与重新生成', async () => {
+  it('复制与重新生成；没给反馈的处理时不显示赞、踩', async () => {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     const onRegenerate = vi.fn();
     renderWithApp(<AnswerActions text="答案" onRegenerate={onRegenerate} />);
     await userEvent.click(screen.getByRole('button', { name: '复制' }));
     expect(writeText).toHaveBeenCalledWith('答案');
-    const up = screen.getByRole('button', { name: '有帮助' });
-    await userEvent.click(up);
-    expect(up).toHaveAttribute('aria-pressed', 'true');
-    await userEvent.click(screen.getByRole('button', { name: '没帮助' }));
-    expect(up).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByRole('button', { name: '有帮助' })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '重新生成' }));
     expect(onRegenerate).toHaveBeenCalled();
+  });
+
+  it('赞、踩照 DSH 官方：点了打开反馈弹窗，提交后才记下；再点已选的直接撤回', async () => {
+    const onFeedback = vi.fn(async () => true);
+    const onRetract = vi.fn(async () => true);
+    const { rerender } = renderWithApp(
+      <AnswerActions text="答案" feedback={null} onFeedback={onFeedback} onRetract={onRetract} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '没帮助' }));
+    const dialog = await screen.findByRole('dialog', { name: '这条回答哪里不好' });
+    expect(onFeedback).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('radio', { name: '任务结果' }));
+    await userEvent.type(within(dialog).getByLabelText('说明'), '没答到点子上');
+    await userEvent.click(within(dialog).getByRole('button', { name: '提交' }));
+    expect(onFeedback).toHaveBeenCalledWith({
+      rating: 'dislike',
+      category: 'task-result',
+      note: '没答到点子上',
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    rerender(<AnswerActions text="答案" feedback="dislike" onFeedback={onFeedback} onRetract={onRetract} />);
+    expect(screen.getByRole('button', { name: '没帮助' })).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(screen.getByRole('button', { name: '没帮助' }));
+    expect(onRetract).toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('复制失败时提示', async () => {

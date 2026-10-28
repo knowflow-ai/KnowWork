@@ -1,5 +1,7 @@
 """身份接口的请求体与响应体。"""
 
+from typing import Literal
+
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from .api_keys import ApiKeyInfo
@@ -17,6 +19,8 @@ class LoginBody(_Strict):
 
 class InviteBody(_Strict):
     email: str = Field(min_length=3, max_length=320)
+    # 邀请只能定成员或管理员；所有者由现任所有者在成员页任命（同空间角色的规矩）
+    role: Literal["editor", "admin"] = "editor"
 
 
 class AcceptInviteBody(_Strict):
@@ -29,7 +33,8 @@ class CreateApiKeyBody(_Strict):
     name: str = Field(min_length=1, max_length=100)
     scopes: list[str] = Field(min_length=1, max_length=32)
     expires_at: AwareDatetime | None = Field(default=None, alias="expiresAt")
-    workspace_id: str | None = Field(default=None, alias="workspaceId", max_length=64)
+    # Key 只在一个工作空间里有效：对外检索与 MCP 的路径里没有空间，只能从 Key 上取
+    workspace_id: str = Field(alias="workspaceId", min_length=1, max_length=64)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

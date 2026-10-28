@@ -13,6 +13,7 @@ import logging
 from fastapi import APIRouter, Header, Query
 from fastapi.responses import JSONResponse
 
+from ..db.base import enter_workspace
 from ..kernel.tokens import TokenError
 from .catalog import SkillCatalog
 from .errors import SkillError
@@ -50,9 +51,11 @@ class SkillDelivery:
         if authorization is None or not authorization.startswith("Bearer "):
             raise _Unauthorized()
         try:
-            return self._signer.verify(authorization[7:])
+            claims = self._signer.verify(authorization[7:])
         except TokenError as error:
             raise _Unauthorized() from error
+        enter_workspace(claims.workspace_id)  # 这次回调以令牌里的空间读写
+        return claims
 
     @property
     def catalog(self) -> SkillCatalog:

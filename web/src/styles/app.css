@@ -109,6 +109,96 @@ body {
   padding: 2px 4px 8px 12px;
 }
 
+.kw-sidebar-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 搜索对话（照 ChatGPT）：顶上输入框，下面一列结果，按时间分组；选中的一行浅灰底，命中处加粗 */
+.kw-search-dialog .kw-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kw-search-dialog .kw-dialog-close {
+  top: 18px;
+}
+
+.kw-search-dialog input {
+  padding-right: 32px;
+}
+
+.kw-search-results,
+.kw-search-results ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kw-search-results {
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+}
+
+.kw-search-group {
+  padding: 12px 10px 4px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-text-xs-size);
+}
+
+.kw-search-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+
+.kw-search-row > svg {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--color-text-secondary);
+}
+
+.kw-search-row.is-active {
+  background: var(--color-surface-secondary);
+}
+
+.kw-search-row-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kw-search-row-title,
+.kw-search-row-snippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kw-search-row-snippet {
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-search-hit {
+  font-weight: var(--font-weight-semibold);
+}
+
+.kw-search-empty {
+  margin: 0;
+  padding: 16px 10px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+}
+
 /* 收起：只有图标的窄栏（照 ChatGPT），宽度变化带一点过渡 */
 .kw-sidebar {
   transition: width 160ms ease;

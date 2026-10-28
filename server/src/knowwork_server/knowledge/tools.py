@@ -19,8 +19,11 @@ from ..tools.registry import BuiltinTool, ToolContext, ToolFailure, ToolSpec
 from .bases import Selection, base_id
 from .citation_store import CitationStore
 from .errors import KnowledgeError
+from .fetch_tool import SessionInput, fetch_tool
 from .models import MAX_CONTEXT, MAX_READ_CHARS, DocumentInfo, Evidence, EvidenceImage, MetaFilter, OutlineNode, Page
+from .search_log import SearchLog
 from .service import KnowledgeService, Pinned, ReadOptions, SearchOptions
+from .turn_ledger import TurnLedger
 
 SEARCH_NAME = "knowledge_search"
 READ_NAME = "knowledge_read"
@@ -135,6 +138,9 @@ CITATION_GUIDANCE = (
     "沿用前面轮次检索到的内容时，照样写当时那条结果的 ref；编号不要自己从 1 重新编，"
     "也不要在回答末尾另写脚注或「来源」说明，界面会按编号显示出处。"
     "知识里找不到依据时直接说明，不要凭常识补全后再标编号。"
+    # 新旧版本：知识源识别出来的写在 version_note 里；没识别出来的靠文档日期兜底
+    "版本规则：文档带 version_note 时照它说的办；几份文件对同一件事说法不一致时，以 date 较新的为准，"
+    "并在回答里说明依据的是哪份文件。"
     # 回答里放图（照 KnowFlow 的图文混排）：模型只见短编号与描述，不见取图地址；前端按引用目录换成图片
     "图片规则：片段正文里的 <image id=\"IMG:3:0\"><caption>…</caption></image> 是一张图和它在原文里的位置，"
     "caption 是图注和图的内容；图没有图注和描述时给的是 <context>，那是图所在章节和图前后的原文，"
@@ -147,6 +153,8 @@ CITATION_GUIDANCE = (
 # 放图提醒：带图的检索、阅读结果在 notes 末尾加这一句。图片规则只写在系统提示里时，离作答点隔着几万字检索结果，
 # 模型约一半时候不放图；结果里补这一句后几乎每次都放，放的也对。2026-10-23 重放两轮真实对话（微短剧代表作品、
 # 落地扇摆头方法）各 20 次，作答时放图从 13/19、10/19 到 20/20、20/20；只改规则写法、换成单一编号、调低温度都没用。
+# 去重提示：同一轮里再次命中的片段只列编号。不说清楚，模型会以为这条结果是空的
+SEEN_NOTE = "seen 为 true 的片段这一轮前面已经给过原文（同一个 ref），直接用前面那段内容和编号，不用为它再查。"
 IMAGE_NOTE = ("这些结果里带有原文配图（<image id=…>）。回答用到某个片段的内容时，那段内容在原文里配的图要一起放进回答："
               "在对应文字后面另起一行，原样写上图的 id，如 [IMG:2:0]；和回答无关的图不放。")
 # 一条片段里图片说明合计给到这么多字，超出的只留第一行（通常就是图注）。图一律插回原位、不按张数截：
@@ -165,8 +173,21 @@ async def _unbound(_ctx: ToolContext) -> TurnScope:
 
 def knowledge_tools(service: KnowledgeService, citations: CitationStore, *,
                     catalog_of: CatalogOf = _session_catalog,
-                    turn_scope: TurnScopeOf = _unbound) -> tuple[BuiltinTool, ...]:
-    """catalog_of 决定一轮的引用目录 ID（默认按会话）；turn_scope 给出这一轮的范围（见 TurnScope），默认不限定。"""
+                    turn_scope: TurnScopeOf = _unbound,
+                    ledger: TurnLedger | None = None,
+                    search_log: SearchLog | None = None,
+                    sandbox: SessionInput | None = None) -> tuple[BuiltinTool, ...]:
+    """catalog_of 决定一轮的引用目录 ID（默认按会话）；turn_scope 给出这一轮的范围（见 TurnScope），默认不限定；
+    ledger 记这一轮给过原文的片段，再次命中时只列编号（见 turn_ledger），不给就不去重；
+    search_log 记下每次检索给知识库运营用（见 search_log），不给就不记；
+    sandbox 是会话沙箱，给了才有 knowledge_fetch（把图、页图、原文件放进工作区，见 fetch_tool）。"""
+
+    def shown(ctx: ToolContext) -> frozenset[int]:
+        return ledger.shown(ctx.session_id) if ledger is not None and ctx.from_root else frozenset()
+
+    def remember(ctx: ToolContext, numbers: Sequence[int | None]) -> None:
+        if ledger is not None and ctx.from_root:
+            ledger.remember(ctx.session_id, frozenset(n for n in numbers if n is not None))
 
     async def search(ctx: ToolContext, arguments: dict[str, Any]) -> str:
         caller = await service.caller(ctx.workspace_id, ctx.user_id)
@@ -176,8 +197,18 @@ def knowledge_tools(service: KnowledgeService, citations: CitationStore, *,
         outcome = await _guard(service.search(caller, str(arguments["query"]), top_n=_int(arguments.get("top_n"), 8),
                                               bases=requested, options=narrowed.options, pins=scope.pins))
         numbers, catalog = await citations.register(ctx.workspace_id, catalog_of(ctx), outcome.evidence)
-        payload: dict[str, Any] = {"results": [_hit(e, n) for e, n in zip(outcome.evidence, numbers, strict=True)],
-                                   "notes": list(outcome.notes)}
+        if search_log is not None:
+            await search_log.record(ctx, query=str(arguments["query"]), evidence=outcome.evidence, numbers=numbers,
+                                    trace=outcome.trace,
+                                    options={"mode": narrowed.options.mode, "bases": list(requested or ()),
+                                             "conditions": list(narrowed.applied)})
+        # 同一步里并行的几次检索可能一条给原文、一条标 seen：几条结果一起进上下文，模型照样看得到原文。
+        # 不会都标 seen：一次调用先取 shown 再 remember，谁标了对方，对方取 shown 时必然还没看到它
+        seen = shown(ctx)
+        payload: dict[str, Any] = {"documents": _grouped(outcome.evidence, numbers, seen), "notes": list(outcome.notes)}
+        remember(ctx, numbers)
+        if any(n in seen for n in numbers if n is not None):
+            payload["notes"].append(SEEN_NOTE)
         # 用上的、撤掉的条件写在结果里：模型知道这次是怎么筛的，界面据此在回答上方列出来、让用户撤掉重答
         if narrowed.applied:
             payload["conditions"] = list(narrowed.applied)
@@ -190,7 +221,7 @@ def knowledge_tools(service: KnowledgeService, citations: CitationStore, *,
             payload["notes"].append(f"本轮引用已达上限 {catalog.limit} 条，ref 为 null 的结果不能被引用")
         if not outcome.evidence:
             payload["notes"].append(_empty_note(narrowed.options))
-        if _shows_images(outcome.evidence, numbers):
+        if _shows_images(outcome.evidence, [None if n in seen else n for n in numbers]):
             payload["notes"].append(IMAGE_NOTE)
         return json.dumps(payload, ensure_ascii=False)
 
@@ -239,6 +270,7 @@ def knowledge_tools(service: KnowledgeService, citations: CitationStore, *,
                        **({"notes": list(result.notes)} if result.notes else {})}
             return json.dumps(payload, ensure_ascii=False)
         numbers, _ = await citations.register(ctx.workspace_id, catalog_of(ctx), result.spans)
+        remember(ctx, numbers)  # 读到的原文模型这一轮已经有了，之后再检索命中只列编号
         # 阅读的是一份文档：元数据在文档这一层给一次，不在每段重复
         meta = _metadata(result.spans[0]) if result.spans and result.spans[0].metadata else None
         payload = {"title": result.title, "doc_ref": result.doc_ref, **({"metadata": meta} if meta else {}),
@@ -249,26 +281,34 @@ def knowledge_tools(service: KnowledgeService, citations: CitationStore, *,
             payload["notes"] = notes
         return json.dumps(payload, ensure_ascii=False)
 
+    async def bases_of(ctx: ToolContext) -> tuple[str, ...] | None:
+        return (await turn_scope(ctx)).bases
+
+    fetch = (fetch_tool(service, citations, sandbox, catalog_of=catalog_of, turn_bases=bases_of),) \
+        if sandbox is not None else ()
     return (
-        BuiltinTool(ToolSpec(SEARCH_NAME, "在本轮可查的知识库里检索，返回带引用编号 ref 的片段，片段所在文档的元数据在 "
-                                          "metadata 里（字段：值）。回答引用时写 [ref]。"
+        BuiltinTool(ToolSpec(SEARCH_NAME, "在本轮可查的知识库里检索。结果按文档分组：每份文档给一次 source_id、"
+                                          "doc_ref、标题和元数据 metadata（字段：值），results 里是命中的片段，带引用编号 "
+                                          "ref，回答引用时写 [ref]；这一轮前面已经给过原文的片段只列 ref 并标 seen。"
                                           "没找到时换成文档里会用的说法重写；同样的词换个 mode 再搜一般没用，编号、型号、"
                                           "报错码这类才改用 keyword。按标题或文件名找文档用 knowledge_documents。"
                                           "知识库目录里「可筛选」列了每个库能按哪些字段筛；要看可选值、标签集先调 "
                                           "knowledge_bases。",
-                             SEARCH_SCHEMA, "read", guidance=CITATION_GUIDANCE), search),
+                             SEARCH_SCHEMA, "read", guidance=CITATION_GUIDANCE, concurrent=True), search),
         BuiltinTool(ToolSpec(READ_NAME, f"按文档引用阅读原文，单次最多 {MAX_READ_CHARS} 字，用 next_cursor 续读。"
                                         "长文档先 outline=true 看目录，再用 section 填目录里的编号读那一节；编号以这次"
                                         "拿到的目录为准。回答引用时写段落的 [ref]。", READ_SCHEMA, "read",
-                             guidance=CITATION_GUIDANCE),
+                             guidance=CITATION_GUIDANCE, concurrent=True),
                     read),
         BuiltinTool(ToolSpec(BASES_NAME, "查看知识库的说明、元数据字段（类型、可选值）和标签，写 knowledge_search 的 "
-                                         "filters、tags 之前用。", BASES_SCHEMA, "read"), bases),
+                                         "filters、tags 之前用。", BASES_SCHEMA, "read", concurrent=True), bases),
         # 照 WeKnora 的 list_documents：看库里有哪些文档、按名字找文档。说清是知识库里的，免得和会话附件、工作区文件混
         BuiltinTool(ToolSpec(DOCUMENTS_NAME, "列出一个知识库里的文档（最近更新的在前），可以按标题或文件名里的字找。"
                                              "用来看库里有哪些文档、按名字找某份文档；doc_ref 交给 knowledge_read 读，"
                                              "outline 为 true 的可以先看目录。这是知识库里的文档，不是会话里上传的附件或"
-                                             "工作区里的文件。", DOCUMENTS_SCHEMA, "read"), documents),
+                                             "工作区里的文件。", DOCUMENTS_SCHEMA, "read", concurrent=True),
+                    documents),
+        *fetch,
     )
 
 
@@ -470,19 +510,40 @@ def _section(evidence: Evidence) -> str | None:
     return " / ".join(path) if path else None
 
 
-def _hit(evidence: Evidence, number: int | None) -> dict[str, Any]:
+def _grouped(evidence: Sequence[Evidence], numbers: Sequence[int | None],
+             seen: frozenset[int]) -> list[dict[str, Any]]:
+    """检索结果按文档分组（照 WeKnora 的 writeKnowledgeMetadataHeader：文档一层的信息每份只写一次）。
+    原来每条片段都带一遍知识源、知识库、文档引用、标题与元数据，占了结果的三成多。文档按最靠前那条命中的
+    名次排，文档里的片段按名次排；这一轮给过原文的片段（seen）只列编号。"""
+    documents: dict[tuple[str, str], dict[str, Any]] = {}
+    for item, number in zip(evidence, numbers, strict=True):
+        key = (item.source_id, item.doc_ref)
+        entry = documents.get(key) or _doc_header(item)
+        piece = {"ref": number, "seen": True} if number is not None and number in seen else _snippet(item, number)
+        documents = {**documents, key: {**entry, "results": [*entry.get("results", ()), piece]}}
+    return list(documents.values())
+
+
+def _doc_header(evidence: Evidence) -> dict[str, Any]:
+    """一份文档给模型看的信息：knowledge_read 要用的 source_id、doc_ref，筛选与回答要用的元数据。
+    元数据与版本提示只在知识源给了时才出现，不给模型塞一堆空字段。"""
+    header: dict[str, Any] = {"source_id": evidence.source_id, "doc_ref": evidence.doc_ref, "title": evidence.title}
+    if evidence.kb_id:
+        header["knowledge_base"] = base_id(evidence.source_id, evidence.kb_id)
+    if evidence.metadata:
+        header["metadata"] = _metadata(evidence)
+    if evidence.version_note:
+        header["version_note"] = evidence.version_note
+    if evidence.document_date:
+        header["date"] = evidence.document_date
+    return header
+
+
+def _snippet(evidence: Evidence, number: int | None) -> dict[str, Any]:
     locator = evidence.locator
     section = _section(evidence)
     text, images = _marked(evidence, number)
-    hit = {"ref": number, "source_id": evidence.source_id,
-           "knowledge_base": base_id(evidence.source_id, evidence.kb_id) if evidence.kb_id else None,
-           "doc_ref": evidence.doc_ref, "title": evidence.title, **({"section": section} if section else {}),
-           "page": locator.page if locator else None, "text": text}
-    # 图片、元数据与版本提示只在知识源给了时才出现，不给模型塞一堆空字段
-    if images:
-        hit["images"] = images
-    if evidence.metadata:
-        hit["metadata"] = _metadata(evidence)
-    if evidence.version_note:
-        hit["version_note"] = evidence.version_note
-    return hit
+    piece: dict[str, Any] = {"ref": number, **({"section": section} if section else {})}
+    if locator is not None and locator.page is not None:
+        piece["page"] = locator.page
+    return {**piece, "text": text, **({"images": images} if images else {})}

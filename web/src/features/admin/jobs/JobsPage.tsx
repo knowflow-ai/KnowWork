@@ -2,6 +2,7 @@
  * 运行面板（系统设置，只有系统管理员能进）：后台任务各池的排队与执行、下游并发、worker 心跳，下面是任务列表。
  * 只显示任务 id、类型、对象 id、阶段与错误码，不显示文件内容和错误详情；服务端同样逐个接口判定。
  */
+import { Lock, Warning } from '@openai/apps-sdk-ui/components/Icon';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { useQueryClient } from '@tanstack/react-query';
 import { Empty } from '../../../ui/Empty';
@@ -17,7 +18,7 @@ function Overview() {
   const client = useQueryClient();
   if (overview.isPending) return <Skeleton rows={6} />;
   if (overview.isError) {
-    return <Empty title="运行情况加载失败" description="请稍后刷新重试" />;
+    return <Empty area icon={<Warning />} title="运行情况加载失败" description="请稍后刷新重试" />;
   }
   const { pools, gates, workers, kinds } = overview.data;
   return (
@@ -58,7 +59,8 @@ export default function JobsPage() {
   if (!systemAdmin.data) {
     return (
       <Empty
-        className="kw-page-state"
+        area
+        icon={<Lock />}
         title="没有权限"
         description="只有系统管理员（初始化时创建的账号）能查看运行面板"
       />
@@ -67,7 +69,7 @@ export default function JobsPage() {
   return (
     <AdminPage
       title="运行面板"
-      description="后台任务（文档解析、富化、同步、导出导入）的排队与执行情况，每 10 秒自动刷新。取消的任务按处理失败收尾。"
+      description="当前空间的后台任务（文档解析、富化、同步、导出导入）的排队与执行情况，每 10 秒自动刷新；worker 与下游并发是整套部署共用的。取消的任务按处理失败收尾。"
     >
       <Overview />
     </AdminPage>

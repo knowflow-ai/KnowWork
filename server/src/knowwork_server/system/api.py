@@ -64,10 +64,12 @@ def build_router(brand: BrandService, info: SystemInfoService, principal) -> API
 
     @router.get("/api/brand")
     async def get_brand() -> dict:
+        """品牌名称与 Logo（不用登录）"""
         return _brand_json(await brand.brand())
 
     @router.get(LOGO_PATH)
     async def get_logo() -> Response:
+        """下载 Logo 图片"""
         found = await brand.logo()
         if found is None:
             raise HTTPException(status_code=404, detail="没有自定义 Logo")
@@ -76,26 +78,31 @@ def build_router(brand: BrandService, info: SystemInfoService, principal) -> API
 
     @router.get("/api/system/check")
     async def check(who: Who) -> dict:
+        """当前用户是不是系统管理员"""
         return {"allowed": not who.is_api_key and await brand.is_admin(who.user_id)}
 
     @router.get("/api/system/info")
     async def get_info(_: Admin) -> dict:
+        """系统信息（版本等）"""
         found = await info.info()
         return {"knowwork": found.knowwork, "dsh": found.dsh, "database": found.database, "license": found.license,
                 "extensions": [{"name": e.name, "enabled": e.enabled, "reason": e.reason} for e in found.extensions]}
 
     @router.put("/api/system/brand")
     async def rename(body: NameBody, actor: Admin) -> dict:
+        """修改品牌名称"""
         return await run(brand.rename(actor, body.name))
 
     @router.put("/api/system/brand/logo")
     async def upload_logo(file: UploadFile, actor: Admin) -> dict:
         # 多读 1 字节就能判断是否超限，不把大文件整个读进内存
+        """上传 Logo"""
         data = await file.read(MAX_LOGO_BYTES + 1)
         return await run(brand.set_logo(actor, data))
 
     @router.delete("/api/system/brand/logo")
     async def reset_logo(actor: Admin) -> dict:
+        """恢复默认 Logo"""
         return await run(brand.clear_logo(actor))
 
     return router

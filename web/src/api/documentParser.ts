@@ -1,10 +1,9 @@
 /**
- * 文档解析服务（MinerU）的配置（server/src/knowwork_server/docparse/api.py）：只给空间管理员。
+ * 文档解析服务（MinerU）的配置（server/src/knowwork_server/docparse/api.py）：全平台共用一份，只给系统管理员。
  * 会话附件与扩展解析 PDF、Word、PPT 都用它；保存后几秒内生效，不用重启。
  */
-import { request, seg } from './http';
+import { request } from './http';
 import { bool, isRecord, num, str } from './parse';
-import { WORKSPACE_ID } from './workspace';
 
 /** 解析模式：auto 按用途（知识库 hybrid、会话附件 pipeline），其余强制，附件与知识库都按它走 */
 export type ParserBackend = 'auto' | 'vlm-http-client' | 'hybrid-http-client' | 'pipeline';
@@ -68,7 +67,7 @@ export interface ParserProbe {
   readonly latencyMs: number;
 }
 
-const path = () => `/api/workspaces/${seg(WORKSPACE_ID)}/document-parser`;
+const path = () => '/api/system/document-parser';
 
 function parserOf(value: unknown): DocumentParser {
   const r = isRecord(value) ? value : {};

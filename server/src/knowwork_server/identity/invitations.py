@@ -1,4 +1,5 @@
-"""邀请注册：管理员生成一次性、有过期的邀请链接（库里只存摘要），被邀请人凭链接设密码完成注册。"""
+"""邀请注册：空间管理员生成一次性、有过期的邀请链接（库里只存摘要），被邀请人凭链接设密码完成注册，
+注册后进邀请所在的空间、当邀请定的角色。能不能邀请由调用方判定（身份模块不认识空间）。"""
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -8,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .credentials import Clock, digest, new_id, new_token, utcnow
 from .errors import EmailTaken, InvalidInvitation, NotAllowed
-from .hooks import UserCreatedHook, notify_user_created
+from .hooks import Placement, UserCreatedHook, notify_user_created
 from .models import Invitation, User
 from .sessions import IssuedSession, SessionService
 from .users import UserInfo, check_password_policy, insert_user, normalize_email, to_info
@@ -45,7 +46,8 @@ class InvitationService:
         self._clock = clock
         self._on_user_created = on_user_created
 
-    async def create(self, *, email: str, invited_by: str, caller_is_admin: bool) -> IssuedInvitation:
+    async def create(self, *, email: str, invited_by: str, placement: Placement,
+                     caller_is_admin: bool) -> IssuedInvitation:
         if not caller_is_admin:
             raise NotAllowed("只有管理员可以邀请")
         normalized = normalize_email(email)
@@ -56,18 +58,21 @@ class InvitationService:
             if exists:
                 raise EmailTaken("该邮箱已注册")
             record = Invitation(id=new_id(), token_hash=digest(token), email=normalized, invited_by=invited_by,
+                                workspace_id=placement.workspace_id, role=placement.role,
                                 created_at=now, expires_at=now + self._ttl)
             session.add(record)
         return IssuedInvitation(id=record.id, email=normalized, token=token,
                                 url=f"{self._link_base}?token={token}", expires_at=record.expires_at)
 
-    async def revoke(self, invitation_id: str, *, caller_is_admin: bool) -> bool:
+    async def revoke(self, invitation_id: str, *, workspace_id: str, caller_is_admin: bool) -> bool:
+        """只撤销这个空间发出的邀请：别的空间的管理员撤不了。"""
         if not caller_is_admin:
             raise NotAllowed("只有管理员可以撤销邀请")
         async with self._sessionmaker() as session, session.begin():
             result = await session.execute(
                 update(Invitation)
-                .where(Invitation.id == invitation_id, Invitation.accepted_at.is_(None),
+                .where(Invitation.id == invitation_id, Invitation.workspace_id == workspace_id,
+                       Invitation.accepted_at.is_(None),
                        Invitation.revoked_at.is_(None))
                 .values(revoked_at=self._clock()))
             return result.rowcount > 0
@@ -89,13 +94,14 @@ class InvitationService:
             except EmailTaken as error:
                 raise InvalidInvitation("邀请无效或已过期") from error
             invitation.accepted_at = now
+            placement = Placement(workspace_id=invitation.workspace_id, role=invitation.role)
             issued = await self._sessions.create_in(session, user.id)
             accepted = AcceptedInvitation(user=to_info(user), session=issued)
-        await notify_user_created(self._on_user_created, accepted.user.id)
+        await notify_user_created(self._on_user_created, accepted.user.id, placement)
         return accepted
 
-    async def consume_for_email(self, session: AsyncSession, email: str) -> bool:
-        """OIDC 首次登录：该邮箱有可用邀请则标记为已接受并返回 True（在调用方事务里）。"""
+    async def consume_for_email(self, session: AsyncSession, email: str) -> Placement | None:
+        """OIDC 首次登录：该邮箱有可用邀请则标记为已接受并返回它定的去处（在调用方事务里）；没有返回 None。"""
         now = self._clock()
         invitation = (await session.execute(
             select(Invitation)
@@ -104,6 +110,6 @@ class InvitationService:
             .order_by(Invitation.created_at.desc()).limit(1).with_for_update()
         )).scalar_one_or_none()
         if invitation is None:
-            return False
+            return None
         invitation.accepted_at = now
-        return True
+        return Placement(workspace_id=invitation.workspace_id, role=invitation.role)

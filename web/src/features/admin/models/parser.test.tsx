@@ -6,7 +6,7 @@ import { ParserTab } from './ParserTab';
 
 afterEach(() => vi.unstubAllGlobals());
 
-const PATH = '/api/workspaces/default/document-parser';
+const PATH = '/api/system/document-parser';
 const ENV = {
   source: 'env',
   enabled: true,

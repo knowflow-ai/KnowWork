@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { startHost, collectEvents, isTurnEnd } from './support/harness.mjs'
 import { bizTool, startToolsStub } from './support/tools-stub.mjs'
+import { startOpenAiStub } from './support/openai-stub.mjs'
 
 const TOKEN_A = 'tools-token-a-'.padEnd(40, 'a')
 const TOKEN_B = 'tools-token-b-'.padEnd(40, 'b')
@@ -209,5 +210,44 @@ test('工具的使用规则进系统提示：同一条只写一次，被策略�
     assert.ok(!denied.includes('只属于 C 的规则'), '被禁用工具的规则出现在系统提示里')
   } finally {
     await env.stop()
+  }
+})
+
+test('业务服务声明 concurrent 的工具：同一步里的几个调用同时执行；没声明的照旧一个一个来', async () => {
+  const gateway = await startOpenAiStub({ script: [
+    { calls: [{ tool: 'kw_fast', args: { q: '一' } }, { tool: 'kw_fast', args: { q: '二' } }] },
+    { text: '好了' },
+    { calls: [{ tool: 'kw_slow', args: { q: '一' } }, { tool: 'kw_slow', args: { q: '二' } }] },
+    { text: '好了' },
+  ] })
+  const spans = []
+  const stub = await startToolsStub({
+    toolsByToken: { [TOKEN_A]: [{ ...bizTool('kw_fast'), concurrent: true }, bizTool('kw_slow')] },
+    execute: async call => {
+      const span = { tool: call.body.toolName, start: Date.now() }
+      await new Promise(resolve => setTimeout(resolve, 400))
+      spans.push({ ...span, end: Date.now() })
+      return undefined
+    },
+  })
+  const host = await startHost({ sequence: ['success'] }, {
+    KNOWWORK_MODEL_PROVIDER: 'knowwork-gateway', KNOWWORK_MODEL: 'kw-chat', KNOWWORK_MODEL_BASE_URL: gateway.baseURL,
+    KNOWWORK_MODEL_TOKEN: 'gw-token-parallel-0001-aaaaa', KNOWWORK_TOOLS_BASE_URL: stub.baseUrl,
+  })
+  try {
+    await host.call('POST', '/v1/sessions', { sessionId: 'tb-par', tools: { token: TOKEN_A } })
+    let after = 0
+    for (const text of ['一起查', '慢慢查']) {
+      await host.call('POST', '/v1/sessions/tb-par/messages', { text })
+      after = lastCursor(await collectEvents(host, 'tb-par', isTurnEnd, { after }))
+    }
+    const overlap = name => {
+      const [a, b] = spans.filter(s => s.tool === name).sort((x, y) => x.start - y.start)
+      return b.start < a.end
+    }
+    assert.equal(overlap('kw_fast'), true, '声明 concurrent 的两个调用没有同时执行')
+    assert.equal(overlap('kw_slow'), false, '没声明的工具不该同时执行')
+  } finally {
+    await host.stop(); await gateway.close(); await stub.close()
   }
 })

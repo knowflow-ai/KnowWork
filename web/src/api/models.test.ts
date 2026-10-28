@@ -5,6 +5,7 @@ import { jsonResponse, routeFetch } from '../test/render';
 afterEach(() => vi.unstubAllGlobals());
 
 const B = '/api/workspaces/default';
+const S = '/api/system';
 const ok = () => new Response(null, { status: 204 });
 
 describe('厂商', () => {
@@ -18,7 +19,7 @@ describe('厂商', () => {
 
   it('列表、新建、修改（密钥不传就不改，空串清除）、删除', async () => {
     const api = routeFetch({
-      [`GET ${B}/model-providers`]: jsonResponse([
+      [`GET ${S}/model-providers`]: jsonResponse([
         {
           id: 'p1',
           name: 'DS',
@@ -30,9 +31,9 @@ describe('厂商', () => {
         },
         {},
       ]),
-      [`POST ${B}/model-providers`]: jsonResponse({}, 201),
-      [`PATCH ${B}/model-providers/*`]: jsonResponse({}),
-      [`DELETE ${B}/model-providers/*`]: ok(),
+      [`POST ${S}/model-providers`]: jsonResponse({}, 201),
+      [`PATCH ${S}/model-providers/*`]: jsonResponse({}),
+      [`DELETE ${S}/model-providers/*`]: ok(),
     });
     expect(await m.listProviders()).toEqual([
       {
@@ -71,11 +72,11 @@ describe('模型与分组', () => {
 
   it('解析模型（单价可能是字符串）并按约定增改删、测试', async () => {
     const api = routeFetch({
-      [`GET ${B}/models`]: jsonResponse([model, { id: 'x' }]),
-      [`POST ${B}/models`]: jsonResponse({}, 201),
-      [`PATCH ${B}/models/*`]: jsonResponse({}),
-      [`DELETE ${B}/models/*`]: ok(),
-      [`POST ${B}/models/*/test`]: jsonResponse({
+      [`GET ${S}/models`]: jsonResponse([model, { id: 'x' }]),
+      [`POST ${S}/models`]: jsonResponse({}, 201),
+      [`PATCH ${S}/models/*`]: jsonResponse({}),
+      [`DELETE ${S}/models/*`]: ok(),
+      [`POST ${S}/models/*/test`]: jsonResponse({
         ok: true,
         capability: 'chat',
         latency_ms: 120,
@@ -119,7 +120,7 @@ describe('模型与分组', () => {
   });
 
   it('测试结果不完整时说明', async () => {
-    routeFetch({ [`POST ${B}/models/*/test`]: jsonResponse('x') });
+    routeFetch({ [`POST ${S}/models/*/test`]: jsonResponse('x') });
     await expect(m.testModel('m1')).resolves.toMatchObject({ ok: false });
   });
 });

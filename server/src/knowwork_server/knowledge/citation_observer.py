@@ -11,22 +11,12 @@ import asyncio
 import logging
 from typing import Any
 
+from ..conversations.events_v1 import assistant_text
 from .citation_store import CitationStore
 from .citations import CitationCheck
 
 log = logging.getLogger(__name__)
 _MAX_CHECKS = 1000
-
-
-def _answer_text(payload: Any) -> str:
-    message = payload.get("message") if isinstance(payload, dict) else None
-    content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "".join(block.get("text", "") for block in content
-                   if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str))
 
 
 class CitationObserver:
@@ -41,7 +31,7 @@ class CitationObserver:
             return
         payload = data.get("data")
         if data.get("type") == "assistant/message":
-            text = _answer_text(payload)
+            text = assistant_text(payload)
             if text:
                 self._answers = {**self._answers, conversation_id: text}
             return

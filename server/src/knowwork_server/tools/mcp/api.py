@@ -42,32 +42,39 @@ def build_router(admin: McpAdmin, current_principal: Callable[..., Awaitable[Pri
 
     @router.get("", response_model=list[McpServerView], response_model_by_alias=True)
     async def list_servers(workspace_id: IdPath, who: Who):
+        """列出 MCP 服务"""
         return [McpServerView.of(record) for record in await _call(admin.list_servers(who.user_id, workspace_id))]
 
     @router.post("", status_code=201, response_model=McpServerView, response_model_by_alias=True)
     async def create(workspace_id: IdPath, body: McpServerCreate, who: Who):
+        """接入 MCP 服务"""
         return await _view(admin.create(who.user_id, workspace_id, body))
 
     @router.get("/{server_id}", response_model=McpServerView, response_model_by_alias=True)
     async def get(workspace_id: IdPath, server_id: IdPath, who: Who):
+        """一个 MCP 服务的配置与工具"""
         return await _view(admin.get(who.user_id, workspace_id, server_id))
 
     @router.patch("/{server_id}", response_model=McpServerView, response_model_by_alias=True)
     async def update(workspace_id: IdPath, server_id: IdPath, body: McpServerPatch, who: Who):
+        """修改 MCP 服务"""
         return await _view(admin.update(who.user_id, workspace_id, server_id, body))
 
     @router.delete("/{server_id}", status_code=204)
     async def delete(workspace_id: IdPath, server_id: IdPath, who: Who):
+        """删除 MCP 服务"""
         await _call(admin.delete(who.user_id, workspace_id, server_id))
         return Response(status_code=204)
 
     @router.post("/{server_id}/sync", response_model=McpServerView, response_model_by_alias=True)
     async def sync(workspace_id: IdPath, server_id: IdPath, who: Who):
+        """重新拉取 MCP 工具清单"""
         return await _view(admin.sync(who.user_id, workspace_id, server_id))
 
     @router.patch("/{server_id}/tools/{tool_name}", response_model=McpServerView, response_model_by_alias=True)
     async def configure_tool(workspace_id: IdPath, server_id: IdPath, tool_name: ToolPath, body: McpToolPatch,
                              who: Who):
+        """修改单个 MCP 工具的风险等级与启停"""
         return await _view(admin.configure_tool(who.user_id, workspace_id, server_id, tool_name, body))
 
     return router

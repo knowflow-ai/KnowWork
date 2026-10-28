@@ -10,12 +10,7 @@ export function RequireAdmin({ children }: { readonly children: ReactNode }) {
   if (admin.isPending) return <Skeleton rows={6} className="kw-page-state" />;
   if (!admin.data) {
     return (
-      <Empty
-        className="kw-page-state"
-        icon={<Lock />}
-        title="没有权限"
-        description="只有工作空间的所有者或管理员能打开管理页面"
-      />
+      <Empty area icon={<Lock />} title="没有权限" description="只有工作空间的所有者或管理员能打开管理页面" />
     );
   }
   return <>{children}</>;

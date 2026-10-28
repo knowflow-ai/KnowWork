@@ -81,6 +81,13 @@ def _joined(content: Any, block_types: tuple[str, ...]) -> str:
                    if isinstance(b, dict) and b.get("type") in block_types and isinstance(b.get("text"), str))
 
 
+def assistant_text(payload: Any) -> str:
+    """助手消息帧的正文，不截断（核对引用编号要看全文）：content 可能是字符串，也可能是块列表，只取文本块。"""
+    message = payload.get("message") if isinstance(payload, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, str) else _joined(content, ("text",))
+
+
 def _texts(content: Any, block_types: tuple[str, ...]) -> str:
     return _joined(content, block_types)[:TEXT_LIMIT]
 
@@ -95,19 +102,35 @@ def _search_summary(text: str) -> dict | None:
     """知识检索结果（knowledge/tools.py 的 knowledge_search）的摘要：命中哪些文档、用了与撤掉了哪些条件。
 
     界面拿它在回答上方列出检索条件、让用户撤掉重答；结果原文会被截到 TEXT_LIMIT，界面自己解析不了，
-    所以在这里按完整原文摘。工具结果帧不带工具名，按结果的形状认：results 里每条都有 doc_ref 与 source_id。
+    所以在这里按完整原文摘。工具结果帧不带工具名，按结果的形状认：documents 里每份都有 doc_ref、source_id
+    和 results 列表，顶层带 notes（knowledge_documents 的结果顶层是 knowledge_base，不算）。2026-10-25 之前
+    的结果不分组（results 里每条都有 doc_ref 与 source_id），回放旧会话时照样认。
     """
     try:
         parsed = json.loads(text)
     except ValueError:
         return None
-    results = parsed.get("results") if isinstance(parsed, dict) else None
-    if not isinstance(results, list) or not all(
-            isinstance(r, dict) and isinstance(r.get("doc_ref"), str) and "source_id" in r for r in results):
+    found = _grouped_hits(parsed) if isinstance(parsed, dict) else None
+    if found is None:
         return None
-    documents = list(dict.fromkeys(f"{r['source_id']}:{r['doc_ref']}" for r in results))
+    documents = list(dict.fromkeys(f"{r['source_id']}:{r['doc_ref']}" for r in found))
     return {"documents": documents[:MAX_SEARCH_DOCUMENTS], "conditions": _labels(parsed.get("conditions")),
             "removed": _labels(parsed.get("conditions_removed"))}
+
+
+def _cited(items: Any) -> bool:
+    return isinstance(items, list) and all(
+        isinstance(r, dict) and isinstance(r.get("doc_ref"), str) and "source_id" in r for r in items)
+
+
+def _grouped_hits(parsed: dict) -> list[dict] | None:
+    """检索结果里的文档（每份一条），认不出是检索结果时为 None。"""
+    documents = parsed.get("documents")
+    if (_cited(documents) and isinstance(parsed.get("notes"), list) and "knowledge_base" not in parsed
+            and all(isinstance(d.get("results"), list) for d in documents)):
+        return documents
+    results = parsed.get("results")
+    return results if _cited(results) else None
 
 
 def _assistant_message(state: ProjectionState, payload: dict, seq: int, time: int) -> list[dict]:

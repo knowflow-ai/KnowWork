@@ -1,7 +1,7 @@
 """mcp 测试夹具：独立数据库（access 的表加 mcp_server，开启行级安全，业务用普通角色读写），
 加一个真实的 MCP 服务（tests/mcp_stub.py）。
 
-空间 ws1：owner alice、admin bob、editor carol、viewer dave。
+空间 ws1：owner alice、admin bob、editor carol、editor dave。
 """
 
 import uuid
@@ -70,7 +70,7 @@ async def env(mcp_db):
     access = AccessService(sessionmaker)
     assert await access.reload()
     await access.create_workspace(workspace_id="ws1", name="空间一", owner_user_id="alice")
-    for user, role in (("bob", "admin"), ("carol", "editor"), ("dave", "viewer")):
+    for user, role in (("bob", "admin"), ("carol", "editor"), ("dave", "editor")):
         await access.add_member("alice", "ws1", user, role)
     yield Env(access=access, mcp=build_mcp(MASTER, sessionmaker, access), sessionmaker=sessionmaker,
               admin_url=admin_url)

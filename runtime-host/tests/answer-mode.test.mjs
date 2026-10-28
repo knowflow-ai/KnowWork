@@ -60,23 +60,28 @@ test('快速问答：除了知识库检索，别的工具调用一律拦下，�
   }
 })
 
-test('快速问答：知识库检索照常执行', async () => {
-  const stub = await startToolsStub({ toolsByToken: { [TOKEN]: [bizTool('knowledge_search')] } })
-  const host = await startHost(
-    { sequence: ['tool_call_success', 'success'], toolName: 'knowledge_search', toolArguments: JSON.stringify({ q: '报销' }) },
-    { KNOWWORK_TOOLS_BASE_URL: stub.baseUrl },
-  )
-  try {
-    await host.call('POST', '/v1/sessions', { sessionId: 'am-search', tools: { token: TOKEN } })
-    await host.call('POST', '/v1/sessions/am-search/messages', { text: '报销标准', answerMode: 'quick' })
-    await collectEvents(host, 'am-search', isTurnEnd)
-    assert.equal(stub.executions().length, 1, '知识库检索没有回调业务服务')
-    assert.ok(!modelInput(host, 1).includes(REJECTED), '知识库检索被拦下了')
-  } finally {
-    await host.stop()
-    await stub.close()
-  }
-})
+for (const [toolName, args, label] of [
+  ['knowledge_search', { q: '报销' }, '知识库检索'],
+]) {
+  test(`快速问答：${label}照常执行`, async () => {
+    const stub = await startToolsStub({ toolsByToken: { [TOKEN]: [bizTool(toolName)] } })
+    const host = await startHost(
+      { sequence: ['tool_call_success', 'success'], toolName, toolArguments: JSON.stringify(args) },
+      { KNOWWORK_TOOLS_BASE_URL: stub.baseUrl },
+    )
+    const sessionId = `am-${toolName}`
+    try {
+      await host.call('POST', '/v1/sessions', { sessionId, tools: { token: TOKEN } })
+      await host.call('POST', `/v1/sessions/${sessionId}/messages`, { text: '报销标准', answerMode: 'quick' })
+      await collectEvents(host, sessionId, isTurnEnd)
+      assert.equal(stub.executions().length, 1, `${label}没有回调业务服务`)
+      assert.ok(!modelInput(host, 1).includes(REJECTED), `${label}被拦下了`)
+    } finally {
+      await host.stop()
+      await stub.close()
+    }
+  })
+}
 
 test('排队等下一轮的快速问答消息不改正在跑的这一轮：这一轮的工具照常执行，下一轮才按快速问答', async () => {
   // 第一轮（智能体）连调两次工具再回答；第二条消息在第一轮开始后立刻排队（每轮只领一条排队消息，必定落到第二轮）

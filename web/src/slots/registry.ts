@@ -29,11 +29,21 @@ export interface CitationPreviewer {
   readonly resolve: (docRef: string) => Promise<PreviewFile | null>;
 }
 
+/** 问答大盘知识库表里，某个知识源的知识库那一行可以挂的动作（例如扩展自己的改进页）。 */
+export interface InsightsBaseAction {
+  readonly sourceId: string;
+  readonly label: string;
+  /** 知识源内的知识库 id → 站内链接 */
+  readonly to: (kbId: string) => string;
+}
+
 /** 授权页知识库树里的一个节点：resource 是授权用的完整资源（`类型:id`），name 是这一层的名字。 */
 export interface GrantTreeNode {
   readonly resource: string;
   readonly name: string;
   readonly children: readonly GrantTreeNode[];
+  /** 只是分组、不能授权（例如「共享给本空间」），不给就是能选 */
+  readonly selectable?: boolean;
 }
 
 export interface KnowledgeTree {
@@ -50,6 +60,8 @@ export interface ExtensionSlots {
   'app.nav': NavItem;
   /** 管理后台侧栏的菜单项 */
   'admin.nav': AdminNavEntry;
+  /** 管理后台「系统」分组的菜单项（只有系统管理员看得到，例如空间管理），排在「模型」后面 */
+  'system.nav': NavItem;
   /** 管理后台的页面，path 相对 /admin */
   'admin.routes': RouteObject;
   /** 使用端的页面，path 相对 /（和对话页同一个外壳） */
@@ -62,6 +74,8 @@ export interface ExtensionSlots {
   'citation.preview': CitationPreviewer;
   /** 授权页里某个知识源下的层级树（例如目录 → 知识库，可以按目录授权）；没注册的知识源平铺知识库 */
   'grants.knowledge': KnowledgeTree;
+  /** 问答大盘知识库表那一行的动作；没注册的知识源不显示 */
+  'insights.base.action': InsightsBaseAction;
 }
 
 export type SlotName = keyof ExtensionSlots;

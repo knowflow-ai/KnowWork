@@ -26,7 +26,7 @@ async def test_grant_change_and_revoke(service, ws):
 
 
 async def test_role_and_wildcard_grants(service, ws):
-    await service.grant("alice", ws, "role:viewer", "tool:*", "use")
+    await service.grant("alice", ws, "role:editor", "tool:*", "use")
     assert service.check("dave", ws, "tool:anything", "use")
     assert service.visible_resources("dave", ws, "tool", "use").all_
     assert not service.visible_resources("dave", ws, "skill", "use").all_
@@ -179,7 +179,7 @@ async def test_fail_closed_when_engine_unavailable(service, ws):
     assert not service.check("dave", ws, "skill:s1", "use")
     assert service.visible_resources("alice", ws, "skill", "use").ids == frozenset()
     with pytest.raises(AccessDenied):
-        await service.add_member("alice", ws, "erin", "viewer")
+        await service.add_member("alice", ws, "erin", "editor")
     assert await service.reload()
     assert service.check("dave", ws, "skill:s1", "use")
 

@@ -20,6 +20,8 @@ class Workspace(Base):
     id: Mapped[str] = mapped_column(ID, primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # 关闭（软删除）的时间：关闭后权限规则不再加载、谁都进不去，数据留着（见 workspaces.py）
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class WorkspaceMember(Base):

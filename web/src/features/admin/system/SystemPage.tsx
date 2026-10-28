@@ -4,7 +4,7 @@
  */
 import { useRef, useState, type FormEvent } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
-import { FileUpload } from '@openai/apps-sdk-ui/components/Icon';
+import { FileUpload, Lock } from '@openai/apps-sdk-ui/components/Icon';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { readableError } from '../../../api/http';
@@ -165,7 +165,8 @@ export default function SystemPage() {
   if (!systemAdmin.data) {
     return (
       <Empty
-        className="kw-page-state"
+        area
+        icon={<Lock />}
         title="没有权限"
         description="只有系统管理员（初始化时创建的账号）能修改系统设置"
       />

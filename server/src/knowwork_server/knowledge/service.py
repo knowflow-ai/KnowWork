@@ -32,6 +32,7 @@ from .errors import (
     NotFound,
     ScopeDenied,
     SourceUnavailable,
+    Unsupported,
 )
 from .models import (
     MAX_READ_CHARS,
@@ -40,6 +41,8 @@ from .models import (
     Cursor,
     DocumentPage,
     Evidence,
+    FetchedFile,
+    FetchRequest,
     KnowledgeSource,
     MetaFilter,
     Page,
@@ -50,6 +53,7 @@ from .models import (
     SearchHits,
     SearchMode,
     SearchRequest,
+    SearchTraceEntry,
     expand_parts,
 )
 from .provided import ProvidedSources
@@ -136,6 +140,7 @@ class BaseListing:
 class SearchOutcome:
     evidence: tuple[Evidence, ...]
     notes: tuple[str, ...] = ()  # 被跳过的知识源及原因，要交给模型与用户
+    trace: tuple[SearchTraceEntry, ...] = ()  # 各知识源交回的检索过程，只进检索记录与运行详情
 
 
 class KnowledgeService:
@@ -179,14 +184,15 @@ class KnowledgeService:
         usable, skipped = await self._usable(caller, grants, selection)
         results = await asyncio.gather(*(self._search_one(caller, r, grants, selection, query, top_n, options, pins)
                                          for r in usable))
-        rankings = [hits for hits, _ in results if not isinstance(hits, _Failure)]
-        failures = skipped + [hits for hits, _ in results if isinstance(hits, _Failure)]
+        rankings = [hits for hits, _, _ in results if not isinstance(hits, _Failure)]
+        failures = skipped + [hits for hits, _, _ in results if isinstance(hits, _Failure)]
         if not rankings:
             raise _nothing_readable(failures)
-        ignored = [note for _, notes in results for note in notes]
+        ignored = [note for _, notes, _ in results for note in notes]
         # 条数按知识源给的整条算，截断之后再把合并过的拆回一块一块
         return SearchOutcome(evidence=expand_parts(rrf_merge(rankings, top_n=top_n)),
-                             notes=tuple(f.text for f in failures) + tuple(ignored))
+                             notes=tuple(f.text for f in failures) + tuple(ignored),
+                             trace=tuple(entry for _, _, trace in results for entry in trace))
 
     async def bases(self, caller: Caller, *, bases: tuple[str, ...] | None = None) -> BaseListing:
         """本人此刻能查的知识库（范围收窄同检索），带名字、描述、字段定义。给每轮的知识库目录与 knowledge_bases 工具；
@@ -248,6 +254,20 @@ class KnowledgeService:
         except Exception:
             log.warning("finding documents in knowledge source %s failed", record.id, exc_info=True)
             return []
+
+    async def fetch(self, caller: Caller, source_id: str, request: FetchRequest, *,
+                    bases: tuple[str, ...] | None = None) -> tuple[FetchedFile, ...]:
+        """取文件（knowledge_fetch）：判权同阅读（开放范围、授权、本轮选择）；知识源要声明 fetch。"""
+        record = await self._record(caller, source_id)
+        source = self._build(record)
+        kb = source.base_of(request.doc_ref)
+        if not admit(source_id, (kb,), self._open_range(record), self._grants(caller))[0]:
+            raise NotFound("文档不存在或你没有使用权限")
+        if bases is not None and not Selection.of(bases).covers(source_id, kb):
+            raise ScopeDenied("这份文档所在的知识库不在本轮选择的知识范围内")
+        if "fetch" not in source.features:
+            raise Unsupported(f"知识源「{record.name}」不支持取文件、图片和页图")
+        return await source.fetch(caller, request)
 
     async def read(self, caller: Caller, source_id: str, doc_ref: str, cursor: str | None = None,
                    max_chars: int = MAX_READ_CHARS, *, bases: tuple[str, ...] | None = None,
@@ -363,15 +383,15 @@ class KnowledgeService:
 
     async def _search_one(self, caller: Caller, record: SourceRecord, grants: Grants, selection: Selection | None,
                           query: str, top_n: int, options: SearchOptions,
-                          pins: tuple[Pinned, ...]) -> "tuple[list[Evidence] | _Failure, tuple[str, ...]]":
-        """返回（结果或失败，给模型的说明：被忽略的条件、知识源自己交回的说明）。"""
+                          pins: tuple[Pinned, ...]) -> "tuple[list[Evidence] | _Failure, tuple[str, ...], tuple]":
+        """返回（结果或失败，给模型的说明：被忽略的条件、知识源自己交回的说明，检索过程：填上是哪个知识源）。"""
         picked = selection.by_source[record.id] if selection else None
         try:
             source = self._build(record)
             datasets = await self._datasets(caller, record, source, grants, picked)
             scope, pin_notes = _pinned_scope(record, source, datasets, pins)
             if scope is None:
-                return [], pin_notes
+                return [], pin_notes, ()
             request = SearchRequest(query=query, scope=scope, top_n=top_n, mode=options.mode,
                                     folders=options.folders, tags=options.tags, filters=options.filters)
             missing = _unsupported(source, request.wants())
@@ -380,15 +400,16 @@ class KnowledgeService:
             ignored = (_ignored_note(record.name, missing),) if missing else ()
             found = await source.search(caller, request)
             if isinstance(found, SearchHits):
-                return list(found.evidence), (*pin_notes, *ignored, *found.notes)
-            return found, (*pin_notes, *ignored)
+                trace = tuple(entry.model_copy(update={"source": record.name}) for entry in found.trace)
+                return list(found.evidence), (*pin_notes, *ignored, *found.notes), trace
+            return found, (*pin_notes, *ignored), ()
         except ValidationError as error:
             raise InvalidInput("检索条件不合法：文件夹、标签最多各 20 个，元数据条件最多 10 个") from error
         except KnowledgeError as error:
-            return _Failure(f"知识源「{record.name}」：{error}", transient=isinstance(error, SourceUnavailable)), ()
+            return _Failure(f"知识源「{record.name}」：{error}", transient=isinstance(error, SourceUnavailable)), (), ()
         except Exception:  # 连接器内部错误只记日志
             log.exception("knowledge source %s search failed", record.id)
-            return _Failure(f"知识源「{record.name}」：暂时不可用", transient=True), ()
+            return _Failure(f"知识源「{record.name}」：暂时不可用", transient=True), (), ()
 
 
 def _pinned_scope(record: SourceRecord, source: KnowledgeSource, datasets: tuple[str, ...],

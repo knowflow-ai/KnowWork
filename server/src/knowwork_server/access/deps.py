@@ -34,3 +34,15 @@ def require_permission(service: AccessService, current_principal: Callable[..., 
         return principal
 
     return dependency
+
+
+def require_system_admin(service: AccessService, current_principal: Callable[..., Awaitable[Principal]]):
+    """生成 FastAPI 依赖：只放系统管理员本人（全平台共用的配置）。API Key 一律不放：它代表某个空间里的调用方，
+    不该改到别的空间也在用的东西。"""
+
+    async def dependency(principal: Annotated[Principal, Depends(current_principal)]) -> Principal:
+        if principal.is_api_key or not service.is_system_admin(principal.user_id):
+            raise HTTPException(status_code=403, detail="无权限执行该操作")
+        return principal
+
+    return dependency

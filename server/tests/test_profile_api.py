@@ -16,6 +16,8 @@ from knowwork_server.profile.errors import ProfileUnavailable
 
 from .fakes import FakeKernel, token_actor
 
+CONV = "/api/workspaces/default/conversations"
+
 pytestmark = pytest.mark.anyio
 TOKEN = "d" * 48
 AUTH = {"authorization": f"Bearer {TOKEN}"}
@@ -55,11 +57,11 @@ async def test_selection_reaches_compiler(sessionmaker):
     profiles = Profiles()
     http, pump, kernel = client(sessionmaker, profiles)
     async with http:
-        created = (await http.post("/api/conversations", json={}, headers=AUTH)).json()
-        sent = await http.post(f"/api/conversations/{created['id']}/messages", headers=AUTH,
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
+        sent = await http.post(f"{CONV}/{created['id']}/messages", headers=AUTH,
                                json={"text": "hi", "skills": ["weekly-report"], "knowledge_bases": ["k1.ds1", "k2.*"]})
         assert sent.status_code == 202
-        bad = await http.post(f"/api/conversations/{created['id']}/messages", headers=AUTH,
+        bad = await http.post(f"{CONV}/{created['id']}/messages", headers=AUTH,
                               json={"text": "hi", "skills": ["含 空格"]})
         assert bad.status_code == 422
     last = profiles.selections[-1]
@@ -73,8 +75,8 @@ async def test_dropped_conditions_reach_the_profile(sessionmaker):
     profiles = Profiles()
     http, pump, _ = client(sessionmaker, profiles)
     async with http:
-        created = (await http.post("/api/conversations", json={}, headers=AUTH)).json()
-        url = f"/api/conversations/{created['id']}/messages"
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
+        url = f"{CONV}/{created['id']}/messages"
         sent = await http.post(url, headers=AUTH, json={"text": "再答一次", "dropped_conditions": ["部门 = 财务部"]})
         assert sent.status_code == 202
         assert (await http.post(url, headers=AUTH, json={"text": "下一问"})).status_code == 202
@@ -96,8 +98,8 @@ async def test_mentions_become_the_turns_selection_and_reach_the_host(sessionmak
         {"type": "skill", "id": "weekly-report", "name": "周报"},
     ]
     async with http:
-        created = (await http.post("/api/conversations", json={}, headers=AUTH)).json()
-        url = f"/api/conversations/{created['id']}/messages"
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
+        url = f"{CONV}/{created['id']}/messages"
         assert (await http.post(url, headers=AUTH, json={"text": "报销标准", "mentions": mentions})).status_code == 202
         for bad in ({"type": "document", "id": "kb2/d1", "name": "x"}, {"type": "skill", "id": "周 报", "name": "x"},
                     {"type": "knowledge_base", "id": "kb1", "name": "x"}, {"type": "folder", "id": "a", "name": "a"}):
@@ -114,12 +116,29 @@ async def test_mentions_become_the_turns_selection_and_reach_the_host(sessionmak
     await pump.close()
 
 
+async def test_creating_with_the_first_turns_selection_binds_it_up_front(sessionmaker):
+    """新会话第一条带 @ 时，建会话就按它定运行配置，第一条发出去不用先释放再重开；选择不合法的照样 422。"""
+    profiles = Profiles()
+    http, pump, kernel = client(sessionmaker, profiles)
+    mentions = [{"type": "document", "id": "kb2/d1", "name": "合同模板.docx", "base": "builtin.kb2", "base_name": "合同库"}]
+    async with http:
+        created = await http.post(CONV, headers=AUTH, json={"title": "合同模板", "first_turn": {"mentions": mentions}})
+        assert created.status_code == 201
+        url = f"{CONV}/{created.json()['id']}/messages"
+        assert (await http.post(url, headers=AUTH, json={"text": "合同模板有哪些内容", "mentions": mentions})).status_code == 202
+        bad = await http.post(CONV, headers=AUTH, json={"first_turn": {"mentions": [{"type": "document", "id": "x"}]}})
+        assert bad.status_code == 422
+    assert [p.documents for p in profiles.selections[0].normalized().pins] == [("kb2/d1",)]
+    assert len(kernel.opened) == 1 and kernel.disposed == []
+    await pump.close()
+
+
 async def test_chosen_language_reaches_the_host(sessionmaker):
     """聊天页选的回答语言随消息带给宿主；不传时为空，由宿主客户端按提问判断。"""
     http, pump, kernel = client(sessionmaker, Profiles())
     async with http:
-        created = (await http.post("/api/conversations", json={}, headers=AUTH)).json()
-        url = f"/api/conversations/{created['id']}/messages"
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
+        url = f"{CONV}/{created['id']}/messages"
         assert (await http.post(url, headers=AUTH, json={"text": "Zleap-AI/SAG-Wiki", "language": "zh"})).status_code == 202
         assert (await http.post(url, headers=AUTH, json={"text": "再来"})).status_code == 202
         assert (await http.post(url, headers=AUTH, json={"text": "x", "language": "fr"})).status_code == 422
@@ -134,8 +153,8 @@ async def test_answer_mode_reaches_the_host(sessionmaker):
     mentions = [{"type": "knowledge_base", "id": "builtin.kb1", "name": "制度库"},
                 {"type": "skill", "id": "weekly-report", "name": "周报"}]
     async with http:
-        created = (await http.post("/api/conversations", json={}, headers=AUTH)).json()
-        url = f"/api/conversations/{created['id']}/messages"
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
+        url = f"{CONV}/{created['id']}/messages"
         quick = {"text": "报销标准", "answer_mode": "quick", "skills": ["weekly-report"], "mentions": mentions}
         assert (await http.post(url, headers=AUTH, json=quick)).status_code == 202
         assert (await http.post(url, headers=AUTH, json={"text": "整理成表格", "mentions": mentions})).status_code == 202
@@ -161,8 +180,8 @@ class Files:
 async def test_attachments_ride_along_with_the_message(sessionmaker):
     http, pump, kernel = client(sessionmaker, Profiles(), attachments=Files())
     async with http:
-        created = (await http.post("/api/conversations", json={}, headers=AUTH)).json()
-        url = f"/api/conversations/{created['id']}/messages"
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
+        url = f"{CONV}/{created['id']}/messages"
         assert (await http.post(url, headers=AUTH, json={"text": "改一下", "attachments": ["att_1"]})).status_code == 202
         gone = await http.post(url, headers=AUTH, json={"text": "x", "attachments": ["att_gone"]})
         assert (gone.status_code, gone.json()["detail"]) == (409, "有附件还没准备好或已失效，请移除后重新上传")
@@ -174,11 +193,11 @@ async def test_profile_unavailable_is_503(sessionmaker):
     profiles = Profiles()
     http, pump, _ = client(sessionmaker, profiles)
     async with http:
-        created = (await http.post("/api/conversations", json={}, headers=AUTH)).json()
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
         profiles.fail = True
-        response = await http.post(f"/api/conversations/{created['id']}/messages", headers=AUTH, json={"text": "x"})
+        response = await http.post(f"{CONV}/{created['id']}/messages", headers=AUTH, json={"text": "x"})
         assert response.status_code == 503
         assert response.json()["detail"]["code"] == "runtime_profile_unavailable"
-        refused = await http.post("/api/conversations", json={}, headers=AUTH)
+        refused = await http.post(CONV, json={}, headers=AUTH)
         assert refused.status_code == 503
     await pump.close()

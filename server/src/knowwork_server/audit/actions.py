@@ -20,7 +20,7 @@ class ActionSpec:
 
 
 W = "/api/workspaces/{workspace_id}"
-C = "/api/conversations/{conversation_id}"
+C = W + "/conversations/{conversation_id}"
 K = W + "/knowledge-sources"
 M = W + "/mcp-servers"
 
@@ -28,8 +28,8 @@ ROUTE_ACTIONS: dict[tuple[str, str], ActionSpec] = {
     ("POST", "/api/auth/login"): ActionSpec("auth.login", "user"),
     ("POST", "/api/auth/logout"): ActionSpec("auth.logout", "user"),
     ("GET", "/api/auth/oidc/callback"): ActionSpec("auth.oidc_login", "user"),
-    ("POST", "/api/auth/invitations"): ActionSpec("invitation.create", "invitation"),
-    ("DELETE", "/api/auth/invitations/{invitation_id}"): ActionSpec("invitation.revoke", "invitation", "invitation_id"),
+    ("POST", W + "/invitations"): ActionSpec("invitation.create", "invitation"),
+    ("DELETE", W + "/invitations/{invitation_id}"): ActionSpec("invitation.revoke", "invitation", "invitation_id"),
     ("POST", "/api/auth/invitations/accept"): ActionSpec("invitation.accept", "invitation"),
     ("POST", "/api/auth/api-keys"): ActionSpec("api_key.create", "api_key"),
     ("DELETE", "/api/auth/api-keys/{key_id}"): ActionSpec("api_key.revoke", "api_key", "key_id"),
@@ -66,7 +66,7 @@ ROUTE_ACTIONS: dict[tuple[str, str], ActionSpec] = {
     ("DELETE", M + "/{server_id}"): ActionSpec("mcp_server.delete", "mcp_server", "server_id"),
     ("POST", M + "/{server_id}/sync"): ActionSpec("mcp_server.sync", "mcp_server", "server_id"),
     ("PATCH", M + "/{server_id}/tools/{tool_name}"): ActionSpec("mcp_tool.update", "mcp_server", "server_id"),
-    ("POST", "/api/conversations"): ActionSpec("conversation.create", "conversation"),
+    ("POST", W + "/conversations"): ActionSpec("conversation.create", "conversation"),
     ("PATCH", C): ActionSpec("conversation.rename", "conversation", "conversation_id"),
     ("DELETE", C): ActionSpec("conversation.delete", "conversation", "conversation_id"),
     ("POST", C + "/messages"): ActionSpec("conversation.send", "conversation", "conversation_id"),

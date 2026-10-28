@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import inspect
 import logging
 import traceback
 from collections import Counter
@@ -17,6 +18,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from ..db.base import enter_workspace
 from .context import JobContext
 from .kinds import INTERNAL_DELAYS, JobCanceled, JobError, JobFailure, JobKind, JobLost, JobReleased
 from .store import Claim, Done, GiveUp, JobStore, OnRetry, Settled
@@ -24,7 +26,8 @@ from .store import Claim, Done, GiveUp, JobStore, OnRetry, Settled
 log = logging.getLogger(__name__)
 
 Handler = Callable[[JobContext], Awaitable[Done | None]]
-Workspaces = Callable[[], Iterable[str]]
+# 有哪些工作空间：worker 每轮从工作空间表读（异步），测试里给个固定列表（同步）
+Workspaces = Callable[[], Iterable[str] | Awaitable[Iterable[str]]]
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,8 @@ class JobRunner:
         return await self._settle(reg, ctx, task)
 
     async def _invoke(self, reg: Registration, ctx: JobContext) -> Done | None:
+        # 处理函数以任务所在的空间读写（扩展拿到的按空间会话工厂据此声明空间）；这是单独的协程，不影响别的任务
+        enter_workspace(ctx.claim.workspace_id)
         async with asyncio.timeout(reg.kind.timeout_seconds) as deadline:
             ctx.bind_deadline(deadline)
             return await reg.handler(ctx)
@@ -239,7 +244,7 @@ class JobRunner:
         while not stop.is_set():
             wake = self._wake.setdefault(pool, asyncio.Event())
             busy = False
-            for workspace_id in _spaces(workspaces):
+            for workspace_id in await _spaces(workspaces):
                 if stop.is_set():
                     break
                 try:
@@ -266,7 +271,7 @@ class JobRunner:
 
     async def _prune(self, workspaces: Workspaces, stop: asyncio.Event, every: float) -> None:
         while not stop.is_set():
-            for workspace_id in _spaces(workspaces):
+            for workspace_id in await _spaces(workspaces):
                 try:
                     await self._store.prune(workspace_id)
                 except Exception:
@@ -274,9 +279,10 @@ class JobRunner:
             await wait_any(stop, timeout=every)
 
 
-def _spaces(workspaces: Workspaces) -> list[str]:
+async def _spaces(workspaces: Workspaces) -> list[str]:
     try:
-        return list(workspaces())
+        found = workspaces()
+        return list(await found if inspect.isawaitable(found) else found)
     except Exception:  # 列工作空间失败（数据库一时不可用）：这一轮跳过，下一轮再来
         log.exception("failed to list workspaces for jobs")
         return []

@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from knowwork_server.identity import IdentityConfig, OidcConfig, build_identity
+from knowwork_server.identity.hooks import Placement
 
 from .conftest import BASE_URL, make_app
 from .fake_idp import CLIENT_ID, CLIENT_SECRET, ISSUER, REDIRECT_URI, FakeIdp
@@ -71,7 +72,8 @@ async def test_unknown_user_rejected_when_only_known_allowed(client, idp_http, i
 
 
 async def test_invited_user_is_created(client, idp_http, idp, identity):
-    await identity.invitations.create(email="newbie@example.com", invited_by="root", caller_is_admin=True)
+    await identity.invitations.create(email="newbie@example.com", invited_by="root",
+                                      placement=Placement("ws1", "editor"), caller_is_admin=True)
     idp.email = "NewBie@example.com"
     assert (await _sso(client, idp_http)).status_code == 302
     me = (await client.get("/api/auth/me")).json()

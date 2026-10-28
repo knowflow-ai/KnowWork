@@ -26,12 +26,13 @@ class MentionSources:
 
 
 def build_router(sources: MentionSources, current_actor: Callable[..., Awaitable[Actor]]) -> APIRouter:
-    # 要排在会话路由前面挂：不然 GET /api/conversations/{conversation_id} 先把 mention-options 当成会话 id
-    router = APIRouter(prefix="/api/conversations/mention-options", tags=["conversations"])
+    # 要排在会话路由前面挂：不然 GET …/conversations/{conversation_id} 先把 mention-options 当成会话 id
+    router = APIRouter(prefix="/api/workspaces/{workspace_id}/conversations/mention-options", tags=["conversations"])
     Who = Annotated[Actor, Depends(current_actor)]
 
     @router.get("")
     async def options(who: Who) -> dict:
+        """@ 菜单可选的知识库、技能"""
         return {"bases": await sources.bases(who.workspace_id, who.user_id),
                 "skills": await sources.skills(who.workspace_id, who.user_id)}
 

@@ -1,10 +1,16 @@
 import '@testing-library/jest-dom/vitest';
-import { afterEach } from 'vitest';
+import { afterEach, beforeEach } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
+import { useWorkspaceStore } from '../stores/workspace';
 import { useToasts } from '../ui/toastStore';
 
 // 全量并行跑（尤其带覆盖率）时机器很忙，异步查找默认 1 秒不够，放宽到 5 秒。
 configure({ asyncUtilTimeout: 5000 });
+
+// 单独渲染的页面不经过选空间那一步，默认就在 default 空间里；要测选空间的用例自己改
+beforeEach(() => {
+  useWorkspaceStore.setState({ id: 'default' });
+});
 
 afterEach(() => {
   cleanup();

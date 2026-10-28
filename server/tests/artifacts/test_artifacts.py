@@ -16,6 +16,8 @@ from ..fake_sandbox import FakeSandbox
 from ..fakes import token_actor
 from ..office_samples import xlsx
 
+CONV = "/api/workspaces/default/conversations"
+
 pytestmark = pytest.mark.anyio
 TOKEN = "t" * 48
 AUTH = {"authorization": f"Bearer {TOKEN}"}
@@ -47,9 +49,9 @@ async def test_collect_and_download(files_db, tmp_path):
     assert [a.filename for a in result.artifacts] == ["page.html", "季度报告.md"]
     md = next(a for a in result.artifacts if a.filename == "季度报告.md")
     async with http:
-        listed = (await http.get(f"/api/conversations/{conv.id}/artifacts", headers=AUTH)).json()
-        response = await http.get(f"/api/conversations/{conv.id}/artifacts/{md.id}", headers=AUTH)
-        html = await http.get(f"/api/conversations/{conv.id}/artifacts/{result.artifacts[0].id}", headers=AUTH)
+        listed = (await http.get(f"{CONV}/{conv.id}/artifacts", headers=AUTH)).json()
+        response = await http.get(f"{CONV}/{conv.id}/artifacts/{md.id}", headers=AUTH)
+        html = await http.get(f"{CONV}/{conv.id}/artifacts/{result.artifacts[0].id}", headers=AUTH)
     assert [i["filename"] for i in listed["items"]] == ["page.html", "季度报告.md"]
     assert listed["items"][0]["runId"] == "run_1"
     assert response.content == "# 结论".encode()
@@ -77,8 +79,8 @@ async def test_list_waits_for_in_flight_collection_before_querying(files_db, tmp
     http, artifacts, sandbox, _ = setup(files_db, tmp_path, settle=settle)
     box.update(sandbox=sandbox, artifacts=artifacts)
     async with http:
-        listed = (await http.get(f"/api/conversations/{conv.id}/artifacts", headers=AUTH)).json()
-        other = await http.get("/api/conversations/conv_unknown/artifacts", headers=AUTH)
+        listed = (await http.get(f"{CONV}/{conv.id}/artifacts", headers=AUTH)).json()
+        other = await http.get(f"{CONV}/conv_unknown/artifacts", headers=AUTH)
     assert settled == [conv.id], "不是本人的会话不该触发等待"
     assert other.status_code == 404
     [item] = listed["items"]
@@ -125,8 +127,8 @@ async def test_spreadsheets_are_escaped_before_storage(files_db, tmp_path):
     by_name = {a.filename: a for a in result.artifacts}
     assert by_name["表.csv"].sanitized and by_name["表.xlsx"].sanitized
     async with http:
-        csv = await http.get(f"/api/conversations/{conv.id}/artifacts/{by_name['表.csv'].id}", headers=AUTH)
-        sheet = await http.get(f"/api/conversations/{conv.id}/artifacts/{by_name['表.xlsx'].id}", headers=AUTH)
+        csv = await http.get(f"{CONV}/{conv.id}/artifacts/{by_name['表.csv'].id}", headers=AUTH)
+        sheet = await http.get(f"{CONV}/{conv.id}/artifacts/{by_name['表.xlsx'].id}", headers=AUTH)
     assert csv.content.startswith(b"'=cmd")
     cell = load_workbook(io.BytesIO(sheet.content)).active["A1"]
     assert cell.value == "=1+1" and cell.quotePrefix
@@ -166,13 +168,13 @@ async def test_download_checks_owner_every_time_and_dies_with_conversation(files
     bob_http, *_ = setup(files_db, tmp_path, user="bob")
     sandbox.write_output("ws1", conv.id, "a.txt", b"secret")
     [artifact] = (await artifacts.collector.collect("ws1", conv.id, paths=sandbox.delivered("ws1", conv.id))).artifacts
-    url = f"/api/conversations/{conv.id}/artifacts/{artifact.id}"
+    url = f"{CONV}/{conv.id}/artifacts/{artifact.id}"
     async with http, bob_http:
         assert (await http.get(url, headers=AUTH)).status_code == 200
         assert (await bob_http.get(url, headers=AUTH)).status_code == 404
         assert (await http.get(url)).status_code == 401
-        assert (await http.get(f"/api/conversations/{conv.id}/artifacts/art_missing", headers=AUTH)).status_code == 404
-        assert (await http.get(f"/api/conversations/{conv.id}/artifacts/bad-id!", headers=AUTH)).status_code == 422
+        assert (await http.get(f"{CONV}/{conv.id}/artifacts/art_missing", headers=AUTH)).status_code == 404
+        assert (await http.get(f"{CONV}/{conv.id}/artifacts/bad-id!", headers=AUTH)).status_code == 422
         await stores("ws1", conv.id).delete(__import__("hashlib").sha256(b"secret").hexdigest())
         assert (await http.get(url, headers=AUTH)).status_code == 410
         await artifacts.service.erase(conv)

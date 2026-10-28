@@ -29,6 +29,8 @@ def _excerpt(text: str) -> str:
 def citation_view(entry: CitationEntry, sign: Callable[[str], str] | None = None) -> dict:
     """sign：给站内取图地址加签名（<img> 发不了自定义请求头，靠签名认人）。不给就不带图片。"""
     evidence = entry.evidence
+    # 知识源给的版本提示（例如「可能已有新版《…》」）：给了才带，引用卡片上照原样显示，用户点开就知道该核对哪份
+    note = {"versionNote": evidence.version_note} if evidence.version_note else {}
     return {
         "number": entry.number,
         "title": evidence.title,
@@ -42,15 +44,17 @@ def citation_view(entry: CitationEntry, sign: Callable[[str], str] | None = None
         "locators": [loc.model_dump(mode="json", exclude_defaults=True) for loc in evidence.locators],
         "images": [{"url": sign(image.url), "caption": image.caption}
                    for image in evidence.images if image.url] if sign else [],
+        **note,
     }
 
 
 def build_router(citations: CitationStore, conversations: ConversationLookup,
                  current_actor: ActorDependency, links: LinkSigner | None = None) -> APIRouter:
-    router = APIRouter(prefix="/api/conversations")
+    router = APIRouter(prefix="/api/workspaces/{workspace_id}/conversations")
 
     @router.get("/{conversation_id}/citations")
     async def list_citations(conversation_id: str, who: Actor = Depends(current_actor)):  # noqa: B008
+        """回答里引用的原文片段"""
         conversation = await owned_conversation(conversations, conversation_id, who)
         catalog = await citations.load(conversation.workspace_id, conversation.id)
         sign = (lambda url: links.sign(url, who.user_id)) if links else None

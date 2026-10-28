@@ -4,7 +4,7 @@ import { BookOpen } from '@openai/apps-sdk-ui/components/Icon';
 import { buildRoutes } from '../app/router';
 import ModelsPage from '../features/admin/models/ModelsPage';
 import SettingsPage from '../features/settings/SettingsPage';
-import { adminNav, ADMIN_NAV } from '../layout/nav';
+import { adminNav, ADMIN_NAV, SYSTEM_NAV, systemNav } from '../layout/nav';
 import { Sidebar } from '../layout/Sidebar';
 import { jsonResponse, ME, renderWithApp, routeFetch } from '../test/render';
 import { register, slotItems } from './registry';
@@ -27,15 +27,21 @@ describe('前端插槽', () => {
     const groups = adminNav();
     const access = groups.find((group) => group.label === '能力接入')!;
     expect(access.items.map((item) => item.label)).toEqual([
-      '模型',
-      '知识库',
       '知识源',
+      '知识库',
       '技能',
       '工具与 MCP',
+      '渠道',
     ]);
     expect(groups.at(-1)?.label).toBe('扩展');
     // 内置导航不被改动
     expect(ADMIN_NAV.find((group) => group.label === '能力接入')!.items).toHaveLength(4);
+  });
+
+  it('扩展的系统菜单项（例如空间管理）排在「模型」后面，内置的系统分组不被改动', () => {
+    register('system.nav', { to: '/admin/workspaces', label: '空间管理', icon: <BookOpen /> });
+    expect(systemNav().items.map((item) => item.label)).toEqual(['模型', '空间管理', '系统设置', '运行面板']);
+    expect(SYSTEM_NAV.items).toHaveLength(3);
   });
 
   it('扩展的页面挂在兜底跳转之前', () => {
@@ -56,8 +62,9 @@ describe('前端插槽', () => {
 
   it('管理后台「模型」页带上扩展的标签页，排在内置标签之后', async () => {
     routeFetch({
-      'GET /api/workspaces/default/model-providers': jsonResponse([]),
-      'GET /api/workspaces/default/models': jsonResponse([]),
+      'GET /api/system/model-providers': jsonResponse([]),
+      'GET /api/system/models': jsonResponse([]),
+      'GET /api/system/check': jsonResponse({ allowed: true }),
     });
     register('admin.models.tabs', { key: 'structure', label: '结构增强', children: <p>结构增强配置</p> });
     renderWithApp(<ModelsPage />);
@@ -68,7 +75,7 @@ describe('前端插槽', () => {
   it('使用端侧栏在「新对话」下面放扩展的入口', async () => {
     routeFetch({
       'GET /api/auth/me': jsonResponse(ME),
-      'GET /api/conversations': jsonResponse({ items: [], next: null }),
+      'GET /api/workspaces/default/conversations': jsonResponse({ items: [], next: null }),
       'GET /api/brand': jsonResponse({ name: 'KnowWork', logo_url: null }),
     });
     register('app.nav', { to: '/library', label: '知识库', icon: <BookOpen /> });

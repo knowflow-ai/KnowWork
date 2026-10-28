@@ -278,6 +278,12 @@
   font-size: var(--font-text-xs-size);
 }
 
+/* 知识源给的版本提示（可能已有新版、已被替代）：说明色小字，使用端不上色 */
+.kw-citation-note {
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+}
+
 .kw-citation-title {
   font-weight: var(--font-weight-semibold);
   overflow-wrap: anywhere;
@@ -856,4 +862,10 @@ a.kw-source-item:hover {
   font-size: var(--kw-font-xs);
   color: var(--kw-text-secondary);
   padding: 4px 0;
+}
+
+/* 反馈弹窗里的分类：七个选项横着排，放不下就换行 */
+.kw-feedback-categories {
+  flex-wrap: wrap;
+  gap: 8px 16px;
 }

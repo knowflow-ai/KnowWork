@@ -62,6 +62,13 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+async def current_system_admin(sessionmaker: async_sessionmaker) -> str | None:
+    """初始化完成时记下的系统管理员；还没初始化返回 None。业务服务启动时交给权限模块（能进任何空间）。"""
+    async with sessionmaker() as session:
+        row = await session.get(SystemSetup, SINGLETON_ID)
+    return row.admin_user_id if row is not None and row.completed_at is not None else None
+
+
 class SetupService:
     def __init__(self, sessionmaker: async_sessionmaker, access: AccessService,
                  clock: Callable[[], datetime] = _utcnow) -> None:
@@ -93,6 +100,7 @@ class SetupService:
             row.completed_at = self._clock()
             row.admin_user_id = user.id
             row.default_workspace_id = workspace_id
+        self._access.set_system_admin(user.id)  # 提交以后才告诉权限模块
         return SetupResult(admin_user_id=user.id, workspace_id=workspace_id)
 
     async def _ensure_row(self) -> None:

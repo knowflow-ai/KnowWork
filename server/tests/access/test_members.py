@@ -10,17 +10,17 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_owner_and_admin_manage_members(service, ws):
-    await service.add_member("bob", ws, "erin", "viewer")
+    await service.add_member("bob", ws, "erin", "editor")
     members = {m.user_id: m.role for m in await service.list_members("dave", ws)}
-    assert members == {"alice": "owner", "bob": "admin", "carol": "editor", "dave": "viewer", "erin": "viewer"}
+    assert members == {"alice": "owner", "bob": "admin", "carol": "editor", "dave": "editor", "erin": "editor"}
     assert service.check("erin", ws, "workspace", "use")
     assert not service.check("erin", ws, "workspace", "edit")
 
 
 @pytest.mark.parametrize("actor", ["carol", "dave", "stranger"])
-async def test_editor_viewer_and_strangers_cannot_manage(service, ws, actor):
+async def test_members_and_strangers_cannot_manage(service, ws, actor):
     with pytest.raises(AccessDenied):
-        await service.add_member(actor, ws, "erin", "viewer")
+        await service.add_member(actor, ws, "erin", "editor")
     with pytest.raises(AccessDenied):
         await service.remove_member(actor, ws, "dave")
 
@@ -34,7 +34,7 @@ async def test_only_owner_touches_owner_role(service, ws):
     with pytest.raises(AccessDenied):
         await service.add_member("bob", ws, "erin", "owner")
     with pytest.raises(AccessDenied):
-        await service.set_member_role("bob", ws, "alice", "viewer")
+        await service.set_member_role("bob", ws, "alice", "editor")
     with pytest.raises(AccessDenied):
         await service.remove_member("bob", ws, "alice")
     await service.set_member_role("alice", ws, "bob", "owner")
@@ -57,21 +57,21 @@ async def test_role_change_takes_effect_immediately(service, ws):
     await service.set_member_role("alice", ws, "dave", "admin")
     assert service.check("dave", ws, "workspace", "edit")
     assert (await service.set_member_role("alice", ws, "dave", "admin")).role == "admin"
-    await service.set_member_role("alice", ws, "dave", "viewer")
+    await service.set_member_role("alice", ws, "dave", "editor")
     assert not service.check("dave", ws, "workspace", "edit")
 
 
 async def test_duplicate_and_missing_members(service, ws):
     with pytest.raises(Conflict):
-        await service.add_member("alice", ws, "bob", "viewer")
+        await service.add_member("alice", ws, "bob", "editor")
     with pytest.raises(NotFound):
-        await service.set_member_role("alice", ws, "nobody", "viewer")
+        await service.set_member_role("alice", ws, "nobody", "editor")
     with pytest.raises(NotFound):
         await service.remove_member("alice", ws, "nobody")
     with pytest.raises(InvalidInput):
         await service.add_member("alice", ws, "erin", "superuser")
     with pytest.raises(InvalidInput):
-        await service.add_member("alice", ws, "bad id!", "viewer")
+        await service.add_member("alice", ws, "bad id!", "editor")
 
 
 async def test_removing_member_clears_groups_departments_and_direct_grants(service, ws):
@@ -86,7 +86,7 @@ async def test_removing_member_clears_groups_departments_and_direct_grants(servi
     assert not service.check("dave", ws, "skill:s2", "use")
     assert [g.members for g in await service.list_groups("alice", ws)] == [()]
     assert (await service.department_tree("alice", ws))[0].members == ()
-    await service.add_member("alice", ws, "dave", "viewer")
+    await service.add_member("alice", ws, "dave", "editor")
     assert not service.check("dave", ws, "skill:s1", "use")  # 重新加入不会恢复旧授权
 
 
@@ -97,7 +97,7 @@ async def test_cross_workspace_isolation(service, ws):
     with pytest.raises(AccessDenied):
         await service.list_members("alice", "ws2")
     with pytest.raises(AccessDenied):
-        await service.add_member("zed", ws, "erin", "viewer")
+        await service.add_member("zed", ws, "erin", "editor")
     with pytest.raises(Conflict):
         await service.create_workspace(workspace_id="ws2", name="重名", owner_user_id="zed")
 

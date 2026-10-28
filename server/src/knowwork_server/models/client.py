@@ -108,10 +108,13 @@ class ModelClient:
 
     async def chat(self, workspace_id: str, alias: str, messages: Sequence[dict[str, Any]], *,
                    max_tokens: int = 1024, temperature: float = 0.2, background: bool = True,
-                   capability: str = Capability.CHAT) -> str:
+                   capability: str = Capability.CHAT, response_format: dict[str, Any] | None = None) -> str:
+        """response_format 原样交给厂商（要结构化输出的调用方用）；不传就不带。"""
         route = await self._route(workspace_id, alias, capability)
         request = with_thinking({"model": route.upstream_model, "messages": list(messages), "max_tokens": max_tokens,
-                                 "temperature": temperature, "stream": False}, route.thinking, route.base_url)
+                                 "temperature": temperature, "stream": False, **(
+                                     {"response_format": response_format} if response_format else {})},
+                                route.thinking, route.base_url)
         body = await self._post(route, "/chat/completions", request,
                                 timeout=VISION_TIMEOUT if capability == Capability.VISION else CHAT_TIMEOUT,
                                 background=background)

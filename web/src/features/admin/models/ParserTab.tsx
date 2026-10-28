@@ -2,6 +2,7 @@
  * 模型 → 文档解析：配置 MinerU（会话附件与扩展解析 PDF、Word、PPT 用）。保存后几秒内生效，不用重启；
  * 没在这里配时用部署时的环境变量。令牌只在 MinerU 前面有网关要求时才填，保存后只显示末四位。
  */
+import { Warning } from '@openai/apps-sdk-ui/components/Icon';
 import { useState } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
@@ -195,7 +196,8 @@ function ParserForm({ parser }: { readonly parser: DocumentParser }) {
 export function ParserTab() {
   const parser = useQuery({ queryKey: KEY, queryFn: getDocumentParser });
   if (parser.isPending) return <Skeleton rows={5} />;
-  if (parser.isError) return <Empty title="配置加载失败" description="请稍后刷新重试" />;
+  if (parser.isError)
+    return <Empty area icon={<Warning />} title="配置加载失败" description="请稍后刷新重试" />;
   // 保存后取回的值变了，换 key 让表单按新值重来
   return <ParserForm key={`${parser.data.source}-${parser.data.updatedAt ?? ''}`} parser={parser.data} />;
 }

@@ -15,6 +15,8 @@ from knowwork_server.kernel.contract import SessionNotFound
 
 from .fakes import FakeKernel, token_actor
 
+CONV = "/api/workspaces/default/conversations"
+
 pytestmark = pytest.mark.anyio
 
 TOKEN = "e" * 48
@@ -38,7 +40,7 @@ async def test_issue_failure_on_create_is_503_without_details(sessionmaker):
 
     client, pump = api(FakeKernel(), sessionmaker, broken)
     async with client:
-        response = await client.post("/api/conversations", json={}, headers=AUTH)
+        response = await client.post(CONV, json={}, headers=AUTH)
     assert response.status_code == 503
     assert response.json()["detail"] == {"code": "tool_credentials_unavailable", "message": "工具服务暂时不可用，请稍后重试"}
     assert "secret" not in response.text
@@ -54,11 +56,11 @@ async def test_revoked_member_on_resume_is_403(sessionmaker):
     kernel = FakeKernel()
     client, pump = api(kernel, sessionmaker, require_membership(issue, lambda c: c.user_id in members))
     async with client:
-        created = await client.post("/api/conversations", json={}, headers=AUTH)
+        created = await client.post(CONV, json={}, headers=AUTH)
         assert created.status_code == 201
         members.clear()
         kernel.send_effects = [SessionNotFound("session_not_found", "gone", 404)]
-        response = await client.post(f"/api/conversations/{created.json()['id']}/messages", json={"text": "hi"},
+        response = await client.post(f"{CONV}/{created.json()['id']}/messages", json={"text": "hi"},
                                      headers=AUTH)
     assert response.status_code == 403
     assert response.json()["detail"] == {"code": "not_a_member", "message": "你已不是本工作空间的成员"}
@@ -77,9 +79,9 @@ async def test_issue_failure_on_resume_is_503(sessionmaker):
     kernel = FakeKernel()
     client, pump = api(kernel, sessionmaker, issue)
     async with client:
-        created = await client.post("/api/conversations", json={}, headers=AUTH)
+        created = await client.post(CONV, json={}, headers=AUTH)
         kernel.send_effects = [SessionNotFound("session_not_found", "gone", 404)]
-        response = await client.post(f"/api/conversations/{created.json()['id']}/messages", json={"text": "hi"},
+        response = await client.post(f"{CONV}/{created.json()['id']}/messages", json={"text": "hi"},
                                      headers=AUTH)
     assert response.status_code == 503
     assert "unreachable" not in response.text

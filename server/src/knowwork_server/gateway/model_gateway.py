@@ -37,6 +37,9 @@ log = logging.getLogger(__name__)
 MODEL_AUDIENCE = "model"
 CHAT_PATH = "/chat/completions"
 UPSTREAM_DETAIL_LOG_BYTES = 500
+# httpx 默认请求压缩，有的厂商（如 DeepSeek 官方接口）连 SSE 也压成 gzip。压缩流要攒够一块才吐，出字会一顿一顿；
+# 原样转给宿主还会被当成解不出 data 行的断流。所以请求时就说不要压缩
+NO_COMPRESSION = {"accept-encoding": "identity"}
 # 流里出现真正的内容（正文、思考、工具调用）才算开始出字。有的模型服务一收到请求就先发一个只有 role、
 # 内容为空的块，再去做长上下文的预填充，不能把那个空块当成开始
 _CONTENT = re.compile(rb'"(?:content|reasoning_content|reasoning)"\s*:\s*"[^"]|"tool_calls"')
@@ -100,7 +103,8 @@ async def _relay(response: httpx.Response, deadline: float, idle: float) -> Asyn
     """转发上游的流。出现第一块有内容的数据之前只受总时长约束（在等预填充）；开始出字后，块与块之间超过空闲超时就截断；
     开始工具调用后又只受总时长约束（参数可能被上游攒着发，见 _TOOL_CALL）。"""
     loop = asyncio.get_running_loop()
-    chunks = response.aiter_raw()
+    # 取解码后的字节：请求时说了不要压缩（见 NO_COMPRESSION），仍压了的上游在这里解开，转给宿主的不带 content-encoding
+    chunks = response.aiter_bytes()
     started = calling = False
     try:
         while (remaining := deadline - loop.time()) > 0:
@@ -152,9 +156,9 @@ class _Forwarder:
             if not self.upstream_model:
                 return _error(404, "模型不存在或未启用")
             request = self.upstream.build_request("POST", CHAT_PATH, json={**body, "model": self.upstream_model},
-                                                  timeout=timeout)
+                                                  headers=NO_COMPRESSION, timeout=timeout)
             return _Outgoing(self.upstream, request)
-        headers = {"authorization": f"Bearer {route.api_key}"} if route.api_key else {}
+        headers = {**NO_COMPRESSION, **({"authorization": f"Bearer {route.api_key}"} if route.api_key else {})}
         # 管理员给这个模型定了思考开、关时，按服务商的写法补上（Qwen3 等在自建服务上默认开着思考，回答慢）
         payload = with_thinking({**body, "model": route.upstream_model}, route.thinking, route.base_url)
         request = self.http.build_request("POST", route.base_url + CHAT_PATH, json=payload, headers=headers,

@@ -9,7 +9,7 @@ from knowwork_server.kernel import contract
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "knowwork_server"
 UPPER_LAYERS = ("conversations", "gateway", "identity", "access", "tools", "knowledge", "skills", "profile",
-                "workflows", "debugview", "system")
+                "workflows", "debugview", "system", "channels")
 FORBIDDEN = "host_client"
 
 

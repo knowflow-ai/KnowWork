@@ -3,6 +3,7 @@
  * 公式显示文件里存的计算结果。行号、列名和 Excel 一致（空行也保留），整张表都能看，只渲染滚动到的那些行。
  * 传了定位时切到对应工作表、滚到那几行并标出来。
  */
+import { TableFilled } from '@openai/apps-sdk-ui/components/Icon';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Empty } from '../../ui/Empty';
 import { Tabs } from '../../ui/Tabs';
@@ -67,7 +68,7 @@ function SheetTable({ sheet, focus }: { readonly sheet: Sheet; readonly focus?: 
     }
   }, [hitFrom]);
 
-  if (width === 0) return <Empty description="这个工作表是空的" />;
+  if (width === 0) return <Empty area icon={<TableFilled />} description="这个工作表是空的" />;
   const { first, last } = visibleRows(sheet.rows.length, scrollTop, viewport, rowHeight);
   return (
     <div

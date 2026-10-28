@@ -2,6 +2,7 @@
 import {
   flattenDepartments,
   memberLabel,
+  peopleOnly,
   ROLES,
   type Action,
   type SubjectKind,
@@ -20,7 +21,7 @@ type Option = { readonly value: string; readonly label: string };
 export function subjectOptions(kind: SubjectKind, dir: Directory): readonly Option[] {
   switch (kind) {
     case 'user':
-      return dir.members.map((m) => ({ value: m.userId, label: memberLabel(m) }));
+      return peopleOnly(dir.members).map((m) => ({ value: m.userId, label: memberLabel(m) }));
     case 'group':
       return dir.groups.map((g) => ({ value: g.id, label: g.name }));
     case 'dept':

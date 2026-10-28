@@ -10,6 +10,10 @@ import { RequireAuth } from './RequireAuth';
 import { RequireAdmin } from './RequireAdmin';
 import { useSessionStore } from '../../stores/session';
 import { ME_KEY } from './queries';
+import type { WorkspaceSummary } from '../../api/workspace';
+import { pickWorkspace, useWorkspaceStore } from '../../stores/workspace';
+
+const DEFAULT_WS: WorkspaceSummary = { id: 'default', name: '默认空间', role: 'owner' };
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -212,7 +216,7 @@ describe('RequireAuth 与 RequireAdmin', () => {
   });
 
   it('已登录显示内容；会话中途过期跳回登录页', async () => {
-    routeFetch({ 'GET /api/auth/me': jsonResponse(ME) });
+    routeFetch({ 'GET /api/auth/me': jsonResponse(ME), 'GET /api/workspaces': jsonResponse([DEFAULT_WS]) });
     renderWithApp(<RequireAuth>受保护</RequireAuth>, {
       route: '/x',
       path: '/x',
@@ -221,6 +225,27 @@ describe('RequireAuth 与 RequireAdmin', () => {
     expect(await screen.findByText('受保护')).toBeInTheDocument();
     useSessionStore.getState().expire();
     expect(await screen.findByText('登录页')).toBeInTheDocument();
+  });
+
+  it('选定当前空间：上次用的还能进就用它，否则第一个', async () => {
+    useWorkspaceStore.setState({ id: null });
+    window.localStorage.setItem('kw.workspace', 'ws2');
+    routeFetch({
+      'GET /api/auth/me': jsonResponse(ME),
+      'GET /api/workspaces': jsonResponse([DEFAULT_WS, { id: 'ws2', name: '二', role: 'editor' }]),
+    });
+    renderWithApp(<RequireAuth>受保护</RequireAuth>, { route: '/x', path: '/x' });
+    expect(await screen.findByText('受保护')).toBeInTheDocument();
+    expect(useWorkspaceStore.getState().id).toBe('ws2');
+    expect(pickWorkspace([DEFAULT_WS], 'gone')).toBe('default');
+  });
+
+  it('一个空间都进不了时说明原因，不渲染页面', async () => {
+    useWorkspaceStore.setState({ id: null });
+    routeFetch({ 'GET /api/auth/me': jsonResponse(ME), 'GET /api/workspaces': jsonResponse([]) });
+    renderWithApp(<RequireAuth>受保护</RequireAuth>, { route: '/x', path: '/x' });
+    expect(await screen.findByText('你还不在任何工作空间里')).toBeInTheDocument();
+    expect(screen.queryByText('受保护')).not.toBeInTheDocument();
   });
 
   it('取不到登录状态时可以重试', async () => {

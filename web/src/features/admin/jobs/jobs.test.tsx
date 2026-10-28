@@ -89,9 +89,9 @@ function api(allowed = true, extra = {}) {
   return routeFetch({
     'GET /api/auth/me': jsonResponse(ME),
     'GET /api/system/check': jsonResponse({ allowed }),
-    'GET /api/system/jobs/overview': jsonResponse(OVERVIEW),
-    'GET /api/system/jobs': jsonResponse({ items: JOBS, next: null }),
-    'GET /api/system/jobs/*': jsonResponse({
+    'GET /api/workspaces/default/jobs/overview': jsonResponse(OVERVIEW),
+    'GET /api/workspaces/default/jobs': jsonResponse({ items: JOBS, next: null }),
+    'GET /api/workspaces/default/jobs/*': jsonResponse({
       ...JOBS[0],
       stages: [
         {
@@ -105,9 +105,9 @@ function api(allowed = true, extra = {}) {
         },
       ],
     }),
-    'POST /api/system/jobs/*/retry': jsonResponse(job('j_failed', {})),
-    'POST /api/system/jobs/*/cancel': jsonResponse(job('j_retry', { cancel_requested: true })),
-    'DELETE /api/system/jobs/*': new Response(null, { status: 204 }),
+    'POST /api/workspaces/default/jobs/*/retry': jsonResponse(job('j_failed', {})),
+    'POST /api/workspaces/default/jobs/*/cancel': jsonResponse(job('j_retry', { cancel_requested: true })),
+    'DELETE /api/workspaces/default/jobs/*': new Response(null, { status: 204 }),
     ...extra,
   });
 }
@@ -160,14 +160,18 @@ describe('运行面板', () => {
     const calls = api();
     renderWithApp(<JobsPage />);
     await userEvent.click(within(await rowOf('doc_j_failed')).getByRole('button', { name: '立即重跑' }));
-    await waitFor(() => expect(calls.find('POST', '/api/system/jobs/j_failed/retry')).toHaveLength(1));
+    await waitFor(() =>
+      expect(calls.find('POST', '/api/workspaces/default/jobs/j_failed/retry')).toHaveLength(1),
+    );
     expect(await screen.findByText('已重新排队')).toBeInTheDocument();
 
     await userEvent.click(within(await rowOf('doc_j_retry')).getByRole('button', { name: '取消任务' }));
     const pop = await screen.findByRole('alertdialog', { name: /按处理失败收尾/ });
-    expect(calls.find('POST', '/api/system/jobs/j_retry/cancel')).toHaveLength(0);
+    expect(calls.find('POST', '/api/workspaces/default/jobs/j_retry/cancel')).toHaveLength(0);
     await userEvent.click(within(pop).getByRole('button', { name: '取消任务' }));
-    await waitFor(() => expect(calls.find('POST', '/api/system/jobs/j_retry/cancel')).toHaveLength(1));
+    await waitFor(() =>
+      expect(calls.find('POST', '/api/workspaces/default/jobs/j_retry/cancel')).toHaveLength(1),
+    );
   });
 
   it('按状态筛选；详情里看各阶段，不显示错误详情', async () => {
@@ -177,7 +181,9 @@ describe('运行面板', () => {
     await pickOption(tasks, '状态', '失败');
     await waitFor(() =>
       expect(
-        calls.calls.some((c) => c.path === '/api/system/jobs' && c.query.get('status') === 'failed'),
+        calls.calls.some(
+          (c) => c.path === '/api/workspaces/default/jobs' && c.query.get('status') === 'failed',
+        ),
       ).toBe(true),
     );
     await userEvent.click(within(await rowOf('doc_j_failed')).getByRole('button', { name: '详情' }));
@@ -191,7 +197,7 @@ describe('运行面板', () => {
     const calls = api(false);
     renderWithApp(<JobsPage />);
     expect(await screen.findByText('没有权限')).toBeInTheDocument();
-    expect(calls.find('GET', '/api/system/jobs/overview')).toHaveLength(0);
+    expect(calls.find('GET', '/api/workspaces/default/jobs/overview')).toHaveLength(0);
   });
 
   it('等待时长按秒、分钟、小时写', () => {

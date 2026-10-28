@@ -16,6 +16,8 @@ from ..fake_sandbox import FakeSandbox
 from ..fakes import token_actor
 from ..office_samples import DOCX, PDF, xlsx
 
+CONV = "/api/workspaces/default/conversations"
+
 pytestmark = pytest.mark.anyio
 TOKEN = "t" * 48
 AUTH = {"authorization": f"Bearer {TOKEN}"}
@@ -40,7 +42,7 @@ def parse_runner(files_db, attachments):
 
 
 async def post(http, cid, *files):
-    return await http.post(f"/api/conversations/{cid}/attachments", headers=AUTH,
+    return await http.post(f"{CONV}/{cid}/attachments", headers=AUTH,
                            files=[("files", (name, data)) for name, data in files])
 
 
@@ -50,7 +52,7 @@ async def test_text_and_excel_go_straight_into_the_sandbox(files_db, tmp_path):
     sheet = xlsx([["a", 1]])
     async with http:
         response = await post(http, conv.id, ("说明.md", "# 你好".encode()), ("数据.xlsx", sheet))
-        listed = (await http.get(f"/api/conversations/{conv.id}/attachments", headers=AUTH)).json()
+        listed = (await http.get(f"{CONV}/{conv.id}/attachments", headers=AUTH)).json()
     assert response.status_code == 200
     body = response.json()
     assert body["failures"] == []
@@ -111,8 +113,8 @@ async def test_request_level_limits_and_ownership(files_db, tmp_path):
     async with http:
         too_many = await post(http, mine.id, *[(f"{i}.txt", b"x") for i in range(4)])
         other_user = await post(http, theirs.id, ("a.txt", b"x"))
-        other_space = await http.get(f"/api/conversations/{elsewhere.id}/attachments", headers=AUTH)
-        anonymous = await http.get(f"/api/conversations/{mine.id}/attachments")
+        other_space = await http.get(f"{CONV}/{elsewhere.id}/attachments", headers=AUTH)
+        anonymous = await http.get(f"{CONV}/{mine.id}/attachments")
     assert too_many.status_code == 400 and too_many.json()["detail"]["code"] == "too_many_files"
     assert other_user.status_code == 404 and other_space.status_code == 404 and anonymous.status_code == 401
     await attachments.aclose()

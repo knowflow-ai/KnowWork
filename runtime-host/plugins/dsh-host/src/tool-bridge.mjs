@@ -10,6 +10,8 @@
  * - 是否审批看业务服务给的 `approval`（与风险等级分开）：`ask` 的工具在官方 `tools/pre-execute`
  *   返回 ask，由官方审批服务 `dsh-user-approval` 转给审批应答者（approval-broker）；`never` 直接放行。
  *   沙箱里的命令与文件工具是 never（照 WeKnora，隔离由容器负责），风险等级仍按真实值给审计与展示。
+ * - 业务服务声明 `concurrent` 的工具（只读、无状态，例如知识检索）照官方写法声明 `isConcurrencySafe`：
+ *   模型一步里发了几个这样的调用，官方循环同时执行（默认最多 10 个）；不声明的照旧一个一个来。
  * - 工具的 `guidance` 用官方 `systemPrompt.section` 注册到该 agent 的作用域层（同 dsh-mcp-client 注册
  *   MCP 服务说明的做法）；文本在每次组装时按该 agent 实际可见的业务工具求值，同一条规则只写一次，
  *   被 deny 或尚未被技能解锁的工具的规则不出现。
@@ -54,6 +56,7 @@ export function apply(ctx, config) {
       description: tool.description,
       parameters: tool.inputSchema,
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] },
+      ...(tool.concurrent ? { isConcurrencySafe: () => true } : {}),
       async execute(args, exec) {
         const root = resolveRootSession(exec.agent.session)
         if (root?.toolAccess === undefined) throw new Error('会话已释放，工具不可用')

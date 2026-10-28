@@ -27,6 +27,7 @@ MODEL_MODULES = (
     "knowwork_server.approvals.models",
     "knowwork_server.jobs.models",
     "knowwork_server.docparse.models",
+    "knowwork_server.channels.models",
 )
 
 # 带 workspace_id 的业务表。identity 的表是全局的（账号跨空间），不在此列。
@@ -42,6 +43,8 @@ RLS_TABLES = (
     "mcp_server",
     "conversation",
     "run_event",
+    "answer_feedback",
+    "run_summary",
     "model_provider",
     "model",
     "usage_record",
@@ -49,6 +52,9 @@ RLS_TABLES = (
     "knowledge_source",
     "citation_catalog",
     "citation",
+    "knowledge_search_log",
+    "knowledge_search_hit",
+    "knowledge_answer_check",
     "skill",
     "skill_release",
     "skill_run",
@@ -65,6 +71,8 @@ RLS_TABLES = (
     "job",
     "job_stage",
     "document_parser",
+    "channel",
+    "channel_session",
 )
 
 

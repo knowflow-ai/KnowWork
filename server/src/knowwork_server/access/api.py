@@ -96,7 +96,18 @@ def build_router(service: AccessService, current_principal: Callable[..., Awaita
     _departments(router, service, Who)
     _groups(router, service, Who)
     _grants(router, service, Who)
-    return router
+    mine = APIRouter(tags=["access"])
+
+    @mine.get("/api/workspaces")
+    async def my_workspaces(who: Who):
+        """我能进的空间；绑定了空间的 API Key 只看得到那一个。"""
+        found = await service.my_workspaces(who.user_id)
+        return [asdict(w) for w in found if who.workspace_id is None or w.id == who.workspace_id]
+
+    combined = APIRouter()
+    combined.include_router(mine)
+    combined.include_router(router)
+    return combined
 
 
 async def _with_profiles(members: Sequence[dict], profiles: ProfileLookup) -> list[dict]:
@@ -105,28 +116,34 @@ async def _with_profiles(members: Sequence[dict], profiles: ProfileLookup) -> li
     except Exception:
         log.warning("member profile lookup failed; returning members without names", exc_info=True)
         found = {}
+    # kind 让前端把渠道账号（机器人回答用的身份）从成员页和选人框里滤掉，授权页、运行记录里照样显示名字
     return [{**m, "name": getattr(found.get(m["user_id"]), "name", None),
-             "email": getattr(found.get(m["user_id"]), "email", None)} for m in members]
+             "email": getattr(found.get(m["user_id"]), "email", None),
+             "kind": getattr(found.get(m["user_id"]), "kind", "person")} for m in members]
 
 
 def _members(router: APIRouter, service: AccessService, Who, profiles: ProfileLookup | None) -> None:
     @router.get("/members")
     async def list_members(workspace_id: IdPath, who: Who):
+        """列出成员"""
         members = [asdict(m) for m in await _call(service.list_members(who.user_id, workspace_id))]
         return members if profiles is None else await _with_profiles(members, profiles)
 
     @router.post("/members", status_code=201)
     async def add_member(workspace_id: IdPath, body: MemberBody, who: Who):
+        """添加成员"""
         annotate(resource_id=body.user_id, role=body.role)
         return asdict(await _call(service.add_member(who.user_id, workspace_id, body.user_id, body.role)))
 
     @router.patch("/members/{user_id}")
     async def set_role(workspace_id: IdPath, user_id: IdPath, body: RoleBody, who: Who):
+        """修改成员角色"""
         annotate(role=body.role)
         return asdict(await _call(service.set_member_role(who.user_id, workspace_id, user_id, body.role)))
 
     @router.delete("/members/{user_id}", status_code=204)
     async def remove_member(workspace_id: IdPath, user_id: IdPath, who: Who):
+        """移除成员"""
         await _call(service.remove_member(who.user_id, workspace_id, user_id))
         return Response(status_code=204)
 
@@ -134,31 +151,37 @@ def _members(router: APIRouter, service: AccessService, Who, profiles: ProfileLo
 def _departments(router: APIRouter, service: AccessService, Who) -> None:
     @router.get("/departments")
     async def tree(workspace_id: IdPath, who: Who):
+        """列出部门"""
         return [asdict(n) for n in await _call(service.department_tree(who.user_id, workspace_id))]
 
     @router.post("/departments", status_code=201)
     async def create(workspace_id: IdPath, body: DepartmentBody, who: Who):
+        """新建部门"""
         dept_id = await _call(service.create_department(who.user_id, workspace_id, body.name, body.parent_id))
         return {"id": dept_id}
 
     @router.patch("/departments/{dept_id}", status_code=204)
     async def update(workspace_id: IdPath, dept_id: IdPath, body: DepartmentPatch, who: Who):
+        """修改部门"""
         moved = {"parent_id": body.parent_id} if body.move else {}
         await _call(service.update_department(who.user_id, workspace_id, dept_id, name=body.name, **moved))
         return Response(status_code=204)
 
     @router.delete("/departments/{dept_id}", status_code=204)
     async def delete(workspace_id: IdPath, dept_id: IdPath, who: Who):
+        """删除部门"""
         await _call(service.delete_department(who.user_id, workspace_id, dept_id))
         return Response(status_code=204)
 
     @router.post("/departments/{dept_id}/members", status_code=204)
     async def add_member(workspace_id: IdPath, dept_id: IdPath, body: DepartmentMemberBody, who: Who):
+        """把成员加进部门"""
         await _call(service.add_department_member(who.user_id, workspace_id, dept_id, body.user_id, body.is_primary))
         return Response(status_code=204)
 
     @router.delete("/departments/{dept_id}/members/{user_id}", status_code=204)
     async def remove_member(workspace_id: IdPath, dept_id: IdPath, user_id: IdPath, who: Who):
+        """把成员移出部门"""
         await _call(service.remove_department_member(who.user_id, workspace_id, dept_id, user_id))
         return Response(status_code=204)
 
@@ -166,29 +189,35 @@ def _departments(router: APIRouter, service: AccessService, Who) -> None:
 def _groups(router: APIRouter, service: AccessService, Who) -> None:
     @router.get("/groups")
     async def list_groups(workspace_id: IdPath, who: Who):
+        """列出用户组"""
         return [asdict(g) for g in await _call(service.list_groups(who.user_id, workspace_id))]
 
     @router.post("/groups", status_code=201)
     async def create(workspace_id: IdPath, body: GroupBody, who: Who):
+        """新建用户组"""
         return {"id": await _call(service.create_group(who.user_id, workspace_id, body.name))}
 
     @router.patch("/groups/{group_id}", status_code=204)
     async def rename(workspace_id: IdPath, group_id: IdPath, body: GroupBody, who: Who):
+        """修改用户组"""
         await _call(service.rename_group(who.user_id, workspace_id, group_id, body.name))
         return Response(status_code=204)
 
     @router.delete("/groups/{group_id}", status_code=204)
     async def delete(workspace_id: IdPath, group_id: IdPath, who: Who):
+        """删除用户组"""
         await _call(service.delete_group(who.user_id, workspace_id, group_id))
         return Response(status_code=204)
 
     @router.post("/groups/{group_id}/members", status_code=204)
     async def add_member(workspace_id: IdPath, group_id: IdPath, body: UserBody, who: Who):
+        """把成员加进用户组"""
         await _call(service.add_group_member(who.user_id, workspace_id, group_id, body.user_id))
         return Response(status_code=204)
 
     @router.delete("/groups/{group_id}/members/{user_id}", status_code=204)
     async def remove_member(workspace_id: IdPath, group_id: IdPath, user_id: IdPath, who: Who):
+        """把成员移出用户组"""
         await _call(service.remove_group_member(who.user_id, workspace_id, group_id, user_id))
         return Response(status_code=204)
 
@@ -196,25 +225,30 @@ def _groups(router: APIRouter, service: AccessService, Who) -> None:
 def _grants(router: APIRouter, service: AccessService, Who) -> None:
     @router.get("/grants")
     async def list_grants(workspace_id: IdPath, who: Who, subject: str | None = None, resource: str | None = None):
+        """列出授权"""
         grants = await _call(service.list_grants(who.user_id, workspace_id, subject=subject, resource=resource))
         return [asdict(g) for g in grants]
 
     @router.post("/grants", status_code=201)
     async def grant(workspace_id: IdPath, body: GrantBody, who: Who):
+        """授权"""
         annotate(subject=body.subject, resource=body.resource, grantedAction=body.action)
         return asdict(await _call(service.grant(who.user_id, workspace_id, body.subject, body.resource, body.action)))
 
     @router.delete("/grants", status_code=204)
     async def revoke(workspace_id: IdPath, who: Who, subject: Annotated[str, Query(max_length=80)],
                      resource: Annotated[str, Query(max_length=120)]):
+        """撤销授权"""
         await _call(service.revoke(who.user_id, workspace_id, subject, resource))
         return Response(status_code=204)
 
     @router.get("/me/visible")
     async def visible(workspace_id: IdPath, who: Who, resource_type: str, action: str = "use"):
+        """某类资源里我能用的有哪些"""
         result = service.visible_resources(who.user_id, workspace_id, resource_type, action)
         return {"all": result.all_, "ids": sorted(result.ids)}
 
     @router.get("/me/check")
     async def check(workspace_id: IdPath, who: Who, resource: str, action: str = "use"):
+        """我对某个资源有没有某项权限"""
         return {"allowed": service.check(who.user_id, workspace_id, resource, action)}

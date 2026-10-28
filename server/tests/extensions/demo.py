@@ -1,4 +1,4 @@
-"""测试用的扩展与授权校验器：一个路由、一种后台任务、一条自己的迁移分支。"""
+"""测试用的扩展与授权校验器：一个公开路由、一个内部端口路由、一种后台任务、一条自己的迁移分支。"""
 
 from pathlib import Path
 
@@ -32,6 +32,15 @@ class Demo:
 
         return [router]
 
+    def setup_internal(self, ctx):
+        router = APIRouter(prefix="/internal/demo")
+
+        @router.get("/ping")
+        async def ping():
+            return {"internal": True}
+
+        return [router]
+
     def setup_worker(self, ctx):
         async def handle(job_ctx):
             return None
@@ -52,8 +61,47 @@ class Broken(Demo):
         raise RuntimeError("装配失败")
 
 
+class BrokenInside(Demo):
+    """公开路由装得上、内部路由装配报错：整个扩展去掉，公开路由也不留。"""
+
+    name = "broken-inside"
+
+    def setup_internal(self, ctx):
+        raise RuntimeError("内部路由装配失败")
+
+
+class PublicOnly:
+    """老扩展没有 setup_internal：照常加载，只挂公开路由。"""
+
+    name = "public-only"
+    license_module = "demo"
+    model_modules: tuple[str, ...] = ()
+    rls_tables: tuple[str, ...] = ()
+    migrations = None
+
+    def setup_api(self, ctx):
+        router = APIRouter(prefix="/api/public-only")
+
+        @router.get("/ping")
+        async def ping():
+            return {"pong": True}
+
+        return [router]
+
+    def setup_worker(self, ctx):
+        return None
+
+    async def start(self) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
 EXTENSION = Demo()
 BROKEN = Broken()
+BROKEN_INSIDE = BrokenInside()
+PUBLIC_ONLY = PublicOnly()
 NOT_AN_EXTENSION = object()
 
 

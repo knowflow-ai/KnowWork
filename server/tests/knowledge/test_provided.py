@@ -5,7 +5,7 @@ import pytest
 
 from knowwork_server.knowledge import ProvidedSource
 from knowwork_server.knowledge.errors import NoReadableKnowledge, NotFound
-from knowwork_server.knowledge.models import BaseInfo, Evidence, Locator, ReadResult, SearchHits
+from knowwork_server.knowledge.models import BaseInfo, Evidence, Locator, ReadResult, SearchHits, SearchTraceEntry
 
 pytestmark = pytest.mark.anyio
 
@@ -126,6 +126,20 @@ async def test_a_source_can_send_notes_with_its_hits(env, builtin):
     outcome = await env.knowledge.service.search(await caller(env, "carol"), "短AB 是什么")
     assert [e.kb_id for e in outcome.evidence] == ["kb1"]
     assert outcome.notes == ("按知识库的同义词表，「短AB」和「微短剧」是同一个意思",)
+
+
+async def test_a_source_can_send_its_search_trace_which_is_not_for_the_model(env, builtin):
+    """检索过程（各路召回的情况）只进检索记录与运行详情，不进给模型的说明；合并时填上是哪个知识源。"""
+    async def with_trace(caller, request):
+        return SearchHits(evidence=tuple(await Builtin.search(builtin, caller, request)),
+                          trace=(SearchTraceEntry(label="视觉检索", summary="命中 2 页", lines=("手册 第 3 页",)),))
+
+    builtin.search = with_trace
+    await env.access.grant("alice", "ws1", "user:carol", "knowledge_base:builtin.kb1", "use")
+    outcome = await env.knowledge.service.search(await caller(env, "carol"), "流程图")
+    assert outcome.notes == ()
+    [entry] = outcome.trace
+    assert (entry.label, entry.summary, entry.lines, entry.source) == ("视觉检索", "命中 2 页", ("手册 第 3 页",), "扩展知识库")
 
 
 async def test_ids_must_not_look_like_configured_sources(env):

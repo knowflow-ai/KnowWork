@@ -1,4 +1,8 @@
-"""服务公共部分：授权判定协议、事务（设置行级安全变量）、行到视图的转换。"""
+"""服务公共部分：授权判定协议、事务（设置行级安全变量）、行到视图的转换。
+
+厂商与模型是全平台共用的：不管调用者在哪个空间，读写都落在平台配置所在的空间（PLATFORM_WORKSPACE_ID），
+管理只给系统管理员；所有空间的成员都能用。用量仍记在调用者自己的空间（recorder）。
+"""
 
 import secrets
 from collections.abc import AsyncIterator
@@ -8,6 +12,7 @@ from typing import Protocol
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ..access.members import PLATFORM_WORKSPACE_ID
 from ..access.rls import set_workspace
 from ..access.vocab import WORKSPACE_RESOURCE, InvalidInput, validate_id
 from .crypto import SecretBox
@@ -15,13 +20,15 @@ from .errors import Conflict, Denied, Invalid
 from .schemas import ModelView, ProviderView
 from .tables import Model, ModelProvider
 
-ADMIN_ACTION = "edit"  # 工作空间 edit = 空间 owner 与 admin
+ADMIN_ACTION = "edit"  # 工作空间 edit = 空间 owner 与 admin（看本空间用量）
 
 
 class Authorizer(Protocol):
     """access.AccessService 满足这个协议。"""
 
     def check(self, user_id: str, workspace_id: str, resource: str, action: str) -> bool: ...
+
+    def is_system_admin(self, user_id: str) -> bool: ...
 
 
 def new_id(prefix: str) -> str:
@@ -41,19 +48,18 @@ class CatalogCore:
         self._auth = authorizer
         self._box = box
 
-    def _require_admin(self, actor_id: str, workspace_id: str) -> None:
-        check_id(workspace_id, "workspace_id")
-        if not self._auth.check(actor_id, workspace_id, WORKSPACE_RESOURCE, ADMIN_ACTION):
+    def _require_admin(self, actor_id: str) -> None:
+        if not self._auth.is_system_admin(actor_id):
             raise Denied()
 
     def is_member(self, user_id: str, workspace_id: str) -> bool:
         return self._auth.check(user_id, workspace_id, WORKSPACE_RESOURCE, "use")
 
     @asynccontextmanager
-    async def _tx(self, workspace_id: str) -> AsyncIterator[AsyncSession]:
+    async def _tx(self) -> AsyncIterator[AsyncSession]:
         try:
             async with self._sessionmaker() as session, session.begin():
-                await set_workspace(session, workspace_id)
+                await set_workspace(session, PLATFORM_WORKSPACE_ID)
                 yield session
         except IntegrityError as error:
             raise Conflict("名称或别名已存在，或被其他对象引用") from error

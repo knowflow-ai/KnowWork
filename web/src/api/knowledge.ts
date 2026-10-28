@@ -1,9 +1,9 @@
 /** 知识源与知识库列表（server/src/knowwork_server/knowledge/api.py）。 */
 import { request, seg } from './http';
 import { bool, isRecord, listOf, num, str, strings, text } from './parse';
-import { WORKSPACE_ID } from './workspace';
+import { workspacePath } from './workspace';
 
-const base = (path = '') => `/api/workspaces/${seg(WORKSPACE_ID)}/knowledge-sources${path}`;
+const base = (path = '') => workspacePath(`/knowledge-sources${path}`);
 
 /**
  * 认证方式：统一账号是主用的；签名断言要 KnowFlow 先支持，新建时不提供，
@@ -224,8 +224,5 @@ function parseSourceBases(value: unknown): SourceBases | undefined {
 
 /** 可编辑的知识源下各有哪些知识库（授权页的树）。以当前管理员身份去列，统一账号方式用那个账号。 */
 export async function listKnowledgeBases(): Promise<readonly SourceBases[]> {
-  return listOf(
-    await request<unknown>(`/api/workspaces/${seg(WORKSPACE_ID)}/knowledge-bases`),
-    parseSourceBases,
-  );
+  return listOf(await request<unknown>(workspacePath('/knowledge-bases')), parseSourceBases);
 }

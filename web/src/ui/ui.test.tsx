@@ -18,6 +18,7 @@ import { NumberInput } from './NumberInput';
 import { StatusDot } from './StatusDot';
 import { DescriptionList } from './DescriptionList';
 import { Combobox } from './Combobox';
+import { SettingList, SettingRow } from './SettingRow';
 
 describe('Dialog', () => {
   it('回车提交表单，关闭按钮与取消都触发 onClose', async () => {
@@ -93,6 +94,29 @@ interface Row {
 }
 
 const COLUMNS: readonly Column<Row>[] = [{ key: 'name', title: '名称', render: (row) => row.name }];
+
+describe('SettingRow', () => {
+  it('函数子元素按标题关联开关，节点子元素整行是以标题命名的 group，说明挂在 aria-describedby 上', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <SettingList>
+        <SettingRow title="图片理解" description="给没有描述的图补中文描述">
+          {(id) => <input id={id} type="checkbox" role="switch" onChange={onChange} />}
+        </SettingRow>
+        <SettingRow title="已有文档">
+          <Button color="secondary">补抽</Button>
+        </SettingRow>
+      </SettingList>,
+    );
+    const toggle = screen.getByRole('switch', { name: '图片理解' });
+    expect(toggle.closest('.kw-setting-row')).toHaveAccessibleDescription('给没有描述的图补中文描述');
+    await user.click(screen.getByText('图片理解'));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const group = screen.getByRole('group', { name: '已有文档' });
+    expect(within(group).getByRole('button', { name: '补抽' })).toBeInTheDocument();
+  });
+});
 
 describe('Table', () => {
   const rows = Array.from({ length: 23 }, (_, i) => ({ id: String(i), name: `第${i + 1}行` }));
@@ -183,6 +207,11 @@ describe('confirm', () => {
       answer = confirm({ title: '再删一个？', okText: '删除' });
     });
     await user.click(await screen.findByRole('button', { name: '取消' }));
+    await expect(answer).resolves.toBe(false);
+    act(() => {
+      answer = confirm({ title: '1 个文件重复', okText: '仍然上传', cancelText: '跳过这 1 个' });
+    });
+    await user.click(await screen.findByRole('button', { name: '跳过这 1 个' }));
     await expect(answer).resolves.toBe(false);
   });
 

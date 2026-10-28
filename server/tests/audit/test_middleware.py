@@ -47,7 +47,7 @@ def make_app(sink) -> FastAPI:
     async def broken(workspace_id: str, model_id: str, user: Who):
         raise RuntimeError("数据库挂了")
 
-    @app.post("/api/conversations/{conversation_id}/approvals/{approval_id}")
+    @app.post("/api/workspaces/{workspace_id}/conversations/{conversation_id}/approvals/{approval_id}")
     async def decide(conversation_id: str, approval_id: str, user: Who):
         annotate(allow=False)
         return {}
@@ -106,10 +106,10 @@ async def test_errors_are_recorded_as_failed(client, memory_sink):
 
 
 async def test_approval_decision_carries_the_choice_and_conversation(client, memory_sink):
-    await client.post("/api/conversations/c1/approvals/ap_1", headers={"x-test-auth": "session"})
+    await client.post("/api/workspaces/ws1/conversations/c1/approvals/ap_1", headers={"x-test-auth": "session"})
     [event] = memory_sink.events
     assert (event.action, event.resource_id, event.session_id) == ("approval.decide", "ap_1", "c1")
-    assert event.detail["allow"] is False and event.workspace_id == "default"
+    assert event.detail["allow"] is False and event.workspace_id == "ws1", "空间从路径上取"
 
 
 async def test_reads_are_not_recorded_unless_marked(client, memory_sink):

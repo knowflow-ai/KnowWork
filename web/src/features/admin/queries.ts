@@ -13,6 +13,7 @@ export const KEYS = {
   sources: ['knowledge-sources'],
   knowledgeBases: ['knowledge-bases'],
   mcpServers: ['admin', 'mcp-servers'],
+  channels: ['admin', 'channels'],
 } as const;
 
 export const useMembers = () => useQuery({ queryKey: KEYS.members, queryFn: listMembers });

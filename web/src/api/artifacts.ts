@@ -7,9 +7,10 @@
 import type { ArtifactView } from '../features/chat/events/types';
 import { request, seg } from './http';
 import { isRecord, listOf, num, str, text } from './parse';
+import { workspacePath } from './workspace';
 
 export function artifactUrl(conversationId: string, artifactId: string): string {
-  return `/api/conversations/${seg(conversationId)}/artifacts/${seg(artifactId)}`;
+  return workspacePath(`/conversations/${seg(conversationId)}/artifacts/${seg(artifactId)}`);
 }
 
 function parseArtifact(conversationId: string, value: unknown): ArtifactView | undefined {
@@ -31,7 +32,9 @@ export async function listArtifacts(
   conversationId: string,
   signal?: AbortSignal,
 ): Promise<readonly ArtifactView[]> {
-  const body = await request<unknown>(`/api/conversations/${seg(conversationId)}/artifacts`, { signal });
+  const body = await request<unknown>(workspacePath(`/conversations/${seg(conversationId)}/artifacts`), {
+    signal,
+  });
   const items = isRecord(body) ? body.items : undefined;
   return listOf(items, (item) => parseArtifact(conversationId, item));
 }

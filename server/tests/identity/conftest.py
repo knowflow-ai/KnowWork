@@ -20,7 +20,9 @@ PASSWORD = "correct horse battery"
 
 class FakeClock:
     def __init__(self) -> None:
-        self.now = datetime(2026, 10, 18, 8, 0, tzinfo=UTC)
+        # 从现在起算：会话 Cookie 的过期时间按这个钟算，测试客户端却按真实时间丢弃过期 Cookie；
+        # 原来写死 2026-10-18，一周后所有要登录的测试都失败（Cookie 被当成过期丢掉）
+        self.now = datetime.now(UTC).replace(second=0, microsecond=0)
 
     def __call__(self) -> datetime:
         return self.now
@@ -66,7 +68,7 @@ def identity(sessionmaker, config, clock):
 
 def make_app(identity, admins) -> FastAPI:
     app = FastAPI()
-    app.include_router(build_router(identity, is_admin=lambda who: who.user_id in admins,
+    app.include_router(build_router(identity, is_admin=lambda who, workspace_id: who.user_id in admins and workspace_id == "ws1",
                                     can_bind_workspace=lambda who, workspace_id: True))
 
     Writer = Annotated[Principal, Depends(identity.require_scopes("conversations:write"))]

@@ -40,6 +40,7 @@ def _node_bin() -> Path:
 
 NODE_BIN = _node_bin()
 PUBLIC_PORT, INTERNAL_PORT, HOST_PORT, WEB_PORT = 8000, 8001, 7300, 5173
+APP_ROLE = "knowwork_app"  # 业务服务与 worker 连库用的普通账号（不是超级用户、没有 BYPASSRLS）
 
 
 def secret(name: str) -> str:
@@ -89,7 +90,13 @@ def main() -> int:
     (DEV / "logs").mkdir(parents=True, exist_ok=True)
     pg = pgserver.get_server(str(DEV / "pg"), cleanup_mode="stop")
     socket_dir = pg.get_uri().split("host=")[1]
-    database_url = f"postgresql+asyncpg://postgres@/postgres?host={socket_dir}"
+    # 和部署包一样分两个账号：超级用户 postgres 只做迁移（表的 owner），业务服务与 worker 用普通账号 APP_ROLE 连库。
+    # 原来本机一直用超级用户跑，超级用户绕过行级安全，一个空间能读到别的空间的数据，隔离问题在本机永远试不出来
+    # （2026-10-27 走查多空间时撞上）。
+    pg.psql(f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{APP_ROLE}') THEN "
+            f"CREATE ROLE {APP_ROLE} LOGIN NOSUPERUSER NOBYPASSRLS; END IF; END $$;")
+    migration_url = f"postgresql+asyncpg://postgres@/postgres?host={socket_dir}"
+    database_url = f"postgresql+asyncpg://{APP_ROLE}@/postgres?host={socket_dir}"
     host_token = secret("host_token")
     internal = f"http://127.0.0.1:{INTERNAL_PORT}"
     base_env = {**os.environ, "PATH": f"{NODE_BIN}:{os.environ['PATH']}"}
@@ -111,7 +118,8 @@ def main() -> int:
     # 业务服务与 worker 共用：同一个库、同一份对象存储、同一个沙箱（worker 把解析出的 Markdown 放进会话容器）。
     # MinerU 地址等其余 KNOWWORK_* 照外面的环境变量传进来。
     app_env = {
-        **base_env, "KNOWWORK_DATABASE_URL": database_url, "KNOWWORK_MASTER_KEY": secret("master_key"),
+        **base_env, "KNOWWORK_DATABASE_URL": database_url, "KNOWWORK_MIGRATION_DATABASE_URL": migration_url,
+        "KNOWWORK_APP_DB_ROLE": APP_ROLE, "KNOWWORK_MASTER_KEY": secret("master_key"),
         "KNOWWORK_HOST_TOKEN": host_token, "KNOWWORK_BLOB_DIR": str(DEV / "blobs"),
         # 会话沙箱：用本机 Docker（Docker Desktop），镜像先构建：
         #   docker build -f deploy/docker/sandbox.Dockerfile -t knowwork-sandbox:dev .

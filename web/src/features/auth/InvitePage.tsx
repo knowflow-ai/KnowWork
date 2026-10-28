@@ -46,7 +46,7 @@ export default function InvitePage() {
   if (!isPlausibleInviteToken(token)) {
     return (
       <Empty
-        className="kw-page-state"
+        area
         icon={<Warning />}
         title="邀请链接无效"
         description="链接不完整或已被修改，请向管理员重新索取邀请链接"

@@ -6,6 +6,7 @@
  */
 import { request } from './http';
 import { bool, isRecord, listOf, str, strings, text } from './parse';
+import { workspacePath } from './workspace';
 
 export type MentionType = 'knowledge_base' | 'folder' | 'document' | 'tag' | 'skill';
 
@@ -49,7 +50,7 @@ export interface MentionOptions {
   readonly skills: readonly MentionSkill[];
 }
 
-const BASE = '/api/conversations/mention-options';
+const base = (path = '') => workspacePath(`/conversations/mention-options${path}`);
 
 function parseBase(value: unknown): MentionBase | undefined {
   if (!isRecord(value)) return undefined;
@@ -81,13 +82,13 @@ function parseDocument(value: unknown): MentionDocument | undefined {
 }
 
 export async function getMentionOptions(): Promise<MentionOptions> {
-  const data = await request<unknown>(BASE);
+  const data = await request<unknown>(base());
   const body = isRecord(data) ? data : {};
   return { bases: listOf(body.bases, parseBase), skills: listOf(body.skills, parseSkill) };
 }
 
 export async function findMentionDocuments(query: string): Promise<readonly MentionDocument[]> {
-  const data = await request<unknown>(`${BASE}/documents`, { query: { q: query } });
+  const data = await request<unknown>(base('/documents'), { query: { q: query } });
   return listOf(isRecord(data) ? data.documents : undefined, parseDocument);
 }
 

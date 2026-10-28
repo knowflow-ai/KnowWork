@@ -12,6 +12,8 @@ const WIDTH = { sm: 520, md: 720, lg: 1000 } as const;
 
 export interface DialogProps {
   readonly title: ReactNode;
+  /** 标题只给读屏念、不显示（搜索框这种顶上就是输入框的，照 ChatGPT） */
+  readonly hideTitle?: boolean;
   readonly description?: ReactNode;
   readonly size?: keyof typeof WIDTH;
   /** 底部操作，通常是 DialogActions。 */
@@ -27,6 +29,7 @@ export interface DialogProps {
 
 export function Dialog({
   title,
+  hideTitle = false,
   description,
   size = 'sm',
   footer,
@@ -57,7 +60,7 @@ export function Dialog({
           {...(description ? {} : { 'aria-describedby': undefined })}
           onPointerDownOutside={closeOnOutside ? undefined : (event) => event.preventDefault()}
         >
-          <header className="kw-dialog-head">
+          <header className={cx('kw-dialog-head', hideTitle && 'sr-only')}>
             <Radix.Title className="kw-dialog-title">{title}</Radix.Title>
             {description ? (
               <Radix.Description className="kw-dialog-description">{description}</Radix.Description>

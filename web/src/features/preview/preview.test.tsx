@@ -18,7 +18,7 @@ vi.mock('./DocxView', () => ({
 
 afterEach(() => vi.unstubAllGlobals());
 
-const URL_DOCX = '/api/conversations/c1/artifacts/art_1';
+const URL_DOCX = '/api/workspaces/default/conversations/c1/artifacts/art_1';
 
 describe('预览类型', () => {
   it('Word（.docx）直接渲染原件；旧格式 Word、PPT、PDF 走 PDF 阅读器；表格、Markdown、文本、图片各自渲染，其余只能下载', () => {

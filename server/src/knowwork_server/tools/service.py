@@ -8,11 +8,12 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from jsonschema import Draft202012Validator
 
+from ..db.base import enter_workspace
 from ..kernel.tokens import TokenError
 from .receipts import ActionCall, ActionResult, ReceiptStore, digest
 from .registry import ToolContext, ToolFailure, ToolRegistry, ToolSpec
@@ -89,10 +90,13 @@ class ToolService:
         return await self._registry.available(ctx)
 
     def verify(self, token: str) -> ToolTokenClaims:
+        """核验宿主回调的令牌；通过后这次回调就以令牌里的空间读写（工具回执、沙箱都走按空间的会话工厂）。"""
         try:
-            return self._signer.verify(token)
+            claims = self._signer.verify(token)
         except TokenError as error:
             raise ToolAccessError(401, "unauthorized", "令牌无效") from error
+        enter_workspace(claims.workspace_id)
+        return claims
 
     async def list_tools(self, claims: ToolTokenClaims) -> list[ToolSpec]:
         specs = await self._registry.available(_context(claims))
@@ -130,7 +134,9 @@ class ToolService:
             raise ToolAccessError(409, "idempotency_conflict", "这个调用 ID 已用于另一个操作")
         if claim.kind == "in_progress":
             raise ToolAccessError(409, "action_in_progress", "同一调用正在执行，请稍后再试")
-        status, content = await self._run(ctx, spec, request.arguments)
+        call_id = request.call_key.removeprefix(f"{request.agent_session_id}:")
+        status, content = await self._run(replace(ctx, agent_session_id=request.agent_session_id, call_id=call_id), spec,
+                                          request.arguments)
         return await self._receipts.settle(call, claim.action_id, status, content)
 
     async def _report(self, ctx: ToolContext, request: ExecuteRequest, risk: str | None, outcome: str, *,

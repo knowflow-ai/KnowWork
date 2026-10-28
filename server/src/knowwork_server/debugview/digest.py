@@ -33,6 +33,8 @@ class ToolCallView:
     started_ms: int | None
     duration_ms: int | None
     truncated: bool
+    # 业务另记的过程（知识检索的各路召回、重排……），按 call_id 从业务记录里取，不在会话日志里，模型也没看到
+    trace: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)

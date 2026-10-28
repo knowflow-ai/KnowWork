@@ -5,6 +5,7 @@
 
 - 一批失败时退避后逐行重试：数据本身存不下的行（DataError 等）换成 kind=kernel.invalid 的占位行，
   序号不变；连占位都写不进去（数据库不可用）就整体退避重试，帧一直留在 pending 里；
+- 一批里可能有几个空间的会话，按空间分开提交（见 _insert）；
 - pending 有上限，满了 put 会等，事件泵随之放慢读宿主，宿主缓冲兜住这段时间。
 """
 
@@ -18,6 +19,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DataError, IntegrityError, ProgrammingError, StatementError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from ..db.base import in_workspace
 from ..kernel.contract import INVALID_FRAME_KIND
 from .listeners import StoredEvent
 from .models import RunEvent
@@ -135,10 +137,15 @@ class BatchWriter:
                 log.error("run event %s/%s placeholder rejected, dropped", row.event.conversation_id, row.event.seq)
 
     async def _insert(self, rows: list[PendingRow]) -> None:
-        statement = insert(RunEvent).values([r.values() for r in rows]).on_conflict_do_nothing()
-        async with self._sessionmaker() as session:
-            await session.execute(statement)
-            await session.commit()
+        """一批里可能有几个空间的会话，一个事务只能声明一个空间（行级安全），所以按空间分开提交。
+        中途失败整批重来时，已经提交的那部分靠 on_conflict_do_nothing 跳过，不会重复。"""
+        workspaces = dict.fromkeys(r.workspace_id for r in rows)
+        for workspace_id in workspaces:
+            values = [r.values() for r in rows if r.workspace_id == workspace_id]
+            with in_workspace(workspace_id):
+                async with self._sessionmaker() as session:
+                    await session.execute(insert(RunEvent).values(values).on_conflict_do_nothing())
+                    await session.commit()
 
     async def _release(self, batch: list[PendingRow]) -> None:
         for row in batch:

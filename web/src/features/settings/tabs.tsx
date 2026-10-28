@@ -91,7 +91,13 @@ export function ApiKeysTab() {
     <>
       <Toolbar
         left={
-          <span className="kw-secondary">给脚本或其他系统调用 KnowWork 接口用。Key 的身份就是你本人。</span>
+          <span className="kw-secondary">
+            给脚本或其他系统调用 KnowWork 接口用。Key 的身份就是你本人。各接口的参数见
+            <a className="kw-link" href="/api/docs" target="_blank" rel="noreferrer">
+              接口文档
+            </a>
+            。
+          </span>
         }
         right={
           <Button color="primary" onClick={() => setCreating(true)}>

@@ -23,8 +23,8 @@ def entry(user="alice", model="ds", turn=1, step=0, inputs=1000, outputs=500, at
 
 
 async def _priced_model(catalog):
-    provider = await catalog.create_provider("bob", "ws1", ProviderCreate(name="p", base_url="https://h/v1"))
-    await catalog.create_model("bob", "ws1", ModelCreate(provider_id=provider.id, alias="ds", name="deepseek-chat",
+    provider = await catalog.create_provider("root", ProviderCreate(name="p", base_url="https://h/v1"))
+    await catalog.create_model("root", ModelCreate(provider_id=provider.id, alias="ds", name="deepseek-chat",
                                                          input_price_per_mtok=Decimal(2),
                                                          output_price_per_mtok=Decimal(8)))
 

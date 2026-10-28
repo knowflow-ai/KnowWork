@@ -15,6 +15,8 @@ from knowwork_server.models.tables import UsageRecord
 
 from .logs import AT, LOG, USAGE
 
+CONV = "/api/workspaces/default/conversations"
+
 pytestmark = pytest.mark.anyio
 
 
@@ -49,15 +51,27 @@ async def seeded(sessionmaker, conversation_id):
     return conversation_id
 
 
-def client(sessionmaker, conversation_id, user="dev-user"):
+class Traces:
+    """业务按 callId 另记的过程（知识检索记录满足同一个接口）。"""
+
+    def __init__(self, found=None):
+        self.found = found or {}
+        self.asked: list[str] = []
+
+    async def traces(self, workspace_id, conversation_id, call_ids):
+        self.asked = list(call_ids)
+        return {k: v for k, v in self.found.items() if k in call_ids}
+
+
+def client(sessionmaker, conversation_id, user="dev-user", traces=None):
     app = FastAPI()
-    debug = build_debugview(sessionmaker, UsageRecorder(sessionmaker))
+    debug = build_debugview(sessionmaker, UsageRecorder(sessionmaker), traces)
     app.include_router(build_router(debug, Lookup(conversation_id), actor_for(user)))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://kw")
 
 
 async def test_owner_sees_turns_steps_and_reconstructed_input(sessionmaker, seeded):
-    base = f"/api/conversations/{seeded}/debug"
+    base = f"{CONV}/{seeded}/debug"
     async with client(sessionmaker, seeded) as http:
         listing = (await http.get(f"{base}/turns")).json()
         assert listing["truncated"] is False
@@ -76,7 +90,7 @@ async def test_owner_sees_turns_steps_and_reconstructed_input(sessionmaker, seed
 
 async def test_export_downloads_the_raw_frames_of_one_turn(sessionmaker, seeded):
     async with client(sessionmaker, seeded) as http:
-        response = await http.get(f"/api/conversations/{seeded}/debug/turns/1/export")
+        response = await http.get(f"{CONV}/{seeded}/debug/turns/1/export")
     assert response.headers["content-disposition"] == f'attachment; filename="{seeded}-turn-1.json"'
     body = response.json()
     assert [e["seq"] for e in body["events"]] == list(range(23))
@@ -85,4 +99,15 @@ async def test_export_downloads_the_raw_frames_of_one_turn(sessionmaker, seeded)
 
 async def test_other_users_get_404(sessionmaker, seeded):
     async with client(sessionmaker, seeded, user="someone-else") as http:
-        assert (await http.get(f"/api/conversations/{seeded}/debug/turns")).status_code == 404
+        assert (await http.get(f"{CONV}/{seeded}/debug/turns")).status_code == 404
+
+
+async def test_tool_calls_carry_the_trace_recorded_by_call_id(sessionmaker, seeded):
+    """知识检索这类工具的过程不在会话日志里，按 callId 从业务记录取来挂上；子 Agent 的调用也一样。"""
+    trace = [{"label": "视觉检索", "summary": "命中 1 页", "lines": ["手册 第 3 页"], "source": "扩展知识库"}]
+    traces = Traces({"call1": trace, "k1": trace})
+    async with client(sessionmaker, seeded, traces=traces) as http:
+        turn = (await http.get(f"{CONV}/{seeded}/debug/turns/1")).json()
+    assert set(traces.asked) >= {"call1", "k1"}
+    assert turn["steps"][0]["toolCalls"][0]["trace"] == trace
+    assert turn["subagents"][0]["steps"][0]["toolCalls"][0]["trace"] == trace

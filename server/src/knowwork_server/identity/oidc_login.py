@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .credentials import Clock, digest, new_token, same, utcnow
 from .errors import EmailTaken, InvalidInput, OidcFailure
-from .hooks import UserCreatedHook, notify_user_created
+from .hooks import Placement, UserCreatedHook, notify_user_created
 from .invitations import InvitationService
 from .models import USER_ACTIVE, OidcIdentity, OidcLoginState, User
 from .oidc_client import OidcClient
@@ -73,12 +73,12 @@ class OidcLoginService:
         claims = await self._client.validate_id_token(id_token)
         if not same(digest(str(claims["nonce"])), login_state.nonce_hash):
             raise OidcFailure("nonce 不匹配")
-        created: list[str] = []
+        created: list[tuple[str, Placement | None]] = []
         async with self._sessionmaker() as session, session.begin():
             user_id = await self._match_user(session, claims, created)
             issued = await self._sessions.create_in(session, user_id, method="oidc")
-        for new_user_id in created:
-            await notify_user_created(self._on_user_created, new_user_id)
+        for new_user_id, placement in created:
+            await notify_user_created(self._on_user_created, new_user_id, placement)
         return issued
 
     async def _consume_state(self, state: str) -> OidcLoginState:
@@ -91,7 +91,8 @@ class OidcLoginService:
             raise OidcFailure("登录状态已失效")
         return record
 
-    async def _match_user(self, session: AsyncSession, claims: dict, created: list[str]) -> str:
+    async def _match_user(self, session: AsyncSession, claims: dict,
+                          created: list[tuple[str, Placement | None]]) -> str:
         issuer, subject = self._client.config.issuer, str(claims["sub"])
         linked = await session.get(OidcIdentity, (issuer, subject))
         user = await session.get(User, linked.user_id) if linked else await self._find_or_create(session, claims,
@@ -102,7 +103,8 @@ class OidcLoginService:
             session.add(OidcIdentity(issuer=issuer, subject=subject, user_id=user.id, created_at=self._clock()))
         return user.id
 
-    async def _find_or_create(self, session: AsyncSession, claims: dict, created: list[str]) -> User | None:
+    async def _find_or_create(self, session: AsyncSession, claims: dict,
+                              created: list[tuple[str, Placement | None]]) -> User | None:
         email = claims.get("email")
         verified = claims.get("email_verified") is True or self._client.config.trust_unverified_email
         if not isinstance(email, str) or not verified:
@@ -115,12 +117,12 @@ class OidcLoginService:
         if existing is not None:
             return existing
         invited = await self._invitations.consume_for_email(session, normalized)
-        if self._client.config.allow_only_known_users and not invited:
+        if self._client.config.allow_only_known_users and invited is None:
             raise OidcFailure("未被邀请的用户")
         name = claims.get("name") if isinstance(claims.get("name"), str) else ""
         try:
             user = await insert_user(session, email=normalized, name=name, password=None)
         except EmailTaken as error:
             raise OidcFailure("建号冲突") from error
-        created.append(user.id)
+        created.append((user.id, invited))
         return user

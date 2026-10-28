@@ -39,10 +39,12 @@ describe('路由', () => {
     const routes = buildRoutes();
     const top = routes.map((r) => r.path);
     expect(top).toEqual(['/login', '/invite', '/setup', '/', '/admin']);
-    const app = routes[3]?.children?.map((r) => r.path ?? 'index') ?? [];
+    const children = (path: string) =>
+      routes.find((r) => r.path === path)?.children?.map((r) => r.path ?? 'index') ?? [];
+    const app = children('/');
     for (const path of ['chat', 'chat/:conversationId', 'settings']) expect(app).toContain(path);
     expect(app.some((path) => path.startsWith('admin'))).toBe(false);
-    const admin = routes[4]?.children?.map((r) => r.path ?? 'index') ?? [];
+    const admin = children('/admin');
     for (const path of [
       'index',
       'members',
@@ -53,6 +55,7 @@ describe('路由', () => {
       'usage',
       'skills',
       'tools',
+      'channels',
       'audit',
     ]) {
       expect(admin).toContain(path);

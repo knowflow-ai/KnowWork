@@ -6,7 +6,7 @@
 import { createServer } from 'node:http'
 
 /**
- * @param {{ toolsByToken: Record<string, object[]>, execute?: (call: object) => { status?: number, body: object } }} options
+ * @param {{ toolsByToken: Record<string, object[]>, execute?: (call: object) => ({ status?: number, body: object } | undefined | Promise<{ status?: number, body: object } | undefined>) }} options
  */
 export async function startToolsStub(options) {
   const requests = []
@@ -22,7 +22,7 @@ export async function startToolsStub(options) {
     if (tools === undefined) return reply(401, { error: { code: 'unauthorized', message: '令牌无效' } })
     if (req.method === 'GET' && req.url.endsWith('/list')) return reply(200, { tools })
     if (req.method === 'POST' && req.url.endsWith('/execute')) {
-      const custom = options.execute?.(record)
+      const custom = await options.execute?.(record)
       if (custom !== undefined) return reply(custom.status ?? 200, custom.body)
       return reply(200, {
         actionId: `act-${requests.length}`,

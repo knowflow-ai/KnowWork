@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from fastapi import APIRouter
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from ..access.api import ProfileLookup
 from ..access.service import AccessService
 from ..attachments.mineru import MinerUProvider
 from ..config import Settings
@@ -33,7 +34,7 @@ class ApiContext:
 
     settings: Settings
     engine: AsyncEngine
-    sessionmaker: async_sessionmaker          # 每个事务都声明默认工作空间
+    sessionmaker: async_sessionmaker          # 每个事务都声明当前空间（db.base.current_workspace）
     global_sessionmaker: async_sessionmaker   # 不声明工作空间，由调用方 set_workspace
     access: AccessService
     # 管理路由的鉴权依赖：principal(范围) 要求 API Key 带这个范围；principal(None) 不查范围，只拦跨空间的 Key
@@ -45,6 +46,8 @@ class ApiContext:
     knowledge_sources: ProvidedSources
     # 对外检索结果里的短期签名链接（图片等）：扩展的取文件接口用 links.verify 认签名，取时仍按签名里的用户判权
     links: LinkSigner | None = None
+    # 按用户 id 批量取姓名与邮箱（同成员列表），给扩展的页面显示人名；查不到的 id 不出现在结果里
+    profiles: ProfileLookup | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,10 @@ class Extension(Protocol):
     def setup_api(self, ctx: ApiContext) -> Sequence[APIRouter]:
         """业务服务启动时调用，返回要挂的路由。"""
         ...
+
+    # 可选：def setup_internal(self, ctx: ApiContext) -> Sequence[APIRouter]
+    # 返回挂在内部端口的路由（只给宿主、扩展自己部署的服务回调，网关不转发）。没有这个方法就不挂；
+    # 和 setup_api 一起装配，任何一个报错整个扩展都去掉。
 
     def setup_worker(self, ctx: WorkerContext) -> None:
         """worker 启动时调用，在 ctx.runner 上注册任务类型。"""

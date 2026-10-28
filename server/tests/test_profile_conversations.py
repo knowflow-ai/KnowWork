@@ -6,12 +6,19 @@ import pytest
 
 import knowwork_server.tools.models  # noqa: F401
 from knowwork_server.conversations.listeners import Broadcaster
+from knowwork_server.conversations.models import RunEvent
 from knowwork_server.conversations.pump import EventPump, PumpTimings
 from knowwork_server.conversations.replay import EventFeed
 from knowwork_server.conversations.service import ConversationService
 from knowwork_server.conversations.tool_credentials import ToolCredentials
 from knowwork_server.conversations.writer import BatchWriter
-from knowwork_server.kernel.contract import KnowledgeCatalog, KnowledgeEntry, SessionNotFound, TurnInput
+from knowwork_server.kernel.contract import (
+    KernelError,
+    KnowledgeCatalog,
+    KnowledgeEntry,
+    SessionNotFound,
+    TurnInput,
+)
 from knowwork_server.profile.clearance import AuthorizedToolRegistry, ToolClearance
 from knowwork_server.profile.errors import ProfileUnavailable
 from knowwork_server.profile.snapshot import TurnSelection
@@ -152,6 +159,59 @@ async def test_reopen_failure_does_not_record_new_version(db):
     await env.service.send(conversation, TurnInput(text="再试"))
     assert "erp_read" not in env.deny()
     assert await env.profiles.bound_version(conversation) != old
+    await env.pump.close()
+
+
+# DSH 第一轮跑起来才写会话记录：一轮都没开始过的会话「接着记录」打开时宿主报 session_open_failed
+NOTHING_PERSISTED = KernelError("session_open_failed", "会话打开失败，详情见宿主日志", 400)
+SKILL = TurnSelection(skills=("weekly-report",))
+
+
+async def test_first_message_that_changes_the_profile_opens_fresh_when_nothing_was_persisted(db):
+    """新会话第一条消息就 @ 了文件（或选了技能），配置版本和建会话时不同，要重开；宿主那边还没有记录，
+    「接着记录」打不开，改成新开（2026-10-26 新会话第一条带 @ 必然报「运行时暂时不可用」）。"""
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    env.kernel.open_effects = [NOTHING_PERSISTED]
+    await env.service.send(conversation, TurnInput(text="用周报技能"), SKILL)
+    assert [s.resume for s in env.kernel.opened] == [False, False]
+    assert env.kernel.sent[-1].text == "用周报技能"
+    assert await env.profiles.bound_version(conversation) == (await env.profiles.compile(conversation, SKILL)).version
+    await env.pump.close()
+
+
+async def test_a_conversation_with_turns_is_never_silently_reopened_fresh(db):
+    """跑过回合的会话打不开时照旧报错：新开会丢掉前面的上下文，不能悄悄这么做。"""
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    async with db() as session:
+        session.add(RunEvent(conversation_id=conversation.id, seq=1, workspace_id=WS, host_epoch="e1", host_cursor=1,
+                             kind="session/event", data={"type": "turn/start", "data": {"turn": 1}}))
+        await session.commit()
+    env.kernel.open_effects = [NOTHING_PERSISTED]
+    with pytest.raises(KernelError):
+        await env.service.send(conversation, TurnInput(text="用周报技能"), SKILL)
+    assert [s.resume for s in env.kernel.opened] == [False]
+    await env.pump.close()
+
+
+async def test_host_restart_before_the_first_message_opens_fresh(db):
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    env.kernel.send_effects = [SessionNotFound("session_not_found", "x", 404)]
+    env.kernel.open_effects = [NOTHING_PERSISTED]
+    await env.service.send(conversation, TurnInput(text="宿主刚重启"))
+    assert [s.resume for s in env.kernel.opened] == [False, False]
+    assert env.kernel.sent[-1].text == "宿主刚重启"
+    await env.pump.close()
+
+
+async def test_creating_with_the_first_selection_does_not_reopen(db):
+    """建会话时就带上第一条消息的选择：第一条发出去不用先释放再重开。"""
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER, selection=SKILL)
+    await env.service.send(conversation, TurnInput(text="用周报技能"), SKILL)
+    assert len(env.kernel.opened) == 1 and env.kernel.disposed == []
     await env.pump.close()
 
 

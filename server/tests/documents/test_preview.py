@@ -16,6 +16,8 @@ from knowwork_server.skills.errors import BlobIntegrityError
 from ..fake_sandbox import FakeSandbox
 from ..fakes import token_actor
 
+CONV = "/api/workspaces/default/conversations"
+
 pytestmark = pytest.mark.anyio
 TOKEN = "t" * 48
 AUTH = {"authorization": f"Bearer {TOKEN}"}
@@ -41,7 +43,7 @@ async def test_office_files_convert_once_and_are_cached(files_db, tmp_path):
     conv = await files_db.conversation()
     http, artifacts, sandbox, _ = setup(files_db, tmp_path)
     doc = await collect(artifacts, sandbox, conv, "简报.docx", b"PK-docx-content")
-    url = f"/api/conversations/{conv.id}/artifacts/{doc.id}/preview"
+    url = f"{CONV}/{conv.id}/artifacts/{doc.id}/preview"
     async with http:
         first = await http.get(url, headers=AUTH)
         second = await http.get(url, headers=AUTH)
@@ -58,9 +60,9 @@ async def test_pdf_is_returned_as_is_and_other_types_are_415(files_db, tmp_path)
     pdf = await collect(artifacts, sandbox, conv, "原件.pdf", b"%PDF-1.4 original")
     notes = await collect(artifacts, sandbox, conv, "说明.md", b"# notes")
     async with http:
-        raw = await http.get(f"/api/conversations/{conv.id}/artifacts/{pdf.id}/preview", headers=AUTH)
-        unsupported = await http.get(f"/api/conversations/{conv.id}/artifacts/{notes.id}/preview", headers=AUTH)
-        missing = await http.get(f"/api/conversations/{conv.id}/artifacts/art_none/preview", headers=AUTH)
+        raw = await http.get(f"{CONV}/{conv.id}/artifacts/{pdf.id}/preview", headers=AUTH)
+        unsupported = await http.get(f"{CONV}/{conv.id}/artifacts/{notes.id}/preview", headers=AUTH)
+        missing = await http.get(f"{CONV}/{conv.id}/artifacts/art_none/preview", headers=AUTH)
     assert raw.content == b"%PDF-1.4 original"
     assert unsupported.status_code == 415
     assert missing.status_code == 404
@@ -73,8 +75,8 @@ async def test_only_the_owner_can_preview(files_db, tmp_path):
     doc = await collect(artifacts, sandbox, conv, "a.pptx", b"PK-pptx")
     bob, *_ = setup(files_db, tmp_path, user="bob")
     async with bob:
-        response = await bob.get(f"/api/conversations/{conv.id}/artifacts/{doc.id}/preview", headers=AUTH)
-        anonymous = await bob.get(f"/api/conversations/{conv.id}/artifacts/{doc.id}/preview")
+        response = await bob.get(f"{CONV}/{conv.id}/artifacts/{doc.id}/preview", headers=AUTH)
+        anonymous = await bob.get(f"{CONV}/{conv.id}/artifacts/{doc.id}/preview")
     assert response.status_code == 404 and anonymous.status_code == 401
     assert sandbox.conversions == []
 
@@ -84,7 +86,7 @@ async def test_conversion_failure_is_explained_and_not_cached(files_db, tmp_path
     http, artifacts, sandbox, _ = setup(files_db, tmp_path)
     doc = await collect(artifacts, sandbox, conv, "坏.docx", b"PK-bad")
     sandbox.fail_convert = SandboxError("文档转换失败（invalid-document）")
-    url = f"/api/conversations/{conv.id}/artifacts/{doc.id}/preview"
+    url = f"{CONV}/{conv.id}/artifacts/{doc.id}/preview"
     async with http:
         failed = await http.get(url, headers=AUTH)
         sandbox.fail_convert = None
@@ -97,7 +99,7 @@ async def test_lost_cache_is_rebuilt_and_erase_removes_preview(files_db, tmp_pat
     conv = await files_db.conversation()
     http, artifacts, sandbox, stores = setup(files_db, tmp_path)
     doc = await collect(artifacts, sandbox, conv, "a.docx", b"PK-a")
-    url = f"/api/conversations/{conv.id}/artifacts/{doc.id}/preview"
+    url = f"{CONV}/{conv.id}/artifacts/{doc.id}/preview"
     async with http:
         pdf = (await http.get(url, headers=AUTH)).content
         await stores("ws1", conv.id).delete(hashlib.sha256(pdf).hexdigest())

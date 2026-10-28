@@ -99,12 +99,14 @@ def _collection(router: APIRouter, service: SkillService, member, base: str, sco
 
     @router.post(base, status_code=201)
     async def install(workspace_id: IdPath, request: Request, who: Who):
+        """新建技能"""
         actor = _actor(who, workspace_id, write=True)
         archive = await _archive(request, service.limits.max_archive_bytes)
         return (await _call(service.install(actor, scope, archive))).to_json()
 
     @router.get(base)
     async def list_skills(workspace_id: IdPath, who: Who):
+        """列出技能"""
         views = await _call(service.list(_actor(who, workspace_id, write=False), scope))
         return {"skills": [view.to_json() for view in views]}
 
@@ -117,12 +119,14 @@ def _items(router: APIRouter, service: SkillService, base: str, scope: str, perm
 
     @router.get(item)
     async def detail(workspace_id: IdPath, skill_id: IdPath, who: Reader):
+        """一个技能的详情"""
         view, releases = await _call(service.get(_actor(who, workspace_id, write=False), skill_id, scope=scope))
         return {**view.to_json(), "releases": [release.to_json() for release in releases]}
 
     @router.put(f"{item}/draft")
     async def replace_draft(workspace_id: IdPath, skill_id: IdPath, request: Request, who: Editor,
                             if_match: str | None = Header(default=None)):
+        """保存技能草稿"""
         actor = _actor(who, workspace_id, write=True)
         archive = await _archive(request, service.limits.max_archive_bytes)
         return (await _call(service.replace_draft(actor, skill_id, archive, scope=scope,
@@ -134,6 +138,7 @@ def _items(router: APIRouter, service: SkillService, base: str, scope: str, perm
     @router.post(f"{item}/publish", status_code=201)
     async def publish(workspace_id: IdPath, skill_id: IdPath, who: Owner, body: PublishBody | None = None,
                       if_match: str | None = Header(default=None)):
+        """发布技能"""
         actor = _actor(who, workspace_id, write=True)
         release = await _call(service.publish(actor, skill_id, scope=scope, version=body.version if body else None,
                                               expected_revision=_revision(if_match)))
@@ -141,6 +146,7 @@ def _items(router: APIRouter, service: SkillService, base: str, scope: str, perm
 
     @router.delete(item, status_code=204)
     async def remove(workspace_id: IdPath, skill_id: IdPath, who: Owner):
+        """删除技能"""
         await _call(service.delete(_actor(who, workspace_id, write=True), skill_id, scope=scope))
         return Response(status_code=204)
 
@@ -148,5 +154,6 @@ def _items(router: APIRouter, service: SkillService, base: str, scope: str, perm
 def _toggle(router: APIRouter, service: SkillService, path: str, scope: str, enabled: bool, Editor) -> None:
     @router.post(path)
     async def toggle(workspace_id: IdPath, skill_id: IdPath, who: Editor):
+        """启用或停用技能"""
         actor = _actor(who, workspace_id, write=True)
         return (await _call(service.set_enabled(actor, skill_id, enabled, scope=scope))).to_json()

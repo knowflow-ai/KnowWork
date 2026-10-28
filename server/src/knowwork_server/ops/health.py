@@ -85,10 +85,12 @@ def build_router(checks: Sequence[Check], *, timeout_seconds: float = DEFAULT_TI
 
     @router.get("/health")
     async def health() -> dict:
+        """存活检查"""
         return {"ok": True}
 
     @router.get("/ready")
     async def ready() -> JSONResponse:
+        """就绪检查（数据库、宿主都可用）"""
         results = await run_checks(frozen, timeout_seconds=timeout_seconds)
         passed = all(value == OK for value in results.values())
         return JSONResponse({"ready": passed, "checks": results}, status_code=200 if passed else 503)

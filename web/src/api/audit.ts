@@ -1,7 +1,7 @@
 /** 审计日志查询（server/src/knowwork_server/audit/api.py），只有空间 owner/admin 能看。 */
-import { request, seg } from './http';
+import { request } from './http';
 import { isRecord, listOf, num, str, text } from './parse';
-import { WORKSPACE_ID } from './workspace';
+import { workspacePath } from './workspace';
 
 export type ActorType = 'human' | 'agent' | 'system';
 export type AuditResult = 'success' | 'denied' | 'failed';
@@ -60,7 +60,7 @@ export async function listAuditLogs(
   filter: AuditFilter,
   cursor?: string | null,
 ): Promise<{ readonly items: readonly AuditEntry[]; readonly next: string | null }> {
-  const body = await request<unknown>(`/api/workspaces/${seg(WORKSPACE_ID)}/audit-logs`, {
+  const body = await request<unknown>(workspacePath('/audit-logs'), {
     query: {
       actorType: filter.actorType,
       result: filter.result,

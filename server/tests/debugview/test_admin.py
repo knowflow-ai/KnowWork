@@ -10,8 +10,9 @@ from fastapi import FastAPI, Header
 
 from knowwork_server.access.service import AccessService
 from knowwork_server.auth.principal import Principal
-from knowwork_server.conversations.models import Conversation, RunEvent
+from knowwork_server.conversations.models import AnswerFeedback, Conversation, RunEvent
 from knowwork_server.conversations.service import ConversationNotFound
+from knowwork_server.conversations.summaries import RunSummaries
 from knowwork_server.debugview import build_admin_router, build_debugview, build_run_records
 from knowwork_server.models.recorder import UsageRecorder
 from knowwork_server.models.tables import UsageRecord
@@ -51,13 +52,35 @@ async def profiles(user_ids):
     return {uid: Profile(name=f"{uid} 的名字", email=f"{uid}@corp.cn") for uid in user_ids}
 
 
+async def summarize(sessionmaker, ws, logs):
+    """样本帧经每轮汇总的观察者写进去（运行记录的列表读它）；帧上的时间挪到半小时前，落在默认的七天里。"""
+    owners = {cid: owner for cid, (owner, _) in logs.items()}
+
+    async def owner_of(conversation_id):
+        return owners.get(conversation_id)
+
+    async def knowledge(ended):
+        # verdict 等几项本来是回合结束后判断时（knowledge.answer_check）补进来的，这里直接给
+        return {"searches": 1, "cited": 0, "bases": ["builtin.kb1"], "cited_bases": [],
+                "verdict": "unanswered", "missing": "请假流程", "reason": "kb_lacks"} if ended.turn == 1 else None
+
+    summaries = RunSummaries(sessionmaker, owner_of)
+    summaries.contribute("knowledge", knowledge)
+    base = int((NOW - timedelta(minutes=30)).timestamp() * 1000)
+    for cid, (_, events) in logs.items():
+        for e in events:
+            if isinstance(e.data, dict) and "time" in e.data:
+                summaries(cid, ws, e.kind, {**e.data, "time": base + e.seq * 1000})
+    await summaries.drain()
+
+
 @pytest.fixture
 async def env(sessionmaker):
     ws = "ws_" + uuid.uuid4().hex[:10]
     access = AccessService(sessionmaker)
     assert await access.reload()
     await access.create_workspace(workspace_id=ws, name="运行记录", owner_user_id="boss")
-    await access.add_member("boss", ws, "alice", "viewer")
+    await access.add_member("boss", ws, "alice", "editor")
     mine = Conversation(id="c_" + uuid.uuid4().hex, workspace_id=ws, user_id="alice", title="请假条")
     own = Conversation(id="c_" + uuid.uuid4().hex, workspace_id=ws, user_id="boss", title="自己的")
     async with sessionmaker() as session:
@@ -68,12 +91,15 @@ async def env(sessionmaker):
                                      host_cursor=e.seq, kind=e.kind, data=e.data, ui=[],
                                      created_at=NOW - timedelta(minutes=30) + timedelta(seconds=e.seq))
                             for e in events)
+        session.add(AnswerFeedback(conversation_id=mine.id, run_id="run-1", workspace_id=ws, user_id="alice",
+                                   rating="dislike"))
         session.add_all(UsageRecord(workspace_id=ws, user_id="alice", conversation_id=mine.id, turn=u.turn,
                                     step=u.step, model_alias=u.model_alias, input_tokens=u.input_tokens,
                                     output_tokens=u.output_tokens, total_tokens=u.input_tokens + u.output_tokens,
                                     cost=u.cost, duration_ms=u.duration_ms, status=u.status, occurred_at=NOW,
                                     day=NOW.date()) for u in USAGE)
         await session.commit()
+    await summarize(sessionmaker, ws, {mine.id: ("alice", LOG), own.id: ("boss", LOG[:2])})
     sink = Sink()
     debug = build_debugview(sessionmaker, UsageRecorder(sessionmaker))
     records = build_run_records(sessionmaker, UsageRecorder(sessionmaker), debug, Finder([mine, own]), access, sink,
@@ -97,7 +123,8 @@ async def test_admin_lists_every_turn_with_status_usage_and_member_name(env):
     assert (first["title"], first["userName"], first["status"], first["modelCalls"], first["cost"]) == (
         "请假条", "alice 的名字", "completed", 2, "0.0012")
     assert first["durationMs"] is not None
-    assert rows[(mine.id, 2)]["status"] == "running"
+    assert (first["searches"], first["cited"], first["rating"], first["tools"]) == (1, 0, "dislike", ["bash"])
+    assert (rows[(mine.id, 2)]["status"], rows[(mine.id, 2)]["question"]) == ("running", "再来一次")
     assert rows[(env["own"].id, 1)]["status"] == "running"
     running = (await http.get(f"/api/workspaces/{ws}/runs", params={"status": "completed"},
                               headers={"x-user": "boss"})).json()
@@ -105,6 +132,26 @@ async def test_admin_lists_every_turn_with_status_usage_and_member_name(env):
     mine_only = (await http.get(f"/api/workspaces/{ws}/runs", params={"user": "boss"},
                                 headers={"x-user": "boss"})).json()
     assert {r["userId"] for r in mine_only["items"]} == {"boss"}
+
+
+async def test_runs_can_be_narrowed_to_uncited_disliked_or_unanswered_turns(env):
+    """检索了知识库却没引用（答完的才算）、被点了踩、判断没答上来的轮次，单独筛出来。"""
+    http, ws, mine = env["http"], env["ws"], env["mine"]
+    for signal in ("uncited", "disliked", "unanswered"):
+        body = (await http.get(f"/api/workspaces/{ws}/runs", params={"signal": signal},
+                               headers={"x-user": "boss"})).json()
+        assert [(r["conversationId"], r["turn"]) for r in body["items"]] == [(mine.id, 1)], signal
+    bad = await http.get(f"/api/workspaces/{ws}/runs", params={"signal": "slow"}, headers={"x-user": "boss"})
+    assert bad.status_code == 422
+
+
+async def test_runs_can_be_narrowed_to_a_tool_or_a_knowledge_base(env):
+    """问答大盘点工具、知识库那一行，跳到运行记录里用过这个工具、检索到这个库的那些轮。"""
+    http, ws, mine = env["http"], env["ws"], env["mine"]
+    for params, expected in (({"tool": "bash"}, [(mine.id, 1)]), ({"tool": "never"}, []),
+                             ({"base": "builtin.kb1"}, [(mine.id, 1)]), ({"base": "builtin.kb9"}, [])):
+        body = (await http.get(f"/api/workspaces/{ws}/runs", params=params, headers={"x-user": "boss"})).json()
+        assert [(r["conversationId"], r["turn"]) for r in body["items"]] == expected, params
 
 
 async def test_viewing_someone_elses_run_is_audited_and_members_are_refused(env):

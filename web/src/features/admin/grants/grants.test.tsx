@@ -20,14 +20,15 @@ function api(extra = {}) {
   return routeFetch({
     [`GET ${B}/grants`]: jsonResponse([
       { subject: 'user:u1', resource: 'knowledge_base:s1.*', action: 'use' },
+      { subject: 'user:u1', resource: 'knowledge_base:s1.gone', action: 'use' },
       { subject: 'user:u2', resource: 'knowledge_base:s1.d1', action: 'use' },
       { subject: 'group:g1', resource: 'skill:*', action: 'edit' },
       { subject: 'user:u2', resource: 'skill:sk_7f3a', action: 'use' },
-      { subject: 'role:viewer', resource: 'tool:*', action: 'owner' },
+      { subject: 'role:editor', resource: 'tool:*', action: 'owner' },
     ]),
     [`GET ${B}/members`]: jsonResponse([
       { user_id: 'u1', role: 'editor', name: '李雷', email: 'li@corp.cn' },
-      { user_id: 'u2', role: 'viewer', name: '韩梅梅', email: 'han@corp.cn' },
+      { user_id: 'u2', role: 'editor', name: '韩梅梅', email: 'han@corp.cn' },
     ]),
     [`GET ${B}/groups`]: jsonResponse([{ id: 'g1', name: '客服', members: [] }]),
     [`GET ${B}/departments`]: jsonResponse([
@@ -73,9 +74,15 @@ describe('GrantsPage', () => {
     renderWithApp(<GrantsPage />);
     expect(await screen.findByText('制度库 · 全部知识库')).toBeInTheDocument();
     expect(screen.getByText('制度库 · 员工手册')).toBeInTheDocument();
-    expect(await screen.findByText('李雷')).toBeInTheDocument();
+    expect(screen.getByText('制度库 · 已失效的知识库')).toHaveAttribute(
+      'title',
+      '这条授权已不起作用，可以撤销（knowledge_base:s1.gone）',
+    );
+    expect(screen.getByText('已删除或共享已撤销')).toBeInTheDocument();
+    expect(await screen.findAllByText('李雷')).not.toHaveLength(0);
     expect(screen.getByText('全部技能')).toBeInTheDocument();
-    expect(screen.getByText('只读成员')).toBeInTheDocument();
+    // 授给角色「成员」的那条（「成员」两个字页面上别处也有，取任意一处）
+    expect(screen.getAllByText('成员').length).toBeGreaterThan(0);
     expect(screen.getByText('全部工具')).toBeInTheDocument();
     expect(screen.getByText('完全管理')).toBeInTheDocument();
     const row = screen.getByText('制度库 · 全部知识库').closest('tr') as HTMLElement;
@@ -261,6 +268,7 @@ describe('授权的纯函数', () => {
     departments: [{ id: 'd1', name: '总部', parentId: null, members: [], children: [] }],
     resources: {},
     knowledge: [],
+    knowledgeLoaded: false,
     tools: [],
     typeLabels: Object.fromEntries(RESOURCE_TYPES.map((t) => [t.value, t.label])),
     trees: {},
@@ -277,6 +285,29 @@ describe('授权的纯函数', () => {
       name: 's9',
     });
     expect(resourceLabel('knowledge_base:*', dir).name).toBe('全部知识库');
+    expect(resourceLabel('knowledge_base:s1.gone', dir), '知识库列表还没取到，不下结论').toEqual({
+      type: '知识库',
+      name: 's1.gone',
+    });
+  });
+
+  it('知识库删了或共享撤销了：显示已失效，知识源取不到时照原样显示编号', () => {
+    const source = (error: string | null) => ({
+      sourceId: 's1',
+      sourceName: '制度库',
+      authMode: 'builtin',
+      enabled: true,
+      error,
+      bases: [],
+    });
+    const loaded = { ...dir, knowledgeLoaded: true, knowledge: [source(null)] } as Directory;
+    expect(resourceLabel('knowledge_base:s1.gone', loaded)).toEqual({
+      type: '知识库',
+      name: '制度库 · 已失效的知识库',
+      stale: true,
+    });
+    const broken = { ...loaded, knowledge: [source('连不上')] } as Directory;
+    expect(resourceLabel('knowledge_base:s1.gone', broken).name).toBe('s1.gone');
   });
 
   it('校验与选项', () => {
@@ -305,7 +336,7 @@ describe('授权的纯函数', () => {
     expect(resourceKey({ ...tool, resourceId: 'tool:mcp__a__x', all: true })).toBe('tool:*');
     expect(resourceKey({ ...kb, resourceId: 'knowledge_folder:f1', all: true })).toBe('knowledge_base:*');
     expect(subjectOptions('dept', dir)).toEqual([{ value: 'd1', label: '总部' }]);
-    expect(subjectOptions('role', dir).map((o) => o.value)).toEqual(['owner', 'admin', 'editor', 'viewer']);
+    expect(subjectOptions('role', dir).map((o) => o.value)).toEqual(['owner', 'admin', 'editor']);
   });
 });
 

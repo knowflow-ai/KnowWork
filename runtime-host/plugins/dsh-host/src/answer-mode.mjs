@@ -22,7 +22,8 @@ const CONTEXT = 'knowwork:answer-mode'
 const QUICK_TOOLS = new Set([SEARCH_TOOL])
 
 const QUICK_RULE = '本轮是快速问答：先调用 knowledge_search 检索，只依据检索到的内容回答并标注出处，不用先说明要做什么。'
-  + '检索不到或证据不够就直接说明，不要凭常识补全。致谢、寒暄这类不需要检索的话直接回答。'
+  + '检索不到或证据不够就直接说明，不要凭常识补全。'
+  + '致谢、寒暄这类不需要检索的话直接回答。'
   + '用户要处理附件、生成文件、执行操作或通读整篇文档时，请他切换到智能体模式。'
 
 const REJECTED = toolName => `快速问答模式只能检索知识库，不能调用 ${toolName}；需要时请用户切换到智能体模式`

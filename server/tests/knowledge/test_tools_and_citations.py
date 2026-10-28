@@ -16,12 +16,14 @@ from knowwork_server.knowledge.schemas import SourceCreate
 from knowwork_server.knowledge.service import SearchOptions, SearchOutcome
 from knowwork_server.knowledge.tools import (
     CAPTION_BUDGET,
+    CITATION_GUIDANCE,
     IMAGE_NOTE,
     READ_SCHEMA,
     SEARCH_SCHEMA,
+    _doc_header,
     _empty_note,
-    _hit,
     _passages,
+    _snippet,
     knowledge_tools,
 )
 from knowwork_server.tools.receipts import ReceiptStore
@@ -29,7 +31,7 @@ from knowwork_server.tools.registry import KW_NOW, StaticToolRegistry, ToolConte
 from knowwork_server.tools.service import ExecuteRequest, ToolService
 from knowwork_server.tools.tokens import ToolTokenSigner
 
-from .conftest import MASTER
+from .conftest import MASTER, flat
 from .knowflow_stub import SERVICE_KEY
 
 pytestmark = pytest.mark.anyio
@@ -67,14 +69,14 @@ async def test_search_tool_registers_citations_and_respects_caller(env):
     tools = tools_of(env.knowledge)
     alice = json.loads(await tools["knowledge_search"].handler(ToolContext("ws1", "conv-1", "alice"),
                                                                 {"query": "条款"}))
-    assert [r["ref"] for r in alice["results"]] == [1, 2, 3]
-    assert alice["results"][0]["page"] == 1
+    assert [r["ref"] for r in flat(alice)] == [1, 2, 3]
+    assert flat(alice)[0]["page"] == 1
     bob = json.loads(await tools["knowledge_search"].handler(ToolContext("ws1", "conv-2", "bob"), {"query": "条款"}))
-    assert {r["doc_ref"] for r in bob["results"]} == {"ds1/contract"}
-    assert {r["knowledge_base"] for r in alice["results"]} == {f"{source.id}.ds1", f"{source.id}.ds2"}
+    assert {r["doc_ref"] for r in flat(bob)} == {"ds1/contract"}
+    assert {r["knowledge_base"] for r in flat(alice)} == {f"{source.id}.ds1", f"{source.id}.ds2"}
     narrowed = json.loads(await tools["knowledge_search"].handler(
         ToolContext("ws1", "conv-3", "alice"), {"query": "条款", "knowledge_bases": [f"{source.id}.ds2"]}))
-    assert {r["doc_ref"] for r in narrowed["results"]} == {"ds2/secret"}
+    assert {r["doc_ref"] for r in flat(narrowed)} == {"ds2/secret"}
     check = await env.knowledge.citations.check_answer("ws1", "conv-2", "付款期限 30 天[1]，机密[3]。")
     assert check.text == "付款期限 30 天[1]，机密。" and check.removed == (3,)
 
@@ -119,7 +121,7 @@ async def test_selection_limits_which_bases_the_model_may_name(env):
     with pytest.raises(ToolFailure, match="不在本轮选择"):
         await tools["knowledge_read"].handler(ctx, {"source_id": source.id, "doc_ref": "ds1/contract"})
     hits = json.loads(await tools["knowledge_search"].handler(ctx, {"query": "x"}))
-    assert {r["knowledge_base"] for r in hits["results"]} == {f"{source.id}.ds2"}, "没点名就用本轮选择"
+    assert {r["knowledge_base"] for r in flat(hits)} == {f"{source.id}.ds2"}, "没点名就用本轮选择"
     assert any("ks_other" in note for note in hits["notes"])
 
 
@@ -171,7 +173,7 @@ async def test_tools_run_through_the_tool_bridge_with_user_from_token(env):
     result = await service.execute(claims, ExecuteRequest(tool_name="knowledge_search", arguments={"query": "条款"},
                                                           agent_session_id="conv-b", call_key="conv-b:call-1"))
     assert result.status == "succeeded"
-    assert {r["doc_ref"] for r in json.loads(result.content)["results"]} == {"ds1/contract"}
+    assert {r["doc_ref"] for r in flat(json.loads(result.content))} == {"ds1/contract"}
 
 
 async def test_discard_removes_the_whole_catalog(env):
@@ -183,12 +185,15 @@ async def test_discard_removes_the_whole_catalog(env):
 
 def test_hits_carry_images_and_version_note_only_when_present():
     plain = Evidence(source_id="s", doc_ref="d", span_ref="p", title="t", text="x")
-    assert "images" not in _hit(plain, 1) and "version_note" not in _hit(plain, 1)
+    assert "images" not in _snippet(plain, 1) and "version_note" not in _doc_header(plain)
+    assert "date" not in _doc_header(plain)
     rich = plain.model_copy(update={"images": (EvidenceImage(ref="i1", caption="流程图", url="/x"),),
-                                    "version_note": "已有更新版本"})
-    assert _hit(rich, 3)["images"] == [{"id": "IMG:3:0", "caption": "流程图"}], "短编号加描述，取图地址不给模型"
-    assert "images" not in _hit(rich, None), "没有引用编号的片段不能引用，图也放不进回答"
-    assert _hit(rich, 1)["version_note"] == "已有更新版本"
+                                    "version_note": "已有更新版本", "document_date": "2025-03-01"})
+    assert _snippet(rich, 3)["images"] == [{"id": "IMG:3:0", "caption": "流程图"}], "短编号加描述，取图地址不给模型"
+    assert "images" not in _snippet(rich, None), "没有引用编号的片段不能引用，图也放不进回答"
+    assert _doc_header(rich)["version_note"] == "已有更新版本"
+    assert _doc_header(rich)["date"] == "2025-03-01", "几份文件说法不一致时模型据此判断哪份较新"
+    assert "version_note" in CITATION_GUIDANCE and "date 较新的为准" in CITATION_GUIDANCE
 
 
 class ImageService:
@@ -263,29 +268,29 @@ async def test_read_tool_returns_an_outline_to_read_by_section_number(env):
 
 
 def test_hits_carry_the_documents_metadata():
-    """每条结果带上文档的元数据（字段：值）：问「这份合同哪年签的」「哪些属于财务部」，模型不用从正文里猜，
+    """结果里每份文档带上它的元数据（字段：值）：问「这份合同哪年签的」「哪些属于财务部」，模型不用从正文里猜，
     也核对得了筛选条件生效没有。没有元数据的知识源不带这一项。"""
     plain = Evidence(source_id="s", doc_ref="d", span_ref="p", title="合同", text="付款期限 30 天")
-    assert "metadata" not in _hit(plain, 1)
+    assert "metadata" not in _doc_header(plain)
     tagged = plain.model_copy(update={"metadata": (MetaItem(name="部门", value="财务部"),
                                                    MetaItem(name="签订日期", value="2025-03-01"),
                                                    MetaItem(name="标签", value="合同、采购"))})
-    assert _hit(tagged, 1)["metadata"] == {"部门": "财务部", "签订日期": "2025-03-01", "标签": "合同、采购"}
+    assert _doc_header(tagged)["metadata"] == {"部门": "财务部", "签订日期": "2025-03-01", "标签": "合同、采购"}
 
 
 def test_hits_say_which_section_they_are_in_without_touching_the_text():
     """章节路径单独给：正文开头不一定写着标题，模型靠它知道这段属于哪一章；正文保持原文。"""
     plain = Evidence(source_id="s", doc_ref="d", span_ref="p", title="t", text="住宿每晚 500 元")
-    assert "section" not in _hit(plain, 1)
+    assert "section" not in _snippet(plain, 1)
     placed = plain.model_copy(update={"locator": Locator(type="pdf", page=3, section_path=("第二章 费用", "2.1 住宿"))})
-    hit = _hit(placed, 1)
+    hit = _snippet(placed, 1)
     assert (hit["section"], hit["page"], hit["text"]) == ("第二章 费用 / 2.1 住宿", 3, "住宿每晚 500 元")
 
 
 def test_images_go_back_to_where_they_were_in_the_text():
     """知识源给了图的位置：图标记插回正文原位（模型看得到图前后是哪句话），没给位置的仍列在 images 里。"""
     text = "报销分三步。先填申请单。审批后报销。"
-    hit = _hit(Evidence(source_id="s", doc_ref="d", span_ref="p", title="t", text=text, images=(
+    hit = _snippet(Evidence(source_id="s", doc_ref="d", span_ref="p", title="t", text=text, images=(
         EvidenceImage(ref="a", caption="报销流程图", at=6),
         EvidenceImage(ref="b", at=len(text)),
         EvidenceImage(ref="c", caption="位置不明的图"),
@@ -296,13 +301,13 @@ def test_images_go_back_to_where_they_were_in_the_text():
     assert hit["images"] == [{"id": "IMG:2:2", "caption": "位置不明的图"}, {"id": "IMG:2:3", "caption": "位置越界"}]
     same = Evidence(source_id="s", doc_ref="d", span_ref="p", title="t", text="ab",
                     images=(EvidenceImage(ref="x", at=1), EvidenceImage(ref="y", at=1)))
-    assert _hit(same, 1)["text"] == 'a<image id="IMG:1:0"></image><image id="IMG:1:1"></image>b', "同一处的图保持先后"
-    assert _hit(same, None)["text"] == "ab", "没有引用编号的片段不插图"
+    assert _snippet(same, 1)["text"] == 'a<image id="IMG:1:0"></image><image id="IMG:1:1"></image>b', "同一处的图保持先后"
+    assert _snippet(same, None)["text"] == "ab", "没有引用编号的片段不插图"
 
 
 def test_images_without_caption_or_description_carry_the_text_around_them_apart():
     """没有图注和描述的图，知识源给的前后原文放在 <context> 里，和 <caption> 分开，模型不会当成图的内容。"""
-    hit = _hit(Evidence(source_id="s", doc_ref="d", span_ref="p", title="t", text="插头插好。不插好会触电。", images=(
+    hit = _snippet(Evidence(source_id="s", doc_ref="d", span_ref="p", title="t", text="插头插好。不插好会触电。", images=(
         EvidenceImage(ref="plug", context="前文：插头插好。", at=5),
         EvidenceImage(ref="lost", context="前文：插头插好。"),
         EvidenceImage(ref="bare"),
@@ -319,7 +324,7 @@ def test_every_image_is_placed_and_long_descriptions_share_a_budget():
     crowded = Evidence(source_id="s", doc_ref="d", span_ref="p", title="t", text="组装说明。风向调节的方法。",
                        images=(*early, EvidenceImage(ref="wind", caption="左右风向调节\n约45° 约45°", at=5),
                                EvidenceImage(ref="sign", context="前文：可动部位不可把手指伸入。", at=13)))
-    text = _hit(crowded, 2)["text"]
+    text = _snippet(crowded, 2)["text"]
     assert text.count("<image") == 8, "图全部插回原位"
     assert f"<caption>{long}</caption>" in text, "预算内给完整描述"
     assert text.count("<caption>部件示意图</caption>") == 5, "超出预算的只留第一行"

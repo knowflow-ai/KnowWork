@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.2-2b7de9" alt="Version: v0.0.2"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.3-2b7de9" alt="Version: v0.0.3"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -94,6 +94,7 @@ deploy/install.sh
 > 不需要执行命令和生成文件时，用 `deploy/install.sh --no-sandbox` 关掉。
 
 部署选项、HTTPS、升级见 [guide/deploy.md](guide/deploy.md)，配置项见 [guide/configuration.md](guide/configuration.md)。
+别的系统要调 KnowWork（API Key、对外知识接口、MCP），见 [guide/api.md](guide/api.md)；部署好以后接口文档在 `/api/docs`。
 
 ### 本机开发
 
@@ -129,7 +130,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 | `runtime-host/` | 运行时宿主：DSH 配置档、插件组装（`cordis.patch.yml`）与 KnowWork 自己的插件 |
 | `web/` | 前端：React 19、TypeScript、Vite、Tailwind 4 |
 | `deploy/` | Docker Compose、各镜像的 Dockerfile、nginx 网关、`install.sh` |
-| `guide/` | 部署、配置、开发 |
+| `guide/` | 部署、配置、开发、API 使用说明 |
 
 
 ## 几个设计取舍
@@ -221,7 +222,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 | 能力 | 说明 |
 |---|---|
 | 组织 | 成员、邀请、部门树、用户组 |
-| 角色与授权 | 空间内四档角色；技能、工具、知识库可以授权给人、用户组、部门，沿部门树继承；登记的模型空间成员都能用 |
+| 角色与授权 | 空间内三档角色（所有者、管理员、成员）；技能、工具、知识库可以授权给人、用户组、部门，沿部门树继承；登记的模型空间成员都能用 |
 | 数据隔离 | PostgreSQL 行级安全按工作空间隔离，应用账号不是表的所有者 |
 | 审计 | 人的写操作和 Agent 的工具调用分开记录，可以查询 |
 | 运行记录 | 管理员按时间、成员、状态查看全空间的每一轮；查看别人的运行会记进审计 |
@@ -249,7 +250,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 
 ## 现状与路线图
 
-当前版本 v0.0.2，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 v0.0.3，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
 
 接下来要做：技能验证台（用例、结构断言、草稿版对比发布版）、场景包、固定工作流的界面、备份与恢复、修改密码与禁用账号。
 

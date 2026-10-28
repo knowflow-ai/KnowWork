@@ -195,6 +195,8 @@ export interface CitationSource {
   /** 这一块里每处的位置与原文：回答里原样写了某处原文时只标那几处（components/claim.ts） */
   readonly spots?: readonly { readonly locate: PreviewLocate; readonly quote: string }[];
   readonly images?: readonly CitationImage[];
+  /** 知识源给的版本提示（例如「可能已有新版《…》」），卡片上照原样显示 */
+  readonly versionNote?: string;
 }
 
 /**

@@ -5,9 +5,20 @@
 import { useState } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { ChevronDown, ChevronRight } from '@openai/apps-sdk-ui/components/Icon';
-import type { DebugStep, DebugToolCall } from '../../api/debug';
+import type { DebugStep, DebugToolCall, DebugTrace } from '../../api/debug';
 import { Block } from './Block';
 import { duration, prettyJson, stepTarget } from './format';
+
+/** 「视觉检索 · 扩展知识库：命中 6 页、展开成 9 块」，下面每行一条明细。 */
+export function traceText(trace: readonly DebugTrace[]): string {
+  return trace
+    .map((item) => {
+      const head = [item.label, item.source].filter(Boolean).join(' · ');
+      const lines = item.lines.map((line) => `  ${line}`);
+      return [`${head}${item.summary ? `：${item.summary}` : ''}`, ...lines].join('\n');
+    })
+    .join('\n');
+}
 
 function ToolCall({ call }: { readonly call: DebugToolCall }) {
   const notes = [
@@ -25,6 +36,7 @@ function ToolCall({ call }: { readonly call: DebugToolCall }) {
       </div>
       <Block label="参数" text={prettyJson(call.arguments) || '（无）'} code />
       <Block label="结果" text={call.result ?? '（没有收到结果）'} code />
+      {call.trace.length > 0 ? <Block label="检索过程（没有交给模型）" text={traceText(call.trace)} /> : null}
     </section>
   );
 }

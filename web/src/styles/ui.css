@@ -236,12 +236,18 @@
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
+/* 窄屏时标签横着滚，纵向不滚。只写 overflow-x: auto 时纵向也会变成可滚动，选中标签的下划线往下伸 1 像素
+ * 压在分隔线上，标签栏就自己多出一条竖滚动条（2026-10-26，一直显示滚动条的系统上看得到）。
+ * 下划线留在 1 像素的内边距里，再用负外边距压回分隔线上，看起来和原来一样 */
 .kw-tabs-list {
   display: flex;
   flex: 1;
   gap: 24px;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 1px;
+  margin-bottom: -1px;
 }
 
 .kw-tabs-trigger {
@@ -390,6 +396,187 @@
 
 .kw-field.is-invalid .kw-field-note {
   color: var(--red-500);
+}
+
+/* ---------- 设置行（照 ChatGPT 设置页）：左边标题与说明，右边控件，行间细线 ---------- */
+.kw-setting-list {
+  max-width: 720px;
+}
+
+.kw-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 14px 0;
+}
+
+.kw-setting-row + .kw-setting-row {
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.kw-setting-row-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.kw-setting-row-title {
+  display: block;
+  font-size: var(--font-text-sm-size);
+  font-weight: var(--font-weight-medium);
+}
+
+.kw-setting-row-description {
+  margin: 2px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+  line-height: var(--font-text-xs-line-height);
+}
+
+.kw-setting-row-control {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- 指标卡（ui/Metric）：名称、大号数值、一句补充；几张并排，窄了自动换行 ---------- */
+.kw-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.kw-metric {
+  padding: 14px 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.kw-metric-label {
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-metric-value {
+  margin-top: 4px;
+  font-size: var(--font-heading-lg-size);
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.kw-metric-hint {
+  margin-top: 2px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-text-xs-size);
+}
+
+/* ---------- 趋势折线（ui/TrendChart）：单色，线是正文色、面积是它的淡填充；刻度和悬停用 HTML 叠在 SVG 上 ---------- */
+.kw-trend {
+  margin: 0;
+}
+
+.kw-trend-title {
+  margin-bottom: 8px;
+  font-size: var(--font-text-sm-size);
+  font-weight: var(--font-weight-medium);
+}
+
+.kw-trend-axis,
+.kw-trend-ticks {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-text-xs-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.kw-trend-axis {
+  margin-bottom: 4px;
+}
+
+.kw-trend-plot {
+  position: relative;
+}
+
+.kw-trend-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.kw-trend-grid {
+  stroke: var(--color-border-subtle);
+  stroke-width: 1;
+}
+
+.kw-trend-line {
+  fill: none;
+  stroke: var(--color-text);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.kw-trend-fill-top {
+  stop-color: var(--color-text);
+  stop-opacity: 0.1;
+}
+
+.kw-trend-fill-bottom {
+  stop-color: var(--color-text);
+  stop-opacity: 0;
+}
+
+.kw-trend-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-border);
+  pointer-events: none;
+}
+
+.kw-trend-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border: 2px solid var(--color-surface);
+  border-radius: var(--radius-full);
+  background: var(--color-text);
+  pointer-events: none;
+}
+
+.kw-trend-tip {
+  position: absolute;
+  top: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-300);
+  font-size: var(--font-text-xs-size);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(8px);
+}
+
+.kw-trend-tip[data-side='left'] {
+  transform: translateX(calc(-100% - 8px));
+}
+
+.kw-trend-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+
+/* ---------- 整块区域的空状态（ui/Empty 加 kw-area-state）----------
+ * 组件库的 EmptyMessage 本来撑满所在区域、上下左右居中；标签页、整页这类没有固定高度的区域，给它一个最小高度，
+ * 空状态落在空白的中间，不贴在顶部。区块里的一小块没有内容时写一句灰字，不用它。 */
+.kw-area-state {
+  min-height: 360px;
+  padding: 48px 24px;
 }
 
 /* ---------- 轻提示 ---------- */

@@ -80,6 +80,7 @@ function useDirectory(): Directory {
       departments: departments.data ?? [],
       resources,
       knowledge: knowledge.data ?? [],
+      knowledgeLoaded: knowledge.isSuccess,
       tools: mcpServers.data ?? [],
       typeLabels: Object.fromEntries([
         ...RESOURCE_TYPES.map((t) => [t.value, t.label] as const),
@@ -92,6 +93,7 @@ function useDirectory(): Directory {
     groups.data,
     departments.data,
     knowledge.data,
+    knowledge.isSuccess,
     mcpServers.data,
     skills.data,
     extras,
@@ -99,15 +101,19 @@ function useDirectory(): Directory {
   ]);
 }
 
-/** 类型用灰色小标签，名称跟在后面。 */
+/** 类型用灰色小标签，名称跟在后面；note 是名称后面的浅色说明（例如资源已失效）。 */
 function Labeled({
   kind,
   name,
   icon,
+  note,
+  title,
 }: {
   readonly kind: string;
   readonly name: string;
   readonly icon?: ReactNode;
+  readonly note?: string;
+  readonly title?: string;
 }) {
   return (
     <span className="kw-labeled">
@@ -119,7 +125,12 @@ function Labeled({
           {icon}
         </span>
       ) : null}
-      <span>{name}</span>
+      <span title={title}>{name}</span>
+      {note ? (
+        <span className="kw-secondary" title={title}>
+          {note}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -137,7 +148,15 @@ export default function GrantsPage() {
   const subjectOf = (g: Grant) => subjectLabel(g.subject, dir);
   const resourceOf = (g: Grant) => {
     const r = resourceLabel(g.resource, dir);
-    return { kind: r.type, name: r.name, icon: resourceIcon(g.resource) };
+    return {
+      kind: r.type,
+      name: r.name,
+      icon: resourceIcon(g.resource),
+      // 列窄，说明只写原因；完整说明和原来的编号（给排查用）放在悬停提示里
+      ...(r.stale
+        ? { note: '已删除或共享已撤销', title: `这条授权已不起作用，可以撤销（${g.resource}）` }
+        : {}),
+    };
   };
   const rows = useMemo(
     () =>

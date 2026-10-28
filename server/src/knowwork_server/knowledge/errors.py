@@ -58,3 +58,10 @@ class NoReadableKnowledge(KnowledgeError):
 
     code = "no_readable_knowledge"
     status = 403
+
+
+class Unsupported(KnowledgeError):
+    """知识源不支持这个操作（例如没声明 fetch 却要取文件）。"""
+
+    code = "unsupported"
+    status = 400

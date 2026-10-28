@@ -45,31 +45,38 @@ def build_router(admin: SourceAdmin, current_principal: Callable[..., Awaitable[
 
     @router.get("/knowledge-bases", response_model=list[SourceBases])
     async def list_bases(workspace_id: IdPath, who: Who):
+        """各知识源下有哪些知识库（授权用）"""
         return await _call(admin.catalog(who.user_id, workspace_id))
 
     @router.get(S, response_model=list[SourceDetail | SourceSummary])
     async def list_sources(workspace_id: IdPath, who: Who):
+        """列出知识源"""
         return await _call(admin.list(who.user_id, workspace_id))
 
     @router.post(S, status_code=201, response_model=SourceDetail)
     async def create(workspace_id: IdPath, body: SourceCreate, who: Who):
+        """接入知识源"""
         return await _call(admin.create(who.user_id, workspace_id, body))
 
     @router.get(S + "/{source_id}", response_model=SourceDetail | SourceSummary)
     async def get(workspace_id: IdPath, source_id: IdPath, who: Who):
+        """一个知识源的配置"""
         return await _call(admin.get(who.user_id, workspace_id, source_id))
 
     @router.patch(S + "/{source_id}", response_model=SourceDetail)
     async def update(workspace_id: IdPath, source_id: IdPath, body: SourcePatch, who: Who):
+        """修改知识源"""
         return await _call(admin.update(who.user_id, workspace_id, source_id, body))
 
     @router.delete(S + "/{source_id}", status_code=204)
     async def delete(workspace_id: IdPath, source_id: IdPath, who: Who):
+        """删除知识源"""
         await _call(admin.delete(who.user_id, workspace_id, source_id))
         return Response(status_code=204)
 
     @router.post(S + "/{source_id}/test", response_model=ProbeResult)
     async def probe(workspace_id: IdPath, source_id: IdPath, who: Who):
+        """测试知识源连接"""
         return await _call(admin.probe(who.user_id, workspace_id, source_id))
 
     return router

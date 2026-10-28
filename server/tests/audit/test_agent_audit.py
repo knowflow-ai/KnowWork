@@ -22,7 +22,7 @@ async def note(_ctx, arguments):
 
 @pytest.fixture
 async def tools(app_sessionmaker, memory_sink):
-    scoped = make_workspace_sessionmaker(app_sessionmaker.kw["bind"], "ws1")
+    scoped = make_workspace_sessionmaker(app_sessionmaker.kw["bind"])
     registry = StaticToolRegistry.of([KW_NOW, BuiltinTool(ToolSpec("kw_note", "记一笔", SCHEMA, "write"), note)])
     service = build_tool_service("m" * 40, scoped, registry=registry, audit=tool_audit_hook(memory_sink))
     claims = service.verify(await service.issue_session_token("ws1", "conv-1", user_id="alice"))
@@ -65,7 +65,7 @@ async def test_hook_failure_does_not_break_the_call(app_sessionmaker, caplog):
     async def broken(_execution):
         raise RuntimeError("审计挂了")
 
-    scoped = make_workspace_sessionmaker(app_sessionmaker.kw["bind"], "ws1")
+    scoped = make_workspace_sessionmaker(app_sessionmaker.kw["bind"])
     service = build_tool_service("m" * 40, scoped, registry=StaticToolRegistry.of([KW_NOW]), audit=broken)
     claims = service.verify(await service.issue_session_token("ws1", "conv-2", user_id="alice"))
     with caplog.at_level(logging.ERROR):

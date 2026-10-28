@@ -23,8 +23,11 @@ LocatorType = Literal["pdf", "docx", "slide", "sheet", "text"]
 SearchMode = Literal["hybrid", "semantic", "keyword"]
 FilterOp = Literal["eq", "ne", "in", "gt", "gte", "lt", "lte", "contains"]
 # 知识源可以声明支持的可选能力（KnowledgeSource.features）。不支持的参数由业务服务去掉并在结果里说明，不静默
-# pins：检索范围里按知识库点名文档与标签（用户 @ 的）；document_query：列文档时按名字找（@ 菜单搜文件）
-FEATURES = frozenset({"mode", "folders", "tags", "filters", "section", "chunk", "find", "pins", "document_query"})
+# pins：检索范围里按知识库点名文档与标签（用户 @ 的）；document_query：列文档时按名字找（@ 菜单搜文件）；
+# fetch：取文件（原文件、单张图、页图），knowledge_fetch 放进会话工作区给智能体用
+FEATURES = frozenset({"mode", "folders", "tags", "filters", "section", "chunk", "find", "pins", "document_query",
+                      "fetch"})
+MAX_FETCH_PAGES = 5  # 一次最多取几页页图：页图大，取多了放进会话也看不过来
 MAX_PINNED = 50
 
 
@@ -157,6 +160,8 @@ class Evidence(_Frozen):
     images: tuple[EvidenceImage, ...] = ()
     # 版本提示（例如「这份文档已有更新版本」），知识源给出的一句话，原样展示给模型与用户
     version_note: str | None = Field(default=None, max_length=300)
+    # 文档的日期（YYYY-MM-DD，可选，知识源给的上传或更新日期）：几份文件说法不一致时，模型据此判断哪份较新
+    document_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     # 文档的元数据（可选）：模型回答「哪年签的」「哪个部门的」这类问题直接用，也核对得了筛选条件生效没有
     metadata: tuple[MetaItem, ...] = Field(default=(), max_length=MAX_META_FIELDS)
 
@@ -290,6 +295,38 @@ class OutlineNode(_Frozen):
     tables: int = 0
 
 
+class FetchRequest(_Frozen):
+    """取文件（knowledge_fetch）：what 是 file 原文件、image 单张图（image_ref 是检索结果里那张图的 ref）、
+    pages 页图（first_page 到 last_page，从 1 起，最多 MAX_FETCH_PAGES 页）。"""
+
+    doc_ref: str = Field(min_length=1, max_length=500)
+    what: Literal["file", "image", "pages"]
+    image_ref: str | None = Field(default=None, min_length=1, max_length=300)
+    first_page: int | None = Field(default=None, ge=1)
+    last_page: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _complete(self) -> Self:
+        if self.what == "image" and not self.image_ref:
+            raise ValueError("取单张图要给 image_ref")
+        if self.what == "pages":
+            if self.first_page is None:
+                raise ValueError("取页图要给页码")
+            last = self.last_page or self.first_page
+            if last < self.first_page or last - self.first_page + 1 > MAX_FETCH_PAGES:
+                raise ValueError(f"页码范围不对：一次最多取 {MAX_FETCH_PAGES} 页")
+        return self
+
+
+class FetchedFile(_Frozen):
+    """取到的一个文件：name 是给人看的文件名（含扩展名），page 是页图对应的页码。"""
+
+    name: str = Field(min_length=1, max_length=200)
+    mime: str = Field(min_length=1, max_length=200)
+    data: bytes
+    page: int | None = None
+
+
 class ReadRequest(_Frozen):
     """一次阅读。默认从 cursor（或开头）顺序读；section、chunk、find 三选一；outline 是看目录，可以配 section 只看那一章
     下面的子目录。知识源在 features 里声明支持哪些。"""
@@ -315,12 +352,24 @@ class ReadRequest(_Frozen):
         return frozenset(name for name in ("outline", "section", "chunk", "find") if getattr(self, name))
 
 
+class SearchTraceEntry(_Frozen):
+    """检索过程里的一项（只记录、给运行详情看，不交给模型）：哪一路或哪一步、一句结论、几行明细。
+    例如「视觉检索」「命中 6 页、展开成 9 块」「手册 第 3 页 分数 12.41，进了结果第 1 名」。"""
+
+    label: str = Field(max_length=50)
+    summary: str = Field(default="", max_length=500)
+    lines: tuple[str, ...] = Field(default=(), max_length=50)
+    source: str = Field(default="", max_length=100)  # 哪个知识源；知识服务合并时填上
+
+
 class SearchHits(_Frozen):
     """知识源的检索结果连同给模型的说明（例如按同义词表补了哪些词，模型才知道结果里的另一个说法就是它问的）。
+    trace 是检索过程（各路召回、重排的情况），只进检索记录与运行详情，不给模型：给模型会费上下文还会干扰作答。
     知识源也可以只返回证据列表。"""
 
     evidence: tuple[Evidence, ...]
     notes: tuple[str, ...] = ()
+    trace: tuple[SearchTraceEntry, ...] = ()
 
 
 class ReadResult(_Frozen):
@@ -376,4 +425,8 @@ class KnowledgeSource(Protocol):
 
     async def probe(self, caller: Caller) -> None:
         """连通测试：以调用者身份发一个最小请求，失败抛 KnowledgeError。"""
+        ...
+
+    async def fetch(self, caller: Caller, request: FetchRequest) -> tuple[FetchedFile, ...]:
+        """取文件（features 里声明了 fetch 才会被调用）：原文件、单张图或几页页图。取不到抛 KnowledgeError。"""
         ...

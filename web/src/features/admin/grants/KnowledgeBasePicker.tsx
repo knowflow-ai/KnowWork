@@ -19,6 +19,7 @@ function fromTree(nodes: readonly GrantTreeNode[]): readonly TreeSelectNode[] {
     key: node.resource,
     label: node.name,
     icon: resourceIcon(node.resource),
+    ...(node.selectable === false ? { selectable: false } : {}),
     children: fromTree(node.children),
   }));
 }

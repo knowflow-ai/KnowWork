@@ -1,6 +1,7 @@
 """网关按别名路由：查模型目录取厂商地址与密钥；空目录回退固定上游；流式按字节转发；超时可配。"""
 
 import asyncio
+import gzip
 import json
 
 import httpx
@@ -100,6 +101,33 @@ async def test_streams_bytes_through():
         received = b"".join([chunk async for chunk in response.aiter_raw()])
         assert response.headers["content-type"].startswith("text/event-stream")
     assert received == b"".join(chunks)
+
+
+class GzipUpstream(Upstream):
+    """不管请求头怎么写都把 SSE 压成 gzip 的上游（DeepSeek 官方接口就会压）。记下请求带的 accept-encoding。"""
+
+    def __call__(self, request: httpx.Request):
+        self.requests.append({"accept_encoding": request.headers.get("accept-encoding")})
+        return httpx.Response(self.status, stream=httpx.ByteStream(gzip.compress(b"".join(self.chunks))),
+                              headers={"content-type": "text/event-stream", "content-encoding": "gzip"})
+
+
+@pytest.mark.parametrize("catalog", [True, False], ids=["routed", "fixed"])
+async def test_compressed_upstream_streams_are_decoded_before_relaying(catalog):
+    """上游把流压缩了：宿主拿到的必须是解压后的 SSE，也不能带 content-encoding（否则宿主解不出 data 行，
+    每轮都报「Stream ended without finish_reason」）。请求时就说不要压缩，流式出字不被压缩攒块拖慢。"""
+    chunks = (b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", b"data: [DONE]\n\n")
+    upstream = GzipUpstream(chunks)
+    resolver = Resolver(ROUTE if catalog else None)
+    transport = httpx.MockTransport(upstream)
+    kwargs = {"routed": transport} if catalog else {"routed": httpx.MockTransport(Upstream()), "fixed": upstream}
+    async with (_client(resolver, **kwargs) as client,
+                client.stream("POST", URL, json={"model": "qwen", "messages": MESSAGES, "stream": True},
+                              headers=_auth()) as response):
+        received = b"".join([chunk async for chunk in response.aiter_raw()])
+        assert "content-encoding" not in response.headers
+    assert received == b"".join(chunks)
+    assert upstream.requests == [{"accept_encoding": "identity"}]
 
 
 async def test_empty_catalog_falls_back_to_fixed_upstream():
@@ -288,9 +316,9 @@ def test_httpx_read_timeout_does_not_cut_the_first_token():
 async def test_with_real_catalog(models):
     """端到端：真实模型目录 + 行级安全，网关解密密钥后转发。"""
     catalog = models.catalog
-    provider = await catalog.create_provider("bob", "ws1", ProviderCreate(
+    provider = await catalog.create_provider("root", ProviderCreate(
         name="Qwen", base_url="http://provider/v1", api_key="sk-real-provider-0000"))
-    await catalog.create_model("bob", "ws1", ModelCreate(provider_id=provider.id, alias="qwen", name="qwen-plus"))
+    await catalog.create_model("root", ModelCreate(provider_id=provider.id, alias="qwen", name="qwen-plus"))
     routed = Upstream()
     async with _client(catalog, routed=httpx.MockTransport(routed)) as client:
         ok = await client.post(URL, json={"model": "qwen", "messages": MESSAGES}, headers=_auth())
@@ -298,5 +326,5 @@ async def test_with_real_catalog(models):
         unknown = await client.post(URL, json={"model": "gpt", "messages": MESSAGES}, headers=_auth())
     assert ok.status_code == 200 and routed.requests[0]["auth"] == "Bearer sk-real-provider-0000"
     assert routed.requests[0]["body"]["model"] == "qwen-plus"
-    assert other_ws.status_code == 200 and len(routed.requests) == 1, "别的空间看不到这个模型，走它自己的回退"
+    assert other_ws.status_code == 200 and len(routed.requests) == 2, "模型全平台共用，别的空间也用这一个"
     assert unknown.status_code == 404

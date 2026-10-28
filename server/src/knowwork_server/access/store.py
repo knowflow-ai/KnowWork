@@ -73,10 +73,16 @@ async def permissions_on(session: AsyncSession, workspace_id: str, resources: tu
     return tuple(_rule_of(row) for row in (await session.scalars(stmt.order_by(CasbinRule.id))).all())
 
 
-async def load_all(sessionmaker: async_sessionmaker) -> tuple[Rule, ...]:
-    """按空间逐个读取策略：每个空间在自己的事务里设置 app.workspace_id，行级安全下也读得到。"""
+async def closed_workspaces(sessionmaker: async_sessionmaker) -> frozenset[str]:
+    """关闭（软删除）了的空间。"""
     async with sessionmaker() as session:
-        workspace_ids = (await session.scalars(select(Workspace.id))).all()
+        return frozenset((await session.scalars(select(Workspace.id).where(Workspace.deleted_at.is_not(None)))).all())
+
+
+async def load_all(sessionmaker: async_sessionmaker) -> tuple[Rule, ...]:
+    """按空间逐个读取策略：每个空间在自己的事务里设置 app.workspace_id，行级安全下也读得到。关闭了的空间不读。"""
+    async with sessionmaker() as session:
+        workspace_ids = (await session.scalars(select(Workspace.id).where(Workspace.deleted_at.is_(None)))).all()
     rules: list[Rule] = []
     for workspace_id in workspace_ids:
         async with sessionmaker() as session, session.begin():

@@ -21,7 +21,7 @@ log = logging.getLogger("e5")
 async def _scenario(service):
     """acme：集团 > 研发中心 > 后端组，集团 > 销售部；用户组 法务、客服。beta 是另一个空间。"""
     await service.create_workspace(workspace_id="acme", name="ACME", owner_user_id="o")
-    for user, role in [("a", "admin"), ("e", "editor"), ("v", "viewer")] + [(f"u{i}", "viewer") for i in range(1, 8)]:
+    for user, role in [("a", "admin"), ("e", "editor"), ("v", "editor")] + [(f"u{i}", "editor") for i in range(1, 8)]:
         await service.add_member("o", "acme", user, role)
     hq = await service.create_department("a", "acme", "集团")
     rd = await service.create_department("a", "acme", "研发中心", hq)
@@ -35,11 +35,11 @@ async def _scenario(service):
         await service.add_group_member("a", "acme", group, user)
     grants = [(f"dept:{hq}", "skill:hq", "use"), (f"dept:{rd}", "skill:rd", "edit"), (f"dept:{be}", "tool:be", "owner"),
               (f"group:{legal}", "knowledge_base:law.*", "use"), (f"group:{cs}", "knowledge_base:cs.faq", "edit"),
-              ("user:u6", "skill:solo", "use"), ("role:editor", "skill:*", "use"), (f"dept:{sales}", "tool:crm", "use")]
+              ("user:u6", "skill:solo", "use"), ("role:editor", "skill:common", "use"), (f"dept:{sales}", "tool:crm", "use")]
     for subject, resource, action in grants:
         await service.grant("a", "acme", subject, resource, action)
     await service.create_workspace(workspace_id="beta", name="Beta", owner_user_id="u1")
-    await service.add_member("u1", "beta", "u2", "viewer")
+    await service.add_member("u1", "beta", "u2", "editor")
     return {"hq": hq, "rd": rd, "be": be, "sales": sales, "legal": legal, "cs": cs}
 
 
@@ -59,14 +59,14 @@ CASES = [
     # 直接授权给个人
     ("u6", "acme", "skill:solo", "use", True), ("u6", "acme", "skill:solo", "edit", False),
     ("u6", "acme", "skill:hq", "use", False),
-    # 四档角色
+    # 三档角色（「只读成员」2026-10-26 并进了「成员」）；授给角色「成员」等于授给全体普通成员
     ("o", "acme", "workspace", "owner", True), ("o", "acme", "skill:anything", "owner", True),
     ("a", "acme", "workspace", "edit", True), ("a", "acme", "workspace", "owner", False),
-    ("a", "acme", "tool:x", "owner", True), ("e", "acme", "skill:any", "use", True),
-    ("e", "acme", "skill:any", "edit", False), ("e", "acme", "workspace", "edit", False),
+    ("a", "acme", "tool:x", "owner", True), ("e", "acme", "skill:common", "use", True),
+    ("e", "acme", "skill:common", "edit", False), ("e", "acme", "workspace", "edit", False),
     ("e", "acme", "tool:any", "use", False), ("v", "acme", "workspace", "use", True),
-    ("v", "acme", "workspace", "edit", False), ("v", "acme", "knowledge_base:law.contracts", "use", False),
-    ("v", "acme", "skill:any", "use", False),
+    ("v", "acme", "knowledge_base:law.contracts", "use", False),
+    ("v", "acme", "skill:any", "use", False), ("v", "acme", "skill:common", "use", True),
     # 跨空间隔离
     ("u3", "beta", "tool:crm", "use", False), ("u1", "beta", "workspace", "owner", True),
     ("o", "beta", "workspace", "use", False), ("a", "beta", "tool:x", "use", False),
@@ -103,7 +103,7 @@ async def _seed_large(access_db, service, *, policies: int, users: int, depts: i
                   "v2": "big", "v3": ""} for r in dept_rows if r["parent_id"]]
     rule_rows += [{"workspace_id": "big", "ptype": "g", "v0": f"user:u{i}", "v1": f"dept:d{depts - 1 - i % min(100, depts)}",
                    "v2": "big", "v3": ""} for i in range(users)]
-    rule_rows += [{"workspace_id": "big", "ptype": "g", "v0": f"user:u{i}", "v1": "role:viewer", "v2": "big", "v3": ""}
+    rule_rows += [{"workspace_id": "big", "ptype": "g", "v0": f"user:u{i}", "v1": "role:editor", "v2": "big", "v3": ""}
                   for i in range(users)]
     kinds = ("skill", "tool", "knowledge_source")
     rule_rows += [{"workspace_id": "big", "ptype": "p", "v0": f"dept:d{i % depts}" if i % 3 else f"user:u{i % users}",
@@ -111,7 +111,7 @@ async def _seed_large(access_db, service, *, policies: int, users: int, depts: i
     engine = create_async_engine(access_db.admin_url)
     async with engine.begin() as conn:
         await conn.execute(insert(Department), sorted(dept_rows, key=lambda r: r["parent_id"] is not None))
-        await conn.execute(insert(WorkspaceMember), [{"workspace_id": "big", "user_id": f"u{i}", "role": "viewer"}
+        await conn.execute(insert(WorkspaceMember), [{"workspace_id": "big", "user_id": f"u{i}", "role": "editor"}
                                                      for i in range(users)])
         await conn.execute(insert(DepartmentMember), [{"department_id": f"d{depts - 1 - i % min(100, depts)}", "user_id": f"u{i}",
                                                        "workspace_id": "big", "is_primary": True}

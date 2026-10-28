@@ -51,6 +51,7 @@ def build_router(query: AuditQuery, access: AccessService,
                         actor_id: ActorQuery = None, actor_type: ActorTypeQuery = None, action: ActionQuery = None,
                         result: ResultQuery = None, limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = 50,
                         cursor: Annotated[str | None, Query(max_length=400)] = None):
+        """查审计日志"""
         if not access.engine.healthy:
             raise HTTPException(status_code=503, detail=UNAVAILABLE)
         if not access.check(who.user_id, workspace_id, WORKSPACE_RESOURCE, Action.EDIT):

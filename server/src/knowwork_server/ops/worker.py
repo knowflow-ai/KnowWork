@@ -17,9 +17,10 @@ from dataclasses import dataclass
 
 import httpx
 from redis.asyncio import Redis
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
-from ..access.members import DEFAULT_WORKSPACE_ID
+from ..access.models import Workspace
 from ..attachments import Attachments, build_attachments
 from ..config import Settings, get_settings
 from ..db.base import make_engine, make_sessionmaker, make_workspace_sessionmaker
@@ -29,6 +30,7 @@ from ..jobs import JobRunner, listen
 from ..jobs.gate import build_gate
 from ..jobs.heartbeat import Heartbeat
 from ..jobs.settings import JobSettings
+from ..knowledge.answer_check import AnswerChecker
 from ..models import ModelClient, catalog_for_worker
 from ..sandbox import SandboxModule, SandboxSettings, build_sandbox
 from ..sandbox.unavailable import UnavailableSandbox
@@ -40,6 +42,7 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class Worker:
     engine: AsyncEngine
+    sessionmaker: async_sessionmaker  # 不声明空间的工厂：读工作空间表、心跳这类全局表
     runner: JobRunner
     attachments: Attachments
     sandbox: SandboxModule | None
@@ -49,14 +52,19 @@ class Worker:
     heartbeat: Heartbeat
     redis: Redis | None = None  # 闸门用的 Redis 客户端，关停时关掉
 
+    async def workspaces(self) -> list[str]:
+        """每轮都从工作空间表读：新建的空间不用重启 worker 就有人领它的任务；关闭了的空间不再执行。"""
+        async with self.sessionmaker() as session:
+            return list((await session.scalars(select(Workspace.id).where(Workspace.deleted_at.is_(None))
+                                               .order_by(Workspace.id))).all())
+
     async def serve(self, stop: asyncio.Event) -> None:
         listener = asyncio.create_task(listen(self.engine, self.runner.on_notify, stop))
         # 心跳在手上的任务退完（宽限期）之后才停：停机过程中面板上照样看得到这个 worker 在跑什么
         drained = asyncio.Event()
         beating = asyncio.create_task(self.heartbeat.run(drained))
         try:
-            # 开源版只有默认空间；多空间时这里换成从工作空间表读
-            await self.runner.run_forever(lambda: [DEFAULT_WORKSPACE_ID], stop,
+            await self.runner.run_forever(self.workspaces, stop,
                                           idle_seconds=self.settings.job_idle_seconds,
                                           grace_seconds=self.settings.job_grace_seconds)
         finally:
@@ -83,26 +91,29 @@ def build_worker(settings: Settings, jobs: JobSettings | None = None, *,
                  extensions: Extensions | None = None) -> Worker:
     jobs = jobs or JobSettings()
     engine = make_engine(settings.database_url)
-    scoped = make_workspace_sessionmaker(engine, DEFAULT_WORKSPACE_ID)
+    scoped = make_workspace_sessionmaker(engine)  # 每条任务以它所在的空间读写（见 jobs.runner）
+    plain = make_sessionmaker(engine)
     sandbox = build_sandbox(SandboxSettings())
     stores = session_stores(settings)
     session_sandbox = sandbox.sandbox if sandbox else UnavailableSandbox()
     gate, redis = build_gate(jobs.redis_url)
     # 文档解析服务的配置在管理后台里改，worker 每次解析前取（几秒缓存），不用重启
-    parsers = DocumentParsers(make_sessionmaker(engine), settings.master_key.get_secret_value())
+    parsers = DocumentParsers(plain, settings.master_key.get_secret_value())
     attachments = build_attachments(scoped, stores, session_sandbox, parsers=parsers, gate=gate)
     if sandbox is not None:
         sandbox.on_created(attachments.service.restage)  # 这边新建了会话容器，也把已就绪的附件放进去
     runner = JobRunner(scoped, pools=jobs.pools)
     attachments.parse_job.register(runner)
     http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=120.0))
-    models = ModelClient(catalog_for_worker(scoped, settings.master_key.get_secret_value()), http)
+    models = ModelClient(catalog_for_worker(plain, settings.master_key.get_secret_value()), http)
+    # 回合结束后判断知识库答上了没有，每个空间一小时一批（入队在 api 进程的 knowledge.search_log）
+    AnswerChecker(scoped, models).register(runner)
     context = WorkerContext(settings=settings, engine=engine, sessionmaker=scoped, runner=runner, stores=stores,
                             sandbox=session_sandbox, models=models, gate=gate, mineru=attachments.mineru,
                             stores_for=lambda namespace: namespaced_stores(settings, namespace))
     extensions = _setup_extensions(extensions or installed_extensions(), context)
-    heartbeat = Heartbeat(scoped, runner, gate, version=settings.version)
-    return Worker(engine=engine, runner=runner, attachments=attachments, sandbox=sandbox, settings=jobs,
+    heartbeat = Heartbeat(plain, runner, gate, version=settings.version)  # 心跳表不分空间
+    return Worker(engine=engine, sessionmaker=plain, runner=runner, attachments=attachments, sandbox=sandbox, settings=jobs,
                   extensions=extensions, http=http, heartbeat=heartbeat, redis=redis)
 
 

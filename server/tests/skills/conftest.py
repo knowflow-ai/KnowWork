@@ -65,7 +65,7 @@ async def env(skills_db, tmp_path):
     access = AccessService(sessionmaker)
     assert await access.reload()
     await access.create_workspace(workspace_id="ws1", name="空间一", owner_user_id="alice")
-    for user, role in (("bob", "admin"), ("carol", "editor"), ("dave", "viewer")):
+    for user, role in (("bob", "admin"), ("carol", "editor"), ("dave", "editor")):
         await access.add_member("alice", "ws1", user, role)
     blobs = LocalBlobStore(tmp_path / "blobs")
     yield Env(access=access, skills=build_skills(MASTER, sessionmaker, access, blobs), blobs=blobs,

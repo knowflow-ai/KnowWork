@@ -1,5 +1,5 @@
 """models 测试夹具：每个测试一个独立数据库，应用以普通角色（非超级用户、无 BYPASSRLS）连接，
-行级安全真实生效。空间 ws1：owner alice，admin bob，editor carol，viewer dave。
+行级安全真实生效。空间 ws1：owner alice，admin bob，editor carol，editor dave；系统管理员 root（不是 ws1 成员）。
 文档解析服务的配置（docparse）在界面上属于「模型」，表也建在这里。
 """
 
@@ -68,8 +68,9 @@ async def access(sessionmaker):
     svc = AccessService(sessionmaker)
     assert await svc.reload()
     await svc.create_workspace(workspace_id="ws1", name="空间一", owner_user_id="alice")
-    for user, role in (("bob", "admin"), ("carol", "editor"), ("dave", "viewer")):
+    for user, role in (("bob", "admin"), ("carol", "editor"), ("dave", "editor")):
         await svc.add_member("alice", "ws1", user, role)
+    svc.set_system_admin("root")
     return svc
 
 

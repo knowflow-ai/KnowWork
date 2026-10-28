@@ -25,6 +25,7 @@ export function ConfirmHost() {
       footer={
         <DialogActions
           okText={pending.okText}
+          cancelText={pending.cancelText}
           danger={pending.danger}
           onCancel={() => settle(false)}
           onOk={() => settle(true)}
