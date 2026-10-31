@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import userEvent from '../../test/user';
+import userEvent, { pickOption } from '../../test/user';
 import { renderWithApp, jsonResponse } from '../../test/render';
 import { ev, wire } from './events/fixtures';
 import type { StreamHandlers } from '../../api/sse';
@@ -70,6 +70,7 @@ const MENTION_OPTIONS = {
       pinnable: true,
     },
   ],
+  services: [],
   skills: [],
 };
 
@@ -111,11 +112,10 @@ describe('ChatPage', () => {
     );
   });
 
-  it('回答方式：从输入框的「+」里选快速问答，之后的消息都带 quick', async () => {
+  it('回答方式：在输入框左上角选快速问答，之后的消息都带 quick', async () => {
     renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
     act(() => streams[0]?.onStatus?.('connected'));
-    await userEvent.click(screen.getByRole('button', { name: '添加文件、快速问答' }));
-    await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: /快速问答/ }));
+    await pickOption(document.body, '回答方式', /快速问答/);
     await userEvent.type(screen.getByRole('textbox'), '报销标准是多少');
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     await waitFor(() =>
@@ -212,7 +212,7 @@ describe('ChatPage', () => {
     );
     push(ev.message(3, '按标准报销'));
     push(ev.runCompleted(4));
-    const shown = screen.getByRole('list', { name: '这条消息 @ 点名的范围与技能' });
+    const shown = screen.getByRole('list', { name: '这条消息 @ 点名的内容' });
     expect(within(shown).getByText('差旅办法')).toBeInTheDocument();
     expect(within(shown).getByText('目录')).toBeInTheDocument();
     await userEvent.click(await screen.findByRole('button', { name: '重新生成' }));

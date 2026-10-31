@@ -64,6 +64,7 @@ describe('模型与分组', () => {
     name: 'deepseek-chat',
     capabilities: ['chat'],
     context_length: 64000,
+    max_output_tokens: 8192,
     input_price_per_mtok: '2.000000',
     output_price_per_mtok: 8,
     currency: 'CNY',
@@ -90,6 +91,7 @@ describe('模型与分组', () => {
       inputPrice: 2,
       outputPrice: 8,
       contextLength: 64000,
+      maxOutputTokens: 8192,
       thinking: null,
     });
     const input = {
@@ -98,6 +100,7 @@ describe('模型与分组', () => {
       name: ' n ',
       capabilities: ['chat'],
       contextLength: null,
+      maxOutputTokens: 4096,
       thinking: 'off' as const,
       inputPrice: 1,
       outputPrice: null,
@@ -112,6 +115,7 @@ describe('模型与分组', () => {
       alias: 'chat',
       name: 'n',
       input_price_per_mtok: 1,
+      max_output_tokens: 4096,
       thinking: 'off',
     });
     expect(api.calls[2]?.body).not.toHaveProperty('provider_id');

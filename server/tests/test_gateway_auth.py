@@ -97,3 +97,21 @@ async def test_unreachable_upstream_is_502():
         response = await client.post("/internal/model/v1/chat/completions", json={"messages": MESSAGES},
                                      headers=GOOD)
     assert response.status_code == 502 and "10.0.0.5" not in response.text
+
+
+@pytest.mark.parametrize("body", [
+    (b'{"error": {"message": "This model\'s maximum context length is 131072 tokens. However, you requested 140000 '
+     b'tokens (sk-live-SECRET)", "code": "context_length_exceeded"}}'),
+    b'{"error": {"message": "Range of input length should be [1, 98304]", "code": "invalid_parameter_error"}}',
+])
+async def test_context_overflow_is_passed_on_in_words_the_harness_recognizes(body):
+    """上下文超长：回一句官方认得的说法，官方压缩才会先压缩历史再重试；厂商原文（可能带账户信息）不回传。"""
+    async with gateway(httpx.MockTransport(Recorder(status=400, body=body))) as client:
+        response = await client.post("/internal/model/v1/chat/completions", json={"messages": MESSAGES},
+                                     headers=GOOD)
+    assert response.status_code == 400 and "SECRET" not in response.text
+    message = response.json()["error"]["message"]
+    assert message.startswith("context_length_exceeded")
+    async with gateway(httpx.MockTransport(Recorder(status=413, body=b"too big"))) as client:
+        too_large = await client.post("/internal/model/v1/chat/completions", json={"messages": MESSAGES}, headers=GOOD)
+    assert (too_large.status_code, too_large.json()["error"]["message"]) == (413, message)

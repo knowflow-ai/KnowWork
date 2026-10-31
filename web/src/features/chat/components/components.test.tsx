@@ -2,14 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '../../../test/user';
 import { renderWithApp } from '../../../test/render';
+import { register } from '../../../slots/registry';
 import { ApprovalCard } from './ApprovalCard';
 import { AnswerActions } from './AnswerActions';
 import { AssistantTurn } from './AssistantTurn';
 import { Composer } from './Composer';
-import { FileCard } from './FileCard';
+import { FileCard, FileCards } from './FileCard';
 import { Markdown } from './Markdown';
 import { ProcessSummary } from './ProcessSummary';
-import type { ApprovalView, RunView } from '../events/types';
+import type { ApprovalView, ArtifactView, RunView } from '../events/types';
 
 const endedTurn: RunView = {
   runId: 'run-1',
@@ -283,6 +284,18 @@ describe('Markdown 与引用', () => {
     expect(screen.getByRole('link', { name: '文档' })).toHaveAttribute('target', '_blank');
   });
 
+  it('表格里的引用照样渲染成上标：单元格前面的竖线不能带进链接，否则表格把链接切断、露出原文', () => {
+    const text =
+      '| 项目 | 内容 |\n| --- | --- |\n| 产品 | KnowFlow 企业知识库 [21] |\n| 定位 | 私有化知识库平台[22] |';
+    const { container } = renderWithApp(
+      <Markdown text={text} sources={{ 21: { title: '产品说明' }, 22: { title: '产品说明' } }} />,
+    );
+    expect(screen.getByRole('button', { name: '查看出处 21' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '查看出处 22' })).toBeInTheDocument();
+    expect(container.textContent).not.toContain('kw-cite');
+    expect(container.querySelectorAll('td')).toHaveLength(4);
+  });
+
   it('回答里的图按出处换成图片，放在它说明的那句话后面；对不上或出处还没拉到时不显示', () => {
     const text = '报销分三步[1]。\n\n[IMG:1:0]\n\n[IMG:1:5]\n\n[IMG:2:0]';
     const { container, rerender } = renderWithApp(
@@ -466,15 +479,56 @@ describe('引用出处与无效编号', () => {
 });
 
 describe('FileCard 与 AnswerActions', () => {
-  it('文件卡片显示类型与大小', () => {
-    renderWithApp(<FileCard name="周报.docx" size={2048} url="/f/1" />);
-    expect(screen.getByText('Word 文档 · 2.0 KB')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '下载 周报.docx' })).toHaveAttribute('href', '/f/1');
+  const file = (name: string, extra: Partial<ArtifactView> = {}): ArtifactView => ({
+    id: name,
+    name,
+    url: `/f/${name}`,
+    ...extra,
   });
 
-  it('没有地址时下载不可用', () => {
-    renderWithApp(<FileCard name="x.bin" />);
-    expect(screen.getByRole('button', { name: '下载 x.bin' })).toBeDisabled();
+  it('文件卡片：文件名，下面一行是说明（去掉末尾括号里的补充），没写说明就写类型与大小', () => {
+    renderWithApp(<FileCard name="周报.docx" url="/f/1" description="本周进展（初稿）" />);
+    expect(screen.getByText('本周进展')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '下载 周报.docx' })).toHaveAttribute('href', '/f/1');
+    renderWithApp(<FileCard name="流程图.png" size={169832} url="/f/2" />);
+    expect(screen.getByText('图片 · 166 KB')).toBeInTheDocument();
+    renderWithApp(<FileCard name="页.html" url="/f/3" />);
+    expect(screen.getByText('网页')).toBeInTheDocument();
+  });
+
+  it('点卡片本身打开预览，图片也是卡片、不直接显示图；不能预览的类型卡片点不了，只能下载', async () => {
+    const onPreview = vi.fn();
+    renderWithApp(<FileCard name="流程图.png" url="/f/2" onPreview={onPreview} />);
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(screen.getByText('在右侧预览')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '预览 流程图.png' }));
+    expect(onPreview).toHaveBeenCalledTimes(1);
+    renderWithApp(<FileCard name="包.zip" url="/f/4" onPreview={onPreview} />);
+    expect(screen.queryByRole('button', { name: '预览 包.zip' })).toBeNull();
+    expect(screen.getByRole('link', { name: '下载 包.zip' })).toBeInTheDocument();
+  });
+
+  it('没有地址时（还在生成）下载不可用、点不开', () => {
+    renderWithApp(<FileCard name="x.png" onPreview={() => undefined} />);
+    expect(screen.getByRole('button', { name: '下载 x.png' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '预览 x.png' })).toBeNull();
+  });
+
+  it('一个文件占满一行，多个排两列；超过四个先收起，「全部 N 个文件」展开、「收起」收回', async () => {
+    const { container } = renderWithApp(<FileCards files={[file('a.md')]} onPreview={() => undefined} />);
+    expect(container.querySelector('.kw-file-grid')).toHaveAttribute('data-single', 'true');
+    const many = ['1.md', '2.md', '3.md', '4.md', '5.md', '6.md'].map((name) => file(name));
+    const onPreview = vi.fn();
+    renderWithApp(<FileCards files={many} onPreview={onPreview} />);
+    const list = screen.getAllByRole('list', { name: '交付的文件' }).at(-1) as HTMLElement;
+    expect(within(list).getAllByRole('listitem')).toHaveLength(4);
+    await userEvent.click(screen.getByRole('button', { name: '展开全部 6 个交付文件' }));
+    expect(within(list).getAllByRole('listitem')).toHaveLength(6);
+    await userEvent.click(within(list).getByRole('button', { name: '预览 6.md' }));
+    expect(onPreview).toHaveBeenCalledWith(many[5]);
+    await userEvent.click(screen.getByRole('button', { name: '收起交付文件列表' }));
+    expect(within(list).getAllByRole('listitem')).toHaveLength(4);
+    expect(screen.getByText('全部 6 个文件')).toBeInTheDocument();
   });
 
   it('复制回答时去掉图片编号（复制出去换不成图）', async () => {
@@ -543,5 +597,44 @@ describe('FileCard 与 AnswerActions', () => {
     expect(screen.getByRole('button', { name: '运行详情' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '复制' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '重新生成' })).not.toBeInTheDocument();
+  });
+});
+
+describe('回答下方的说明', () => {
+  it('扩展工具登记了 notice 时，回答下方一行说明色小字，带去管理的链接', () => {
+    register('chat.tools', {
+      name: 'remember_note',
+      label: '记住',
+      notice: ({ arguments: args }) => ({
+        text: `已记住：${String(args.content)}`,
+        link: { label: '管理记忆', to: '/settings?tab=memory' },
+      }),
+    });
+    const run: RunView = {
+      ...endedTurn,
+      steps: [
+        {
+          callId: 'm1',
+          kind: 'tool',
+          name: 'remember_note',
+          arguments: '{"action":"add","content":"以后回答都用表格"}',
+          status: 'done',
+          resultPreview: '已记住 [1]：以后回答都用表格',
+        },
+      ],
+    };
+    renderWithApp(
+      <AssistantTurn
+        run={run}
+        approvals={[]}
+        questions={[]}
+        artifacts={[]}
+        onDecide={vi.fn()}
+        onAnswer={vi.fn(async () => true)}
+        busy={false}
+      />,
+    );
+    expect(screen.getByText('已记住：以后回答都用表格')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '管理记忆' })).toHaveAttribute('href', '/settings?tab=memory');
   });
 });

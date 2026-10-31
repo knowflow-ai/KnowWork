@@ -1,10 +1,10 @@
 """api 与 worker 容器入口：按挂进来的 Docker 套接字的属组给应用账号补一个附加组，然后降权运行主进程。
 
-照抄 WeKnora 的 scripts/docker-entrypoint.sh（grant_docker_sock_to_appuser）：套接字通常是 root:docker 0660，
+按 Docker 套接字的属组给应用账号补附加组：套接字通常是 root:docker 0660，
 应用账号要读写它就得在那个组里。**绝不 chmod 套接字**：那会削弱宿主机上 daemon 的访问控制。属组是 0（root）
 时不加：把应用账号放进 root 组的代价不该由入口脚本悄悄替部署方承担，应先在宿主机给套接字配一个非 root 组。
 
-与 WeKnora 的差异：它以 root 运行、改 /etc/group 后用 gosu 降权；我们的根文件系统是只读的，改为直接
+不以 root 常驻、不改 /etc/group 后用 gosu 降权：我们的根文件系统是只读的，改为直接
 setgroups + setgid + setuid 后 exec（数字组号不需要 /etc/group 里有条目），不依赖 gosu。
 挂 docker.sock 等于给了宿主机 root，只用于私有化单机部署。
 

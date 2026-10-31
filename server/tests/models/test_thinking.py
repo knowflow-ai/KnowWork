@@ -1,4 +1,4 @@
-"""对话模型的「思考」开关：跟随服务默认时请求原样不动；开、关按服务商的写法补参数（照 WeKnora，按接口地址认服务商）：
+"""对话模型的「思考」开关：跟随服务默认时请求原样不动；开、关按服务商的写法补参数（按接口地址认服务商）：
 自建的 vLLM、SGLang 等用 chat_template_kwargs.enable_thinking，阿里百炼、硅基流动用顶层 enable_thinking，
 DeepSeek、智谱、火山方舟、Moonshot 用 thinking.type；认不出写法的（OpenAI）不补。宿主自己带的思考参数以管理员的设置为准。"""
 

@@ -1,4 +1,4 @@
-"""会话沙箱：一会话一个长驻 Docker 容器，工作区在 /workspace（做法照抄 WeKnora 的 Docker 后端）。
+"""会话沙箱：一会话一个长驻 Docker 容器，工作区在 /workspace。
 
 模型用的是宿主里 DSH 官方的 bash、文件工具与 present：它们经宿主的远程执行器回调本包的内部接口（internal_api）
 落到会话容器。装配：`build_sandbox(SandboxSettings())` 返回 SandboxModule；没有打开 KNOWWORK_SANDBOX_DOCKER_ENABLED
@@ -16,6 +16,7 @@ from .contract import SessionSandbox
 from .docker_engine import DockerEngine
 from .docker_host import ClientFactory, client_factory
 from .docker_sandbox import DockerSessionSandbox
+from .ssh_pipe import SshPipes
 from .sweeper import IdleSweeper, LiveCheck, reap_orphans
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class SandboxModule:
     engine: DockerEngine
     orphan_grace_seconds: float
     max_timeout_seconds: float
+    ssh: SshPipes | None = None  # 流式执行（KNOWWORK_SANDBOX_SSH_ENABLED）没打开时为空
 
     def eraser(self) -> Callable[[ConversationRef], Awaitable[None]]:
         return sandbox_eraser(self.sandbox)
@@ -58,7 +60,7 @@ class SandboxModule:
         self.containers.add_created_hook(hook)
 
     async def reap_orphans(self, is_live: LiveCheck) -> int:
-        """删掉会话已不存在的沙箱容器；is_live 由主线提供。默认不定时调用（WeKnora 同此）。"""
+        """删掉会话已不存在的沙箱容器；is_live 由主线提供。默认不定时调用。"""
         return await reap_orphans(self.engine, self.containers, is_live, grace_seconds=self.orphan_grace_seconds)
 
     def start(self) -> None:
@@ -67,6 +69,8 @@ class SandboxModule:
 
     async def aclose(self) -> None:
         await self.sweeper.aclose()
+        if self.ssh is not None:
+            await self.ssh.aclose()
         await self.engine.aclose()
 
 
@@ -84,9 +88,11 @@ def build_sandbox(settings: SandboxSettings, *, factory: ClientFactory | None = 
     sandbox = DockerSessionSandbox(engine, containers, user=settings.exec_user,
                                    max_input_bytes=settings.max_input_bytes, max_write_bytes=settings.max_write_bytes,
                                    max_timeout_seconds=settings.exec_max_timeout_seconds)
+    ssh = SshPipes(engine, containers, exec_user=settings.exec_user, max_pipes=settings.ssh_max_pipes) \
+        if settings.ssh_enabled else None
     return SandboxModule(sandbox=sandbox, containers=containers, sweeper=sweeper, engine=engine,
                          orphan_grace_seconds=settings.orphan_grace_seconds,
-                         max_timeout_seconds=settings.exec_max_timeout_seconds)
+                         max_timeout_seconds=settings.exec_max_timeout_seconds, ssh=ssh)
 
 
 __all__ = ["EXECUTION_TOOLS", "SANDBOX_RLS_TABLES", "SandboxModule", "SandboxSettings", "build_sandbox", "sandbox_eraser"]

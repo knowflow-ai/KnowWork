@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from ..access.rls import set_workspace
+from ..access.workspaces import PLATFORM_WORKSPACE_ID
 from ..skills.models import SkillRelease
 from ..skills.views import CatalogEntry
 from ..skills.workflow_def import definition_digest, load_definition
@@ -74,7 +75,9 @@ class WorkflowService:
     async def start(self, actor: Actor, skill_id: str, inputs: dict[str, Any], *,
                     session_id: str | None = None) -> RunView:
         entry = await self._entry(actor, skill_id)
-        manifest = await self._release_manifest(actor.workspace_id, entry.release_id)
+        # 企业技能的发布记录在平台配置所在的空间名下，别的在会话所在的空间
+        home = PLATFORM_WORKSPACE_ID if entry.scope == "platform" else actor.workspace_id
+        manifest = await self._release_manifest(home, entry.release_id)
         snapshot = manifest.get("workflow")
         if not isinstance(snapshot, dict):
             raise NotAWorkflow()

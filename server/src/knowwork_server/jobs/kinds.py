@@ -1,5 +1,5 @@
 """任务类型与失败。任务类型是入队方（api）和执行方（worker）共用的唯一定义：池、重试、租约、超时都写在这里，
-两边不会各配一套（WeKnora 的 queueDefinitions 同理）。
+两边不会各配一套。
 """
 
 from dataclasses import dataclass, field

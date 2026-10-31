@@ -56,35 +56,63 @@ def _message(raw: object) -> MessageView | None:
                        is_error=raw.get("isError") is True)
 
 
+# 目标那一步里，这些事件说明模型已经开始输出：输入到此为止
+_OUTPUT = frozenset({"assistant/attempt", "assistant/message", "tool/call", "step/end"})
+
+
 def step_input(events: Sequence[Event], turn: int, step: int) -> StepInput:
-    """events 是主会话从头开始的全部事件；遇到目标那一步的 step/start 为止。"""
+    """events 是主会话从头开始的全部事件；收到目标那一步模型的输出为止。
+
+    DSH 0.2.2 起一步的系统提示、提问、宿主追加的上下文、工具清单都记在 step/start 之后（之前的版本记在前面），
+    所以不能停在 step/start。排进收件箱的提问先记一次 agent/inbox/spliced、进会话时再记一次同 id 的 user/message，
+    按 id 只算一条。系统提示每个请求系列开头整套重发，按发它的那一步分套，取最近的一套。
+    """
     system: list[str] = []
+    system_of: tuple[object, object] | None = None
     tools: list[ToolInfo] = []
     messages: list[MessageView] = []
-    compacted = False
+    seen: set[str] = set()
+    compacted = inside = False
+
+    def add(raw: object) -> None:
+        message_id = raw.get("id") if isinstance(raw, dict) else None
+        if isinstance(message_id, str) and message_id in seen:
+            return
+        if isinstance(message_id, str):
+            seen.add(message_id)
+        found = _message(raw)
+        messages.extend((found,) if found else ())
+
+    def result() -> StepInput:
+        notes = (APPROXIMATE, COMPACTED) if compacted else (APPROXIMATE,)
+        return StepInput(turn=turn, step=step, found=True, system=tuple(system), tools=tuple(tools),
+                         messages=tuple(messages), notes=notes)
+
     for event in events:
         payload = event.payload
         if event.type == "step/start" and turn_of(event) == turn and payload.get("step") == step:
-            notes = (APPROXIMATE, COMPACTED) if compacted else (APPROXIMATE,)
-            return StepInput(turn=turn, step=step, found=True, system=tuple(system), tools=tuple(tools),
-                             messages=tuple(messages), notes=notes)
+            inside = True
+            continue
+        if inside and (event.type in _OUTPUT or event.type == "step/start"):
+            return result()
         if "compact" in event.type:
             compacted = True
         if event.type == "request/header":
-            if payload.get("startsSeries") is True:
-                system = []
             tools = _tools(payload.get("header"))
         elif event.type == "system/message":
             text = text_of(payload.get("message"))
+            series = (payload.get("turn"), payload.get("step"))
+            if series != system_of:
+                system, system_of = [], series
             if text:
                 system.append(text)
         elif event.type == "user/message":
-            found = _message(payload)
-            messages.extend((found,) if found else ())
+            add(payload)
         elif event.type == "agent/inbox/spliced":
-            inserted = (_message(m) for m in payload.get("inserted") or ())
-            messages.extend(m for m in inserted if m is not None)
+            for raw in payload.get("inserted") or ():
+                add(raw)
         elif event.type in ("assistant/message", "tool/result"):
-            found = _message(payload.get("message"))
-            messages.extend((found,) if found else ())
+            add(payload.get("message"))
+    if inside:  # 这一步模型还没输出（还在跑）：给到目前为止的
+        return result()
     return StepInput(turn=turn, step=step, found=False, system=(), tools=(), messages=(), notes=())

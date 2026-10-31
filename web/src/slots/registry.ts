@@ -8,6 +8,7 @@
  * 注册在第一次查询插槽时才发生（不靠入口文件 import 一次），单独渲染组件的测试里也拿得到。
  * 前端插槽只决定显示什么；扩展有没有授权由后端判定，没授权时它的接口不存在。
  */
+import type { ReactNode } from 'react';
 import type { RouteObject } from 'react-router';
 import { install } from '@knowwork/extensions';
 import type { PreviewFile } from '../features/preview/FilePreview';
@@ -55,6 +56,33 @@ export interface KnowledgeTree {
   readonly load: () => Promise<readonly GrantTreeNode[]>;
 }
 
+/** 扩展提供的工具在对话执行过程里怎么显示（同开源内置工具的 stepLabels）：「记住：回答用表格」而不是函数名。 */
+export interface ToolPresentation {
+  /** 工具名（同后端 ToolSpec.name） */
+  readonly name: string;
+  /** 给人看的名字，如「记住」 */
+  readonly label: string;
+  /** 参数里当目标显示的那一项，如 content；不给就用通用的参数摘要 */
+  readonly target?: string;
+  /**
+   * 回答下方的一行说明（例如「已记住：回答用表格 · 管理记忆」），按这一轮里每次做完、没出错的调用算；
+   * result 是工具结果的文字（可能截断），返回 null 不显示。执行过程默认收起，用户要知道的副作用放这里。
+   */
+  readonly notice?: (call: ToolCallDone) => ToolNotice | null;
+}
+
+export interface ToolCallDone {
+  /** 调用参数（JSON 解析后；解析不了是空对象） */
+  readonly arguments: Readonly<Record<string, unknown>>;
+  readonly result: string;
+}
+
+export interface ToolNotice {
+  readonly text: string;
+  /** 站内链接，例如 /settings?tab=memory */
+  readonly link?: { readonly label: string; readonly to: string };
+}
+
 export interface ExtensionSlots {
   /** 使用端侧栏「新对话」下面的入口（例如知识库），按注册顺序排 */
   'app.nav': NavItem;
@@ -76,6 +104,18 @@ export interface ExtensionSlots {
   'grants.knowledge': KnowledgeTree;
   /** 问答大盘知识库表那一行的动作；没注册的知识源不显示 */
   'insights.base.action': InsightsBaseAction;
+  /** 扩展提供的工具在执行过程里的显示名；没注册的照原名显示 */
+  'chat.tools': ToolPresentation;
+  /** 技能页「企业」页签里系统管理员看到的内容（管理企业技能本身，连同本空间的设置）；没注册时只有本空间的设置 */
+  'admin.skills.enterprise': PanelItem;
+  /** 「工具与 MCP」页的「企业」页签：注册了才有这个页签；系统管理员看到这里给的内容（管理企业 MCP 本身，连同本空间的设置），
+   * 其他管理员看本空间的停用与给谁用 */
+  'admin.tools.enterprise': PanelItem;
+}
+
+/** 一块由扩展给出的页面内容。 */
+export interface PanelItem {
+  readonly children: ReactNode;
 }
 
 export type SlotName = keyof ExtensionSlots;

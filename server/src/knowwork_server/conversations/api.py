@@ -82,7 +82,7 @@ class TurnChoice(BaseModel):
     dropped_conditions: list[ConditionLabel] = Field(default_factory=list, max_length=MAX_DROPPED)
     # 输入框里 @ 的知识库、目录、文件、标签、技能（见 mentions.py）
     mentions: list[Mention] = Field(default_factory=list, max_length=MAX_MENTIONS)
-    # 回答方式：智能体，或只检索知识库的快速问答（宿主只放行 knowledge_search）；用户在输入框里随时切换
+    # 回答方式：智能体，或只查知识库的快速问答（宿主只放行 knowledge_search、knowledge_read）；用户在输入框里随时切换
     answer_mode: Literal["agent", "quick"] = "agent"
 
     def _scoped(self) -> tuple[list[str] | None, list[Mention]]:
@@ -117,7 +117,7 @@ class SendMessage(TurnChoice):
     def _quick_has_no_files(self) -> "SendMessage":
         # 快速问答没有读文件的工具，附件放进会话容器也没人读
         if self.answer_mode == "quick" and self.attachments:
-            raise ValueError("快速问答只检索知识库，不能带附件；要处理附件请切换到智能体")
+            raise ValueError("快速问答只查知识库，不能带附件；要处理附件请切换到智能体")
         return self
 
     def turn(self) -> TurnInput:

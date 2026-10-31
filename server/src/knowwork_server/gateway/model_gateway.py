@@ -11,6 +11,8 @@
 不经 LiteLLM：宿主的 dsh-llm-pi-ai 已统一协议，这里只换地址与密钥并按字节转发（理由见 models 包说明）。
 
 上游出错时对宿主只回固定文案：上游的状态码与响应体只写服务端日志（可能含厂商账户信息）。
+例外是上下文超长：官方适配器按错误文字认出超长，才会先压缩历史再重试；这时回一句统一的英文说法（官方认得），
+厂商原文照旧只进日志。
 上游 401/403 是我们自己的密钥问题，对宿主表现为 502；429 原样保留，让适配器按限流重试。
 单次调用有总时长上限与流式空闲上限（GatewayLimits），超时对宿主表现为 504 或截断的流。
 """
@@ -33,6 +35,17 @@ from ..models.thinking import with_thinking
 from .request_filter import InvalidRequest, parse_request
 
 log = logging.getLogger(__name__)
+
+# 各家「上下文超长」的说法（照官方适配器 pi-ai 认超长的那份规则，挑常见厂商的）；413 一律算超长
+OVERFLOW_PHRASES = (
+    r"context[_ ]length[_ ]exceeded", r"maximum context length", r"exceeds the context window",
+    r"prompt (?:is )?too long", r"too many tokens", r"context window exceeds limit", r"range of input length should be",
+    r"input token count.*exceeds the maximum", r"maximum prompt length is \d+", r"reduce the length of the messages",
+    r"exceeds the available context size", r"greater than the context length", r"exceeded model token limit",
+    r"longer than the model'?s context length", r"request_too_large", r"input is too long",
+)
+CONTEXT_OVERFLOW = re.compile("|".join(OVERFLOW_PHRASES), re.IGNORECASE)
+OVERFLOW_MESSAGE = "context_length_exceeded: the request exceeds the model's maximum context length"
 
 MODEL_AUDIENCE = "model"
 CHAT_PATH = "/chat/completions"
@@ -83,6 +96,14 @@ def _status_for_host(upstream_status: int) -> int:
     if upstream_status in (401, 403) or upstream_status >= 500:
         return 502
     return upstream_status
+
+
+def _within_output_limit(payload: dict[str, Any], limit: int | None) -> dict[str, Any]:
+    """宿主按全局默认请求 max_tokens（32768），有的模型上限更小、厂商会直接拒绝：管理员填了这个模型的最大输出时收紧到它。"""
+    if limit is None:
+        return payload
+    return {**payload, **{key: min(int(payload[key]), limit) for key in ("max_tokens", "max_completion_tokens")
+                          if isinstance(payload.get(key), int) and not isinstance(payload.get(key), bool)}}
 
 
 def _verify(signer: TokenSigner, header: str) -> str:
@@ -161,6 +182,7 @@ class _Forwarder:
         headers = {**NO_COMPRESSION, **({"authorization": f"Bearer {route.api_key}"} if route.api_key else {})}
         # 管理员给这个模型定了思考开、关时，按服务商的写法补上（Qwen3 等在自建服务上默认开着思考，回答慢）
         payload = with_thinking({**body, "model": route.upstream_model}, route.thinking, route.base_url)
+        payload = _within_output_limit(payload, route.max_output_tokens)
         request = self.http.build_request("POST", route.base_url + CHAT_PATH, json=payload, headers=headers,
                                           timeout=timeout)
         return _Outgoing(self.http, request)
@@ -180,6 +202,8 @@ class _Forwarder:
             detail = (await response.aread())[:UPSTREAM_DETAIL_LOG_BYTES].decode(errors="replace")
             await response.aclose()
             log.warning("model upstream returned %s: %s", response.status_code, detail)
+            if response.status_code == 413 or (response.status_code == 400 and CONTEXT_OVERFLOW.search(detail)):
+                return _error(response.status_code, OVERFLOW_MESSAGE)
             return _error(_status_for_host(response.status_code), "上游模型返回错误")
         return StreamingResponse(_relay(response, deadline, self.limits.idle_timeout_seconds),
                                  status_code=response.status_code,

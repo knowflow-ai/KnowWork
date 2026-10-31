@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { register } from '../../../slots/registry';
 import { stepLabel, stepTarget } from './stepLabels';
 import type { StepView } from './types';
 
@@ -41,6 +42,17 @@ describe('官方工具的步骤说明', () => {
 describe('外部工具的步骤说明', () => {
   it('MCP 工具显示成「服务名 · 工具名」，其余不认识的照原名', () => {
     expect(stepLabel(step('mcp__github__create_issue', { title: 'x' }))).toBe('github · create_issue');
+    expect(stepLabel(step('mcp__ent_gitlab__search', {}))).toBe('gitlab · search');
     expect(stepLabel(step('custom_tool', {}))).toBe('custom_tool');
+  });
+});
+
+describe('扩展提供的工具', () => {
+  it('按扩展在插槽里登记的名字与目标参数显示，没登记的照原名', () => {
+    register('chat.tools', { name: 'memory_note', label: '记住', target: 'content' });
+    const s = step('memory_note', { action: 'add', content: '回答用表格' });
+    expect(stepLabel(s)).toBe('记住');
+    expect(stepTarget(s)).toBe('回答用表格');
+    expect(stepLabel(step('other_tool', {}))).toBe('other_tool');
   });
 });

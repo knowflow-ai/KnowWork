@@ -29,7 +29,8 @@ class ArtifactObserver:
         self._collector = collector
         self._tasks: set[asyncio.Task] = set()
         self._by_conversation: dict[str, set[asyncio.Task]] = {}
-        self._presented: dict[str, list[str]] = {}
+        # 每个会话本回合交付过的路径 → 说明（没写是 None）；同一路径交付多次用最近一次的说明（同官方交付卡片）
+        self._presented: dict[str, dict[str, str | None]] = {}
 
     def __call__(self, conversation_id: str, workspace_id: str, kind: str, data: Any) -> None:
         if kind != "session/event" or not isinstance(data, dict):
@@ -37,18 +38,21 @@ class ArtifactObserver:
         payload = data.get("data") if isinstance(data.get("data"), dict) else {}
         if data.get("type") == "deliverables/presented":
             files = payload.get("files") if isinstance(payload.get("files"), list) else []
-            paths = [f["path"] for f in files if isinstance(f, dict) and isinstance(f.get("path"), str)]
-            self._presented.setdefault(conversation_id, []).extend(paths)
+            presented = self._presented.setdefault(conversation_id, {})
+            for file in files:
+                if isinstance(file, dict) and isinstance(file.get("path"), str):
+                    description = file.get("description")
+                    presented[file["path"]] = description if isinstance(description, str) else None
             return
         if data.get("type") != "turn/end":
             return
-        paths = self._presented.pop(conversation_id, [])
+        presented = self._presented.pop(conversation_id, {})
         reason = payload.get("reason") if isinstance(payload.get("reason"), dict) else {}
-        if reason.get("kind") != "completed" or not paths:
+        if reason.get("kind") != "completed" or not presented:
             return
         turn = payload.get("turn")
         run_id = turn_run_id(turn) if isinstance(turn, int) else None
-        task = asyncio.create_task(self._collect(workspace_id, conversation_id, run_id, paths))
+        task = asyncio.create_task(self._collect(workspace_id, conversation_id, run_id, presented))
         self._tasks.add(task)
         self._by_conversation.setdefault(conversation_id, set()).add(task)
         task.add_done_callback(lambda done: self._forget(conversation_id, done))
@@ -71,9 +75,12 @@ class ArtifactObserver:
         if late:
             log.warning("artifacts for %s still collecting after %.0fs", conversation_id, timeout)
 
-    async def _collect(self, workspace_id: str, conversation_id: str, run_id: str | None, paths: list[str]) -> None:
+    async def _collect(self, workspace_id: str, conversation_id: str, run_id: str | None,
+                       presented: dict[str, str | None]) -> None:
+        descriptions = {path: text for path, text in presented.items() if text is not None}
         try:
-            result = await self._collector.collect(workspace_id, conversation_id, run_id=run_id, paths=paths)
+            result = await self._collector.collect(workspace_id, conversation_id, run_id=run_id,
+                                                   paths=list(presented), descriptions=descriptions)
         except Exception:
             log.exception("collecting artifacts for %s failed", conversation_id)
             return

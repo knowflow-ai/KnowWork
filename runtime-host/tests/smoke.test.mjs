@@ -30,6 +30,20 @@ test('系统提示用中文的企业助手人设，要求调工具前先说明�
     assert.ok(system.includes('KnowWork 企业智能助手'), `系统提示里没有人设：${system.slice(0, 300)}`)
     assert.ok(system.includes('调用工具前，先用一两句话告诉用户你要做什么'), '人设里没有工具前说明的要求')
     assert.ok(!system.includes('software engineer assistant'), '官方英文人设没有被替换')
+    assert.ok(system.includes('```mermaid'), '系统提示里没有说对话界面能显示 mermaid 图')
+  } finally {
+    await host.stop()
+  }
+})
+
+test('换了人设（KNOWWORK_PERSONA）也还告诉模型对话界面能显示 mermaid 图', async () => {
+  const host = await startHost({ sequence: ['success'], successText: '好' }, { KNOWWORK_PERSONA: '你是测试助手。' })
+  try {
+    await host.call('POST', '/v1/sessions', { sessionId: 'persona-2' })
+    await host.call('POST', '/v1/sessions/persona-2/messages', { text: '你好' })
+    await collectEvents(host, 'persona-2', isTurnEnd)
+    const system = JSON.stringify(host.llm.requests[0]?.body?.system ?? '')
+    assert.ok(system.includes('你是测试助手。') && system.includes('```mermaid'), system.slice(0, 300))
   } finally {
     await host.stop()
   }

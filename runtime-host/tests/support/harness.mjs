@@ -47,7 +47,9 @@ export async function startHost(mock, env = {}, options = {}) {
   })
   const token = randomBytes(24).toString('hex')
   const home = options.home ?? freshDshHome()
-  const child = spawn(DSH_BIN, ['--profile', 'knowwork-host', '--patch', TEST_OVERLAY], {
+  // options.patches：再叠加几份测试配置（例如工作流试点），按顺序跟在测试工具配置后面
+  const patches = (options.patches ?? []).flatMap(file => ['--patch', file])
+  const child = spawn(DSH_BIN, ['--profile', 'knowwork-host', '--patch', TEST_OVERLAY, ...patches], {
     cwd: ROOT,
     env: {
       ...process.env,

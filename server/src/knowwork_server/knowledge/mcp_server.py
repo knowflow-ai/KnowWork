@@ -63,13 +63,16 @@ class KnowledgeMcp:
         async def knowledge_bases(ctx: Context, knowledge_bases: list[str] | None = None) -> str:
             return await run(reader.bases(await caller_of(ctx), knowledge_bases))
 
-        @server.tool(description="在能查的知识库里检索，返回带定位与原文的片段。编号、型号这类要原样命中的用 mode=keyword")
+        @server.tool(description="在能查的知识库里检索，返回带定位与原文的片段。编号、型号这类要原样命中的用 mode=keyword；"
+                                 "知识库支持时（knowledge_bases 的 routes）可以用 multi_hop、visual 打开或关掉多跳、视觉检索")
         async def knowledge_search(ctx: Context, query: str, top_n: int = 8, knowledge_bases: list[str] | None = None,
                                    mode: str = "hybrid", folders: list[str] | None = None,
-                                   tags: list[str] | None = None, filters: list[dict] | None = None) -> str:
+                                   tags: list[str] | None = None, filters: list[dict] | None = None,
+                                   multi_hop: bool | None = None, visual: bool | None = None) -> str:
             body = SearchBody(query=query, top_n=top_n, knowledge_bases=knowledge_bases, mode=mode,
                               folders=folders or [], tags=tags or [],
-                              filters=[MetaFilter.model_validate(f) for f in filters or []])
+                              filters=[MetaFilter.model_validate(f) for f in filters or []],
+                              multi_hop=multi_hop, visual=visual)
             return await run(reader.search(await caller_of(ctx), body))
 
         @server.tool(description="按文档引用连续阅读原文；chunk 填检索结果的 span_ref 从那里读，用 next_cursor 续读")

@@ -5,8 +5,11 @@
 - **内置工具**（kw_now、knowledge_search、knowledge_read 这类随服务发布、对所有成员开放的工具）不需要
   tool 授权：现状里所有成员都能用它们，而默认策略只给 owner、admin 授了 `tool:*`，若内置工具也要授权，
   编辑者与查看者升级后会突然失去它们。知识工具另按知识库授权（knowledge_base 的 use）收窄范围；
+  扩展提供的工具（tools/provided.py，例如记忆写入）算内置工具，它们只碰调用者自己的数据，给不给由扩展按会话判断；
 - **其余工具**（以后接入的 HTTP、MCP 工具）需要 `tool:<工具名>` 的 use 权限；默认只有 owner、admin
   （`tool:*`）能用，其他人靠显式授权。工具表上线前资源 id 就是工具名。
+- **企业 MCP 的工具**（mcp__ent_ 开头）不在这里判：到了空间默认全体成员可用，空间停用、收窄后按授权，
+  都由 MCP 模块（tools/mcp/enterprise.McpReach）在列工具与执行前判，这里放行，免得没收窄时也要逐个空间去授权。
 判定出错一律当作没有权限。
 """
 
@@ -14,11 +17,15 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ..tools.provided import ProvidedTools
 from ..tools.registry import ToolContext, ToolFailure, ToolRegistry, ToolSpec
 
 log = logging.getLogger(__name__)
 
 TOOL_RESOURCE = "tool"
+# 企业 MCP 工具名的前缀，和 tools/mcp/naming.is_enterprise_tool 一致（测试钉住）。不 import 那个包：
+# 它的 __init__ 会带进知识模块，知识模块又引用这里，成了循环引用
+ENTERPRISE_MCP_PREFIX = "mcp__ent_"
 
 
 class AccessChecker(Protocol):
@@ -29,6 +36,7 @@ class AccessChecker(Protocol):
 class ToolClearance:
     access: AccessChecker
     builtin: frozenset[str]
+    provided: ProvidedTools | None = None  # 扩展装配时才登记，所以按名字现查，不在构造时取一份
 
     def member(self, user_id: str, workspace_id: str) -> bool:
         return self._check(user_id, workspace_id, "workspace")
@@ -36,12 +44,20 @@ class ToolClearance:
     def permits(self, user_id: str, workspace_id: str, name: str) -> bool:
         if not self.member(user_id, workspace_id):
             return False
-        return name in self.builtin or self._check(user_id, workspace_id, f"{TOOL_RESOURCE}:{name}")
+        return self._builtin(name) or self._check(user_id, workspace_id, f"{TOOL_RESOURCE}:{name}")
 
     def permitted(self, user_id: str, workspace_id: str, names: list[str]) -> frozenset[str]:
         if not self.member(user_id, workspace_id):
             return frozenset()
-        return frozenset(n for n in names if n in self.builtin or self._check(user_id, workspace_id, f"{TOOL_RESOURCE}:{n}"))
+        return frozenset(n for n in names if self._builtin(n) or self._check(user_id, workspace_id, f"{TOOL_RESOURCE}:{n}"))
+
+    def _builtin(self, name: str) -> bool:
+        return name in self.builtin or (self.provided is not None and self.provided.has(name)) \
+            or name.startswith(ENTERPRISE_MCP_PREFIX)
+
+    def builtin_names(self) -> frozenset[str]:
+        """内置工具与扩展提供的工具的名字（运行配置里标 builtin 用）。"""
+        return self.builtin | (self.provided.names() if self.provided is not None else frozenset())
 
     def _check(self, user_id: str, workspace_id: str, resource: str) -> bool:
         try:

@@ -1,8 +1,10 @@
-"""用户在输入框里 @ 的东西：知识库、目录、文件、标签、技能。
+"""用户在输入框里 @ 的东西：知识库、目录、文件、标签、MCP 服务、技能。
 
 两件事：换成本轮选择（服务端据此限定检索：@ 的知识库与目录整库查，@ 的文件、标签所在的库只查它们；技能照 DSH
 官方的 /技能名 手势由宿主写进消息）；再把名字交给宿主写进这条用户消息（模型知道用户点名了什么，气泡上也显示出来）。
 名字只用来显示和告诉模型，限定检索只认 id，名字被改了也越不过权限。
+MCP 服务只是「这一轮优先用它的工具」的提示，不改本轮选择：工具给不给模型、能不能调
+仍由授权与连接决定，@ 不代表授权。id 是服务标识（工具名前缀 mcp__<标识>__ 里那段）。
 """
 
 import re
@@ -14,15 +16,16 @@ from ..kernel.contract import TurnMention
 from ..profile.snapshot import MAX_SELECTED, PinnedScope, TurnSelection
 
 MAX_MENTIONS = 30
-MentionType = Literal["knowledge_base", "folder", "document", "tag", "skill"]
+MentionType = Literal["knowledge_base", "folder", "document", "tag", "mcp", "skill"]
 BASE_ID = r"^[A-Za-z0-9_-]{1,64}\.[A-Za-z0-9_-]{1,64}$"
 SKILL_NAME = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"  # 与 DSH 官方 isSkillName 相同，/名字 手势才认得
+MCP_SERVER = r"^(ent_)?[a-z][a-z0-9-]{0,23}$"  # 与 tools/mcp/naming.SERVER_NAME_PATTERN 一致，企业 MCP 多 ent_ 前缀（会话层不引用工具模块）
 BaseId = Annotated[str, Field(pattern=BASE_ID)]
 
 
 class Mention(BaseModel):
     """一个 @。id 按类型：knowledge_base 是知识库全局 id，document 是文档引用（doc_ref），tag 是标签，
-    skill 是技能名，folder 是目录路径（只显示用，限定靠 bases）。"""
+    mcp 是 MCP 服务标识，skill 是技能名，folder 是目录路径（只显示用，限定靠 bases）。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -43,12 +46,14 @@ class Mention(BaseModel):
             raise ValueError("目录下没有知识库")
         if self.type == "skill" and not re.fullmatch(SKILL_NAME, self.id):
             raise ValueError("技能名格式不对")
+        if self.type == "mcp" and not re.fullmatch(MCP_SERVER, self.id):
+            raise ValueError("MCP 服务标识格式不对")
         return self
 
 
 def mentioned(selection: TurnSelection, mentions: list[Mention]) -> TurnSelection:
     """把 @ 并进本轮选择。没 @ 知识库或目录时 knowledge_bases 不动（只 @ 了文件、标签时，运行配置把它们所在的库
-    并进来；什么都没 @ 时照旧用全部可查的）。"""
+    并进来；什么都没 @ 时照旧用全部可查的）。@ 的 MCP 服务不改选择，只由宿主写进消息提示模型。"""
     if not mentions:
         return selection
     whole = [m.id for m in mentions if m.type == "knowledge_base"] + [b for m in mentions if m.type == "folder"

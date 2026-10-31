@@ -379,6 +379,45 @@ describe('历史提问', () => {
     expect(users).toHaveLength(1);
   });
 
+  it('拿到消息 id 后按 id 合并：回显的原话截短过（超长消息只回显前面一段）也只显示一遍', () => {
+    const long = '长'.repeat(9000);
+    const sent = chatReducer(initialChatState, {
+      type: 'local/sent',
+      localId: 'l1',
+      text: long,
+      mode: 'followup',
+    });
+    const delivered = chatReducer(sent, { type: 'local/delivered', localId: 'l1', messageId: 'msg-1' });
+    const echoed = fold([ev.runStarted(1, 1), ev.asked(2, long.slice(0, 8000), 1, 'msg-1')], delivered);
+    expect(selectTimeline(echoed).filter((entry) => entry.type === 'user')).toHaveLength(1);
+  });
+
+  it('发送请求还没返回、回显先到：原话首尾带空白也认得出是同一条', () => {
+    const sent = chatReducer(initialChatState, {
+      type: 'local/sent',
+      localId: 'l1',
+      text: '帮我把上面的图转成 html ',
+      mode: 'followup',
+    });
+    const echoed = fold([ev.runStarted(1, 1), ev.asked(2, '帮我把上面的图转成 html', 1, 'msg-1')], sent);
+    expect(selectTimeline(echoed).filter((entry) => entry.type === 'user')).toHaveLength(1);
+    const delivered = chatReducer(echoed, { type: 'local/delivered', localId: 'l1', messageId: 'msg-1' });
+    expect(selectTimeline(delivered).filter((entry) => entry.type === 'user')).toHaveLength(1);
+  });
+
+  it('同一句话再问一遍（重新生成）：已经发出、还没回显的这条不会被上一轮的同一句顶掉', () => {
+    const history = fold([ev.runStarted(1, 1), ev.asked(2, '继续', 1, 'msg-1'), ev.runCompleted(3, 1)]);
+    const sent = chatReducer(history, { type: 'local/sent', localId: 'l2', text: '继续', mode: 'followup' });
+    const delivered = chatReducer(sent, { type: 'local/delivered', localId: 'l2', messageId: 'msg-2' });
+    const ids = (state: typeof delivered) =>
+      selectTimeline(state).flatMap((entry) => (entry.type === 'user' ? [entry.message.localId] : []));
+    expect(ids(delivered)).toEqual(['msg-1', 'l2']);
+    expect(ids(fold([ev.runStarted(4, 2), ev.asked(5, '继续', 2, 'msg-2')], delivered))).toEqual([
+      'msg-1',
+      'msg-2',
+    ]);
+  });
+
   it('同一个问题问两次，两条都显示', () => {
     const state = fold([
       ev.runStarted(1, 1),

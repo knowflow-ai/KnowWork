@@ -72,7 +72,7 @@ describe('前端插槽', () => {
     expect(tabs.map((tab) => tab.textContent)).toEqual(['模型', '厂商', '文档解析', '结构增强']);
   });
 
-  it('使用端侧栏在「新对话」下面放扩展的入口', async () => {
+  it('使用端侧栏在「新对话」「技能」下面放扩展的入口', async () => {
     routeFetch({
       'GET /api/auth/me': jsonResponse(ME),
       'GET /api/workspaces/default/conversations': jsonResponse({ items: [], next: null }),
@@ -82,6 +82,6 @@ describe('前端插槽', () => {
     renderWithApp(<Sidebar />);
     const nav = await screen.findByRole('navigation', { name: '主导航' });
     const links = Array.from(nav.querySelectorAll('a')).map((link) => link.textContent);
-    expect(links.slice(0, 2)).toEqual(['新对话', '知识库']);
+    expect(links.slice(0, 3)).toEqual(['新对话', '技能', '知识库']);
   });
 });

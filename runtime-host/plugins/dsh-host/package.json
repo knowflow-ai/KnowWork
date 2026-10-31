@@ -10,6 +10,7 @@
     "./prompt-context": "./src/prompt-context.mjs",
     "./answer-mode": "./src/answer-mode.mjs",
     "./knowledge-catalog": "./src/knowledge-catalog.mjs",
+    "./turn-context": "./src/turn-context.mjs",
     "./bundled-skills": "./src/bundled-skills.mjs",
     "./remote-fs": "./src/remote-fs.mjs",
     "./remote-subprocess": "./src/remote-subprocess.mjs",

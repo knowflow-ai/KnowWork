@@ -264,6 +264,15 @@ export function grant(subject: string, resource: string, action: Action): Promis
   return request(base('/grants'), { method: 'POST', body: { subject, resource, action } });
 }
 
+/** 设置一个资源「给谁用」：把它上面「可用」一档的授权整体换成 subjects（全体成员是 role:editor）。 */
+export async function setResourceUsers(
+  resource: string,
+  subjects: readonly string[],
+): Promise<readonly string[]> {
+  const body = await request<unknown>(base('/grants/users'), { method: 'PUT', body: { resource, subjects } });
+  return isRecord(body) ? strings(body.subjects) : [];
+}
+
 export function revokeGrant(subject: string, resource: string): Promise<void> {
   return request(base('/grants'), { method: 'DELETE', query: { subject, resource } });
 }

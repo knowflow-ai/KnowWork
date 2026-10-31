@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '../test/user';
 import { renderWithApp } from '../test/render';
-import { filterTree, pathOf, TreeSelect, type TreeSelectNode } from './TreeSelect';
+import { filterTree, labelOf, pathOf, TreeSelect, type TreeSelectNode } from './TreeSelect';
 
 const NODES: readonly TreeSelectNode[] = [
   {
@@ -72,6 +72,42 @@ describe('TreeSelect', () => {
   });
 });
 
+function MultiHarness({ seen }: { readonly seen: string[][] }) {
+  const [value, setValue] = useState<string[]>([]);
+  return (
+    <TreeSelect
+      multiple
+      aria-label="知识库"
+      nodes={NODES}
+      value={value}
+      onChange={(next) => {
+        seen.push(next);
+        setValue(next);
+      }}
+      placeholder="选择知识库或目录"
+      searchPlaceholder="搜索"
+      emptyMessage="没有匹配的选项"
+    />
+  );
+}
+
+describe('TreeSelect 多选', () => {
+  it('点一下选上、再点取消，浮层不收；框里列出选中项的名字', async () => {
+    const seen: string[][] = [];
+    renderWithApp(<MultiHarness seen={seen} />);
+    await userEvent.click(screen.getByRole('button', { name: /选择知识库或目录/ }));
+    const tree = await screen.findByRole('tree', { name: '知识库' });
+    expect(tree).toHaveAttribute('aria-multiselectable', 'true');
+    await userEvent.click(within(tree).getByRole('button', { name: '电风扇说明书' }));
+    await userEvent.click(within(tree).getByRole('button', { name: '制度' }));
+    expect(seen.at(-1)).toEqual(['knowledge_base:builtin.kb1', 'knowledge_base:kf.d1']);
+    expect(screen.getByRole('tree', { name: '知识库' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /电风扇说明书、制度/ })).toBeInTheDocument();
+    await userEvent.click(within(tree).getByRole('button', { name: '电风扇说明书' }));
+    expect(seen.at(-1)).toEqual(['knowledge_base:kf.d1']);
+  });
+});
+
 describe('树的纯函数', () => {
   it('过滤与路径', () => {
     const kept = filterTree(NODES, '产品');
@@ -81,5 +117,7 @@ describe('树的纯函数', () => {
     expect(filterTree(NODES, ' ')).toBe(NODES);
     expect(pathOf(NODES, 'knowledge_base:builtin.kb1')).toBe('扩展知识库 / 产品资料 / 电风扇说明书');
     expect(pathOf(NODES, 'nope')).toBeUndefined();
+    expect(labelOf(NODES, 'knowledge_base:builtin.kb1')).toBe('电风扇说明书');
+    expect(labelOf(NODES, 'nope')).toBeUndefined();
   });
 });

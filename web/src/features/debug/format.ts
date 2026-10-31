@@ -45,6 +45,8 @@ const SOURCE: Readonly<Record<string, string>> = {
   'skill-invocation': '技能内容',
   'subagent-settled': '子 Agent 结果',
   'agent-message': '其他 Agent 的消息',
+  'knowwork-knowledge-catalog': '知识库目录',
+  'knowwork-turn-context': '随提问带上的背景',
 };
 
 /** 消息的说明：用户亲手发的就写「用户」，宿主塞进去的上下文写明是什么。 */

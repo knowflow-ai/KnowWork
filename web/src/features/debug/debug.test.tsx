@@ -71,6 +71,14 @@ function api() {
       ],
       subagents: [],
       events: ['审批 write：批准本次'],
+      background: [
+        { kind: 'standing', text: '<user_memory>[1] 回答用表格</user_memory>', sentTurn: 1 },
+        {
+          kind: 'turn',
+          text: '<user_memory_recall>[2] 生产库是 PostgreSQL</user_memory_recall>',
+          sentTurn: 3,
+        },
+      ],
     }),
     [`GET ${B}/turns/3/steps/2/input`]: jsonResponse({
       system: ['你是 KnowWork 企业智能助手'],
@@ -110,6 +118,19 @@ describe('RunInspector', () => {
     expect(within(first).queryByText('检索过程（没有交给模型）')).not.toBeInTheDocument();
   });
 
+  it('随提问带上的背景默认收起，点开是每轮都带的（写明沿用第几轮发的）与只给这一轮的', async () => {
+    api();
+    renderWithApp(<RunInspector source={ownRun('c1')} turn={3} onClose={() => undefined} />);
+    const toggle = await screen.findByRole('button', { name: '随提问带上的背景' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText(/回答用表格/)).not.toBeInTheDocument();
+    await userEvent.click(toggle);
+    expect(screen.getByText('每轮都带 · 沿用第 1 轮发的')).toBeInTheDocument();
+    expect(screen.getByText(/\[1\] 回答用表格/)).toBeInTheDocument();
+    expect(screen.getByText('只给这一轮')).toBeInTheDocument();
+    expect(screen.getByText(/生产库是 PostgreSQL/)).toBeInTheDocument();
+  });
+
   it('逐步回放：上一步只剩第一步，下一步再出现第二步并选中它', async () => {
     api();
     renderWithApp(<RunInspector source={ownRun('c1')} turn={3} onClose={() => undefined} />);
@@ -136,6 +157,7 @@ describe('RunInspector', () => {
   it('文案：消息来源与 JSON 排版', () => {
     expect(messageLabel('user', 'user')).toBe('用户');
     expect(messageLabel('user', 'runtime-context')).toBe('运行上下文');
+    expect(messageLabel('user', 'knowwork-turn-context')).toBe('随提问带上的背景');
     expect(messageLabel('tool', null)).toBe('工具结果');
     expect(prettyJson('not json')).toBe('not json');
   });

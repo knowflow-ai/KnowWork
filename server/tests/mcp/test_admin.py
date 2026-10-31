@@ -76,7 +76,7 @@ async def test_registry_lists_usable_tools_and_invokes(env, stub):
     with pytest.raises(ToolFailure, match="记录 x 不存在"):
         await registry.invoke(ctx(), DELETE, {"item_id": "x"})
 
-    await env.mcp.admin.configure_tool("alice", "ws1", record.id, DELETE, McpToolPatch(enabled=False))
+    await env.mcp.admin.configure_tool("alice", "ws1", record.id, DELETE, McpToolPatch(policy="block"))
     assert DELETE not in {s.name for s in await registry.available(ctx())}
     with pytest.raises(ToolFailure, match="不存在或已停用"):
         await registry.invoke(ctx(), DELETE, {"item_id": "x"})
@@ -86,10 +86,10 @@ async def test_registry_lists_usable_tools_and_invokes(env, stub):
 
 async def test_tool_settings_change_spec(env, stub):
     record = await register(env, stub)
-    await env.mcp.admin.configure_tool("alice", "ws1", record.id, ADD, McpToolPatch(risk="write", approval="ask"))
+    await env.mcp.admin.configure_tool("alice", "ws1", record.id, ADD, McpToolPatch(group="write", policy="ask"))
     spec = next(s for s in await env.mcp.registry.available(ctx()) if s.name == ADD)
     assert (spec.risk, spec.approval_mode) == ("write", "ask")
-    await env.mcp.admin.configure_tool("alice", "ws1", record.id, ADD, McpToolPatch(risk="auto", approval="auto"))
+    await env.mcp.admin.configure_tool("alice", "ws1", record.id, ADD, McpToolPatch(group="read", policy="allow"))
     spec = next(s for s in await env.mcp.registry.available(ctx()) if s.name == ADD)
     assert (spec.risk, spec.approval_mode) == ("read", "never")
 
@@ -115,12 +115,14 @@ async def test_changing_headers_reconnects_first(env, stub):
     assert renamed.title == "新名字" and renamed.tools == record.tools
 
 
-async def test_members_need_tool_grants(env, stub):
+async def test_new_server_is_for_everyone_and_can_be_narrowed(env, stub):
     await register(env, stub)
     builtin = frozenset({"kw_now"})
     registry = AuthorizedToolRegistry(env.mcp.registry, ToolClearance(env.access, builtin=builtin))
     assert len(await registry.available(ctx("bob"))) == 4, "admin 默认能用全部工具"
-    assert await registry.available(ctx("carol")) == [], "编辑者默认不能用外部工具"
+    assert len(await registry.available(ctx("carol"))) == 4, "新登记的服务默认全体成员都能用"
+    await env.access.set_users("alice", "ws1", "tool:mcp__demo__*", [])  # 在服务设置里收窄成只有管理员
+    assert await registry.available(ctx("carol")) == []
     await env.access.grant("alice", "ws1", "user:carol", "tool:mcp__demo__*", "use")
     assert len(await registry.available(ctx("carol"))) == 4, "按服务授权覆盖它的全部工具"
     await env.access.revoke("alice", "ws1", "user:carol", "tool:mcp__demo__*")
@@ -128,3 +130,14 @@ async def test_members_need_tool_grants(env, stub):
     assert [s.name for s in await registry.available(ctx("carol"))] == [ADD]
     with pytest.raises(ToolFailure):
         await registry.invoke(ctx("carol"), TICKET, {"title": "x"})
+
+
+def test_header_names_may_use_underscores_but_not_reserved_ones():
+    """有服务的 Key 请求头带下划线（例如 CONTEXT7_API_KEY），HTTP 本身允许；协议自己管的头仍不让配。"""
+    from pydantic import ValidationError
+
+    body = McpServerCreate(name="ctx", title="文档检索", url="https://mcp.example.com/mcp",
+                           headers={"CONTEXT7_API_KEY": "ctx7sk-1234"})
+    assert body.headers == {"CONTEXT7_API_KEY": "ctx7sk-1234"}
+    with pytest.raises(ValidationError):
+        McpServerCreate(name="ctx", title="文档检索", url="https://mcp.example.com/mcp", headers={"Host": "x"})

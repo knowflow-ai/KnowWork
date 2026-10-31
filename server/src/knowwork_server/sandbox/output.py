@@ -31,3 +31,14 @@ class CappedOutput:
 def frame(stream: int, payload: bytes) -> bytes:
     """按 Docker 的格式拼一帧。测试桩用它扮 daemon，避免另写一份格式。"""
     return bytes([stream, 0, 0, 0]) + struct.pack(">I", len(payload)) + payload
+
+
+MIN_MASKED = 4  # 太短的值（例如 "1"）不替换，否则会把输出里所有同样的字符都换掉
+MASK = "******"
+
+
+def mask(text: str, secrets: list[str]) -> str:
+    """把输出里的密钥值（技能的环境变量）换成 ******；长的先换，免得短值是长值的一部分时换不干净。"""
+    for secret in sorted((s for s in secrets if len(s) >= MIN_MASKED), key=len, reverse=True):
+        text = text.replace(secret, MASK)
+    return text

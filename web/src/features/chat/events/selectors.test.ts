@@ -52,6 +52,17 @@ describe('summarizeProcess', () => {
     expect(summarizeProcess(run({ steps: [step('awaiting-approval', 'write')] }))).toBe('等待批准：write');
   });
 
+  it('模型还在写工具的参数（工具没开始跑）时说它在做什么，不是一直「思考中」', () => {
+    expect(summarizeProcess(run(), ['write'])).toBe('正在写入文件');
+    expect(summarizeProcess(run(), ['web_search'])).toBe('正在执行：web_search');
+    expect(summarizeProcess(run({ steps: [step('running', 'read')] }), ['write'])).toBe('正在读取文件');
+  });
+
+  it('模型在写待办、提问这类内部工具时不露工具名（它们本来就不算步骤），仍是「思考中」', () => {
+    expect(summarizeProcess(run(), ['todo_write'])).toBe('思考中');
+    expect(summarizeProcess(run(), ['write', 'ask_user_question'])).toBe('正在写入文件');
+  });
+
   it('hasProcess：运行中或有细节时显示', () => {
     expect(hasProcess(run())).toBe(true);
     expect(hasProcess(run({ endedAt: 1 }))).toBe(false);

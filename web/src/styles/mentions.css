@@ -2,7 +2,7 @@
  * 输入框 @（features/chat/mentions）：浮在输入框上方的点名菜单，和输入框、气泡上的 @ 小标签。
  * 单色（使用端不上色）；类型靠图标和类型名区分，和附件卡片（带彩色类型块与大小）分开。
  */
-.kw-composer {
+.kw-composer-main {
   position: relative;
 }
 

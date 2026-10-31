@@ -1,0 +1,26 @@
+# 流式执行用的 sshd 配置：只给 `sshd -i` 用（业务服务经 docker exec 的管道起它），不监听端口。
+# 能接上这条管道本身要先过业务服务的令牌与成员检查；登录再用宿主为每个执行环境现生成的临时公钥，
+# 业务服务连接前把公钥写进 /etc/ssh/kw_authorized_keys/<账号>（root 所有，StrictModes 才认）。
+HostKey /etc/ssh/ssh_host_ed25519_key
+AuthorizedKeysFile /etc/ssh/kw_authorized_keys/%u
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+UsePAM no
+StrictModes yes
+# 执行账号可以是 root（沙箱默认），只认公钥
+PermitRootLogin prohibit-password
+PermitUserEnvironment no
+# DSH 官方 SSH 执行环境的程序流走转发的 Unix 套接字（ssh -L 本地套接字:远端套接字）。OpenSSH 的本地转发许可
+# 是 TCP 与 Unix 套接字共用的（AllowTcpForwarding no 会连 Unix 套接字转发一起拒掉），所以要 local。
+# 发起转发的是宿主的 ssh 客户端（部署方配置），不是模型；远端转发一律不开。
+AllowStreamLocalForwarding local
+AllowTcpForwarding local
+PermitListen none
+GatewayPorts no
+AllowAgentForwarding no
+X11Forwarding no
+PermitTTY no
+PrintMotd no
+LogLevel ERROR

@@ -1,18 +1,20 @@
 {
   "name": "@knowwork/runtime-host",
   "private": true,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": ">=24.9.0"
   },
   "description": "KnowWork 运行时宿主：基于 DeepSeek Harness 官方配置档机制",
   "dependencies": {
-    "@deepseek-ai/dsh": "0.2.1-rc.2"
+    "@deepseek-ai/dsh": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-ssh": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-subprocess-ssh": "0.2.2-alpha.2"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-llm-mock-server": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-llm-replay": "0.2.1-rc.2"
+    "@deepseek-ai/dsh-llm-mock-server": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-llm-replay": "0.2.2-alpha.2"
   },
   "scripts": {
     "test": "node --test --test-timeout=90000 --test-concurrency=1 tests/*.test.mjs",

@@ -1,5 +1,5 @@
 /**
- * 路由表：使用端（对话、个人设置）与管理后台（/admin）是两套外壳。
+ * 路由表：使用端（对话、技能、个人设置）与管理后台（/admin）是两套外壳。
  * 管理后台只给空间 owner/admin（AdminLayout 里的 RequireAdmin），服务端仍逐个接口判定。
  */
 import { lazy, Suspense, type ReactNode } from 'react';
@@ -16,6 +16,7 @@ const LoginPage = lazy(() => import('../features/auth/LoginPage'));
 const InvitePage = lazy(() => import('../features/auth/InvitePage'));
 const SetupPage = lazy(() => import('../features/auth/SetupPage'));
 const SettingsPage = lazy(() => import('../features/settings/SettingsPage'));
+const MySkillsPage = lazy(() => import('../features/skills/SkillsPage'));
 const SkillsPage = lazy(() => import('../features/admin/skills/SkillsPage'));
 const ChannelsPage = lazy(() => import('../features/admin/channels/ChannelsPage'));
 const MembersPage = lazy(() => import('../features/admin/members/MembersPage'));
@@ -73,6 +74,7 @@ export const buildRoutes = (): RouteObject[] => [
       { path: 'chat', element: page(<ChatPage />) },
       { path: 'chat/:conversationId', element: page(<ChatPage />) },
       { path: 'settings', element: page(<SettingsPage />) },
+      { path: 'skills', element: page(<MySkillsPage />) },
       ...slotItems('app.routes'),
       { path: '*', element: <Navigate to="/chat" replace /> },
     ],

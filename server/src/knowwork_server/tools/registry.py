@@ -17,6 +17,10 @@ Risk = Literal["read", "write", "dangerous"]
 Approval = Literal["ask", "never"]
 RISKS: frozenset[str] = frozenset({"read", "write", "dangerous"})
 APPROVALS: frozenset[str] = frozenset({"ask", "never"})
+# 回答方式（同 kernel/contract.TurnInput.answer_mode）：工具声明自己在哪几种里提供，默认只在智能体里
+ANSWER_MODES: frozenset[str] = frozenset({"agent", "quick"})
+AGENT_ONLY: frozenset[str] = frozenset({"agent"})
+AGENT_AND_QUICK: frozenset[str] = ANSWER_MODES
 MAX_GUIDANCE = 1000
 
 
@@ -46,10 +50,17 @@ class ToolSpec:
 
     - risk 是真实风险等级，给审计、展示与工作流缓存判断用，不为了少弹审批而调低；
     - approval 决定执行前是否走官方人工审批：不写时按 risk 推导（只读不问，写入与高风险要问），
-      隔离由别处负责的工具（例如沙箱里的命令，照 WeKnora）显式写 "never"；
+      隔离由别处负责的工具（例如沙箱里的命令）显式写 "never"；
     - guidance 是写进系统提示的使用规则（可选），只在这个工具对该会话可见时才出现；
     - concurrent：模型一步里发了几个调用时可以同时执行（宿主照 DSH 官方声明 isConcurrencySafe）。只给只读、
-      不改共享状态的工具（知识检索这类），写入工具与外部 MCP 工具不开，它们的并发安全我们保证不了。
+      不改共享状态的工具（知识检索这类），写入工具与外部 MCP 工具不开，它们的并发安全我们保证不了；
+    - answer_modes：在哪几种回答方式下提供（默认只在智能体里）。快速问答只给能「快速查知识库作答」的工具（只读知识库工具、
+      用户明确要记的记忆写入），由定义工具的模块自己声明，和 risk、concurrent 一样随描述交给宿主；宿主按它算官方条件工具的
+      `when`，名单不写在宿主里，加工具不用两头改；
+    - tailor：按会话裁剪交给宿主的那份描述（可选），例如去掉这个会话用不上的参数。DSH 的工具参数注册时就定了，
+      没有按步改参数的扩展点；官方自己的做法是装配时定（bash 只在有沙箱执行器时才带 sandbox_permissions）。
+      宿主每个会话开始时拉一次清单，就在那时定，整个会话不变，不动模型服务的前缀缓存。只影响交给宿主的描述，
+      执行时仍按完整的 input_schema 校验：会话中途情况变了，宿主手里那份描述照样能用。
     """
 
     name: str
@@ -59,6 +70,8 @@ class ToolSpec:
     approval: Approval | None = None
     guidance: str | None = None
     concurrent: bool = False
+    answer_modes: frozenset[str] = AGENT_ONLY
+    tailor: "Tailor | None" = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.risk not in RISKS:
@@ -69,6 +82,8 @@ class ToolSpec:
             raise ValueError(f"工具 {self.name} 的使用规则为空或过长")
         if self.concurrent and self.risk != "read":
             raise ValueError(f"工具 {self.name} 不是只读的，不能声明同时执行")
+        if not self.answer_modes or not self.answer_modes <= ANSWER_MODES:
+            raise ValueError(f"工具 {self.name} 的回答方式不合法")
 
     @property
     def approval_mode(self) -> Approval:
@@ -80,7 +95,11 @@ class ToolSpec:
         described = {"name": self.name, "description": self.description, "inputSchema": self.input_schema,
                      "risk": self.risk, "approval": self.approval_mode}
         return {**described, **({"guidance": self.guidance} if self.guidance is not None else {}),
-                **({"concurrent": True} if self.concurrent else {})}
+                **({"concurrent": True} if self.concurrent else {}),
+                **({"answerModes": sorted(self.answer_modes)} if self.answer_modes != AGENT_ONLY else {})}
+
+
+Tailor = Callable[[ToolContext, ToolSpec], Awaitable[ToolSpec]]
 
 
 class ToolFailure(Exception):

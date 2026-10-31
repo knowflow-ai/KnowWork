@@ -11,17 +11,19 @@ from knowwork_server.conversations.pump import EventPump, PumpTimings
 from knowwork_server.conversations.replay import EventFeed
 from knowwork_server.conversations.service import ConversationService
 from knowwork_server.conversations.tool_credentials import ToolCredentials
+from knowwork_server.conversations.turn_context import TurnContextHook
 from knowwork_server.conversations.writer import BatchWriter
 from knowwork_server.kernel.contract import (
     KernelError,
     KnowledgeCatalog,
     KnowledgeEntry,
     SessionNotFound,
+    TurnContext,
     TurnInput,
 )
 from knowwork_server.profile.clearance import AuthorizedToolRegistry, ToolClearance
 from knowwork_server.profile.errors import ProfileUnavailable
-from knowwork_server.profile.snapshot import TurnSelection
+from knowwork_server.profile.snapshot import NO_SELECTION, PinnedScope, TurnSelection
 from knowwork_server.tools import build_tool_service
 from knowwork_server.tools.service import ExecuteRequest, ToolAccessError
 
@@ -57,7 +59,7 @@ async def db(sessionmaker):
 
 
 class Env:
-    def __init__(self, sessionmaker, kernel=None, knowledge_catalog=None):
+    def __init__(self, sessionmaker, kernel=None, knowledge_catalog=None, turn_context=None):
         from knowwork_server.profile.assembly import build_profiles
 
         self.kernel = kernel or FakeKernel()
@@ -78,7 +80,7 @@ class Env:
                                            EventFeed(sessionmaker, writer, broadcaster, self.pump.produced_upto),
                                            tool_credentials=ToolCredentials(self.kernel, issue),
                                            profiles=self.profiles, knowledge_catalog=knowledge_catalog,
-                                           resume_retry_delays=(0.01,))
+                                           turn_context=turn_context, resume_retry_delays=(0.01,))
 
     def deny(self, index=-1):
         return set(self.kernel.opened[index].policy.deny)
@@ -127,13 +129,14 @@ async def test_grant_then_revoke_reopens_each_time(db):
     await env.pump.close()
 
 
-async def test_selection_change_reopens(db):
+async def test_selection_change_rebinds_without_reopening(db):
     env = Env(db)
     conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    first = await env.profiles.bound_version(conversation)
     await env.service.send(conversation, TurnInput(text="用周报技能"), TurnSelection(skills=("weekly-report",)))
-    assert len(env.kernel.opened) == 2
+    assert len(env.kernel.opened) == 1 and await env.profiles.bound_version(conversation) != first
     await env.service.send(conversation, TurnInput(text="还是周报"), TurnSelection(skills=("weekly-report",)))
-    assert len(env.kernel.opened) == 2
+    assert len(env.kernel.opened) == 1
     await env.pump.close()
 
 
@@ -168,15 +171,16 @@ SKILL = TurnSelection(skills=("weekly-report",))
 
 
 async def test_first_message_that_changes_the_profile_opens_fresh_when_nothing_was_persisted(db):
-    """新会话第一条消息就 @ 了文件（或选了技能），配置版本和建会话时不同，要重开；宿主那边还没有记录，
+    """建会话后、第一条消息前宿主相关的配置变了（例如刚授了一个工具），要重开；宿主那边还没有记录，
     「接着记录」打不开，改成新开（2026-10-26 新会话第一条带 @ 必然报「运行时暂时不可用」）。"""
     env = Env(db)
     conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    env.grants.grant(USER, "tool:erp_read")
     env.kernel.open_effects = [NOTHING_PERSISTED]
-    await env.service.send(conversation, TurnInput(text="用周报技能"), SKILL)
+    await env.service.send(conversation, TurnInput(text="查一下 ERP"))
     assert [s.resume for s in env.kernel.opened] == [False, False]
-    assert env.kernel.sent[-1].text == "用周报技能"
-    assert await env.profiles.bound_version(conversation) == (await env.profiles.compile(conversation, SKILL)).version
+    assert env.kernel.sent[-1].text == "查一下 ERP"
+    assert await env.profiles.bound_version(conversation) == (await env.profiles.compile(conversation)).version
     await env.pump.close()
 
 
@@ -188,9 +192,10 @@ async def test_a_conversation_with_turns_is_never_silently_reopened_fresh(db):
         session.add(RunEvent(conversation_id=conversation.id, seq=1, workspace_id=WS, host_epoch="e1", host_cursor=1,
                              kind="session/event", data={"type": "turn/start", "data": {"turn": 1}}))
         await session.commit()
+    env.grants.grant(USER, "tool:erp_read")
     env.kernel.open_effects = [NOTHING_PERSISTED]
     with pytest.raises(KernelError):
-        await env.service.send(conversation, TurnInput(text="用周报技能"), SKILL)
+        await env.service.send(conversation, TurnInput(text="查一下 ERP"))
     assert [s.resume for s in env.kernel.opened] == [False]
     await env.pump.close()
 
@@ -227,6 +232,37 @@ async def test_profile_unavailable_blocks_create_without_orphan(db):
     assert env.kernel.opened == []
     page = await env.service.list_page(workspace_id=WS, user_id="orphan-check")
     assert page.items == ()
+    await env.pump.close()
+
+
+async def test_selection_only_changes_rebind_without_reopening(db):
+    """只是本轮选择变了（@ 文件、标签、知识库、技能，撤掉检索条件，或回到什么都不 @）：只改绑定，不释放宿主会话。
+    释放会结束会话里还在跑的后台任务、结算待决的审批与提问；这些选择只在执行检索时从绑定读，宿主用不到。"""
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    host = await env.profiles.bound_host_version(conversation)
+    pinned = TurnSelection(pins=(PinnedScope(base="kb.kb1", documents=("d1",)),))
+    dropped = TurnSelection(dropped_conditions=("部门 = 财务部",))
+    for text, selection in (("@ 一个文件", pinned), ("什么都不 @", NO_SELECTION), ("撤掉一个条件", dropped),
+                            ("@ 一个技能", SKILL), ("@ 一个知识库", TurnSelection(knowledge_bases=("kb.kb1",)))):
+        await env.service.send(conversation, TurnInput(text=text), selection)
+        bound = await env.profiles.bound(conversation)
+        assert bound.version == (await env.profiles.compile(conversation, selection)).version, text
+        assert await env.profiles.bound_host_version(conversation) == host, "「不再询问」的授权不因 @ 失效"
+    assert len(env.kernel.opened) == 1 and env.kernel.disposed == []
+    await env.service.send(conversation, TurnInput(text="又 @ 一个文件"), pinned)
+    assert [(p.base, p.documents) for p in (await env.profiles.bound(conversation)).pins] == [("kb.kb1", ("d1",))]
+    await env.pump.close()
+
+
+async def test_host_facing_change_together_with_a_selection_still_reopens(db):
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    host = await env.profiles.bound_host_version(conversation)
+    env.grants.grant(USER, "tool:erp_read")
+    await env.service.send(conversation, TurnInput(text="@ 一个技能，顺便刚授了工具"), SKILL)
+    assert env.kernel.disposed == [conversation.id] and "erp_read" not in env.deny()
+    assert await env.profiles.bound_host_version(conversation) != host
     await env.pump.close()
 
 
@@ -278,3 +314,47 @@ async def test_a_failing_or_slow_catalog_does_not_block_the_turn(db, monkeypatch
     await env.service.send(conversation, TurnInput(text="查合同"))
     assert env.kernel.sent[-1].knowledge is None
     await env.pump.close()
+
+
+async def test_turns_carry_the_extension_context_only_when_one_is_provided(db):
+    """扩展登记了提供者才带（问的是这一轮的人与提问）；没登记时和没有这个功能一样；插话进的是正在跑的一轮，不另算。"""
+    asked = []
+
+    async def memory(request):
+        asked.append((request.user_id, request.text, request.answer_mode))
+        return TurnContext(standing="你的记忆：回答用表格", turn="相关：A 项目 11 月 15 日截标")
+
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="查合同"))
+    assert env.kernel.sent[-1].context is None
+    await env.pump.close()
+
+    hook = TurnContextHook()
+    hook.set(memory)
+    env = Env(db, turn_context=hook)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="招标还剩几天", answer_mode="quick"))
+    assert env.kernel.sent[-1].context == TurnContext(standing="你的记忆：回答用表格", turn="相关：A 项目 11 月 15 日截标")
+    await env.service.send(conversation, TurnInput(text="补充一句", mode="steer"))
+    assert env.kernel.sent[-1].context is None and asked == [(USER, "招标还剩几天", "quick")]
+    await env.pump.close()
+
+
+async def test_a_failing_or_slow_context_provider_does_not_block_the_turn(db):
+    async def broken(request):
+        raise RuntimeError("记忆服务挂了")
+
+    async def slow(request):
+        await asyncio.sleep(5)
+        return TurnContext(standing="x")
+
+    for provider, hook in ((broken, TurnContextHook()), (slow, TurnContextHook(timeout=0.05))):
+        hook.set(provider)
+        env = Env(db, turn_context=hook)
+        conversation = await env.service.create(workspace_id=WS, user_id=USER)
+        await env.service.send(conversation, TurnInput(text="查合同"))
+        assert env.kernel.sent[-1].context is None, "没算出来就不带，宿主沿用上一轮的常驻那段"
+        await env.pump.close()
+    with pytest.raises(ValueError):
+        hook.set(broken)

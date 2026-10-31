@@ -51,7 +51,7 @@ export function MessageList({
           return (
             <div key={`u-${entry.message.localId}`} className="kw-user-row">
               <AttachmentChips items={entry.message.attachments ?? []} label="这条消息带的附件" />
-              <MentionChips items={entry.message.mentions ?? []} label="这条消息 @ 点名的范围与技能" />
+              <MentionChips items={entry.message.mentions ?? []} label="这条消息 @ 点名的内容" />
               {entry.message.text ? (
                 <div
                   className={`kw-user-bubble${sending ? ' is-pending' : ''}`}
@@ -83,6 +83,7 @@ export function MessageList({
             onInspect={onInspect ? () => onInspect(entry.runId) : undefined}
             busy={busy}
             liveText={state.live?.runId === entry.runId ? state.live.text : undefined}
+            liveTools={state.live?.runId === entry.runId ? state.live.tools : undefined}
             feedback={feedback?.byRun[entry.runId]?.rating ?? null}
             onFeedback={feedback ? (input) => feedback.submit(entry.runId, input) : undefined}
             onRetract={feedback ? () => feedback.retract(entry.runId) : undefined}

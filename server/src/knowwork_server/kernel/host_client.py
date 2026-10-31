@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from .contract import (
     INVALID_FRAME_KIND,
+    BundledSkill,
     CancelResult,
     EpochMismatch,
     KernelError,
@@ -139,8 +140,11 @@ class HostKernel:
             body["attachments"] = [_attachment(a) for a in turn.attachments]
         if turn.knowledge is not None:
             body["knowledge"] = {"bases": [{"id": e.id, "name": e.name, "description": e.description,
-                                            **({"fields": list(e.fields)} if e.fields else {})}
+                                            **({"fields": list(e.fields)} if e.fields else {}),
+                                            **({"routes": list(e.routes)} if e.routes else {})}
                                            for e in turn.knowledge.bases], "omitted": turn.knowledge.omitted}
+        if turn.context is not None:
+            body["context"] = {"standing": turn.context.standing, "turn": turn.context.turn}
         if turn.mentions:
             body["mentions"] = [{"type": m.type, "id": m.id, "name": m.name,
                                  **({"base": m.base, "baseName": m.base_name or m.base} if m.base else {})}
@@ -188,6 +192,12 @@ class HostKernel:
     async def rotate_skill_credential(self, session_id: str, token: str) -> None:
         path = f"/v1/sessions/{_segment(session_id)}/skill-credential"
         _raise_for(await self._client.put(path, json={"token": token}))
+
+    async def bundled_skills(self) -> tuple[BundledSkill, ...]:
+        response = await self._client.get("/v1/skills/bundled")
+        _raise_for(response)
+        return tuple(BundledSkill(name=s["name"], description=s["description"], user_invocable=s.get("userInvocable", True))
+                     for s in response.json()["skills"])
 
     async def subscribe(self, session_id: str, *, after: int = 0, epoch: str | None = None) -> AsyncIterator[KernelEvent]:
         params: dict[str, str | int] = {"after": after}

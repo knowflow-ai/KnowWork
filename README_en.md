@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.3-2b7de9" alt="Version: v0.0.3"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.4-2b7de9" alt="Version: v0.0.4"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -177,7 +177,7 @@ communication with the host are not available for now.
 | Feature | Description |
 |---|---|
 | Visible execution | Every step the model takes is streamed: which tool it called, with what arguments and what came back. Collapsed by default, expandable at any time; answers stream token by token |
-| Quick answer | Searches the knowledge bases and answers only from what it found, with citations, without the full agent loop; switch between agent and quick answer mid-conversation |
+| Quick answer | Answers only from the knowledge bases (searches them, and reads around a hit when the excerpt is incomplete), with citations, without the full agent loop; switch between agent and quick answer mid-conversation |
 | Thinking switch | Turn the chat model's thinking on or off, sent the way each provider expects |
 | @ mentions | @ a knowledge base in the input box to search only that base this turn; @ a skill to invoke it explicitly |
 | Follow-ups and cancel | Enter queues a message until the current task finishes; a key combination adds it to the running task. Cancel at any time |
@@ -270,7 +270,7 @@ communication with the host are not available for now.
 
 ## Status and roadmap
 
-The current version is v0.0.3. APIs and data structures may still change before 1.0. Known
+The current version is v0.0.4. APIs and data structures may still change before 1.0. Known
 limitations are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Next up: a skill test bench (cases, structural assertions, draft versus published comparison), scenario packs, a UI for
@@ -305,8 +305,8 @@ measures quality, and KnowWork gets the work done.
 KnowWork is released under the [Apache License 2.0](LICENSE).
 
 - [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh), the agent kernel (MIT).
-- [WeKnora](https://github.com/Tencent/WeKnora); the Docker backend of the session sandbox and the deployment layout
-  follow its approach (MIT).
+- [WeKnora](https://github.com/Tencent/WeKnora); the Docker backend of the session sandbox and the deployment layout,
+  the IM channels, knowledge search and citations, answer modes and the @ menu in the composer follow its approach (MIT).
 - [@openai/apps-sdk-ui](https://www.npmjs.com/package/@openai/apps-sdk-ui), UI components (MIT).
 
 Third-party notices are in [NOTICE](NOTICE).

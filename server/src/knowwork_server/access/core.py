@@ -1,7 +1,7 @@
 """服务的公共部分：事务（设置行级安全变量、收集规则变更、提交后回放）、调用者授权、判定。"""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from sqlalchemy import select
@@ -27,6 +27,9 @@ from .vocab import (
 )
 
 log = logging.getLogger(__name__)
+
+# 移出成员时扩展清理这个人在本空间的数据：(会话, 空间, 用户)，在移出的同一个事务里调用（会话已声明这个空间）
+MemberRemoved = Callable[[AsyncSession, str, str], Awaitable[None]]
 
 
 class Tx:
@@ -56,6 +59,7 @@ class AccessCore:
         self._system_admin: str | None = None
         # 关闭了的空间：规则不加载，判定一律拒绝（系统管理员也一样）。整体重载时从空间表读
         self._closed: frozenset[str] = frozenset()
+        self._member_removed: tuple[MemberRemoved, ...] = ()
 
     @property
     def engine(self) -> PolicyEngine:
@@ -75,6 +79,11 @@ class AccessCore:
         if self._hierarchy is not NO_HIERARCHY:
             raise ValueError("a resource hierarchy is already installed")
         self._hierarchy = hierarchy
+
+    def on_member_removed(self, hook: MemberRemoved) -> None:
+        """启动时登记：成员被移出空间时在同一个事务里调用，例如扩展删掉他在这个空间的长期记忆。
+        抛错时整个移出回滚，不留下人走了、数据还在的情况。"""
+        self._member_removed = (*self._member_removed, hook)
 
     def set_system_admin(self, user_id: str | None) -> None:
         self._system_admin = user_id or None

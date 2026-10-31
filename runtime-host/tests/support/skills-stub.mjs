@@ -32,8 +32,8 @@ export function publishedSkill(name, { body = `技能 ${name} 的正文`, unlock
 }
 
 /**
- * @param {{ skillsByToken: Record<string, Array<{ entry: object, body: string }>>, tamper?: boolean }} options
- *   tamper 为真时内容接口返回与摘要不符的正文。
+ * @param {{ skillsByToken: Record<string, Array<{ entry: object, body: string }>>, tamper?: boolean, bundledOff?: string[] }} options
+ *   tamper 为真时内容接口返回与摘要不符的正文；bundledOff 是清单里带的「本空间停用的自带技能」。
  */
 export async function startSkillsStub(options) {
   const requests = []
@@ -44,7 +44,9 @@ export async function startSkillsStub(options) {
     const reply = (status, payload) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)) }
     const skills = options.skillsByToken[token]
     if (skills === undefined) return reply(401, { error: { code: 'unauthorized', message: '令牌无效' } })
-    if (url.pathname.endsWith('/catalog')) return reply(200, { skills: skills.map(s => s.entry) })
+    if (url.pathname.endsWith('/catalog')) {
+      return reply(200, { skills: skills.map(s => s.entry), bundledOff: options.bundledOff ?? [] })
+    }
     if (url.pathname.endsWith('/content')) {
       const found = skills.find(s => s.entry.name === url.searchParams.get('name') && s.entry.digest === url.searchParams.get('digest'))
       if (found === undefined) return reply(404, { error: { code: 'skill_not_found', message: '技能不在本会话的可用范围内' } })

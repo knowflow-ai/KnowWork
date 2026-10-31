@@ -70,6 +70,13 @@
   margin-bottom: 8px;
 }
 
+/* 「设置 → 连接」里一个服务的工具清单：一个工具一段，原名加说明 */
+.kw-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 /* 工具清单的工具列：原名一行，说明一行（超长省略） */
 .kw-tool-name {
   display: flex;
@@ -390,4 +397,41 @@
   gap: 2px;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* 技能审核：SKILL.md 正文与逐行对比。加上的行浅绿、删掉的行浅红，其余照常 */
+.kw-skill-text {
+  max-height: 480px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--font-text-sm-size);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.kw-skill-text > div {
+  padding: 0 12px 0 28px;
+  text-indent: -16px;
+}
+
+.kw-skill-text .is-add {
+  background: var(--color-background-success-soft);
+}
+
+.kw-skill-text .is-del {
+  background: var(--color-background-danger-soft);
+  color: var(--color-text-secondary);
+}
+
+/* 详情里一个区块的标题行：标题在左，这一块的操作在右（例如「填写环境变量」） */
+.kw-detail-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }

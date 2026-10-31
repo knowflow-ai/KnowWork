@@ -45,30 +45,50 @@ def remote(name: str, schema=OBJECT, annotations=None, description="") -> Remote
 
 
 def test_build_validates_schema_and_keeps_admin_settings():
-    first = catalog.build("demo", [remote("a", annotations={"readOnlyHint": True}), remote("b")], [])
-    assert [(t.name, t.risk, t.usable) for t in first] == [("mcp__demo__a", "read", True),
-                                                           ("mcp__demo__b", "write", True)]
+    first = catalog.build("demo", [remote("a", annotations={"readOnlyHint": True}), remote("b")], [], first=True)
+    assert [(t.name, t.group, t.policy, t.usable) for t in first] == [
+        ("mcp__demo__a", "read", "allow", True), ("mcp__demo__b", "write", "ask", True)], "第一次登记照注解预填"
     assert first[0].description == "MCP 工具 a", "没有说明时给一个兜底说明"
-    tuned = catalog.configure(first, "b", risk="dangerous", approval="never", enabled=False)
+    tuned = catalog.set_policy(first, "b", policy="block")
     again = catalog.build("demo", [remote("b"), remote("c", schema={"type": "array"}),
                                    remote("d", schema={"type": "object", "properties": 3})], tuned)
     b, c, d = again
-    assert (b.risk, b.approval_override, b.enabled) == ("dangerous", "never", False), "按原名保留管理员的设置"
+    assert b.policy == "block", "按原名保留管理员的设置"
     assert c.problem == "参数结构的根不是对象" and not c.usable
     assert d.problem == "参数结构不是合法的 JSON Schema"
     assert [t.raw_name for t in again] == ["b", "c", "d"], "服务端去掉的工具随之消失"
 
 
-def test_configure_auto_restores_derived_values():
-    tools = catalog.build("demo", [remote("a", annotations={"readOnlyHint": True})], [])
-    tuned = catalog.configure(tools, "a", risk="write", approval="ask")
-    assert spec_of(tuned[0]).approval_mode == "ask" and tuned[0].risk == "write"
-    restored = catalog.configure(tuned, "a", risk="auto", approval="auto")
-    assert (restored[0].risk, spec_of(restored[0]).approval_mode) == ("read", "never")
+def test_new_tools_after_first_sync_need_confirmation_and_are_marked():
+    first = catalog.build("demo", [remote("a")], [], first=True)
+    again = catalog.build("demo", [remote("a"), remote("e", annotations={"readOnlyHint": True})], first)
+    e = again[1]
+    assert (e.group, e.policy, e.is_new) == ("read", "ask", True), "对方标了只读也不直接放开"
+    assert spec_of(e).approval_mode == "ask"
+    seen = catalog.set_policy(again, "e", policy="allow")
+    assert (seen[1].policy, seen[1].is_new) == ("allow", False), "管理员改过就不再算新"
+    assert catalog.build("demo", [remote("a"), remote("e")], seen)[1].is_new is False
+
+
+def test_policy_and_group_map_onto_approval_and_risk():
+    tools = catalog.build("demo", [remote("a", annotations={"readOnlyHint": True}),
+                                   remote("x", annotations={"destructiveHint": True})], [], first=True)
+    assert [(t.group, t.policy) for t in tools] == [("read", "allow"), ("write", "ask")], "高风险并进写入组"
+    moved = catalog.set_policy(tools, "a", group="write")
+    assert (moved[0].risk, moved[0].policy) == ("write", "allow"), "挪组不改三档"
+    asked = catalog.set_policy(moved, "a", policy="ask")
+    assert spec_of(asked[0]).approval_mode == "ask" and asked[0].enabled
+    back = catalog.set_policy(asked, "a", group="read")
+    assert (back[0].risk_override, back[0].group) == (None, "read"), "挪回注解的分组就不再覆盖"
+    allowed = catalog.set_policy(tools, "x", policy="allow")
+    assert spec_of(allowed[1]).approval_mode == "never", "写入工具也可以设成允许"
     with pytest.raises(KeyError):
-        catalog.configure(tools, "missing", enabled=False)
+        catalog.set_policy(tools, "missing", policy="block")
+    with pytest.raises(ValueError):
+        catalog.set_policy(tools, "a", policy="maybe")
 
 
 def test_snapshot_round_trips_through_json():
-    tools = catalog.configure(catalog.build("demo", [remote("a", description="说明")], []), "a", risk="read")
-    assert catalog.load(catalog.dump(tools)) == tools
+    built = catalog.build("demo", [remote("a", description="说明")], [], first=True)
+    tools = catalog.build("demo", [remote("a"), remote("b")], catalog.set_policy(built, "a", group="read"))
+    assert tools[1].is_new and catalog.load(catalog.dump(tools)) == tools

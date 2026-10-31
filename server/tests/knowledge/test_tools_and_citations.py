@@ -126,7 +126,7 @@ async def test_selection_limits_which_bases_the_model_may_name(env):
 
 
 async def test_documents_tool_lists_one_knowledge_base_within_the_turn_scope(env):
-    """knowledge_documents（照 WeKnora 的 list_documents）：列一个知识库里的文档，给 knowledge_read 用的 doc_ref；
+    """knowledge_documents：列一个知识库里的文档，给 knowledge_read 用的 doc_ref；
     知识源不支持按名字找时忽略 keyword 并说明；要指定一个知识库，并且在授权与本轮选择范围内。"""
     source = await setup_source(env)
     tool = tools_of(env.knowledge)["knowledge_documents"]

@@ -1,4 +1,4 @@
-"""容器生命周期：开关、姿态参数（照抄 WeKnora）、按名字与 label 找回、停了拉起、配置变更重建、不收养、销毁、新建钩子。"""
+"""容器生命周期：开关、姿态参数、按名字与 label 找回、停了拉起、配置变更重建、不收养、销毁、新建钩子。"""
 
 import asyncio
 
@@ -30,7 +30,7 @@ def test_docker_backend_is_off_by_default():
     assert build_sandbox(SandboxSettings(image="kw-sandbox:1")) is None
 
 
-async def test_first_use_creates_container_with_weknora_posture(make):
+async def test_first_use_creates_container_with_the_sandbox_posture(make):
     fake, module = make()
     await _touch(module)
     container = fake.containers[KEY.name]
@@ -44,7 +44,7 @@ async def test_first_use_creates_container_with_weknora_posture(make):
     assert options["mem_limit"] == options["memswap_limit"] == 2 * 1024**3
     assert options["nano_cpus"] == 2_000_000_000 and options["pids_limit"] == 512
     assert options["network_mode"] == "bridge" and "runtime" not in options
-    assert "volumes" not in options and "mounts" not in options  # 工作区不挂卷（WeKnora 同此）
+    assert "volumes" not in options and "mounts" not in options  # 工作区不挂卷
     labels = container["Labels"]
     assert labels["io.knowwork.workspace"] == WS and labels["io.knowwork.session"] == SID
     assert labels["io.knowwork.component"] == "sandbox" and labels[LABEL_IDLE_TTL] == "1800"

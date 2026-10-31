@@ -15,7 +15,7 @@ import logging
 import mimetypes
 import posixpath
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -33,6 +33,7 @@ from .sanitize import SpreadsheetRejected, sanitize_csv, sanitize_xlsx
 
 log = logging.getLogger(__name__)
 MIB = 1024 * 1024
+DESCRIPTION_LIMIT = 300  # 和 Artifact.description 的列宽一致
 UNSANITIZABLE = frozenset({"xlsm", "xls", "xlsb", "ods", "xltm"})
 CONTENT_TYPES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -67,6 +68,7 @@ class ArtifactView:
     run_id: str | None
     sanitized: bool
     created_at: datetime | None
+    description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,7 +87,14 @@ class CollectResult:
 
 def artifact_view(row: Artifact) -> ArtifactView:
     return ArtifactView(id=row.id, filename=row.filename, content_type=row.content_type, size=row.size,
-                        run_id=row.run_id, sanitized=row.sanitized, created_at=row.created_at)
+                        run_id=row.run_id, sanitized=row.sanitized, created_at=row.created_at,
+                        description=row.description)
+
+
+def one_line(description: str | None) -> str | None:
+    """说明收成一行（卡片上单行显示）、过长截断；空的当没写。"""
+    text = " ".join((description or "").split())[:DESCRIPTION_LIMIT]
+    return text or None
 
 
 def content_type_of(name: str) -> str:
@@ -120,7 +129,8 @@ class ArtifactCollector:
         self._limits = limits
 
     async def collect(self, workspace_id: str, session_id: str, *, run_id: str | None = None,
-                      paths: Sequence[str] = ()) -> CollectResult:
+                      paths: Sequence[str] = (), descriptions: Mapping[str, str] | None = None) -> CollectResult:
+        """descriptions 按路径给 present 时写的说明，没写的不在里面。"""
         if not paths:
             return CollectResult()
         budget = await self._budget(workspace_id, session_id)
@@ -131,7 +141,8 @@ class ArtifactCollector:
                 notices.append(Notice(name, "duplicate_name", "本轮已经交付过同名文件"))
                 continue
             names.add(name)
-            outcome = await self._one(workspace_id, session_id, run_id, path, name, budget)
+            outcome = await self._one(workspace_id, session_id, run_id, path, name, budget,
+                                      one_line((descriptions or {}).get(path)))
             if isinstance(outcome, Notice):
                 notices.append(outcome)
             elif outcome is not None:
@@ -169,7 +180,7 @@ class ArtifactCollector:
             return Notice(name, "read_failed", f"读取失败（{error}）")
 
     async def _one(self, workspace_id: str, session_id: str, run_id: str | None, path: str, name: str,
-                   budget: _Budget) -> ArtifactView | Notice | None:
+                   budget: _Budget, description: str | None) -> ArtifactView | Notice | None:
         notice = self._precheck(name)
         if notice is not None:
             return notice
@@ -186,7 +197,7 @@ class ArtifactCollector:
         quota = self._quota(name, len(content), budget)
         if quota is not None:
             return quota
-        row = await self._store(workspace_id, session_id, run_id, name, content, source, sanitized)
+        row = await self._store(workspace_id, session_id, run_id, name, content, source, sanitized, description)
         if isinstance(row, Notice):
             return row
         budget.collected += 1
@@ -204,14 +215,15 @@ class ArtifactCollector:
         return None
 
     async def _store(self, workspace_id: str, session_id: str, run_id: str | None, name: str, content: bytes,
-                     source: str, sanitized: bool) -> ArtifactView | Notice:
+                     source: str, sanitized: bool, description: str | None) -> ArtifactView | Notice:
         try:
             digest = await self._stores(workspace_id, session_id).put(content)
         except BlobIntegrityError:
             return Notice(name, "storage_unavailable", "存储暂时不可用，未能保存")
         row = Artifact(id=f"art_{uuid.uuid4().hex}", workspace_id=workspace_id, conversation_id=session_id,
                        run_id=run_id, filename=name, content_type=content_type_of(name), size=len(content),
-                       digest=digest, source_sha256=source, sanitized=sanitized, created_at=datetime.now(UTC))
+                       digest=digest, source_sha256=source, sanitized=sanitized, description=description,
+                       created_at=datetime.now(UTC))
         async with self._sessionmaker() as session, session.begin():
             await set_workspace(session, workspace_id)
             session.add(row)

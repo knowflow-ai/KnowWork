@@ -79,6 +79,8 @@ class SearchOptions:
     folders: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     filters: tuple[MetaFilter, ...] = ()
+    multi_hop: bool | None = None  # 这一次开不开多跳、视觉检索；None 按知识库自己的默认
+    visual: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -306,7 +308,7 @@ class KnowledgeService:
 
     async def documents(self, caller: Caller, base: str, page: Page, *,
                         bases: tuple[str, ...] | None = None) -> tuple[DocumentPage, tuple[str, ...]]:
-        """一个知识库里的文档（智能体的 knowledge_documents，照 WeKnora 的 list_documents）：知识库要在开放范围内、授权给了
+        """一个知识库里的文档（智能体的 knowledge_documents）：知识库要在开放范围内、授权给了
         调用者、在本轮选择（bases）里。按名字找要知识源声明 document_query，不支持就列全部并说明。"""
         source_id, kb = parse_selector(base)
         if kb == ALL:
@@ -393,7 +395,8 @@ class KnowledgeService:
             if scope is None:
                 return [], pin_notes, ()
             request = SearchRequest(query=query, scope=scope, top_n=top_n, mode=options.mode,
-                                    folders=options.folders, tags=options.tags, filters=options.filters)
+                                    folders=options.folders, tags=options.tags, filters=options.filters,
+                                    multi_hop=options.multi_hop, visual=options.visual)
             missing = _unsupported(source, request.wants())
             if missing:
                 request = request.model_copy(update={key: _SEARCH_DEFAULTS[key] for key in missing})

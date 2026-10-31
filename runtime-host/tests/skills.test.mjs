@@ -23,9 +23,9 @@ const toolNamesOf = request => (request.body?.tools ?? []).map(t => t.function?.
 const messagesText = request => JSON.stringify(request.body?.messages ?? [])
 const kinds = frames => frames.map(f => f.kind)
 
-async function startSkillHost(script, { skills = [EXTRACT, NOTES], tamper = false, others = {} } = {}) {
+async function startSkillHost(script, { skills = [EXTRACT, NOTES], tamper = false, others = {}, bundledOff } = {}) {
   const gateway = await startOpenAiStub({ script })
-  const skillsStub = await startSkillsStub({ skillsByToken: { [SKILLS_TOKEN]: skills, ...others }, tamper })
+  const skillsStub = await startSkillsStub({ skillsByToken: { [SKILLS_TOKEN]: skills, ...others }, tamper, bundledOff })
   const tools = await startToolsStub({ toolsByToken: { [TOOLS_TOKEN]: [bizTool('kw_biz_a'), bizTool('extract_records')] } })
   const host = await startHost({ sequence: ['success'] }, {
     KNOWWORK_MODEL_PROVIDER: 'knowwork-gateway',
@@ -66,6 +66,38 @@ test('会话打开时按业务服务清单交给官方技能目录；没有业�
     assert.ok(!messagesText(plain).includes('contract-extract'), '没有业务技能的会话看到了业务技能')
     assert.equal(env.skillsStub.requests.filter(r => r.path.endsWith('/catalog')).length, 1)
     assert.equal(env.skillsStub.contentLoads().length, 0, '没加载就拉了内容')
+  } finally {
+    await env.stop()
+  }
+})
+
+test('自带技能按会话给：本空间停用的、和清单里同名的不进这个会话', async () => {
+  const ownDocx = publishedSkill('office-docx', { body: '本空间自己的 Word 做法' })
+  const env = await startSkillHost([{ text: '好的' }], { skills: [ownDocx], bundledOff: ['office-pptx'] })
+  try {
+    await env.open('sk-off')
+    await env.host.call('POST', '/v1/sessions/sk-off/messages', { text: '有哪些技能' })
+    await collectEvents(env.host, 'sk-off', isTurnEnd)
+    const [first] = env.chat()
+    const text = messagesText(first)
+    assert.match(text, /office-xlsx/)
+    assert.ok(!text.includes('office-pptx'), '停用的自带技能还在目录里')
+    assert.ok(text.includes('技能 office-docx 的说明') && !text.includes('处理 Word 文档'), '同名时该只给清单里那份')
+  } finally {
+    await env.stop()
+  }
+})
+
+test('本空间把自带技能全停用、清单里也没有技能时，收掉 skill 工具', async () => {
+  const env = await startSkillHost([{ text: '好的' }],
+    { skills: [], bundledOff: ['office-docx', 'office-pptx', 'office-xlsx'] })
+  try {
+    await env.open('sk-none-left')
+    await env.host.call('POST', '/v1/sessions/sk-none-left/messages', { text: '随便问问' })
+    await collectEvents(env.host, 'sk-none-left', isTurnEnd)
+    const [first] = env.chat()
+    assert.ok(!toolNamesOf(first).includes('skill'), '一个技能都没有还给了 skill 工具')
+    assert.ok(!messagesText(first).includes('office-docx'))
   } finally {
     await env.stop()
   }

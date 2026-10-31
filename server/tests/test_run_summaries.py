@@ -1,6 +1,7 @@
 """每轮汇总：回合开始插一行（进行中），结束时补齐提问、状态、起止时间、用过的工具和各模块的事实；
 结束原因归成四种状态；模块算事实出错不挡汇总；进程重启后才收到结束帧的也能补上。"""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -78,8 +79,8 @@ async def test_a_turn_is_running_at_start_and_complete_at_the_end(env):
         {"knowledge": {"searches": 2, "cited": 1}}, "alice")
     assert (done.started_at, done.ended_at) == (datetime.fromtimestamp(START / 1000, UTC),
                                                 datetime.fromtimestamp(END / 1000, UTC))
-    assert [(e.turn, e.question, e.answer, e.status) for e in seen] == [(2, "合同有哪些条款", "付款分两期 [1]",
-                                                                        "completed")]
+    assert [(e.turn, e.question, e.answer, e.status, e.user_id) for e in seen] == [
+        (2, "合同有哪些条款", "付款分两期 [1]", "completed", "alice")], "带上提问人：扩展（例如记忆）按人做自己的事"
 
 
 @pytest.mark.parametrize(("reason", "status"), [("aborted", "cancelled"), ("error", "failed"), ("blocked", "failed"),
@@ -126,3 +127,25 @@ async def test_frames_of_unknown_conversations_are_skipped(env):
     feed(summaries, "c_gone", frame("turn/start", {"turn": 1}), frame("turn/end", {"turn": 1, "reason": {}}))
     await summaries.drain()
     assert await summary(sessionmaker, "c_gone", 1) is None
+
+
+async def test_the_question_sticks_even_when_it_is_written_before_the_row(sessionmaker):
+    """开始那一行和提问各在后台写，谁先落库都对：负载高时补写提问可能跑在插入前面（以前那样就丢了提问）。"""
+    conversation = Conversation(id="c_" + uuid.uuid4().hex, workspace_id=WS, user_id="alice", title="合同")
+    async with sessionmaker() as session:
+        session.add(conversation)
+        await session.commit()
+    calls = 0
+
+    async def slow_owner(conversation_id):
+        nonlocal calls
+        calls += 1
+        if calls == 1:  # 开始那一行查主人慢一拍，提问先写
+            await asyncio.sleep(0.2)
+        return "alice"
+
+    summaries = RunSummaries(sessionmaker, slow_owner)
+    feed(summaries, conversation.id, frame("turn/start", {"turn": 1}), frame("user/message", user("合同有哪些条款")))
+    await summaries.drain()
+    running = await summary(sessionmaker, conversation.id, 1)
+    assert (running.status, running.question) == ("running", "合同有哪些条款")

@@ -1,6 +1,6 @@
 """对话模型的「思考」开关：管理员在「管理 → 模型」里给对话模型定开、关或跟随服务默认，转发时按服务商的写法补参数。
 
-不同服务商关思考的写法不一样（照 WeKnora 的 ThinkingFormat，按接口地址认服务商，认不出的当成自建服务）：
+不同服务商关思考的写法不一样（按接口地址认服务商，认不出的当成自建服务）：
 - 自建的 vLLM、SGLang、Xinference 等：chat_template_kwargs.enable_thinking（两家都写明是按请求覆盖的开关）；
 - 阿里百炼、硅基流动、魔搭、腾讯混元：顶层 enable_thinking；
 - DeepSeek、智谱、火山方舟、Moonshot、MiniMax：thinking.type 为 enabled 或 disabled；

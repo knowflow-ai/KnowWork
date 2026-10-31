@@ -47,7 +47,7 @@ deploy/install.sh --timeout 600
 
 `.env` 里两项要和实际访问方式一致：
 
-- `KNOWWORK_PUBLIC_BASE_URL`：浏览器访问的外部地址，邀请链接与 OIDC 回调都用它拼。换域名或端口时同步改。
+- `KNOWWORK_PUBLIC_BASE_URL`：浏览器访问的外部地址，邀请链接、OIDC 回调与 MCP OAuth 授权的回调（`/api/mcp/oauth/callback`）都用它拼。换域名或端口时同步改；在对方那边手工建过 MCP 的 OAuth 应用的，回调地址也要跟着改。
 - `KNOWWORK_COOKIE_SECURE`：会话 Cookie 是否只走 HTTPS。默认 `false`，因为装好时是 http；
   如果设成 `true` 却用 http 访问，浏览器不会保存 Cookie，表现为登录后马上又回到登录页。
 
@@ -77,7 +77,7 @@ PDF、Office 等附件的解析用 MinerU。部署后在「管理后台 → 模�
 ## 升级
 
 1. 先备份数据（见下一节）；
-2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.3`（换成要升级到的版本）。编排文件
+2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.4`（换成要升级到的版本）。编排文件
    可能随版本变，只改版本号会用旧的编排文件跑新镜像。`deploy/.env` 不在仓库里，切换版本不会动它；
 3. 把 `deploy/.env` 的 `KNOWWORK_VERSION` 改成新版本；
 4. 重新执行 `deploy/install.sh`：它会拉新镜像（包括会话沙箱镜像）并重启服务。

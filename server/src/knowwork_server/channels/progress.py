@@ -1,7 +1,7 @@
 """智能体在 IM 里的进度行：每一步一行，过渡说明优先，没有就用工具的人话名字加目标（叫法同网页的步骤标签
 web/src/features/chat/events/stepLabels.ts）。
 
-IM 里一条消息只能整段替换，没有网页那样的步骤区：照 WeKnora internal/im 的做法，过程收进消息上方的引用块，
+IM 里一条消息只能整段替换，没有网页那样的步骤区：过程收进消息上方的引用块，
 只追加不替换，答完整条换成只有回答。模型的思考内容（reasoning）不推：IM 里没法折叠，原文又长，还可能带着
 检索到的片段，群里全员可见。
 """
@@ -28,7 +28,7 @@ LABELS = {
 }
 # 目标取参数里固定的一项；文档、文件这类内部引用不给 IM 里的人看
 TARGET_KEY = {"knowledge_search": "query", "knowledge_gap": "missing", "bash": "description", "skill": "name"}
-_MCP = re.compile(r"^mcp__([a-z][a-z0-9-]*)__(.+)$")
+_MCP = re.compile(r"^mcp__(?:ent_)?([a-z][a-z0-9-]*)__(.+)$")  # 企业 MCP 的 ent_ 是内部前缀，不给人看
 
 
 def one_line(text: str) -> str:

@@ -86,6 +86,7 @@ def skill_zip(name: str = "contract-extract", *, version: str = "", allowed: str
     text_md = "---\n" + "\n".join(lines) + f"\n---\n\n{body}\n"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{folder}SKILL.md", text_md)
-        archive.writestr(f"{folder}references/guide.md", "参考资料")
+        # 时间戳写死：用当前时间的话两次打包跨过秒边界摘要就不同，「换回同一个包」的用例会偶发失败
+        for path, data in ((f"{folder}SKILL.md", text_md), (f"{folder}references/guide.md", "参考资料")):
+            archive.writestr(zipfile.ZipInfo(path, date_time=(2026, 1, 1, 0, 0, 0)), data)
     return buffer.getvalue()

@@ -5,7 +5,7 @@ from knowwork_server.debugview.context import APPROXIMATE, COMPACTED, step_input
 from knowwork_server.debugview.digest import detail, summarize
 from knowwork_server.debugview.events import main_events, slice_turns
 
-from .logs import LOG, USAGE, frame
+from .logs import LOG, USAGE, frame, text
 
 USAGE_MAP = {(u.turn, u.step): u for u in USAGE}
 
@@ -76,3 +76,43 @@ def test_request_replaces_the_hosts_attachment_note_with_file_names():
     only_file = {"role": "user", "content": [{"type": "text", "text": note}]}
     log = (frame(0, "user/message", only_file), frame(1, "turn/start", {"turn": 1}))
     assert summarize(slice_turns(log)[0], {}).request == "附件：季度报告.pdf"
+
+
+def test_step_input_follows_the_current_dsh_order():
+    """DSH 0.2.2 起一步的系统提示、提问、宿主追加的上下文、工具清单都记在 step/start 之后、模型输出之前；
+    排进收件箱的提问先记一次 agent/inbox/spliced，进会话时再记一次同 id 的 user/message，只算一条。"""
+    def message(id_, value, source):
+        return {**text("user", value, source), "id": id_}
+
+    log = (
+        frame(0, "agent/inbox/spliced", {"target": "next-turn", "inserted": [message("u1", "你好", "user")]}),
+        frame(1, "turn/start", {"turn": 1}),
+        frame(2, "step/start", {"turn": 1, "step": 1}),
+        frame(3, "system/message", {"turn": 1, "step": 1, "message": text("system", "你是助手")}),
+        frame(4, "user/message", message("u1", "你好", "user")),
+        frame(5, "user/message", message("r1", "当前时间", "runtime-context")),
+        frame(6, "request/header", {"reason": "initial",
+                                    "header": {"tools": [{"name": "bash", "description": "执行命令"}]}}),
+        frame(7, "assistant/message", {"turn": 1, "step": 1, "message": {"role": "assistant", "content": [
+            {"type": "tool-call", "id": "call1", "name": "bash", "arguments": "{}"}]}}),
+        frame(8, "tool/result", {"turn": 1, "step": 1, "message": {
+            "role": "tool", "toolCallId": "call1", "content": [{"type": "text", "text": "a.txt"}]}}),
+        frame(9, "step/end", {"turn": 1, "step": 1}),
+        frame(10, "step/start", {"turn": 1, "step": 2}),
+        frame(11, "user/message", message("t1", "<system-reminder>背景</system-reminder>", "knowwork-turn-context")),
+        frame(12, "assistant/message", {"turn": 1, "step": 2, "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "好了"}]}}),
+        frame(13, "step/end", {"turn": 1, "step": 2}),
+        frame(14, "turn/end", {"turn": 1, "reason": {"kind": "completed"}}),
+    )
+    events = main_events(log)
+    first = step_input(events, 1, 1)
+    assert first.found and first.system == ("你是助手",) and [t.name for t in first.tools] == ["bash"]
+    assert [m.source for m in first.messages] == ["user", "runtime-context"], "同一条提问只算一次"
+    second = step_input(events, 1, 2)
+    assert second.system == ("你是助手",), "没重发系统提示的步骤沿用上一份"
+    assert [(m.role, m.source) for m in second.messages] == [
+        ("user", "user"), ("user", "runtime-context"), ("assistant", None), ("tool", None),
+        ("user", "knowwork-turn-context")]
+    running = step_input(main_events(log[:12]), 1, 2)
+    assert running.found and running.messages[-1].source == "knowwork-turn-context", "模型还没输出时给到目前为止的"

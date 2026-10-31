@@ -256,6 +256,7 @@ def test_attachment_handles_become_attachments_not_text():
 def test_mention_block_becomes_chips_not_text():
     """宿主写的 @ 说明块不进气泡文字，换成小标签数据（类型、名字、所在知识库）；格式不对的项丢掉。"""
     items = [{"type": "document", "id": "kb1/d1", "name": "差旅办法.pdf", "base": "builtin.kb1", "baseName": "制度库"},
+             {"type": "mcp", "id": "context7", "name": "Context7"},
              {"type": "skill", "id": "weekly-report", "name": "周报"}, {"type": "unknown", "id": "x", "name": "x"},
              {"type": "tag", "name": "没有 id"}]
     block = "[用户这一轮 @ 点名的范围] " + json.dumps(items, ensure_ascii=False) + "\nknowledge_search 已由系统限定……\n用户点名的技能： /weekly-report "
@@ -265,4 +266,4 @@ def test_mention_block_becomes_chips_not_text():
     assert event["data"]["text"] == "报销标准"
     assert event["data"]["mentions"] == [
         {"type": "document", "id": "kb1/d1", "name": "差旅办法.pdf", "base": "builtin.kb1", "base_name": "制度库"},
-        {"type": "skill", "id": "weekly-report", "name": "周报"}]
+        {"type": "mcp", "id": "context7", "name": "Context7"}, {"type": "skill", "id": "weekly-report", "name": "周报"}]

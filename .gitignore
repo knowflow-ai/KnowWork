@@ -2,6 +2,8 @@
 .coverage
 node_modules
 deploy/.env
+# 打包脚本的输出
+/dist/
 .dev/
 # 没配 KNOWWORK_BLOB_DIR 时，在 server/ 下跑服务或测试，文件默认存到这里
 server/data/

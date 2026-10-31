@@ -1,13 +1,14 @@
 name: ci-runtime-host
 
-# 运行时宿主：DSH 版本锁定检查 + npm test。只在 runtime-host/ 有改动时跑（省 Actions 分钟数）。
+# 运行时宿主：DSH 版本锁定检查 + npm test。只在 runtime-host/ 有改动时跑（省 Actions 分钟数）；
+# 沙箱镜像装着同版本的 dsh-ssh 辅助程序（流式执行），它的 Dockerfile 改了也跑版本检查。
 
 on:
   push:
     branches: [main]
-    paths: ["runtime-host/**", ".github/workflows/ci-runtime-host.yml"]
+    paths: ["runtime-host/**", "deploy/docker/sandbox.Dockerfile", ".github/workflows/ci-runtime-host.yml"]
   pull_request:
-    paths: ["runtime-host/**", ".github/workflows/ci-runtime-host.yml"]
+    paths: ["runtime-host/**", "deploy/docker/sandbox.Dockerfile", ".github/workflows/ci-runtime-host.yml"]
 
 concurrency:
   group: ci-runtime-host-${{ github.ref }}
@@ -33,5 +34,10 @@ jobs:
           cache-dependency-path: runtime-host/package-lock.json
       - run: npm ci --no-audit --no-fund
       - name: DSH 版本锁定检查
-        run: test "$(node -p "require('@deepseek-ai/dsh/package.json').version")" = "0.2.1-rc.2"
+        run: |
+          test "$(node -p "require('@deepseek-ai/dsh/package.json').version")" = "0.2.2-alpha.2"
+          # 流式执行：宿主按本机同版本文件的摘要校验沙箱镜像里的辅助程序，三处版本必须一致
+          test "$(node -p "require('@deepseek-ai/dsh-ssh/package.json').version")" = "0.2.2-alpha.2"
+          test "$(node -p "require('@deepseek-ai/dsh-subprocess-ssh/package.json').version")" = "0.2.2-alpha.2"
+          grep -qx 'ARG DSH_VERSION=0.2.2-alpha.2' ../deploy/docker/sandbox.Dockerfile
       - run: npm test

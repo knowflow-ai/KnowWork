@@ -1,8 +1,10 @@
 /**
- * 知识库目录：照官方 dsh-tool-skill 的会话技能目录写法——本轮可查的知识库列 id、名字、截短的描述
- * 和能筛的字段名（「部门（文本）」），作为一条持久的用户角色 <system-reminder> 消息；可选值、标签集由模型按需调
+ * 知识库目录：照官方 dsh-tool-skill 的会话技能目录写法——本轮可查的知识库列 id、名字、截短的描述、
+ * 能筛的字段名（「部门（文本）」）和能开的检索方式（多跳、视觉），作为一条持久的用户角色 <system-reminder> 消息；可选值、标签集由模型按需调
  * knowledge_bases 取（和技能目录只列名字、正文用 skill 工具加载是同一个形态，不用过滤的回合不多花 token）。
  * 原来连字段名也不列，要多调一次才知道能按什么筛，模型多数时候直接搜、不筛。
+ * 哪个库能开多跳、视觉检索每轮可能不同，写在目录里（追加的消息，不动前缀）；knowledge_search 带不带这两个参数
+ * 由业务服务在会话开始时定（工具声明一变整段前缀缓存失效），见业务服务 ToolSpec.tailor。
  *
  * - 目录由业务服务随消息下发（sendMessage 存进根会话状态）；某一轮没下发就沿用上一轮的；
  * - 只给看得见 knowledge_search 的 agent（工具被收窄掉、子 Agent 没有这个工具就不给），判断方式同官方；
@@ -23,6 +25,8 @@ const KIND = 'knowwork-knowledge-catalog'
 export const SEARCH_TOOL = 'knowledge_search'
 const MAX_BASES = 100
 const MAX_FIELDS = 30
+// knowledge_search 的同名参数，目录里写成给模型看的名字
+const ROUTES = Object.freeze({ multi_hop: '多跳检索', visual: '视觉检索' })
 const ID = /^[A-Za-z0-9_.:-]{3,200}$/
 const EMPTY = Object.freeze({ bases: Object.freeze([]), omitted: 0 })
 
@@ -33,7 +37,7 @@ export function catalogOf(value) {
     throw new Error('knowledge 格式错误：要有 bases 数组，最多 100 项')
   }
   const bases = value.bases.map(entry => {
-    const { id, name: title, description = '', fields = [] } = entry ?? {}
+    const { id, name: title, description = '', fields = [], routes = [] } = entry ?? {}
     if (typeof id !== 'string' || !ID.test(id)) throw new Error('knowledge 里的知识库 id 格式错误')
     if (typeof title !== 'string' || title.length === 0 || title.length > 200) throw new Error('knowledge 里的知识库名字格式错误')
     if (typeof description !== 'string' || description.length > 300) throw new Error('knowledge 里的知识库描述过长')
@@ -41,7 +45,12 @@ export function catalogOf(value) {
       || !fields.every(field => typeof field === 'string' && field.length > 0 && field.length <= 100)) {
       throw new Error('knowledge 里的字段格式错误：最多 30 个，每个是不超过 100 字的文字')
     }
-    return Object.freeze({ id, name: title, description, fields: Object.freeze([...fields]) })
+    if (!Array.isArray(routes) || !routes.every(route => Object.hasOwn(ROUTES, route))) {
+      throw new Error('knowledge 里的检索方式只能是 multi_hop、visual')
+    }
+    return Object.freeze({
+      id, name: title, description, fields: Object.freeze([...fields]), routes: Object.freeze([...new Set(routes)]),
+    })
   })
   const omitted = value.omitted ?? 0
   if (!Number.isSafeInteger(omitted) || omitted < 0) throw new Error('knowledge.omitted 要是非负整数')
@@ -49,14 +58,20 @@ export function catalogOf(value) {
 }
 
 const digestOf = catalog => createHash('sha256')
-  .update(JSON.stringify([catalog.bases.map(b => [b.id, b.name, b.description, b.fields]), catalog.omitted]))
+  // 没有检索方式时摘要照旧：升级前的会话里那份目录不会因此被当成变了再发一遍
+  .update(JSON.stringify([catalog.bases.map(b => [b.id, b.name, b.description, b.fields, ...(b.routes.length > 0 ? [b.routes] : [])]),
+    catalog.omitted]))
   .digest('hex')
 
 function entries(catalog) {
   const lines = catalog.bases.map(b => {
     const line = `- \`${b.id}\`：${escapeText(b.name)}`
     const described = b.description ? `${line}。${escapeText(b.description)}` : line
-    return b.fields.length > 0 ? `${described}（可筛选：${b.fields.map(escapeText).join('、')}）` : described
+    const notes = [
+      ...(b.fields.length > 0 ? [`可筛选：${b.fields.map(escapeText).join('、')}`] : []),
+      ...(b.routes.length > 0 ? [`可开：${b.routes.map(route => ROUTES[route]).join('、')}`] : []),
+    ]
+    return notes.length > 0 ? `${described}（${notes.join('；')}）` : described
   })
   if (catalog.omitted > 0) lines.push(`- 另有 ${catalog.omitted} 个知识库没有列出，可以用 knowledge_bases 查看`)
   return lines
@@ -74,6 +89,8 @@ function render(catalog, digest, update) {
         '</available_knowledge_bases>',
         '',
         '「可筛选」是这个库能按哪些元数据字段筛（knowledge_search 的 filters、tags）；要看可选值和标签集调 knowledge_bases。',
+        ...(catalog.bases.some(b => b.routes.length > 0)
+          ? ['「可开」是这个库能按需打开的检索方式（knowledge_search 的 multi_hop、visual），问题用得上才开。'] : []),
       ]
   return createUserMessage({
     content: [{ type: 'text', text: ['<system-reminder>', ...body, '</system-reminder>'].join('\n') }],

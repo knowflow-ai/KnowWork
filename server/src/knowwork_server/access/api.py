@@ -21,10 +21,11 @@ log = logging.getLogger(__name__)
 
 
 class Profile(Protocol):
-    """成员资料：姓名与邮箱。由账号模块提供，本模块不读账号表。"""
+    """成员资料：姓名、邮箱与账号类型（person 真人、channel 渠道账号）。由账号模块提供，本模块不读账号表。"""
 
     name: str
     email: str
+    kind: str
 
 
 # 按用户 id 批量取资料；查不到的 id 不出现在结果里
@@ -71,6 +72,11 @@ class GrantBody(BaseModel):
     subject: str = Field(min_length=1, max_length=80)
     resource: str = Field(min_length=1, max_length=120)
     action: str
+
+
+class UsersBody(BaseModel):
+    resource: str = Field(min_length=1, max_length=120)
+    subjects: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(max_length=200)
 
 
 def _http(error: Exception) -> HTTPException:
@@ -234,6 +240,15 @@ def _grants(router: APIRouter, service: AccessService, Who) -> None:
         """授权"""
         annotate(subject=body.subject, resource=body.resource, grantedAction=body.action)
         return asdict(await _call(service.grant(who.user_id, workspace_id, body.subject, body.resource, body.action)))
+
+    @router.put("/grants/users")
+    async def set_users(workspace_id: IdPath, body: UsersBody, who: Who):
+        """设置一个资源给谁用
+        把这个资源上「可用」一档的授权整体换成给出的对象（全体成员是 role:editor）；可编辑、可管理两档不动。
+        技能、MCP 服务在自己的设置里改「给谁用」用这个。"""
+        annotate(resource=body.resource, subjects=body.subjects)
+        users = await _call(service.set_users(who.user_id, workspace_id, body.resource, body.subjects))
+        return {"resource": body.resource, "subjects": list(users)}
 
     @router.delete("/grants", status_code=204)
     async def revoke(workspace_id: IdPath, who: Who, subject: Annotated[str, Query(max_length=80)],

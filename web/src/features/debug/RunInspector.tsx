@@ -16,6 +16,7 @@ import { duration, statusLabel } from './format';
 import { StepDetail } from './StepDetail';
 import { StepInputDialog } from './StepInputDialog';
 import { StepList, type StepGroup, type StepRef } from './StepList';
+import { TurnBackground } from './TurnBackground';
 import { useReplay } from './useReplay';
 
 /** 汇总：这一轮的提问，下面一行说明色小字；状态只写文字不上色（同对话里的执行过程摘要）。 */
@@ -35,6 +36,7 @@ function Summary({ detail }: { readonly detail: TurnDetail }) {
       <p className="kw-trace-request">{s.request || '（没有找到这一轮的提问）'}</p>
       <div className="kw-trace-meta">{meta.join(' · ')}</div>
       {detail.events.length > 0 ? <div className="kw-trace-meta">{detail.events.join(' · ')}</div> : null}
+      <TurnBackground items={detail.background} turn={s.turn} />
     </header>
   );
 }

@@ -17,6 +17,7 @@ from knowwork_server.kernel.contract import (
     SessionSpec,
     SkillGate,
     TurnAttachment,
+    TurnContext,
     TurnInput,
 )
 from knowwork_server.kernel.host_client import CONTROL_TIMEOUT, STREAM_TIMEOUT, HostKernel, parse_frame
@@ -247,4 +248,36 @@ async def test_send_carries_the_knowledge_catalog_only_when_computed():
                                                "fields": ["部门（文本）", "签订日期（日期）"]}], "omitted": 2}
     assert seen[1]["knowledge"] == {"bases": [], "omitted": 0}, "空目录也要发：宿主据此撤掉旧目录"
     assert "knowledge" not in seen[2], "没算出来就不发，宿主沿用上一轮的"
+    await kernel.aclose()
+
+
+async def test_send_carries_the_extension_context_only_when_computed():
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(202, json={"messageId": "m1", "mode": "followup"})
+
+    client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t" * 32, client=client)
+    await kernel.send("s1", TurnInput(text="一", context=TurnContext(standing="你的记忆：用表格", turn="相关：A 项目")))
+    await kernel.send("s1", TurnInput(text="二", context=TurnContext()))
+    await kernel.send("s1", TurnInput(text="三"))
+    assert seen[0]["context"] == {"standing": "你的记忆：用表格", "turn": "相关：A 项目"}
+    assert seen[1]["context"] == {"standing": "", "turn": ""}, "空的也要发：宿主据此说一句不再适用"
+    assert "context" not in seen[2], "没算出来就不发，宿主沿用上一轮的"
+    await kernel.aclose()
+
+
+async def test_bundled_skills_are_read_from_the_host():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert (request.method, request.url.path) == ("GET", "/v1/skills/bundled")
+        return httpx.Response(200, json={"skills": [
+            {"name": "office-docx", "description": "处理 Word 文档", "userInvocable": True},
+            {"name": "office-xlsx", "description": "处理表格", "userInvocable": False}]})
+
+    client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t", client=client)
+    found = await kernel.bundled_skills()
+    assert [(s.name, s.user_invocable) for s in found] == [("office-docx", True), ("office-xlsx", False)]
     await kernel.aclose()

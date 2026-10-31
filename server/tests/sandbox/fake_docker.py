@@ -18,7 +18,7 @@ import requests
 from docker.errors import APIError, ImageNotFound, NotFound
 
 from knowwork_server.sandbox.output import STDERR, STDOUT, frame
-from knowwork_server.sandbox.scripts import EXEC_WRAPPER, KILL_GROUP
+from knowwork_server.sandbox.scripts import EXEC_WRAPPER, KILL_GROUP, SSHD_ARGV
 
 
 @dataclass
@@ -53,6 +53,7 @@ class ExecRecord:
     running: bool = False
     exit_code: int | None = None
     released: threading.Event = field(default_factory=threading.Event)
+    stdin: bool = False
 
     @property
     def token(self) -> str | None:
@@ -210,7 +211,8 @@ class FakeApi:
         self._fake.guard("exec_create")
         self._fake.by_ref(container_id)
         exec_id = self._fake._next("e")
-        self._fake.execs[exec_id] = ExecRecord(container_id, list(cmd), options["user"], options["workdir"])
+        self._fake.execs[exec_id] = ExecRecord(container_id, list(cmd), options["user"], options["workdir"],
+                                               stdin=bool(options.get("stdin")))
         return {"Id": exec_id}
 
     def exec_start(self, exec_id: str, socket: bool) -> Any:
@@ -219,6 +221,8 @@ class FakeApi:
         record = self._fake.execs[exec_id]
         if record.cmd[2:3] == [KILL_GROUP]:
             return self._kill(record)
+        if record.cmd == list(SSHD_ARGV):
+            return _serve_sshd(record)
         behavior = self._fake.responder(record.argv, record.user)
         return _serve(record, behavior)
 
@@ -267,6 +271,27 @@ def _serve(record: ExecRecord, behavior: Behavior) -> socket.socket:
 
     threading.Thread(target=write, daemon=True).start()
     return reader
+
+
+def _serve_sshd(record: ExecRecord) -> socket.socket:
+    """假的 `sshd -i`：先写一行日志到 stderr，之后把 stdin 收到的每段加上 echo: 写回 stdout，读到 EOF 就退出。"""
+    near, far = socket.socketpair()
+    record.running = True
+
+    def serve() -> None:
+        try:
+            far.sendall(frame(STDERR, b"sshd: ready\n"))
+            while chunk := far.recv(65536):
+                far.sendall(frame(STDOUT, b"echo:" + chunk))
+        except OSError:
+            pass
+        finally:
+            record.exit_code = 0
+            record.running = False
+            far.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return near
 
 
 def tar_members(data: bytes) -> list[tarfile.TarInfo]:

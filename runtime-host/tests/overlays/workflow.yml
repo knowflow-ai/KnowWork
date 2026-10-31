@@ -1,0 +1,14 @@
+# 只在工作流试点的测试里叠加：官方工作流引擎（跑在 PTC 运行时上，经流式执行落到会话容器）与面向模型的
+# workflow 工具，挂法照官方 dsh-base。生产配置不包含这些，要不要对模型开放、开给谁另定。
+- insert:
+    - id: workflow-ptc
+      name: '@deepseek-ai/dsh-workflow-ptc'
+      config:
+        provider: spawn
+        # 试点设上限：一次运行最多派 20 个子 Agent，同时跑 4 个（每个子 Agent 都是一串模型调用）
+        maxConcurrentAgents: 4
+        maxTotalAgents: 20
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+      config:
+        enableRunInBackground: false

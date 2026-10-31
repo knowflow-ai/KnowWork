@@ -6,6 +6,7 @@
  * 同官方一样：同一会话「已打开或正在打开」时拒绝再开；等整棵插件树就绪后才对外服务；
  * 关闭时先拒新请求、等正在打开的会话、排空子 Agent，再释放。
  * 区别只在传输：官方是 stdio JSON-RPC，这里是带令牌的 HTTP，事件流为 NDJSON。
+ * 空闲会话定时释放（见 idle-sessions.mjs），业务服务下次发消息走恢复流程。
  *
  * 业务服务是唯一调用方；宿主只监听内网地址，缺令牌或令牌太短直接拒绝启动。
  */
@@ -20,8 +21,11 @@ import { AnswerError, checkAnswer, parseAnswer } from './question-answers.mjs'
 import { attachmentBlocks, attachmentsOf } from './attachment-handles.mjs'
 import { sessionRoot } from './sandbox-client.mjs'
 import { EPOCH, createSession, dropSession, framesAfter, getSession, oldestCursor, publish, publishLive } from './state.mjs'
+import { createIdleTracker, idleMsOf, releasable, sweepMsOf } from './idle-sessions.mjs'
+import { bundledCandidates } from './bundled-skills.mjs'
 import { catalogOf } from './knowledge-catalog.mjs'
 import { mentionBlocks, mentionsOf } from './mentions.mjs'
+import { receiveTurnContext, turnContextOf } from './turn-context.mjs'
 
 // DSH 版本号随 /health 一起报给业务服务，系统信息页显示（所有 @deepseek-ai 包锁在同一版本）
 const DSH_VERSION = createRequire(import.meta.url)('@deepseek-ai/dsh/package.json').version
@@ -34,6 +38,7 @@ const CANCEL_SETTLE_MS = 5000
 const MAX_BODY_BYTES = 1024 * 1024
 const MAX_SUBSCRIBERS_PER_SESSION = 8
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/
+const CREDENTIAL_ACTIONS = new Set(['tool-credential', 'skill-credential'])
 
 class HttpError extends Error {
   constructor(status, code, message) {
@@ -141,7 +146,8 @@ function toolTokenOf(value, field) {
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ host?: string, port?: number, token?: string, provider?: string, model?: string, modelTokenRef?: string }} [config]
+ * @param {{ host?: string, port?: number, token?: string, provider?: string, model?: string, modelTokenRef?: string,
+ *   idleMinutes?: number }} [config]
  */
 export function apply(ctx, config) {
   config ??= {}
@@ -165,18 +171,23 @@ export function apply(ctx, config) {
   const opening = new Map()
   const closing = new Set()
   let shuttingDown = false
+  const idleMs = idleMsOf(config.idleMinutes ?? process.env.KNOWWORK_HOST_SESSION_IDLE_MINUTES)
+  const idle = createIdleTracker(idleMs)
 
   ctx.on('session/event', (session, event) => {
     publish(String(session.id), 'session/event', event)
   })
   ctx.on('agent/status', ({ agent, status }) => {
-    publish(String(agent.session.id), 'agent/status', { status })
+    const sessionId = String(agent.session.id)
+    if (handles.has(sessionId)) idle.touch(sessionId)  // 一轮跑完（变成空闲）从这一刻起算
+    publish(sessionId, 'agent/status', { status })
   })
   // 逐字输出：官方 dsh-agent-loop 的 agent/assistant-stream（官方会话接口 dsh-api-session-controller、
-  // 命令行运行 dsh-headless 都订阅它出字）。只转正文片段，作为临时帧推给当前订阅方；
+  // 命令行运行 dsh-headless 都订阅它出字）。转正文片段，和模型开始写某个工具调用时的工具名，作为临时帧推给当前订阅方；
   // 这一步的正式消息照常落成会话事件，业务服务拿它整段替换。子 Agent 的会话不是宿主打开的，查不到就丢。
+  const announced = new Map() // 每次输出里已经报过名字的工具调用（attemptId → 序号）：参数片段很多，名字只报一次
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
-    const data = liveFrame(frame)
+    const data = liveFrame(frame, announced)
     if (data !== undefined) publishLive(String(agent.session.id), 'assistant/stream', data)
   }, { global: true })
 
@@ -212,6 +223,7 @@ export function apply(ctx, config) {
     try {
       const handle = await task
       handles.set(sessionId, handle)
+      idle.touch(sessionId)
       return { sessionId, status: handle.agent.status, epoch: EPOCH }
     } catch (error) {
       dropSession(state)
@@ -238,10 +250,12 @@ export function apply(ctx, config) {
     let files
     let knowledge
     let mentions
+    let context
     try {
       files = attachmentsOf(body.attachments)
       knowledge = catalogOf(body.knowledge)
       mentions = mentionsOf(body.mentions)
+      context = turnContextOf(body.context)
     } catch (error) {
       throw new HttpError(400, 'invalid_request', error.message)
     }
@@ -252,6 +266,7 @@ export function apply(ctx, config) {
     const message = createUserMessage({ content, source: { kind: 'user' } })
     // 回答方式等这条消息进入步骤时才生效（answer-mode）：排队到下一轮的消息不改正在跑的这一轮
     state?.answerModes.set(String(message.id), answerMode)
+    receiveTurnContext(state, message.id, context)
     if (mode === 'steer') agent.steer(message)
     else agent.followup(message)
     return { messageId: message.id, mode }
@@ -279,6 +294,7 @@ export function apply(ctx, config) {
       // 先结算待决审批、结束事件流，再释放 agent；否则释放会等一个最长 30 分钟的审批。
       if (state !== undefined) dropSession(state)
       handles.delete(sessionId)
+      idle.forget(sessionId)
       await handle.dispose()
       return { disposed: true }
     } finally {
@@ -411,6 +427,20 @@ export function apply(ctx, config) {
     return { questionId, state: 'queued' }
   }
 
+  /**
+   * 宿主自带的技能：业务服务的「技能」页、@ 菜单与「公共与自带」页要列出来，业务服务自己不知道有哪些。
+   * 自带技能按会话注册（bundled-skills），这里给的是全部，停用与同名由业务服务按空间算。
+   */
+  function bundledSkills() {
+    return {
+      skills: bundledCandidates().map(skill => ({
+        name: skill.name,
+        description: skill.description,
+        userInvocable: skill.invocation.userInvocable,
+      })),
+    }
+  }
+
   async function route(req, res) {
     const url = new URL(req.url ?? '/', 'http://host')
     const path = url.pathname
@@ -419,12 +449,17 @@ export function apply(ctx, config) {
 
     if (req.method === 'POST' && path === '/v1/sessions') return send(res, 201, await openSession(await readJson(req)))
     if (req.method === 'PUT' && path === '/v1/model-credential') return send(res, 200, await rotateModelCredential(await readJson(req)))
+    if (req.method === 'GET' && path === '/v1/skills/bundled') return send(res, 200, bundledSkills())
 
     const match = /^\/v1\/sessions\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?$/.exec(path)
     if (match === null) throw new HttpError(404, 'not_found', '路径不存在')
     const sessionId = sessionIdOf(match[1])
     const action = match[2]
     const sub = match[3]
+    // 业务服务定期续签令牌、查状态不算活动：否则会话永远不空闲
+    if (handles.has(sessionId) && !CREDENTIAL_ACTIONS.has(action) && !(req.method === 'GET' && action === undefined)) {
+      idle.touch(sessionId)
+    }
 
     if (req.method === 'DELETE' && action === undefined) return send(res, 200, await dispose(sessionId))
     if (req.method === 'GET' && action === undefined) return send(res, 200, { sessionId, status: liveAgent(sessionId).status })
@@ -458,6 +493,34 @@ export function apply(ctx, config) {
     log.error('http server error: %s', error instanceof Error ? error.stack : String(error))
     process.exitCode = 1
   })
+
+  /** 释放空闲会话：一次一个，出错只记日志（下一轮再试）。 */
+  async function sweepIdle() {
+    if (shuttingDown) return
+    const jobs = ctx.get('jobs')
+    for (const [sessionId, handle] of [...handles]) {
+      if (opening.has(sessionId) || closing.has(sessionId) || !idle.due(sessionId)) continue
+      if (!releasable(handle.agent, getSession(sessionId), jobs)) continue
+      try {
+        await dispose(sessionId)
+        log.info('session %s idle for %d min; released (reopens on the next message)', sessionId, Math.round(idleMs / 60_000))
+      } catch (error) {
+        log.warn('release idle session %s failed: %s', sessionId, error instanceof Error ? error.message : String(error))
+      }
+    }
+  }
+
+  ctx.effect(() => {
+    if (idleMs === 0) return () => {}
+    let sweeping = false
+    const timer = setInterval(() => {
+      if (sweeping) return
+      sweeping = true
+      sweepIdle().finally(() => { sweeping = false })
+    }, sweepMsOf(idleMs))
+    timer.unref?.()
+    return () => clearInterval(timer)
+  }, 'knowwork.http-host.idle-sweep')
 
   ctx.effect(() => {
     // 照官方就绪边界：整棵插件树（会话策略、技能门、审批应答者等监听）挂好之后才对外服务。
@@ -493,14 +556,28 @@ export function apply(ctx, config) {
 }
 
 /**
- * 官方逐字帧 → 转给业务服务的样子：开始（带轮次、步）、正文片段、结束。思考与工具参数的片段不转。
- * @param {{ type: string, attemptId?: string, turn?: number, step?: number, chunk?: { type: string, text?: string } }} frame
+ * 官方逐字帧 → 转给业务服务的样子：开始（带轮次、步）、正文片段、开始写某个工具调用（只报一次工具名）、结束。
+ * 思考与工具参数的片段不转：模型把整个文件写进 write 的参数时要好十几秒，这期间页面只能写「思考中」、点开什么都没有，
+ * 看着像卡住了；报一次工具名，页面就能写「正在写文件」。参数本身不转（量大，半截的参数也没法给人看）。
+ * @param {{ type: string, attemptId?: string, turn?: number, step?: number,
+ *   chunk?: { type: string, text?: string, index?: number, name?: string } }} frame
+ * @param {Map<string, Set<number>>} announced
  */
-function liveFrame(frame) {
+export function liveFrame(frame, announced) {
   if (frame.type === 'start') return { type: 'start', attemptId: frame.attemptId, turn: frame.turn, step: frame.step }
-  if (frame.type === 'end') return { type: 'end', attemptId: frame.attemptId }
-  if (frame.type === 'chunk' && frame.chunk?.type === 'text-delta' && typeof frame.chunk.text === 'string') {
-    return { type: 'text', attemptId: frame.attemptId, text: frame.chunk.text }
+  if (frame.type === 'end') {
+    announced.delete(frame.attemptId)
+    return { type: 'end', attemptId: frame.attemptId }
+  }
+  const chunk = frame.type === 'chunk' ? frame.chunk : undefined
+  if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
+    return { type: 'text', attemptId: frame.attemptId, text: chunk.text }
+  }
+  if (chunk?.type === 'tool-call-delta' && typeof chunk.name === 'string' && chunk.name) {
+    const seen = announced.get(frame.attemptId) ?? new Set()
+    if (seen.has(chunk.index)) return undefined
+    announced.set(frame.attemptId, seen.add(chunk.index))
+    return { type: 'tool', attemptId: frame.attemptId, name: chunk.name }
   }
   return undefined
 }

@@ -36,7 +36,7 @@ def _keywords(schema):
 # -- 配置 --------------------------------------------------------------------
 
 
-def test_defaults_follow_weknora():
+def test_defaults():
     s = SandboxSettings()
     assert (s.docker_enabled, s.cpus, s.memory_bytes, s.pids_limit) == (False, 2.0, 2 * 1024**3, 512)
     assert (s.idle_ttl_seconds, s.network_mode, s.exec_user, s.runtime) == (1800, "bridge", "root", "")

@@ -60,6 +60,8 @@ class Model(Base):
     name: Mapped[str] = mapped_column(String(200))
     capabilities: Mapped[list[str]] = mapped_column(ARRAY(String(16)))  # chat | embedding | rerank | vision
     context_length: Mapped[int | None] = mapped_column(Integer)
+    # 对话模型单次最多输出多少 token；网关转发时把 max_tokens 收紧到它（宿主按全局默认 32768 请求，有的模型上限更小）
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer)
     # 对话模型的思考：on、off，空是跟随服务默认（不补参数）；转发时按服务商的写法补（models/thinking.py）
     thinking: Mapped[str | None] = mapped_column(String(8))
     input_price_per_mtok: Mapped[Decimal | None] = mapped_column(PRICE)

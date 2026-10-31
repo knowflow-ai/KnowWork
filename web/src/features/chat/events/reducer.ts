@@ -149,7 +149,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'local/delivered':
       return {
         ...state,
-        sent: state.sent.map((m) => (m.localId === action.localId ? { ...m, status: 'sent' } : m)),
+        sent: state.sent.map((m) =>
+          m.localId === action.localId
+            ? { ...m, status: 'sent', ...(action.messageId ? { messageId: action.messageId } : {}) }
+            : m,
+        ),
       };
     case 'local/failed':
       return { ...state, sent: state.sent.filter((m) => m.localId !== action.localId) };

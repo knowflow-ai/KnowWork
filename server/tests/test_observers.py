@@ -24,8 +24,9 @@ class Collector:
     def __init__(self, fail=False):
         self.calls, self.fail = [], fail
 
-    async def collect(self, workspace_id, session_id, *, run_id=None, paths=()):
+    async def collect(self, workspace_id, session_id, *, run_id=None, paths=(), descriptions=None):
         self.calls.append((workspace_id, session_id, run_id, tuple(paths)))
+        self.descriptions = dict(descriptions or {})
         if self.fail:
             raise RuntimeError("sandbox down")
 
@@ -39,8 +40,9 @@ def turn_end(kind, turn=3):
     return {"type": "turn/end", "data": {"turn": turn, "reason": {"kind": kind}}}
 
 
-def presented(*paths, turn=3):
-    return {"type": "deliverables/presented", "data": {"turn": turn, "callId": "c", "files": [{"path": p} for p in paths]}}
+def presented(*paths, turn=3, described=None):
+    files = [{"path": p, **({"description": described[p]} if described and p in described else {})} for p in paths]
+    return {"type": "deliverables/presented", "data": {"turn": turn, "callId": "c", "files": files}}
 
 
 async def test_collects_only_after_completed_turns():
@@ -56,6 +58,18 @@ async def test_collects_only_after_completed_turns():
     observer("c1", "ws", "session/event", turn_end("completed", turn=4))  # 没交付的回合不收
     await observer.drain()
     assert collector.calls == [("ws", "c1", "run-3", ("/sessions/c1/a.docx", "/sessions/c1/b.xlsx", "/sessions/c1/c.md"))]
+
+
+async def test_passes_each_files_description_and_a_later_declaration_wins():
+    collector = Collector()
+    observer = ArtifactObserver(collector)
+    observer("c1", "ws", "session/event", presented("/sessions/c1/a.png", "/sessions/c1/b.html",
+                                                   described={"/sessions/c1/a.png": "初稿"}))
+    observer("c1", "ws", "session/event", presented("/sessions/c1/a.png", described={"/sessions/c1/a.png": "流程图"}))
+    observer("c1", "ws", "session/event", turn_end("completed"))
+    await observer.drain()
+    assert collector.calls == [("ws", "c1", "run-3", ("/sessions/c1/a.png", "/sessions/c1/b.html"))]
+    assert collector.descriptions == {"/sessions/c1/a.png": "流程图"}, "重复交付用最近一次的说明；没写说明的不带"
 
 
 async def test_collect_failure_is_logged_not_raised(caplog):
@@ -83,7 +97,7 @@ class GatedCollector:
 
         self.gate, self.calls = asyncio.Event(), []
 
-    async def collect(self, workspace_id, session_id, *, run_id=None, paths=()):
+    async def collect(self, workspace_id, session_id, *, run_id=None, paths=(), descriptions=None):
         self.calls.append(session_id)
         await self.gate.wait()
 

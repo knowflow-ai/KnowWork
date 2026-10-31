@@ -3,7 +3,7 @@
 ## 准备
 
 - Python 3.12 与 [uv](https://docs.astral.sh/uv/)；
-- Node.js 22.19 以上（开发时用 24）；
+- Node.js 24.9 以上；
 - Docker：会话沙箱要用。不需要本机装 PostgreSQL，开发与测试用嵌入式的。
 
 ## 本机拉起全套
@@ -19,6 +19,8 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 后台任务 worker（附件解析，业务服务就绪后再起）和前端开发服务器（5173，`/api` 代理到 8000），Ctrl+C 一起停。
 要解析 PDF、Office 附件时，到「管理 → 模型 → 文档解析」里填 MinerU 地址（也可以启动前设 `KNOWWORK_MINERU_BASE_URL` 当默认值）。
 
+- 改了代码不用重启整套：前端热更新；业务服务与 worker 的 Python 代码、宿主的插件（`runtime-host/plugins`）改了
+  各自自动重启（几秒）。宿主重启时正在进行的回答会中断，要重发；`runtime-host/profile/` 改了要重启整套；
 - 数据、密钥、日志都在仓库根的 `.dev/`（日志在 `.dev/logs/`），删掉它就回到全新状态；
 - 首次打开走初始化向导建管理员，再到「管理 → 模型」添加模型，模型别名填 `default`；
 - Node 默认取 PATH 里的，也可以用 `KNOWWORK_NODE_BIN` 指定所在目录；

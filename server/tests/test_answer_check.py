@@ -12,7 +12,15 @@ from sqlalchemy import select
 
 from knowwork_server.conversations.models import Conversation, RunSummary
 from knowwork_server.jobs import JobError
-from knowwork_server.knowledge.answer_check import MAX_CHECK_TRIES, PER_CALL, AnswerChecker, parse_verdicts
+from knowwork_server.knowledge.answer_check import (
+    CITED_CHARS,
+    MAX_CHECK_TRIES,
+    PER_CALL,
+    SNIPPET_CHARS,
+    SNIPPETS_BUDGET,
+    AnswerChecker,
+    parse_verdicts,
+)
 from knowwork_server.knowledge.tables import (
     Citation,
     CitationCatalogRow,
@@ -129,6 +137,84 @@ async def test_judges_in_batches_and_merges_the_verdict_into_the_turn_facts(sess
                                "reason": "kb_lacks"}
     assert facts[PER_CALL + 1]["verdict"] == "unanswered" and facts[PER_CALL + 1]["reason"] == "kb_lacks"
     assert await pending(sessionmaker, ctx) == []
+
+
+async def seed_long(sessionmaker, answer: str, texts: dict[int, str], *, images: dict[int, list] | None = None,
+                    ranked: tuple[int, ...] = (), tools: tuple[str, ...] = ()) -> Ctx:
+    """一轮等着判断：引用目录里放 texts 这几段（可带图），这一轮检索的名次是 ranked。"""
+    ctx = Ctx()
+    ws, c1 = ctx.workspace_id, f"{ctx.workspace_id}-c1"
+    async with sessionmaker() as session, session.begin():
+        session.add(Conversation(id=c1, workspace_id=ws, user_id="alice", title="微短剧"))
+        session.add(CitationCatalogRow(id=c1, workspace_id=ws, limit=100))
+        await session.flush()
+        session.add_all([Citation(catalog_id=c1, workspace_id=ws, number=number, source_id="builtin", doc_ref="kb1/r",
+                                  span_ref=f"r{number}", title="行业报告", text=text,
+                                  images=(images or {}).get(number)) for number, text in texts.items()])
+        session.add(RunSummary(conversation_id=c1, turn=1, workspace_id=ws, user_id="alice", question="代表作品有哪些",
+                               status="completed", started_at=datetime.now(UTC), tools=list(tools),
+                               facts={"knowledge": {"searches": 1}}))
+        session.add(KnowledgeSearchLog(id=f"{ws}-log1", workspace_id=ws, conversation_id=c1, turn=1, user_id="alice",
+                                       query="代表作品", options={}))
+        await session.flush()
+        session.add_all([KnowledgeSearchHit(log_id=f"{ws}-log1", rank=rank, workspace_id=ws, number=number,
+                                            source_id="builtin", kb_id="kb1", doc_ref="d", span_ref="s", title="t",
+                                            score=0.5, cited=False) for rank, number in enumerate(ranked)])
+        session.add(KnowledgeAnswerCheck(id=f"{ws}-kac1", workspace_id=ws, conversation_id=c1, turn=1,
+                                         question="代表作品有哪些", answer=answer))
+    return ctx
+
+
+async def item_seen(sessionmaker, ctx: Ctx) -> dict:
+    models = Models(results({"verdict": "answered"}))
+    await AnswerChecker(sessionmaker, models).handle(ctx)
+    return models.calls[0][0]
+
+
+async def snippets_seen(sessionmaker, ctx: Ctx) -> list[dict]:
+    return (await item_seen(sessionmaker, ctx))["snippets"]
+
+
+async def test_a_cited_snippet_is_given_in_full_so_what_the_answer_took_from_its_second_half_can_be_checked(
+        sessionmaker):
+    # 2026-10-29：片段 563 字，《招惹》的主演、播放量在第 400 字之后；原来一律截 400 字，答对了被判成只答了一部分
+    cited = "《东栏雪》" + "介" * 450 + "《招惹》主演：李沐宸；播放量：2.0亿+"
+    ranked_only = "背景" * 400
+    ctx = await seed_long(sessionmaker, "《招惹》播放量 2.0 亿+ [33]", {33: cited, 7: ranked_only}, ranked=(7, 33))
+    snippets = await snippets_seen(sessionmaker, ctx)
+    assert [s["ref"] for s in snippets] == [33, 7]
+    assert snippets[0]["text"] == cited, "回答标了编号的片段给全文"
+    assert len(snippets[1]["text"]) == SNIPPET_CHARS and snippets[1]["text"].endswith("…"), "按名次补的截短并标出截了"
+
+
+async def test_cited_snippets_stop_at_their_cap_and_the_turn_stays_within_the_budget(sessionmaker):
+    long = "条" * (CITED_CHARS * 2)
+    texts = {number: long for number in range(1, 11)}
+    ctx = await seed_long(sessionmaker, "".join(f"[{n}]" for n in texts), texts)
+    snippets = await snippets_seen(sessionmaker, ctx)
+    assert all(len(s["text"]) <= CITED_CHARS for s in snippets)
+    assert snippets[0]["text"].endswith("…")
+    assert sum(len(s["text"]) for s in snippets) <= SNIPPETS_BUDGET
+
+
+async def test_a_cited_snippet_brings_its_image_descriptions_in_order(sessionmaker):
+    images = {5: [{"ref": "i0", "caption": "《东栏雪》海报：古装女子 \n 立于雪中"}, {"ref": "i1"}]}
+    ctx = await seed_long(sessionmaker, "海报如下 [IMG:5:0]", {5: "宣传图", 6: "别的"}, images={**images, 6: images[5]},
+                          ranked=(6,))
+    snippets = await snippets_seen(sessionmaker, ctx)
+    assert snippets[0] == {"ref": 5, "title": "行业报告", "text": "宣传图",
+                           "images": ["《东栏雪》海报：古装女子 立于雪中", "无描述"]}
+    assert "images" not in snippets[1], "没被引用的不带图的描述"
+
+
+@pytest.mark.parametrize(("tools", "looked"), [
+    (("knowledge_search", "knowledge_fetch", "read_image"), True),
+    (("knowledge_search", "read_image"), False),  # 只看过图：可能是用户传的附件
+    (("knowledge_search", "knowledge_fetch"), False),
+])
+async def test_the_judge_is_told_when_the_agent_looked_at_the_knowledge_base_images(sessionmaker, tools, looked):
+    ctx = await seed_long(sessionmaker, "海报左侧是主海报 [IMG:5:0]", {5: "宣传图"}, tools=tools)
+    assert (await item_seen(sessionmaker, ctx)).get("looked_at_images", False) is looked
 
 
 async def test_turns_without_a_readable_verdict_wait_for_the_next_batch(sessionmaker):

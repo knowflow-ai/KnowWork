@@ -120,7 +120,7 @@ export const REPLY_LANGUAGES: readonly { readonly value: ReplyLanguage; readonly
 ];
 
 /**
- * 回答方式（服务端 conversations/api.py 的 answer_mode）：智能体，或只检索知识库的快速问答。
+ * 回答方式（服务端 conversations/api.py 的 answer_mode）：智能体，或只查知识库（检索与阅读）的快速问答。
  * 每条消息都带，会话中途可以换；快速问答不能带附件，@ 的技能不算。
  */
 export type AnswerMode = 'agent' | 'quick';

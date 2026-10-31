@@ -386,18 +386,6 @@ body {
   color: var(--kw-text-secondary);
 }
 
-/* 菜单项下面一行说明（输入框「+」里的「快速问答 / 只检索知识库，回答更快」） */
-.kw-menu-item-text {
-  display: inline-flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.kw-menu-item-text small {
-  color: var(--color-text-secondary);
-  font-size: var(--font-text-xs-size);
-}
-
 /* ---------- 侧栏会话项 ---------- */
 .kw-conversation-item {
   position: relative;
@@ -437,4 +425,17 @@ body {
 /* 整页的加载、无权限、出错：在内容区居中 */
 .kw-page-state {
   padding: 48px 24px;
+}
+
+/* 管理后台侧栏菜单右侧的待处理数（技能待审核） */
+.kw-sidebar-count {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--color-surface-tertiary);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+  line-height: 18px;
+  text-align: center;
 }

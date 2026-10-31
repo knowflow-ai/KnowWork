@@ -58,11 +58,39 @@
     - id: knowwork-log-sink
       name: '@knowwork/dsh-host/log-sink'
 
+    # 官方工具结果裁剪（照官方完整版 dsh-base 的挂法）：压缩触发时先把超长的工具结果裁成头尾，常常就不用再花一次模型调用
+    # 做摘要；完整原文仍在会话日志里。压缩插件运行时按名字取它，挂的先后不影响；不到压缩时什么都不改，不动前缀缓存。
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+    # 官方重复调用提醒（照 dsh-base）：模型用完全相同的参数反复调同一个工具时，提醒它先看上一次的结果、换个办法或结束；
+    # 只提醒不拦截，新的用户消息清零计数
+    - id: repeat-tool-reminder
+      name: '@deepseek-ai/dsh-repeat-tool-reminder'
+      config:
+        thresholds: [3, 5, 8]
+        argumentsPreviewChars: 500
+
     # 执行世界：会话容器（/sessions/<会话 id> 对到容器的 /workspace），经业务服务的内部沙箱接口
     - id: knowwork-remote-fs
       name: '@knowwork/dsh-host/remote-fs'
     - id: knowwork-remote-subprocess
       name: '@knowwork/dsh-host/remote-subprocess'
+
+    # 官方 PTC 运行时：模型写的程序在会话容器里跑（经 remote-subprocess 的流式执行，即官方 SSH 执行环境），
+    # 程序里调用的宿主函数走 fd 7 控制管道回到宿主。启动脚本是沙箱镜像里装的同版本文件（摘要由 dsh-ssh 校验）。
+    # 只提供运行时，不带任何面向模型的工具；业务服务没打开流式执行时用到它会报错。
+    - id: knowwork-ptc-runtime
+      name: '@deepseek-ai/dsh-ptc-runtime-node'
+      config:
+        launch:
+          kind: node-script
+          executable: /usr/local/bin/node
+          bootstrapPath: /opt/dsh-ssh/node_modules/@deepseek-ai/dsh-ptc-runtime-node/lib/process.js
 
     # 官方 bash（照 dsh-base 的挂法）：执行器建在 ctx.subprocess 上，所以命令跑在容器里；
     # 超时、取消、输出截断、后台任务都是官方机制
@@ -92,14 +120,18 @@
     - id: knowwork-prompt-context
       name: '@knowwork/dsh-host/prompt-context'
 
-    # 回答方式：每条消息带「智能体 / 快速问答」，会话中途可切换；快速问答在提问后加一段只检索的指令，
-    # 执行时只放行知识库检索。工具清单与系统提示不随切换变化（照官方计划模式）
+    # 回答方式：每条消息带「智能体 / 快速问答」，会话中途可切换；快速问答在提问后加一段指令，那一步只给模型看
+    # 声明了快速问答的业务工具（官方条件工具 + restrict，见 answer-mode.mjs）
     - id: knowwork-answer-mode
       name: '@knowwork/dsh-host/answer-mode'
 
     # 知识库目录：照官方 dsh-tool-skill 的会话技能目录，只列名字与简介，字段与标签由 knowledge_bases 按需取
     - id: knowwork-knowledge-catalog
       name: '@knowwork/dsh-host/knowledge-catalog'
+
+    # 扩展补的每轮上下文（例如记忆）：常驻的一段照知识库目录的办法发，只这一轮的一段紧跟在提问后面
+    - id: knowwork-turn-context
+      name: '@knowwork/dsh-host/turn-context'
 
     # 官方凭据服务：网关短期令牌经 ctx.credentials 轮换，下一次请求即生效，无需重启。
     # 存储文件放在宿主私有目录（容器里挂 tmpfs），宿主不开放 shell 与文件工具，Agent 读不到。
@@ -117,6 +149,9 @@
             api: openai-completions
             apiKeyEnv: KNOWWORK_MODEL_TOKEN
             baseURL: !!js process.env.KNOWWORK_MODEL_BASE_URL ?? 'http://127.0.0.1:8001/internal/model/v1'
+            # 输出上限显式写死：0.2.2 起没声明的模型默认 128000（0.2.1 是 32768），请求里的 max_tokens 会超过很多
+            # 模型服务自己的上限而被拒；保持 0.2.1 的值
+            defaultMaxTokens: 32768
             models:
               - id: !!js process.env.KNOWWORK_MODEL ?? 'default'
                 name: 工作空间默认模型

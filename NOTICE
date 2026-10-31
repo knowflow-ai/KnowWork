@@ -16,7 +16,8 @@ Copyright (c) 2026 DeepSeek
 WeKnora（https://github.com/Tencent/WeKnora）
 Copyright (C) 2026 Tencent. All rights reserved.
 
-会话沙箱的 Docker 后端（容器能力、资源限制、镜像内容）与部署编排参照其做法改写。
+会话沙箱的 Docker 后端（容器能力、资源限制、镜像内容）与部署编排、IM 渠道的消息处理、知识检索工具与引用定位、
+模型思考开关、回答方式与输入框的 @ 菜单参照其做法改写。
 
 -------------------------------------------------------------------------------
 MIT License

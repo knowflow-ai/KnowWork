@@ -86,6 +86,7 @@ async def test_workspace_skill_follows_rbac(env, client):
 
     view = await env.skills.service.install(owner, "workspace", workflow_zip(REVIEW, "shared-review"))
     await env.skills.service.publish(owner, view.id)
+    await env.access.set_users("alice", "ws1", f"skill:{view.id}", [])  # 新建的默认全体成员，先收窄
     body = {"skillId": view.id, "inputs": {"contract_id": "a"}}
     assert (await client.post(BASE, json=body, headers=as_("dave"))).status_code == 404
     await env.access.grant("alice", "ws1", "user:dave", f"skill:{view.id}", "use")
@@ -161,3 +162,18 @@ async def test_event_stream_pushes_snapshots_until_finished(env, client):
     assert "event:" not in empty.text
     assert (await client.get(f"{BASE}/{run_id}/events", headers=as_("erin"))).status_code == 404
     assert parse_after("12", 3) == 12 and parse_after(None, -1) == 0 and parse_after("x", 4) == 4
+
+
+
+async def test_platform_workflow_skill_starts_in_a_workspace_it_reaches(env, client):
+    """公共技能的发布记录在平台空间：工作流照样取得到它冻结的固定流程。"""
+    from .conftest import workflow_zip
+
+    await env.access.create_workspace(workspace_id="default", name="默认空间", owner_user_id="alice")
+    env.access.set_system_admin("root")
+    platform = env.skills.platform
+    view = await platform.install("root", workflow_zip(REVIEW, "company-review"))
+    await platform.publish("root", view.id)
+    await platform.set_audience("root", view.id, ["ws1"])
+    started = await client.post(BASE, json={"skillId": view.id, "inputs": {"contract_id": "a"}}, headers=as_("dave"))
+    assert started.status_code == 202, started.text

@@ -1,4 +1,4 @@
-"""空闲清扫与孤儿回收（照抄 WeKnora 的 docker_idle_sweeper.go 与 orphan_reaper.go）。
+"""空闲清扫与孤儿回收。
 
 Docker 没有空闲超时：容器会一直跑到有人停它。没有清扫，一个被丢下的会话就永远占着宿主机的内存与 CPU。
 - 最后一次使用时间读容器里活动标记的 mtime（每次 exec 顺手 touch），没有就退回容器创建时间；
@@ -140,7 +140,7 @@ class IdleSweeper:
 
 async def reap_orphans(engine: DockerEngine, guard: Guard, is_live: LiveCheck, *, grace_seconds: float,
                        clock: Callable[[], float] = time.time) -> int:
-    """删掉会话已经不存在的沙箱容器（照抄 WeKnora 的 ReapOrphanSandboxes；它在 WeKnora 里也没有默认调用方）。
+    """删掉会话已经不存在的沙箱容器（默认没有调用方）。
 
     is_live(工作空间, 会话) 由主线提供（查会话表）。刚建不久（grace 内）的不动：会话行可能还没提交。
     查询失败就跳过这一个，不当成孤儿——拿不准时不删。

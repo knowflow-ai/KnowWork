@@ -172,6 +172,8 @@ export interface ArtifactView {
   readonly size?: number;
   readonly url?: string;
   readonly runId?: string;
+  /** 模型交付时写的说明，卡片上显示；没写时显示文件类型 */
+  readonly description?: string;
 }
 
 /** 回答里 [n] 的出处：来自 /citations，按编号查。 */
@@ -200,7 +202,7 @@ export interface CitationSource {
 }
 
 /**
- * 本页发出的用户消息。events.v1 目前不含用户消息，只能在本页记住；
+ * 本页发出的用户消息：事件流里同一条回显之前先摆上（回显到了就合并掉，见 selectors.unechoedSent）。
  * afterRuns 记下发送时已有几轮，用来在时间线里摆到正确位置（重算时也稳定）。
  */
 export interface SentMessage {
@@ -209,6 +211,8 @@ export interface SentMessage {
   readonly mode: 'followup' | 'steer';
   readonly afterRuns: number;
   readonly status: 'sending' | 'sent';
+  /** 发送接口返回的消息 id，和事件流里这条消息的 id 是同一个；发出去之前没有 */
+  readonly messageId?: string;
   readonly attachments?: readonly AttachmentChip[];
   readonly mentions?: readonly Mention[];
 }
@@ -246,11 +250,21 @@ export interface LiveText {
   readonly runId: string;
   readonly step: number;
   readonly text: string;
+  /** 这一步模型开始写了哪些工具调用（工具名，按先后）：参数还没写完、工具还没开始跑 */
+  readonly tools: readonly string[];
 }
 
-/** 服务端推来的一个逐字片段：offset 为 0 表示从头替换；done 表示这一步输出结束。 */
+/** 服务端推来的一个逐字片段：offset 为 0 表示从头替换（快照还带着报过的工具）；tool 是模型开始写某个工具调用；
+ * done 表示这一步输出结束。 */
 export type LivePiece =
-  | { readonly runId: string; readonly step: number; readonly offset: number; readonly text: string }
+  | {
+      readonly runId: string;
+      readonly step: number;
+      readonly offset: number;
+      readonly text: string;
+      readonly tools?: readonly string[];
+    }
+  | { readonly runId: string; readonly step: number; readonly tool: string }
   | { readonly runId: string; readonly step: number; readonly done: true };
 
 export type ChatAction =
@@ -264,7 +278,7 @@ export type ChatAction =
       readonly attachments?: readonly AttachmentChip[];
       readonly mentions?: readonly Mention[];
     }
-  | { readonly type: 'local/delivered'; readonly localId: string }
+  | { readonly type: 'local/delivered'; readonly localId: string; readonly messageId?: string }
   | { readonly type: 'local/failed'; readonly localId: string }
   /** 提交回答时后端说问题已结束（宿主重启过等），把卡片标成失效。 */
   | { readonly type: 'local/question-expired'; readonly questionId: string }

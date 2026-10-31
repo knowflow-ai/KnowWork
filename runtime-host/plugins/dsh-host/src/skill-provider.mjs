@@ -10,7 +10,7 @@
  *   目录消息、`skill` 工具、用户 `/技能名` 显式调用都由官方插件负责；
  * - 内容按需拉取：模型加载某个技能时才回调业务服务 `GET /content`，按会话打开时的版本摘要钉住，
  *   拉到的正文按清单里的 contentDigest 校验；
- * - 本会话与全局（官方随包技能）都没有技能时，用官方 `restrict` 收掉 `skill` 工具，不给模型一个空工具。
+ * - 本会话（清单与自带技能，见 bundled-skills）与全局都没有技能时，用官方 `restrict` 收掉 `skill` 工具，不给模型一个空工具。
  *
  * 专业工具的解锁：模型经 `skill` 工具成功加载技能（官方 `tools/result`），或用户 `/技能名` 显式调用
  * 之后，解锁该技能认领的专业工具（skill-unlock）。
@@ -23,6 +23,7 @@
  */
 
 import { createScope } from '@deepseek-ai/dsh-scope'
+import { bundledFor } from './bundled-skills.mjs'
 import { skillClient, ensureCatalog, lockedTools } from './skill-catalog.mjs'
 import { lockTools, unlockSkill } from './skill-unlock.mjs'
 import { publish, resolveRootSession } from './state.mjs'
@@ -81,6 +82,7 @@ export function apply(ctx) {
     const skill = root.skillCatalog?.find(s => s.name === skillName)
     if (skill === undefined) return
     unlockSkill(agent, skillName)
+    root.loadedSkills.add(skillName)  // 之后这个会话跑的命令带上它的环境变量（业务服务注入，宿主不经手值）
     const unlocked = [...skill.unlocks]
     const sessionId = String(agent.session.id)
     // 只有声明了完成判据的技能才进技能门；子 Agent 加载的不约束根会话的最终回答
@@ -93,9 +95,10 @@ export function apply(ctx) {
     if (root === undefined) return
     const catalog = await ensureCatalog(root)
     if (catalog.length === 0) {
-      // 全局也没有技能（官方随包技能如 Office 是全局注册的）才收掉 skill 工具
+      // 这个会话也没有自带技能（按会话注册，本空间可能全停用了），全局也没有，才收掉 skill 工具
       const global = await ctx.skills.list().catch(() => [])
-      if (global.length === 0 && ctx.tools.get(SKILL_TOOL) !== undefined) agent.ctx.tools.restrict({ deny: [SKILL_TOOL] })
+      const none = global.length === 0 && bundledFor(root, catalog).length === 0
+      if (none && ctx.tools.get(SKILL_TOOL) !== undefined) agent.ctx.tools.restrict({ deny: [SKILL_TOOL] })
       return
     }
     lockTools(agent, lockedTools(catalog))

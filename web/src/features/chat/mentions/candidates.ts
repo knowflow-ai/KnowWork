@@ -7,6 +7,7 @@ import type {
   MentionBase,
   MentionDocument,
   MentionOptions,
+  MentionService,
   MentionSkill,
 } from '../../../api/mentions';
 import type { MentionGroup } from './kinds';
@@ -72,6 +73,19 @@ function documentCandidates(documents: readonly MentionDocument[]): Candidate[] 
   }));
 }
 
+const SERVICE_STATUS: Record<MentionService['status'], string> = {
+  ready: '可以直接用',
+  connected: '已连接',
+  invalid: '连接已失效',
+};
+
+function serviceCandidates(services: readonly MentionService[]): Candidate[] {
+  return services.map((service) => ({
+    mention: { type: 'mcp', id: service.name, name: service.title },
+    detail: `${service.tools} 个工具 · ${SERVICE_STATUS[service.status]}`,
+  }));
+}
+
 function skillCandidates(skills: readonly MentionSkill[]): Candidate[] {
   return skills.map((skill) => ({
     mention: { type: 'skill', id: skill.name, name: skill.name },
@@ -91,6 +105,8 @@ export function groupCandidates(
       return documentCandidates(documents);
     case 'tags':
       return tagCandidates(options.bases);
+    case 'services':
+      return serviceCandidates(options.services);
     case 'skills':
       return skillCandidates(options.skills);
   }
@@ -112,7 +128,9 @@ export function sections(
   query: string,
   group: MentionGroup | null,
 ): readonly Section[] {
-  const groups: readonly MentionGroup[] = group ? [group] : ['bases', 'documents', 'tags', 'skills'];
+  const groups: readonly MentionGroup[] = group
+    ? [group]
+    : ['bases', 'documents', 'tags', 'services', 'skills'];
   return groups.flatMap((name) => {
     const all = groupCandidates(name, options, documents);
     const found = name === 'documents' ? all : matching(all, query);

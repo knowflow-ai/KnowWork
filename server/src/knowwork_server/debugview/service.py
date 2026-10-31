@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 from ..conversations.models import Conversation
 from ..conversations.runlog import RawEvent, RunLog
+from .background import background
 from .context import StepInput, step_input
 from .digest import StepView, TurnDetail, TurnSummary, detail, summarize
 from .events import TurnSlice, main_events, slice_turns
@@ -46,10 +47,12 @@ class DebugService:
         return TurnList(turns=tuple(summarize(t, usage) for t in slice_turns(page.events)), truncated=page.truncated)
 
     async def turn(self, conversation: Conversation, turn: int) -> TurnDetail | None:
-        found = await self._slice(conversation, turn)
+        turns = slice_turns((await self._runlog.read(conversation.id)).events)
+        found = next((t for t in turns if t.turn == turn), None)
         if found is None:
             return None
-        return await self._with_traces(conversation, detail(found, await self._usage_map(conversation)))
+        built = replace(detail(found, await self._usage_map(conversation)), background=background(turns, turn))
+        return await self._with_traces(conversation, built)
 
     async def _with_traces(self, conversation: Conversation, turn: TurnDetail) -> TurnDetail:
         if self._traces is None:

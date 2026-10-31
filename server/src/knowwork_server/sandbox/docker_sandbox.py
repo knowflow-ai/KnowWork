@@ -1,12 +1,12 @@
 """SessionSandbox 的 Docker 实现，外加给沙箱工具用的工作区文件操作。
 
-执行身份照抄 WeKnora：容器的 PID 1 以 root 运行，命令与文件操作默认也是 root（exec_user 可改成 uid[:gid]，
+执行身份：容器的 PID 1 以 root 运行，命令与文件操作默认也是 root（exec_user 可改成 uid[:gid]，
 单次调用也可指定 user，例如镜像里保留的 uid 1000）。一个沙箱只属于一个会话，容器里没有第二个需要内核替它
 隔开的账号；跨会话、跨租户与宿主机的隔离在容器边界，不靠工作目录的文件权限。
 
 - 读文件、列目录、收产物都经 exec 在容器里跑（带执行账号、超时与活动标记）；
 - 写入内容（附件、宿主文件工具的写入）经 Docker 的 archive 接口放进去：docker-py 接管的 exec 连接在 TLS 上
-  没法可靠地半关闭写端，stdin 送不完整（WeKnora 用 Go 的 CloseWrite 走 exec stdin）。archive 由 daemon
+  没法可靠地半关闭写端，stdin 送不完整。archive 由 daemon
   以 root 身份解包，与默认执行账号相同，不改变权限口径；写之前先用 exec 以执行账号确认目标可写；
 - 产物是模型用 present 交付的文件，只收普通文件（最后一级不跟随符号链接）。
 """
@@ -62,6 +62,7 @@ class FileChunk:
     size: int  # 文件总字节数
     offset: int
     data: bytes
+    version: str = ""  # 同 PathStat.version：读的同时给出，宿主编辑时用它核对，不用另外 stat
 
 
 def _parse_listing(raw: bytes) -> list[DirEntry]:
@@ -298,16 +299,20 @@ class DockerSessionSandbox:
         target = resolve(path)
         if offset < 0 or limit <= 0:
             raise SandboxError("读取范围不合法")
+        # 宿主读文件不再先 stat：还没有容器时不为此建一个，什么文件都还不存在（同 stat_path）
         result = await self._script(workspace_id, session_id, READ_FILE, [target, str(offset), str(limit)],
-                                    cap=limit + 32)
-        if result is None or result.exit_code != 0:
-            raise _file_error(result) if result else SandboxError(NOT_STARTED)
+                                    create=False, cap=limit + 96)
+        if result is None:
+            raise SandboxFileError(FILE_ERRORS[3], FILE_ERROR_CODES[3])
+        if result.exit_code != 0:
+            raise _file_error(result)
         head, _, data = result.stdout.partition(b"\n")
         try:
-            size = int(head)
-        except ValueError as error:
+            size, mtime, inode = head.decode("ascii").split("|")
+        except (UnicodeDecodeError, ValueError) as error:
             raise SandboxError("文件操作失败") from error
-        return FileChunk(path=target, size=size, offset=offset, data=data[:limit])
+        return FileChunk(path=target, size=int(size), offset=offset, data=data[:limit],
+                         version=f"{mtime}:{inode}:{size}")
 
     async def write_file(self, workspace_id: str, session_id: str, path: str, data: bytes) -> int:
         target = resolve_writable(path)

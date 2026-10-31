@@ -1,8 +1,7 @@
-"""一会话一个长驻容器（照抄 WeKnora 的 docker_remote_client.go）：按需创建、按 label 找回、停了就拉起、
+"""一会话一个长驻容器：按需创建、按 label 找回、停了就拉起、
 配置变了重建、销毁时连匿名卷一起删。
 
-- 工作区不挂卷，就在容器自己的文件系统里（WeKnora 同此：它的 Docker 后端不支持卷，容器被删后「之前的文件
-  不会保留」）。容器被空闲清扫或配置变更删掉后，下一次使用会新建一个空的；新建时调用 on_created 钩子，
+- 工作区不挂卷，就在容器自己的文件系统里（容器被删后之前的文件不保留）。容器被空闲清扫或配置变更删掉后，下一次使用会新建一个空的；新建时调用 on_created 钩子，
   主线把它接到附件的 restage 上，把已就绪的附件重新放进去。产物在每轮结束时已收走，不受影响。
 - 容器名由（工作空间, 会话）的摘要确定，同一会话不管哪个进程来找都落到同一个名字上；找到同名容器时再核对
   label，不是我们为这个会话建的就拒绝，不收养。
@@ -22,7 +21,7 @@ from .config import ContainerPosture
 from .contract import SandboxError
 from .docker_engine import DockerConflict, DockerEngine
 from .paths import WORKSPACE_DIR, session_root
-from .scripts import ENTRYPOINT
+from .scripts import ENTRYPOINT, ENTRYPOINT_SSH
 
 log = logging.getLogger(__name__)
 
@@ -34,10 +33,14 @@ LABEL_IDLE_TTL = "io.knowwork.idle-ttl-seconds"
 COMPONENT = "sandbox"
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 CONFLICT = "沙箱环境冲突，请联系管理员"
-# CapDrop ALL 之后加回的能力，与 WeKnora 的 dockerSandboxCapabilities 相同：以 root 运行的装包工具要写镜像里的
+# CapDrop ALL 之后加回的能力：以 root 运行的装包工具要写镜像里的
 # 目录、改属主（CHOWN/DAC_OVERRIDE/FOWNER/FSETID），apt、pip 解包时会降权（SETUID/SETGID），KILL 用来停自己的子进程。
 # NET_RAW、NET_BIND_SERVICE、MKNOD、SYS_CHROOT、AUDIT_WRITE、SETPCAP、SETFCAP 不加回。
 CAPABILITIES = ("CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETGID", "SETUID", "KILL")
+# 打开流式执行时多加 SYS_CHROOT：sshd 的权限分离必须 chroot 到 /run/sshd，没有开关能关
+# （不加时 sshd 在 preauth 阶段报 chroot Operation not permitted 断开）。no-new-privileges 下靠 setuid 程序
+# 提权的路子走不通；执行账号是 uid 1000 时普通进程本来就拿不到能力。
+SSH_CAPABILITIES = ("SYS_CHROOT",)
 START_READY_SECONDS = 15.0
 START_READY_POLL = 0.05
 
@@ -78,16 +81,17 @@ class SandboxKey:
 
 
 def container_options(key: SandboxKey, posture: ContainerPosture, *, idle_ttl_seconds: int) -> dict[str, Any]:
-    """docker-py containers.create 的参数（姿态照抄 WeKnora 的 Create 与 hostConfig）。"""
+    """docker-py containers.create 的参数。"""
     options: dict[str, Any] = {
         "image": posture.image,
         # 用 entrypoint 而不是 command，并把 command 清空：否则镜像自带的 ENTRYPOINT 会接管 PID 1
-        "entrypoint": list(ENTRYPOINT), "command": [],
+        "entrypoint": list(ENTRYPOINT_SSH if posture.ssh else ENTRYPOINT), "command": [],
         # PID 1 固定 uid 0：入口要在 /var/lib 下建活动标记；镜像最后一行是非 root USER 时也照样成立
         "user": "0", "working_dir": WORKSPACE_DIR,
         "environment": ["LANG=C.UTF-8", "PYTHONUNBUFFERED=1", f"KW_SESSION_ROOT={session_root(key.session_id)}"],
         "labels": {**key.labels(), LABEL_POSTURE: posture.digest, LABEL_IDLE_TTL: str(idle_ttl_seconds)},
-        "cap_drop": ["ALL"], "cap_add": list(CAPABILITIES), "security_opt": ["no-new-privileges"],
+        "cap_drop": ["ALL"], "cap_add": [*CAPABILITIES, *(SSH_CAPABILITIES if posture.ssh else ())],
+        "security_opt": ["no-new-privileges"],
         # 入口是不调 wait() 的 sleep；没有 init（tini）在前面，后台进程退出后成僵尸，久了占满进程数上限
         "init": True,
         # 内存与内存+交换相等即关掉交换：失控的分配直接被杀，不去拖垮宿主机磁盘
@@ -170,7 +174,7 @@ class ContainerManager:
         return await self._create(key), True
 
     async def _connect(self, info: dict[str, Any]) -> str:
-        """停了的容器文件系统还在，拉起来接着用（WeKnora 的 Connect：Docker 里最接近「暂停后自动恢复」的做法）。"""
+        """停了的容器文件系统还在，拉起来接着用（Docker 里最接近「暂停后自动恢复」的做法）。"""
         container_id = str(info["Id"])
         status = _status(info)
         if status == "running":

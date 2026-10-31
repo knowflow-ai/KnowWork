@@ -1,6 +1,7 @@
 """业务服务侧工具接口：令牌、可用性重新判定、参数校验、动作回执的幂等与截断。真实 PostgreSQL。"""
 
 import uuid
+from dataclasses import replace
 from datetime import datetime
 
 import httpx
@@ -147,6 +148,39 @@ async def test_same_call_id_with_other_arguments_is_rejected(env):
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "idempotency_conflict"
     assert len(env["handler"].calls) == 1
+
+
+async def test_tailored_description_only_changes_what_the_host_sees(env):
+    """按会话裁剪交给宿主的描述（去掉这个会话用不上的参数）；执行仍按完整定义校验，会话中途情况变了也照样能调。
+    裁剪出错就给完整描述，不能因此整个会话没有这个工具。"""
+    full = {**NOTE_SCHEMA, "properties": {**NOTE_SCHEMA["properties"], "deep": {"type": "boolean"}}}
+    seen = []
+
+    async def trim(ctx, spec):
+        seen.append(ctx.session_id)
+        return replace(spec, input_schema={**spec.input_schema, "properties": {"q": {"type": "string"}}})
+
+    async def broken(ctx, spec):
+        raise RuntimeError("列不出知识库")
+
+    def listed():
+        return env["client"].get(f"{PREFIX}/list", headers={"authorization": f"Bearer {env['token']}"})
+
+    env["registry"].tools["kw_note"] = BuiltinTool(ToolSpec("kw_note", "记一笔", full, "write", tailor=trim),
+                                                   env["handler"])
+    tools = {t["name"]: t for t in (await listed()).json()["tools"]}
+    assert tools["kw_note"]["inputSchema"]["properties"] == {"q": {"type": "string"}} and seen == [env["session_id"]]
+    agent = env["session_id"]
+    executed = await env["client"].post(
+        f"{PREFIX}/execute", json={"toolName": "kw_note", "arguments": {"q": "x", "deep": True}, "agentSessionId": agent,
+                                   "callId": "call-t"},
+        headers={"authorization": f"Bearer {env['token']}", "idempotency-key": f"{agent}:call-t"})
+    assert executed.status_code == 200 and env["handler"].calls == [{"q": "x", "deep": True}]
+    assert len(seen) == 1, "只在列清单时裁剪，执行不再算一遍"
+    env["registry"].tools["kw_note"] = BuiltinTool(ToolSpec("kw_note", "记一笔", full, "write", tailor=broken),
+                                                   env["handler"])
+    tools = {t["name"]: t for t in (await listed()).json()["tools"]}
+    assert tools["kw_note"]["inputSchema"] == full
 
 
 async def test_availability_is_rejudged_at_execution(env):

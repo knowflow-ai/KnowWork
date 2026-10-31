@@ -54,7 +54,7 @@ function NewChat() {
       const { id } = await createConversation(truncate(text, 30), { answerMode, mentions });
       // 附件要先有会话才能传：建会话 → 把文件放进会话工作区 → 带着附件 id 发首条消息
       const attachments = await uploadForTurn(id, files);
-      await sendMessage(id, text, 'followup', {
+      const { messageId } = await sendMessage(id, text, 'followup', {
         language: currentReplyLanguage(),
         answerMode,
         attachments,
@@ -63,7 +63,9 @@ function NewChat() {
       void client.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
       // 事件流从头回放，进入会话页后能看到回答；首条消息由本页带过去，回显之前先摆上。@ 也带过去，输入框接着用
       navigate(`/chat/${encodeURIComponent(id)}`, {
-        state: { firstMessage: { text, attachments: chipsOf(files), mentions } } satisfies NavigationState,
+        state: {
+          firstMessage: { text, attachments: chipsOf(files), mentions, messageId },
+        } satisfies NavigationState,
       });
     } catch (error) {
       throw new Error(readableError(error, '没能新建对话，请稍后重试'));

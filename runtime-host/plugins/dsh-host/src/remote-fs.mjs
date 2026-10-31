@@ -6,6 +6,9 @@
  *   会话下（容器里两者是同一个目录）；别处一律拒绝；
  * - targetKey 即规范化后的路径（不做 realpath：容器里工作区内的符号链接由容器自己解析）；
  * - 版本号取容器里的修改时间（纳秒）、inode 与字节数；写入与编辑按目标串行，读-判-写之间不交错；
+ * - 每次操作都是「宿主 → 业务服务 → docker exec」一个来回，能省则省：沙箱的 read 顺带返回 stat，读文件不先 stat，
+ *   编辑用读回来的版本核对（读 + 写两次）；写入要先知道文件在不在、版本对不对（大文件不能为拿版本整个读一遍），
+ *   probe 之后读旧内容不再 stat；
  * - 文本读取与字面编辑的语义见 fs-text.mjs；不支持监听（基类默认拒绝）。
  */
 
@@ -73,7 +76,10 @@ export default class RemoteFileSystem extends FileSystem {
     if (typeof path !== 'string' || path.trim().length === 0) throw new FsError('file_path must be a non-empty string', 'FS_NOT_FOUND')
     const absolute = path.startsWith('/') ? workspaceAlias(path, cwd) : cwd === undefined ? undefined : posix.join(cwd, path)
     const located = absolute === undefined ? undefined : sessionPath(absolute)
-    if (located === undefined) {
+    // 调用方（模型的文件工具带着本会话的工作目录）只能落到自己的会话：沙箱请求用的是路径里那个会话的令牌，
+    // 不核对的话，知道别人对话 id 的模型就能读写别人的容器。子 Agent 继承根会话的工作目录，照样通过
+    const caller = cwd === undefined ? undefined : sessionPath(cwd)
+    if (located === undefined || (cwd !== undefined && caller?.sessionId !== located.sessionId)) {
       throw new FsError(`cannot access "${path}": only files under the session working directory are available`, 'FS_PERMISSION_DENIED')
     }
     return located
@@ -142,36 +148,50 @@ export default class RemoteFileSystem extends FileSystem {
     return info
   }
 
-  async readWindow(target, offset, length, signal) {
+  /**
+   * 从 offset 起读 length 字节；第一次读回来的 stat（大小、版本）一并返回。tooLarge 给出时第一块就按总大小判断，
+   * 超了不再往下读。不存在、是目录、不是普通文件由沙箱按错误码报（同 stat）。
+   */
+  async readWindow(target, offset, length, signal, tooLarge) {
     const chunks = []
     let read = 0
+    let stat
     while (read < length) {
       const want = Math.min(READ_CHUNK, length - read)
-      const { data } = await this.call('read', target, { offset: offset + read, length: want }, 'read', signal)
-      const bytes = Buffer.from(data ?? '', 'base64')
+      const reply = await this.call('read', target, { offset: offset + read, length: want }, 'read', signal)
+      stat ??= reply.stat
+      if (tooLarge !== undefined && stat !== undefined && stat.size > tooLarge) {
+        throw new FsError(`cannot read "${target.displayPath}": ${stat.size} bytes exceeds the ${tooLarge}-byte limit`, 'FS_TOO_LARGE')
+      }
+      const bytes = Buffer.from(reply.data ?? '', 'base64')
       chunks.push(bytes)
       read += bytes.length
       if (bytes.length < want) break
     }
-    return Buffer.concat(chunks, read)
+    return { bytes: Buffer.concat(chunks, read), stat }
   }
 
-  async readBytes(target, signal, maxBytes) {
-    const info = await this.regularFile(target, 'read', signal)
-    if (info.size > maxBytes) {
-      throw new FsError(`cannot read "${target.displayPath}": ${info.size} bytes exceeds the ${maxBytes}-byte limit`, 'FS_TOO_LARGE')
-    }
-    const bytes = await this.readWindow(target, 0, maxBytes + 1, signal)
+  /** 整个文件（不超过 maxBytes）连同读时的 stat：一次来回，不先 stat。 */
+  async readWhole(target, signal, maxBytes) {
+    throwIfAborted(signal, 'read')
+    const { bytes, stat } = await this.readWindow(target, 0, maxBytes + 1, signal, maxBytes)
     if (bytes.length > maxBytes) {
       throw new FsError(`cannot read "${target.displayPath}": content exceeds the ${maxBytes}-byte limit`, 'FS_TOO_LARGE')
     }
-    return bytes
+    return { bytes, stat }
+  }
+
+  async readBytes(target, signal, maxBytes) {
+    return (await this.readWhole(target, signal, maxBytes)).bytes
   }
 
   async readByteRange(target, range, signal) {
-    await this.regularFile(target, 'read', signal)
-    if (range.length === 0) return new Uint8Array(0)
-    return this.readWindow(target, range.offset, range.length, signal)
+    throwIfAborted(signal, 'read')
+    if (range.length === 0) {
+      await this.regularFile(target, 'read', signal)  // 空区间不读，但文件得在
+      return new Uint8Array(0)
+    }
+    return (await this.readWindow(target, range.offset, range.length, signal)).bytes
   }
 
   async readText(target, signal) {
@@ -228,13 +248,20 @@ export default class RemoteFileSystem extends FileSystem {
 
   async editText(target, edit, expected, signal) {
     return this.withLock(String(target.targetKey), async () => {
-      const existing = await this.probe(target, 'edit', signal)
-      if (existing === undefined) throw new FsError(`cannot edit "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
-      if (existing.kind !== 'f') throw new FsError(`cannot edit "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
-      if (expected && existing.version !== expected.version) {
+      // 读一次就够：读回来的 stat 带着版本，不存在、不是普通文件由沙箱报错
+      let whole
+      try {
+        whole = await this.readWhole(target, signal, MAX_TEXT_BYTES)
+      } catch (error) {
+        if (error instanceof FsError && error.code === 'FS_NOT_FOUND') {
+          throw new FsError(`cannot edit "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
+        }
+        throw error
+      }
+      if (expected && whole.stat?.version !== expected.version) {
         throw new FsError(`cannot edit "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
       }
-      const raw = decodeText(await this.readBytes(target, signal, MAX_TEXT_BYTES), 'edit', target.displayPath)
+      const raw = decodeText(whole.bytes, 'edit', target.displayPath)
       const { before, after, written } = applyLiteralEdit(raw, edit, target.displayPath)
       throwIfAborted(signal, 'edit')
       const version = await this.put(target, written, signal)

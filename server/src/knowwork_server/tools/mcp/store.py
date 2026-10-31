@@ -1,6 +1,9 @@
 """mcp_server 的读写。每个事务先设置行级安全变量，只看得到本空间的行。
 
-请求头在这里加解密：入库前整体 seal，只有 headers() 返回明文（连接 MCP 服务时用）。
+企业服务（scope = enterprise）和默认空间自己的服务存在同一个空间名下：列表按范围分开（list_servers 只给空间服务），
+免得默认空间的管理员看到、改到企业服务；按 id 取（get）不分范围，由调用方核对范围。
+
+请求头与 OAuth 授权的 client 在这里加解密：入库前整体 seal，只有 headers()、oauth_client() 返回明文（连接时用）。
 """
 
 import json
@@ -43,6 +46,17 @@ class McpServerRecord:
     sync_error: str | None
     created_by: str
     updated_at: datetime | None
+    auth: str = "shared"  # shared | user_token | oauth
+    auth_config: dict | None = None
+    oauth_client_ciphertext: str | None = None
+    scope: str = "workspace"  # workspace | enterprise
+    audience: tuple[str, ...] = ()  # 企业服务发给哪些空间
+    origin_server_id: str | None = None  # 企业服务从哪个空间服务收上来的
+
+    @property
+    def per_user(self) -> bool:
+        """每人用自己的凭据（个人访问令牌、OAuth 授权）。"""
+        return self.auth != "shared"
 
 
 @dataclass(frozen=True)
@@ -58,6 +72,15 @@ class McpChanges:
     synced_at: datetime | None = None
     sync_error: str | None = None
     clear_sync_error: bool = False
+    auth: str | None = None
+    auth_config: dict | None = None
+    oauth_client: str | None = None  # OAuth 授权的 client（明文 JSON，入库前加密）；给出时替换
+    clear_oauth_client: bool = False
+    audience: list[str] | None = None  # 企业服务发给哪些空间
+
+
+def new_server_id() -> str:
+    return "mcp_" + secrets.token_hex(8)
 
 
 def _record(row: McpServerRow) -> McpServerRecord:
@@ -65,11 +88,18 @@ def _record(row: McpServerRow) -> McpServerRecord:
                            headers_ciphertext=row.headers_ciphertext, header_names=tuple(row.header_names or ()),
                            timeout_seconds=row.timeout_seconds, enabled=row.enabled, tools=tuple(load(row.tools)),
                            synced_at=row.synced_at, sync_error=row.sync_error, created_by=row.created_by,
-                           updated_at=row.updated_at)
+                           updated_at=row.updated_at, auth=row.auth or "shared",
+                           auth_config=dict(row.auth_config) if row.auth_config else None,
+                           oauth_client_ciphertext=row.oauth_client_ciphertext, scope=row.scope or "workspace",
+                           audience=tuple(row.audience or ()), origin_server_id=row.origin_server_id)
 
 
 def headers_context(workspace_id: str, server_id: str) -> str:
     return f"{workspace_id}/mcp/{server_id}/headers"
+
+
+def oauth_client_context(workspace_id: str, server_id: str) -> str:
+    return f"{workspace_id}/mcp/{server_id}/oauth-client"
 
 
 class McpServerStore:
@@ -84,26 +114,37 @@ class McpServerStore:
             yield session
 
     async def create(self, workspace_id: str, *, name: str, title: str, url: str, headers: dict[str, str],
-                     timeout_seconds: int, tools: list[CatalogTool], synced_at: datetime,
-                     created_by: str) -> McpServerRecord:
-        server_id = "mcp_" + secrets.token_hex(8)
+                     timeout_seconds: int, tools: list[CatalogTool], synced_at: datetime | None, created_by: str,
+                     also: Callable[[AsyncSession, str], Awaitable[T]], auth: str = "shared",
+                     auth_config: dict | None = None, oauth_client: str | None = None,
+                     server_id: str | None = None, scope: str = "workspace",
+                     origin_server_id: str | None = None) -> tuple[McpServerRecord, T]:
+        """新建服务；also(session, 服务名) 在同一事务里执行（默认给全体成员用），返回它的结果。"""
+        server_id = server_id or new_server_id()
         row = McpServerRow(id=server_id, workspace_id=workspace_id, name=name, title=title, url=url,
                            timeout_seconds=timeout_seconds, enabled=True, tools=dump(tools), synced_at=synced_at,
-                           created_by=created_by)
+                           created_by=created_by, auth=auth, auth_config=auth_config, scope=scope,
+                           origin_server_id=origin_server_id)
         self._seal(row, headers)
+        if oauth_client is not None:
+            row.oauth_client_ciphertext = self._box.seal(oauth_client,
+                                                         context=oauth_client_context(workspace_id, server_id))
         try:
             async with self._session(workspace_id) as session:
                 session.add(row)
+                await session.flush()
+                extra = await also(session, name)
         except IntegrityError as error:
             raise Conflict(f"已经有一个叫 {name} 的 MCP 服务") from error
-        return await self.get(workspace_id, server_id)
+        return await self.get(workspace_id, server_id), extra
 
     async def update(self, workspace_id: str, server_id: str, changes: McpChanges) -> McpServerRecord:
         async with self._session(workspace_id) as session:
             row = await self._row(session, server_id)
             for item in fields(McpChanges):
                 value = getattr(changes, item.name)
-                if value is None or item.name in ("headers", "tools", "clear_sync_error"):
+                if value is None or item.name in ("headers", "tools", "clear_sync_error", "oauth_client",
+                                                  "clear_oauth_client"):
                     continue
                 setattr(row, item.name, value)
             if changes.headers is not None:
@@ -112,6 +153,11 @@ class McpServerStore:
                 row.tools = dump(changes.tools)
             if changes.clear_sync_error:
                 row.sync_error = None
+            if changes.clear_oauth_client:
+                row.oauth_client_ciphertext = None
+            if changes.oauth_client is not None:
+                row.oauth_client_ciphertext = self._box.seal(changes.oauth_client,
+                                                             context=oauth_client_context(workspace_id, server_id))
         return await self.get(workspace_id, server_id)
 
     async def delete(self, workspace_id: str, server_id: str,
@@ -126,9 +172,10 @@ class McpServerStore:
         async with self._session(workspace_id) as session:
             return _record(await self._row(session, server_id))
 
-    async def list_servers(self, workspace_id: str) -> list[McpServerRecord]:
+    async def list_servers(self, workspace_id: str, scope: str = "workspace") -> list[McpServerRecord]:
         async with self._session(workspace_id) as session:
-            rows = (await session.execute(select(McpServerRow).order_by(McpServerRow.created_at))).scalars()
+            rows = (await session.execute(select(McpServerRow).where(McpServerRow.scope == scope)
+                                          .order_by(McpServerRow.created_at))).scalars()
             return [_record(row) for row in rows]
 
     def headers(self, record: McpServerRecord) -> dict[str, str]:
@@ -136,6 +183,12 @@ class McpServerStore:
             return {}
         plain = self._box.open(record.headers_ciphertext, context=headers_context(record.workspace_id, record.id))
         return dict(json.loads(plain))
+
+    def oauth_client(self, record: McpServerRecord) -> str | None:
+        if not record.oauth_client_ciphertext:
+            return None
+        return self._box.open(record.oauth_client_ciphertext,
+                              context=oauth_client_context(record.workspace_id, record.id))
 
     def _seal(self, row: McpServerRow, headers: dict[str, str]) -> None:
         row.header_names = [{"name": key, "last4": mask(value)} for key, value in headers.items()]

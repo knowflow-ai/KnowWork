@@ -5,7 +5,7 @@
  * 产物预览和知识库的引用预览共用这一个抽屉；知识库多传一个 locate 定位并高亮，产物不传。
  * 不要抽屉、直接嵌在页面里时用 PreviewPane。
  */
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { ButtonLink } from '@openai/apps-sdk-ui/components/Button';
 import { Download, FileBlank } from '@openai/apps-sdk-ui/components/Icon';
 import { useQuery } from '@tanstack/react-query';
@@ -19,6 +19,7 @@ import { TextView } from './TextView';
 import type { PreviewLocate } from './locate';
 import { pdfSource, previewKindOf, type PreviewKind } from './previewKind';
 import { FileKindIcon } from '../../ui/FileKindIcon';
+import { BlobImage } from './BlobImage';
 
 const PdfView = lazy(() => import('./PdfView'));
 const DocxView = lazy(() => import('./DocxView'));
@@ -58,12 +59,6 @@ function useBytes(file: PreviewFile, kind: PreviewKind) {
   });
 }
 
-function ImageView({ data, name }: { readonly data: ArrayBuffer; readonly name: string }) {
-  const url = useMemo(() => URL.createObjectURL(new Blob([data])), [data]);
-  useEffect(() => () => URL.revokeObjectURL(url), [url]);
-  return <img className="kw-preview-image" src={url} alt={name} />;
-}
-
 function Body({
   file,
   kind,
@@ -93,7 +88,7 @@ function Body({
     case 'text':
       return <TextView text={text()} focus={locate?.type === 'text' ? locate : undefined} />;
     case 'image':
-      return <ImageView data={data} name={file.name} />;
+      return <BlobImage className="kw-preview-image" data={data} alt={file.name} />;
     default:
       return null;
   }

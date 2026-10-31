@@ -826,6 +826,14 @@
   text-overflow: ellipsis;
 }
 
+/* 多选时选中项行尾的勾（同组件库多选下拉） */
+.kw-tree-check {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+}
+
 /* ---------- 树形选择框 ---------- */
 .kw-tree-select-menu {
   display: flex;

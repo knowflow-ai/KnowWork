@@ -104,6 +104,8 @@ export interface Model {
   readonly name: string;
   readonly capabilities: readonly string[];
   readonly contextLength: number | null;
+  /** 对话模型单次最多输出多少 token；网关据此收紧请求里的 max_tokens，空表示不限 */
+  readonly maxOutputTokens: number | null;
   readonly thinking: Thinking;
   readonly inputPrice: number | null;
   readonly outputPrice: number | null;
@@ -123,6 +125,7 @@ function parseModel(value: unknown): Model | undefined {
     name: str(value.name) ?? alias,
     capabilities: strings(value.capabilities),
     contextLength: num(value.context_length) ?? null,
+    maxOutputTokens: num(value.max_output_tokens) ?? null,
     thinking: thinkingOf(value.thinking),
     inputPrice: num(value.input_price_per_mtok) ?? null,
     outputPrice: num(value.output_price_per_mtok) ?? null,
@@ -141,6 +144,7 @@ export interface ModelInput {
   readonly name: string;
   readonly capabilities: readonly string[];
   readonly contextLength: number | null;
+  readonly maxOutputTokens: number | null;
   readonly thinking: Thinking;
   readonly inputPrice: number | null;
   readonly outputPrice: number | null;
@@ -155,6 +159,7 @@ function modelBody(input: ModelInput): Record<string, unknown> {
     name: input.name.trim(),
     capabilities: input.capabilities,
     context_length: input.contextLength,
+    max_output_tokens: input.maxOutputTokens,
     thinking: input.thinking,
     input_price_per_mtok: input.inputPrice,
     output_price_per_mtok: input.outputPrice,

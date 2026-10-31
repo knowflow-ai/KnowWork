@@ -103,7 +103,8 @@ class ModelMixin(ProviderMixin):
             await self._provider(session, body.provider_id)
             row = Model(id=new_id("md"), workspace_id=PLATFORM_WORKSPACE_ID, provider_id=body.provider_id, alias=body.alias,
                         name=body.name.strip(), capabilities=[c.value for c in body.capabilities],
-                        context_length=body.context_length, thinking=body.thinking,
+                        context_length=body.context_length, max_output_tokens=body.max_output_tokens,
+                        thinking=body.thinking,
                         input_price_per_mtok=body.input_price_per_mtok,
                         output_price_per_mtok=body.output_price_per_mtok, currency=body.currency,
                         enabled=body.enabled)
@@ -120,7 +121,8 @@ class ModelMixin(ProviderMixin):
         self._require_admin(actor_id)
         changes = body.model_dump(exclude_unset=True)
         if any(value is None for key, value in changes.items()
-               if key not in ("context_length", "thinking", "input_price_per_mtok", "output_price_per_mtok")):
+               if key not in ("context_length", "max_output_tokens", "thinking", "input_price_per_mtok",
+                              "output_price_per_mtok")):
             raise Invalid("该字段不能置空")
         async with self._tx() as session:
             row = await self._model(session, model_id)
@@ -170,7 +172,8 @@ class ModelMixin(ProviderMixin):
         if not (model.enabled and provider.enabled):
             raise NotFound("模型不存在")
         return Route(model_id=model.id, alias=model.alias, upstream_model=model.name,
-                     base_url=provider.base_url, api_key=self._decrypt(provider), thinking=model.thinking)
+                     base_url=provider.base_url, api_key=self._decrypt(provider), thinking=model.thinking,
+                     max_output_tokens=model.max_output_tokens)
 
     async def resolve_capable(self, workspace_id: str, alias: str, capability: str) -> Route:
         """内部模型客户端用：按别名取路由并核对能力。没配置、找不到、停用、不支持这种能力都抛错，不回退到别的模型
@@ -187,7 +190,7 @@ class ModelMixin(ProviderMixin):
             raise Invalid(f"模型「{alias}」没有标记「{capability}」能力")
         return Route(model_id=model.id, alias=model.alias, upstream_model=model.name,
                      base_url=provider.base_url, api_key=self._decrypt(provider), context_length=model.context_length,
-                     thinking=model.thinking)
+                     thinking=model.thinking, max_output_tokens=model.max_output_tokens)
 
     async def default_capabilities(self, workspace_id: str) -> frozenset[str] | None:
         """宿主请求的 default 实际落到的那个模型有哪些能力（规则同 resolve）。没配模型、找不到或已停用时

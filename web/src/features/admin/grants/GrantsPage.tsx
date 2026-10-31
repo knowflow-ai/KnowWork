@@ -17,7 +17,9 @@ import { SearchInput } from '../../../ui/SearchInput';
 import { Skeleton } from '../../../ui/Skeleton';
 import { Table, type Column } from '../../../ui/Table';
 import { KEYS, useDepartments, useGroups, useMembers } from '../queries';
-import { SKILL_KEYS } from '../skills/queries';
+import { SOURCE_TEXT } from '../skills/here';
+import { SKILL_KEYS, useUpperSkills } from '../skills/queries';
+import { useEnterpriseHere } from '../tools/queries';
 import { GrantDialog } from './GrantDialog';
 import { actionLabel, resourceLabel, subjectLabel, type Directory } from './labels';
 import { resourceIcon } from './icons';
@@ -51,6 +53,9 @@ function useDirectory(): Directory {
   const mcpServers = useQuery({ queryKey: KEYS.mcpServers, queryFn: listServers });
   // 技能授权记的是技能的内部 id：按名称列出来选，已有授权也显示名称
   const skills = useQuery({ queryKey: SKILL_KEYS.list, queryFn: () => listSkills('workspace') });
+  // 企业技能、内置技能在本空间收窄给谁用时，授权挂在它们自己的资源上
+  const upper = useUpperSkills();
+  const enterpriseMcp = useEnterpriseHere();
   // 扩展给的知识源层级树（插槽 grants.knowledge，例如目录 → 知识库）：各取一次
   const extras = slotItems('grants.knowledge');
   const trees = useQueries({
@@ -68,6 +73,8 @@ function useDirectory(): Directory {
       for (const b of s.bases) resources[`knowledge_base:${b.id}`] = `${s.sourceName} · ${b.name}`;
     }
     for (const s of skills.data ?? []) resources[`skill:${s.id}`] = s.name;
+    for (const s of upper.data ?? []) resources[s.resource] = `${s.name}（${SOURCE_TEXT[s.source]}）`;
+    for (const s of enterpriseMcp.data ?? []) resources[s.resource] = `${s.title}（企业，全部工具）`;
     // MCP 工具：按服务授权（前缀通配，覆盖它以后新增的工具）排在前面，再列单个工具
     for (const server of mcpServers.data ?? []) {
       resources[`tool:${server.grantPattern}`] = `${server.title}（全部工具）`;
@@ -96,6 +103,8 @@ function useDirectory(): Directory {
     knowledge.isSuccess,
     mcpServers.data,
     skills.data,
+    upper.data,
+    enterpriseMcp.data,
     extras,
     trees,
   ]);

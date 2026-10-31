@@ -65,6 +65,25 @@ async def test_collect_and_download(files_db, tmp_path):
     assert downloads == [("alice", "季度报告.md"), ("alice", "page.html")]
 
 
+async def test_keeps_the_description_given_when_presenting(files_db, tmp_path):
+    """present 时给的说明跟着产物存下来，卡片上显示；收成一行、过长截断，没给就是 null。"""
+    conv = await files_db.conversation()
+    http, artifacts, sandbox, _ = setup(files_db, tmp_path)
+    sandbox.write_output("ws1", conv.id, "图.png", b"png")
+    sandbox.write_output("ws1", conv.id, "页.html", b"<p>")
+    sandbox.write_output("ws1", conv.id, "长.md", b"#")
+    paths = sandbox.delivered("ws1", conv.id)
+    path_of = {path.rsplit("/", 1)[1]: path for path in paths}
+    described = {path_of["图.png"]: "  四阶段流程\n加柱状图  ", path_of["页.html"]: "说" * 400}
+    await artifacts.collector.collect("ws1", conv.id, paths=paths, descriptions=described)
+    async with http:
+        items = (await http.get(f"{CONV}/{conv.id}/artifacts", headers=AUTH)).json()["items"]
+    by_name = {item["filename"]: item["description"] for item in items}
+    assert by_name["图.png"] == "四阶段流程 加柱状图"
+    assert by_name["页.html"] == "说" * 300
+    assert by_name["长.md"] is None
+
+
 async def test_list_waits_for_in_flight_collection_before_querying(files_db, tmp_path):
     """前端收到 run.completed 立即来列：列表先等这个会话正在收的产物落库，刚生成的文件这一轮就能看到。"""
     conv = await files_db.conversation()

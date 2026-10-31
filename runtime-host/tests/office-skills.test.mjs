@@ -47,3 +47,15 @@ test('加载 Word 技能：正文原样交给模型，资源目录是容器里�
     await gateway.close()
   }
 })
+
+test('业务服务能问到自带技能清单（技能页与 @ 菜单列出来用）', async () => {
+  const host = await startHost({ sequence: ['success'] })
+  try {
+    const { status, body: { skills } } = await host.call('GET', '/v1/skills/bundled')
+    assert.equal(status, 200)
+    assert.deepEqual(skills.map(s => s.name), ['office-docx', 'office-pptx', 'office-xlsx'])
+    assert.ok(skills.every(s => s.description.length > 0 && s.userInvocable === true))
+  } finally {
+    await host.stop()
+  }
+})

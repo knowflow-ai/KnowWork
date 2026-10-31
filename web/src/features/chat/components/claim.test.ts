@@ -19,12 +19,18 @@ describe('引用的那句话', () => {
     expect(at('[1]', '[1]')).toBe('');
   });
 
+  it('表格里只取同一格的话，不带竖线', () => {
+    const row = '| 产品 | KnowFlow 企业知识库 [21] |';
+    expect(at(row, '[21]')).toBe('KnowFlow 企业知识库');
+    expect(markCitations(row)).toBe('| 产品 | KnowFlow 企业知识库 [21](#kw-cite-21 "KnowFlow 企业知识库") |');
+  });
+
   it('改写成链接时把这句话放在 title 上，引号转义', () => {
     expect(markCitations('他说"可以"[1]。')).toBe('他说"可以"[1](#kw-cite-1 "他说\\"可以\\"")。');
   });
 });
 
-describe('原样出现了原文才收窄（照 WeKnora）', () => {
+describe('原样出现了原文才收窄', () => {
   const pdf = (quote: string, page = 11): PreviewLocate => ({
     type: 'pdf',
     page,

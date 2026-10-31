@@ -1,7 +1,7 @@
 """技能提供方的内部路由，只挂在内部端口（宿主回调用）。
 
 - `GET /internal/extensions/skills/catalog`：本会话可用技能清单（已发布版本）与每个技能的
-  allowed-tools、completion-tools、unlocks；
+  allowed-tools、completion-tools、unlocks；bundledOff 是本空间停用了的内置技能，宿主不给这个会话注册它们；
 - `GET /internal/extensions/skills/content?name=&digest=`：一个技能的 SKILL.md 正文。
 
 都要 `Authorization: Bearer <受众 skills 的短期令牌>`；清单与内容都按此刻的授权重新编译。
@@ -78,12 +78,13 @@ def build_internal_router(delivery: SkillDelivery) -> APIRouter:
         try:
             claims = delivery.verify(authorization)
             entries = await delivery.catalog.for_session(claims.workspace_id, claims.user_id)
+            bundled_off = await delivery.catalog.bundled_off(claims.workspace_id, claims.user_id)
         except _Unauthorized:
             return _error(401, "unauthorized", "令牌无效")
         except Exception:
             log.exception("skill catalog compile failed")
             return _error(500, "internal", "技能清单暂时不可用")
-        return {"skills": [entry.to_host() for entry in entries]}
+        return {"skills": [entry.to_host() for entry in entries], "bundledOff": list(bundled_off)}
 
     @router.get(f"{PREFIX}/content")
     async def content(name: str = Query(pattern=NAME_PATTERN, max_length=64),

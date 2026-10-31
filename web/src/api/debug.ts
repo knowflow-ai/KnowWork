@@ -87,6 +87,17 @@ export interface TurnDetail {
   readonly subagents: readonly DebugSubagent[];
   /** 技能加载、审批、提问这类不属于某一步的事。 */
   readonly events: readonly string[];
+  readonly background: readonly DebugBackground[];
+}
+
+/**
+ * 随提问带上的背景：扩展每轮补的上下文（例如记忆）。standing 每轮都带，只在变了时才发，
+ * 沿用之前那一份时 sentTurn 早于这一轮；turn 只给这一轮。
+ */
+export interface DebugBackground {
+  readonly kind: 'standing' | 'turn';
+  readonly text: string;
+  readonly sentTurn: number;
 }
 
 export interface DebugBlock {
@@ -182,6 +193,14 @@ function parseSummary(value: unknown): TurnSummary | undefined {
   };
 }
 
+function parseBackground(value: unknown): DebugBackground | undefined {
+  if (!isRecord(value)) return undefined;
+  const kind = value.kind === 'standing' || value.kind === 'turn' ? value.kind : undefined;
+  const text = str(value.text);
+  const sentTurn = num(value.sentTurn);
+  return kind && text && sentTurn !== undefined ? { kind, text, sentTurn } : undefined;
+}
+
 function parseBlock(value: unknown): DebugBlock | undefined {
   if (!isRecord(value)) return undefined;
   return {
@@ -221,6 +240,7 @@ export async function getTurn(source: RunSource, turn: number): Promise<TurnDeta
         : undefined,
     ),
     events: strings(value.events),
+    background: listOf(value.background, parseBackground),
   };
 }
 

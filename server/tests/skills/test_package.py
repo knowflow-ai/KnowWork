@@ -118,3 +118,25 @@ def test_default_limits_match_benchmark():
     assert limits.max_uncompressed_bytes == 200 * 1024 * 1024
     assert limits.max_files == 256
     assert limits.max_compression_ratio == 200
+
+
+ENV_MD = "---\nname: report-sync\ndescription: 同步报表\nenv:\n  REPORT_API_KEY required 报表系统的密钥\n---\n\n{body}\n"
+
+
+def test_declared_env_must_be_used_somewhere():
+    used_in_script = make_zip({"SKILL.md": ENV_MD.format(body="运行 scripts/sync.py"),
+                               "scripts/sync.py": 'key = os.environ["REPORT_API_KEY"]'})
+    assert [e.name for e in validate_skill_zip(used_in_script).manifest.env] == ["REPORT_API_KEY"]
+    used_in_body = make_zip({"SKILL.md": ENV_MD.format(body="curl -H \"Authorization: $REPORT_API_KEY\" ...")})
+    assert validate_skill_zip(used_in_body).manifest.env[0].required
+    with pytest.raises(PackageInvalid) as caught:  # 只在 frontmatter 里声明、别处都没用到
+        validate_skill_zip(make_zip({"SKILL.md": ENV_MD.format(body="随便写写"),
+                                     "scripts/sync.py": "key = REPORT_API_KEY_OLD"}))
+    assert caught.value.code == "env_unused"
+
+
+def test_reserved_env_names_are_rejected():
+    md = "---\nname: bad\ndescription: x\nenv:\n  PATH required 不行\n---\n\n$PATH\n"
+    with pytest.raises(PackageInvalid) as caught:
+        validate_skill_zip(make_zip({"SKILL.md": md}))
+    assert caught.value.code == "env_reserved"

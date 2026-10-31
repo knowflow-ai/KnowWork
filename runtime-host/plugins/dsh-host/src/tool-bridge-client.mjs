@@ -11,6 +11,8 @@
 const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
 const RISKS = new Set(['read', 'write', 'dangerous'])
 const APPROVALS = new Set(['ask', 'never'])
+/** 回答方式（同业务服务 ToolSpec.answer_modes），不写时只在智能体里提供 */
+const ANSWER_MODES = new Set(['agent', 'quick'])
 const MAX_GUIDANCE = 1000
 const MAX_TOOLS = 128
 const MAX_DESCRIPTION = 4000
@@ -30,6 +32,7 @@ export class BridgeError extends Error {}
  * @property {'ask' | 'never'} approval 执行前是否走官方人工审批
  * @property {string} [guidance] 写进系统提示的使用规则
  * @property {true} [concurrent] 业务服务声明可与同一步里的其它调用同时执行（只读、无状态）
+ * @property {Array<'agent' | 'quick'>} [answerModes] 在哪几种回答方式下提供；不写时只在智能体里
  */
 
 /** @returns {BridgeTool} */
@@ -50,14 +53,26 @@ function toolOf(raw) {
     throw new BridgeError(`工具 ${name} 的使用规则为空或过长`)
   }
   if (raw.concurrent !== undefined && typeof raw.concurrent !== 'boolean') throw new BridgeError(`工具 ${name} 的 concurrent 必须是布尔值`)
+  const { answerModes } = raw
+  if (answerModes !== undefined && (!Array.isArray(answerModes) || answerModes.length === 0
+    || !answerModes.every(mode => ANSWER_MODES.has(mode)))) {
+    throw new BridgeError(`工具 ${name} 的回答方式只能是 agent、quick`)
+  }
   return {
     name, description, inputSchema, risk, approval,
     ...(guidance === undefined ? {} : { guidance }),
     ...(raw.concurrent === true ? { concurrent: true } : {}),
+    ...(answerModes === undefined ? {} : { answerModes: [...new Set(answerModes)] }),
   }
 }
 
 /** 校验业务服务返回的工具清单：数量上限、名称不重复。 */
+/** 随清单来的一段说明（例如「这些服务用户还没连接」），和工具的使用规则一起写进系统提示；没有或不合格就不带。 */
+export function notesOf(body) {
+  const notes = body?.notes
+  return typeof notes === 'string' && notes.length > 0 && notes.length <= MAX_GUIDANCE ? notes : undefined
+}
+
 export function toolsOf(body) {
   const list = body?.tools
   if (!Array.isArray(list) || list.length > MAX_TOOLS) throw new BridgeError('工具清单格式错误或数量超限')
@@ -109,9 +124,10 @@ export function createBridgeClient({ baseUrl, executeTimeoutMs }) {
 
   return {
     /** 拉取本会话可用的工具描述。 */
+    /** @returns {Promise<{ tools: object[], notes: string | undefined }>} */
     async list(token) {
       const body = await call('/list', { token, method: 'GET', signal: AbortSignal.timeout(LIST_TIMEOUT_MS) })
-      return toolsOf(body)
+      return { tools: toolsOf(body), notes: notesOf(body) }
     },
 
     /**

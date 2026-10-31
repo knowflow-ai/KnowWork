@@ -1,6 +1,6 @@
 [project]
 name = "knowwork-server"
-version = "0.0.3"
+version = "0.0.4"
 description = "KnowWork 业务服务"
 requires-python = ">=3.12,<3.13"
 dependencies = [

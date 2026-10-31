@@ -1,6 +1,7 @@
 /** 从界面状态推导显示用的值，均为纯函数。 */
 import type { Mention } from '../../../api/mentions';
-import { stepLabel } from './stepLabels';
+import { INTERNAL_TOOLS } from './runs';
+import { stepLabel, toolLabel } from './stepLabels';
 import type {
   ApprovalView,
   AskedMessage,
@@ -32,17 +33,23 @@ export function selectRunQuestions(state: ChatState, runId: string): readonly Qu
   return state.questions.filter((q) => q.runId === runId);
 }
 
-/** 用户消息与轮次按发生顺序交错：每条消息排在发送时已有的那些轮次之后。 */
-/** 事件流里的提问（历史）按文本记数：本页刚发出的同一条消息到了就合并掉，不显示两遍。 */
+/** 本页刚发出、事件流里还没回显的消息：回显到了就合并掉，不显示两遍。
+ * 发送接口返回了消息 id 的按 id 认：回显的原话去掉了首尾空白、超长的只留前面一段，按原话认会认不出来。
+ * 还没拿到 id 的（请求还在路上，回显可能先到）按去掉首尾空白的原话记数认，不算已被别的消息按 id 认走的。 */
 function unechoedSent(state: ChatState): readonly SentMessage[] {
+  const asked = state.runOrder.flatMap((runId) => state.runs[runId]?.asked ?? []);
+  const echoed = new Set(asked.map((m) => m.id));
+  const claimed = new Set(state.sent.flatMap((m) => (m.messageId ? [m.messageId] : [])));
   const pending = new Map<string, number>();
-  for (const runId of state.runOrder) {
-    for (const m of state.runs[runId]?.asked ?? []) pending.set(m.text, (pending.get(m.text) ?? 0) + 1);
+  for (const m of asked) {
+    if (!claimed.has(m.id)) pending.set(m.text, (pending.get(m.text) ?? 0) + 1);
   }
   return state.sent.filter((m) => {
-    const left = pending.get(m.text) ?? 0;
+    if (m.messageId) return !echoed.has(m.messageId);
+    const text = m.text.trim();
+    const left = pending.get(text) ?? 0;
     if (left === 0) return true;
-    pending.set(m.text, left - 1);
+    pending.set(text, left - 1);
     return false;
   });
 }
@@ -55,6 +62,7 @@ function askedEntry(index: number, asked: AskedMessage): TimelineEntry {
   };
 }
 
+/** 用户消息与轮次按发生顺序交错：每条消息排在发送时已有的那些轮次之后。 */
 export function selectTimeline(state: ChatState): readonly TimelineEntry[] {
   const entries: TimelineEntry[] = [];
   const placed = new Set<string>();
@@ -117,8 +125,8 @@ export function formatDuration(ms: number): string {
   return rest === 0 ? `${minutes} 分钟` : `${minutes} 分 ${rest} 秒`;
 }
 
-/** 执行过程的一行摘要，例如「已完成 4 个步骤 · 用时 38 秒」。 */
-export function summarizeProcess(run: RunView): string {
+/** 执行过程的一行摘要，例如「已完成 4 个步骤 · 用时 38 秒」。preparing 是模型正在写的工具调用（还没开始跑）。 */
+export function summarizeProcess(run: RunView, preparing: readonly string[] = []): string {
   const count = run.steps.length;
   const running = run.endedAt === undefined;
   const current = [...run.steps]
@@ -128,9 +136,12 @@ export function summarizeProcess(run: RunView): string {
     if (current?.status === 'awaiting-approval') return `等待批准：${current.name}`;
     // 审批之外让一轮停下来等人的只有提问（提问不算步骤，见 INTERNAL_TOOLS）
     if (run.status === 'waiting') return '等待你回答';
-    if (!current) return '思考中';
-    const label = stepLabel(current);
-    return label === current.name ? `正在执行：${label}` : `正在${label}`;
+    // 模型在写工具的参数（例如把整个网页写进 write）：说它在做什么，不是一直「思考中」；
+    // 待办、提问这类内部工具不算步骤、没有中文名，不把工具名露出来
+    const name = current?.name ?? preparing.filter((tool) => !INTERNAL_TOOLS.has(tool)).at(-1);
+    if (name === undefined) return '思考中';
+    const label = current ? stepLabel(current) : toolLabel(name);
+    return label === name ? `正在执行：${label}` : `正在${label}`;
   }
   const elapsed =
     run.startedAt !== undefined && run.endedAt !== undefined ? run.endedAt - run.startedAt : undefined;

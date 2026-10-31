@@ -40,3 +40,16 @@ def test_text_beyond_the_limit_stops_the_step_instead_of_leaving_a_hole(monkeypa
     live, skipped = advance(live, text("四五六"))
     live, after = advance(live, text("七"))
     assert skipped is None and after is None and snapshot(live)["text"] == "一二三"
+
+
+def test_a_tool_call_being_written_is_announced_once_and_kept_in_the_snapshot():
+    live, _ = advance(None, start())
+    live, first = advance(live, {"type": "tool", "attemptId": "a1", "name": "write"})
+    assert first == {"run_id": "run-2", "step": 1, "tool": "write"}
+    assert advance(live, {"type": "tool", "attemptId": "a1", "name": "write"}) == (live, None), "同一个工具只推一次"
+    for bad in ({"type": "tool", "attemptId": "a1", "name": "坏 名字"}, {"type": "tool", "attemptId": "a1"},
+                {"type": "tool", "attemptId": "a0", "name": "read"}):
+        assert advance(live, bad) == (live, None)
+    assert snapshot(live) == {"run_id": "run-2", "step": 1, "offset": 0, "text": "", "tools": ["write"]}
+    retried, _ = advance(live, start(attempt="a2"))
+    assert snapshot(retried) == {"run_id": "run-2", "step": 1, "offset": 0, "text": ""}, "新一步从头算"

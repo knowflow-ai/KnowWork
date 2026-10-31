@@ -94,9 +94,13 @@ async def test_chat_models_carry_a_thinking_setting_into_their_route(catalog):
 
 async def test_model_crud_and_conflicts(catalog):
     provider = await _provider(catalog)
-    model = await _model(catalog, provider.id, context_length=64000, input_price_per_mtok="2",
+    model = await _model(catalog, provider.id, context_length=64000, max_output_tokens=8192, input_price_per_mtok="2",
                          output_price_per_mtok="8", capabilities=("chat", "vision"))
     assert model.capabilities == ("chat", "vision") and model.context_length == 64000
+    assert model.max_output_tokens == 8192
+    assert (await catalog.resolve("ws1", "default")).max_output_tokens == 8192, "网关据此收紧 max_tokens"
+    cleared = await catalog.update_model("root", model.id, ModelUpdate(max_output_tokens=None))
+    assert cleared.max_output_tokens is None, "可以清空，表示不限"
     with pytest.raises(Conflict):
         await _model(catalog, provider.id)
     with pytest.raises(NotFound):

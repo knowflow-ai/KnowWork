@@ -28,7 +28,17 @@ MAX_ERROR_TEXT = 2000
 
 
 class McpUnavailable(Exception):
-    """连不上、被拒绝、超时或协议出错。message 面向管理员与模型。"""
+    """连不上、被拒绝、超时或协议出错。message 面向管理员与模型；status 是对方最后一次回的 HTTP 状态码
+    （每人凭据时据 401、403 判断这个人的连接失效了）。"""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def rejected(self) -> bool:
+        """对方拒绝了这份凭据。"""
+        return self.status in (401, 403)
 
 
 @dataclass(frozen=True)
@@ -103,7 +113,7 @@ class McpClient:
         except Exception as error:
             reason = explain(error, transport.status, transport.error)
             log.warning("mcp request to %s failed: %s", endpoint.url, reason, exc_info=error)
-            raise McpUnavailable(reason) from error
+            raise McpUnavailable(reason, transport.status) from error
 
 
 def explain(error: BaseException, status: int | None, network: Exception | None = None) -> str:

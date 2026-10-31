@@ -67,7 +67,7 @@ def _slide(page: int, span_ref: str | None = None) -> Evidence:
 
 
 async def test_merged_results_count_as_one_and_are_cited_piece_by_piece(env, builtin):
-    """照 WeKnora（expandCitationSources）：知识源把相邻命中合并、补足成一段，排序与条数按整段算；交给模型、登记引用前
+    """知识源把相邻命中合并、补足成一段，排序与条数按整段算；交给模型、登记引用前
     拆回原来的一块一块，每块一条、带自己的定位，模型引用哪块点开就是哪块。原来整段一个编号，一份 PPT 的 19 页
     合成一条，点开跳到了不相干的页。"""
     whole = _slide(2).model_copy(update={"text": "第1页的话 第2页的话 第3页的话",

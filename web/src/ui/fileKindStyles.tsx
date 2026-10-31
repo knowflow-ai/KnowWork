@@ -5,7 +5,9 @@
 import {
   File,
   FileBlank,
+  FileCode,
   FileDocument,
+  FileImage,
   FilePresentation,
   FileSpreadsheet,
 } from '@openai/apps-sdk-ui/components/Icon';
@@ -24,5 +26,7 @@ export const FILE_KINDS: Record<FileKindKey, FileKind> = {
   sheet: { label: 'Excel 表格', color: '#52c41a', icon: <FileSpreadsheet /> },
   slide: { label: 'PPT 演示文稿', color: '#fa8c16', icon: <FilePresentation /> },
   pdf: { label: 'PDF 文件', color: '#ff4d4f', icon: <File /> },
+  image: { label: '图片', color: '#722ed1', icon: <FileImage /> },
+  web: { label: '网页', color: '#13c2c2', icon: <FileCode /> },
   other: { label: '文件', color: '#8c8c8c', icon: <FileBlank /> },
 };

@@ -4,7 +4,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { SkillCatalogError, catalogOf, createSkillClient, ensureCatalog, lockedTools } from '../plugins/dsh-host/src/skill-catalog.mjs'
+import { SkillCatalogError, bundledOffOf, catalogOf, createSkillClient, ensureCatalog, lockedTools } from '../plugins/dsh-host/src/skill-catalog.mjs'
 import { publishedSkill, startSkillsStub } from './support/skills-stub.mjs'
 
 const TOKEN = 'skills-token-unit-'.padEnd(40, 'u')
@@ -42,7 +42,8 @@ test('内容客户端：带令牌与摘要拉取，摘要不符或业务服务�
   const tampered = await startSkillsStub({ skillsByToken: { [TOKEN]: [notes] }, tamper: true })
   try {
     const client = createSkillClient({ baseUrl: stub.baseUrl })
-    const catalog = await client.catalog(TOKEN)
+    const { skills: catalog, bundledOff } = await client.catalog(TOKEN)
+    assert.deepEqual(bundledOff, [])
     assert.equal(await client.content(TOKEN, catalog[1]), notes.body)
     assert.deepEqual(stub.contentLoads()[0].query, { name: 'meeting-notes', digest: notes.entry.digest })
     await assert.rejects(client.catalog('wrong'.padEnd(40, 'w')), /令牌无效/)
@@ -57,4 +58,12 @@ test('内容客户端：带令牌与摘要拉取，摘要不符或业务服务�
 
 test('没有技能令牌的会话清单为空，不发请求', async () => {
   assert.deepEqual(await ensureCatalog({ id: 's', skillAccess: undefined }), [])
+})
+
+test('停用的自带技能：只认技能名，缺了当作没停用', () => {
+  assert.deepEqual(bundledOffOf({}), [])
+  assert.deepEqual(bundledOffOf({ bundledOff: ['office-pptx', 'office-pptx'] }), ['office-pptx'])
+  for (const bundledOff of ['office-pptx', ['../x'], [1]]) {
+    assert.throws(() => bundledOffOf({ bundledOff }), SkillCatalogError)
+  }
 })

@@ -8,6 +8,10 @@
  *
  * 技能按目录发现，新增一个自带技能只要加目录。正文按需读；资源目录报容器里的脚本目录，不把宿主机路径告诉模型。
  * 候选的形状、等级、调用权限与官方随包技能一致。
+ *
+ * 按会话注册（同 skill-provider：用官方 createScope 给 agent 铸一个作用域再 registerProvider），不注册到全局层：
+ * 空间管理员可以在本空间停用自带技能，停用的名字随本会话技能清单一起拿到（root.bundledOff），这个会话就不注册它们；
+ * 和会话清单里的技能（公共、空间、个人）同名的也不注册，同名时只给清单里那份。没带技能令牌的会话全部注册。
  */
 
 import { readFileSync, readdirSync } from 'node:fs'
@@ -15,6 +19,9 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { BUNDLED_SKILL_RANK } from '@deepseek-ai/dsh-skill'
+import { createScope } from '@deepseek-ai/dsh-scope'
+import { ensureCatalog } from './skill-catalog.mjs'
+import { resolveRootSession } from './state.mjs'
 
 export const name = 'knowwork-bundled-skills'
 export const inject = ['skills']
@@ -47,12 +54,13 @@ export function bundledSkillNames(root = SKILL_ROOT) {
     .sort()
 }
 
-/** @param {import('@deepseek-ai/cordis').Context} ctx */
-export function apply(ctx) {
-  const candidates = bundledSkillNames().map(skillName => {
+let candidatesCache
+/** 自带技能的候选（进程内只读一次目录）。 */
+export function bundledCandidates() {
+  candidatesCache ??= Object.freeze(bundledSkillNames().map(skillName => {
     const locator = join(SKILL_ROOT, skillName, 'SKILL.md')
     const { description } = parseSkill(readFileSync(locator, 'utf8'), locator)
-    return {
+    return Object.freeze({
       name: skillName,
       description,
       invocation: { modelInvocable: true, userInvocable: true },
@@ -61,9 +69,19 @@ export function apply(ctx) {
       rank: BUNDLED_SKILL_RANK,
       resourceBase: { kind: 'directory', path: RESOURCE_BASE },
       locator,
-    }
-  })
-  const provider = {
+    })
+  }))
+  return candidatesCache
+}
+
+/** 这个会话要给的自带技能：去掉本空间停用的、和会话清单里同名的。 */
+export function bundledFor(root, catalog = root?.skillCatalog ?? []) {
+  const hidden = new Set([...(root?.bundledOff ?? []), ...catalog.map(skill => skill.name)])
+  return bundledCandidates().filter(candidate => !hidden.has(candidate.name))
+}
+
+function providerOf(candidates) {
+  return {
     name: 'knowwork-bundled',
     list: () => Promise.resolve(candidates),
     async get(candidate, options) {
@@ -72,5 +90,28 @@ export function apply(ctx) {
       return { ...summary, content: parseSkill(raw, locator).content }
     },
   }
-  ctx.skills.registerProvider(() => provider)
+}
+
+/** @param {import('@deepseek-ai/cordis').Context} ctx */
+export function apply(ctx) {
+  /** agent → 为它铸的作用域（释放时撤销提供方）。 */
+  const scopes = new WeakMap()
+
+  ctx.on('agent/created', async ({ agent }) => {
+    const root = resolveRootSession(agent.session)
+    // 拉清单失败时 skill-provider 让会话打开失败；这里什么都不注册（失败关闭）
+    const catalog = root === undefined ? [] : await ensureCatalog(root).catch(() => undefined)
+    if (catalog === undefined) return
+    const candidates = bundledFor(root, catalog)
+    if (candidates.length === 0) return
+    const scope = createScope(ctx, agent)
+    scopes.set(agent, scope)
+    scope.ctx.skills.registerProvider(() => providerOf(candidates))
+  })
+
+  ctx.on('agent/disposed', async ({ agent }) => {
+    const scope = scopes.get(agent)
+    scopes.delete(agent)
+    await scope?.dispose()
+  })
 }

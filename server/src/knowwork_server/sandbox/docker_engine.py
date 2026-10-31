@@ -1,6 +1,5 @@
 """Docker Engine 的薄封装：官方 Python SDK（docker-py）的同步调用放进线程，错误统一转成 SandboxError。
 
-对应 WeKnora 的 docker_engine.go + docker_rpc_timeout.go：
 - 客户端第一次用到时才建（daemon 没起时不让启动失败，也不在构建时协商 API 版本）；
 - 短调用（inspect、create、list、exec create/inspect）受 http_timeout 约束：docker-py 的 timeout 是每次读写的
   套接字超时；exec 的输出流在接管套接字后关掉超时，否则一条半分钟不出声的命令会被当成连接断开。
@@ -44,7 +43,7 @@ class DockerConflict(SandboxError):
 
 
 def translate(action: str, error: BaseException) -> SandboxError:
-    """按 docker-py 的异常类型分类（比看文案可靠），与 WeKnora 的 dockerErrorKind 同一思路。"""
+    """按 docker-py 的异常类型分类（比看文案可靠）。"""
     if isinstance(error, SandboxError):
         return error
     if isinstance(error, NotFound):
@@ -172,7 +171,7 @@ class DockerEngine:
         await self._call("unpause", lambda c: c.api.unpause(container_id))
 
     async def remove_container(self, container_id: str) -> None:
-        """强制删除，连匿名卷一起删（WeKnora 的 Delete 同此）；本来就不存在不算错。"""
+        """强制删除，连匿名卷一起删；本来就不存在不算错。"""
         try:
             await self._call("remove", lambda c: c.api.remove_container(container_id, force=True, v=True))
         except DockerNotFound:
@@ -184,7 +183,7 @@ class DockerEngine:
             raise SandboxError(FAILED)
 
     async def stat_path(self, container_id: str, path: str) -> dict[str, Any] | None:
-        """读一个文件的元数据（WeKnora 用 ContainerStatPath 读活动标记的 mtime）。不存在时为 None。"""
+        """读一个文件的元数据（空闲清扫读活动标记的 mtime）。不存在时为 None。"""
         def stat(client: docker.DockerClient) -> dict[str, Any]:
             stream, info = client.api.get_archive(container_id, path)
             for _chunk in stream:  # 标记文件是空的，读完即可释放连接
@@ -214,9 +213,10 @@ class DockerEngine:
 
     # -- exec ---------------------------------------------------------------
 
-    async def exec_create(self, container_id: str, cmd: list[str], *, user: str, workdir: str) -> str:
+    async def exec_create(self, container_id: str, cmd: list[str], *, user: str, workdir: str,
+                          stdin: bool = False) -> str:
         def create(client: docker.DockerClient) -> str:
-            created = client.api.exec_create(container_id, cmd, stdout=True, stderr=True, stdin=False, tty=False,
+            created = client.api.exec_create(container_id, cmd, stdout=True, stderr=True, stdin=stdin, tty=False,
                                              user=user, workdir=workdir)
             return str(created["Id"])
         return await self._call("exec_create", create)
@@ -243,6 +243,15 @@ class DockerEngine:
             raise translate("exec_start", error) from error
         except RuntimeError as error:  # 线程池已关闭（服务正在退出）
             raise SandboxError(UNAVAILABLE) from error
+
+    async def exec_attach(self, exec_id: str) -> Any:
+        """启动一个带 stdin 的 exec，交回接管后的连接（阻塞式套接字，关掉超时）：写进去的是进程的 stdin，
+        读出来的是 Docker 按流分帧的 stdout / stderr。读写与关闭由调用方负责（见 ssh_pipe）。"""
+        def start(client: docker.DockerClient) -> Any:
+            sock = client.api.exec_start(exec_id, socket=True)
+            _no_timeout(sock)
+            return sock
+        return await self._call("exec_start", start)
 
     async def exec_inspect(self, exec_id: str) -> dict[str, Any]:
         return await self._call("exec_inspect", lambda c: c.api.exec_inspect(exec_id))

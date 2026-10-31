@@ -11,7 +11,7 @@
 # 镜像都在阿里云容器镜像服务（KNOWWORK_REGISTRY）：我们的四个镜像，以及照原样同步过去的 postgres、redis、rustfs，
 # 国内拉取不依赖 Docker Hub。只发布 linux/amd64。
 #
-# 会话沙箱（Docker 后端，做法照抄 WeKnora）默认打开，配置在 docker-compose.sandbox.yml：api 与 worker 挂本机
+# 会话沙箱（Docker 后端）默认打开，配置在 docker-compose.sandbox.yml：api 与 worker 挂本机
 # docker.sock，按会话创建沙箱容器（不在本文件里），模型的命令与文件读写都落在容器里；worker 把解析出的附件
 # Markdown 放进会话容器。挂 docker.sock 等于给了宿主机 root，只用于私有化单机部署；不要沙箱时把 .env 里
 # COMPOSE_FILE 的第二个文件去掉（install.sh --no-sandbox 会替你改）。
@@ -27,7 +27,7 @@ x-logging: &logging
     max-file: "5"
 
 x-server-image: &server-image
-  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.0.3}
+  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.0.4}
   pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
 
 x-hardening: &hardening
@@ -65,7 +65,7 @@ x-server-env: &server-env
 # 并把含 ca.pem、cert.pem、key.pem 的证书目录挂进来、填到 TLS_CERT_PATH。
 x-sandbox-env: &sandbox-env
   KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-false}
-  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.3}}
+  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.4}}
   KNOWWORK_SANDBOX_DOCKER_HOST: ${KNOWWORK_SANDBOX_DOCKER_HOST:-}
   KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH: ${KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH:-}
   KNOWWORK_SANDBOX_ALLOW_INTERNET: ${KNOWWORK_SANDBOX_ALLOW_INTERNET:-true}
@@ -155,7 +155,7 @@ services:
     logging: *logging
 
   runtime-host:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.0.3}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.0.4}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped
@@ -174,6 +174,10 @@ services:
       KNOWWORK_APPROVAL_TIMEOUT_MS: ${KNOWWORK_APPROVAL_TIMEOUT_MS:-1800000}
       # Agent 向用户提问时前台最多等多久；到期后 Agent 先继续，问题仍可答
       KNOWWORK_QUESTION_TIMEOUT_MS: ${KNOWWORK_QUESTION_TIMEOUT_MS:-1800000}
+      # 会话空闲多久（分钟）从宿主内存里释放，下次发消息自动恢复；0 不释放
+      KNOWWORK_HOST_SESSION_IDLE_MINUTES: ${KNOWWORK_HOST_SESSION_IDLE_MINUTES:-30}
+      # 流式执行的执行环境没有进程在跑多久（分钟）自己关掉（打开了流式执行才有用）
+      KNOWWORK_HOST_SSH_IDLE_MINUTES: ${KNOWWORK_HOST_SSH_IDLE_MINUTES:-10}
       KNOWWORK_LOG_LEVEL: ${KNOWWORK_LOG_LEVEL:-info}
       # DSH 的原生模块加载器默认把 .node 复制到 /tmp 下的缓存再加载，而 /tmp 是 noexec 的 tmpfs，加载会报
       # failed to map segment from shared object，宿主起不来。容器里的 node_modules 不会变，直接加载即可
@@ -281,9 +285,9 @@ services:
     logging: *logging
 
   sandbox-image:
-    # 会话沙箱镜像：只用于拉取或本地构建，不常驻（WeKnora 的 sandbox 服务同此）；api 按会话用它创建容器。
+    # 会话沙箱镜像：只用于拉取或本地构建，不常驻；api 按会话用它创建容器。
     # 拉取：docker compose --profile sandbox pull sandbox-image（install.sh 会做）；本地构建：把 pull 换成 build。
-    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.3}}
+    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.4}}
     build:
       context: ..
       dockerfile: deploy/docker/sandbox.Dockerfile
@@ -294,7 +298,7 @@ services:
     logging: *logging
 
   gateway:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.0.3}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.0.4}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped

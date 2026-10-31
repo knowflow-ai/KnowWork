@@ -9,7 +9,7 @@
  *   执行时带根会话的令牌；幂等键里的会话是实际发起调用的子会话。
  * - 是否审批看业务服务给的 `approval`（与风险等级分开）：`ask` 的工具在官方 `tools/pre-execute`
  *   返回 ask，由官方审批服务 `dsh-user-approval` 转给审批应答者（approval-broker）；`never` 直接放行。
- *   沙箱里的命令与文件工具是 never（照 WeKnora，隔离由容器负责），风险等级仍按真实值给审计与展示。
+ *   沙箱里的命令与文件工具是 never（隔离由容器负责），风险等级仍按真实值给审计与展示。
  * - 业务服务声明 `concurrent` 的工具（只读、无状态，例如知识检索）照官方写法声明 `isConcurrencySafe`：
  *   模型一步里发了几个这样的调用，官方循环同时执行（默认最多 10 个）；不声明的照旧一个一个来。
  * - 工具的 `guidance` 用官方 `systemPrompt.section` 注册到该 agent 的作用域层（同 dsh-mcp-client 注册
@@ -25,6 +25,7 @@
  * 拉取失败、描述不合法、与全局工具重名时，会话打开失败（失败关闭），不会带着残缺的工具清单运行。
  */
 
+import { allowedInMode } from './answer-mode.mjs'
 import { BridgeError, createBridgeClient } from './tool-bridge-client.mjs'
 import { ensureCatalog, lockedTools } from './skill-catalog.mjs'
 import { defer, lockTools } from './skill-unlock.mjs'
@@ -88,22 +89,27 @@ export function apply(ctx, config) {
     }
     for (const tool of root.bridgeTools ?? []) {
       if (isDenied(root, tool.name)) continue
-      const register = () => { agent.ctx.tools.register(definitionOf(tool)) }
+      // 官方条件工具：每个模型步骤按回答方式算一次，快速问答下只留声明了 quick 的工具，描述与执行一起去掉
+      const register = () => { agent.ctx.tools.register(definitionOf(tool), { when: () => allowedInMode(root, tool) }) }
       if (owners.has(tool.name)) defer(agent, tool.name, register)
       else register()
     }
     registerGuidance(agent, root.bridgeTools ?? [])
   })
 
-  /** 该 agent 此刻可见的业务工具的使用规则，去重后按工具顺序拼接。 */
+  /** 该 agent 此刻可见的业务工具的使用规则，去重后按工具顺序拼接。不带工具集的 get 不算条件，回答方式另外筛 */
   function guidanceFor(agent, tools) {
-    const visible = tools.filter(t => t.guidance !== undefined && owned.get(ctx.tools.get(t.name, agent)) !== undefined)
-    return [...new Set(visible.map(t => t.guidance))].join('\n\n')
+    const root = resolveRootSession(agent.session)
+    const visible = tools.filter(t => t.guidance !== undefined && allowedInMode(root, t)
+      && owned.get(ctx.tools.get(t.name, agent)) !== undefined)
+    const notes = root?.toolNotes === undefined ? [] : [root.toolNotes]
+    return [...new Set(visible.map(t => t.guidance)), ...notes].join('\n\n')
   }
 
   function registerGuidance(agent, tools) {
     const prompt = agent.ctx.systemPrompt
-    if (prompt === undefined || !tools.some(t => t.guidance !== undefined)) return
+    const root = resolveRootSession(agent.session)
+    if (prompt === undefined || (!tools.some(t => t.guidance !== undefined) && root?.toolNotes === undefined)) return
     prompt.section({
       name: GUIDANCE_SECTION,
       order: prompt.getSectionOrder('TOOLS_SDK'),
@@ -121,7 +127,9 @@ export function apply(ctx, config) {
   async function fetchTools(root) {
     let tools
     try {
-      tools = await client.list(root.toolAccess.token)
+      const listed = await client.list(root.toolAccess.token)
+      tools = listed.tools
+      root.toolNotes = listed.notes  // 例如「这些服务用户还没连接」，和使用规则一起写进系统提示
     } catch (error) {
       const reason = error instanceof BridgeError ? error.message : '拉取失败'
       throw new Error(`knowwork-tool-bridge: 会话 ${root.id} 拉取业务工具失败：${reason}`)

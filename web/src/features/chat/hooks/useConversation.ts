@@ -50,6 +50,8 @@ export interface FirstMessage {
   readonly text: string;
   readonly attachments?: readonly AttachmentChip[];
   readonly mentions?: readonly Mention[];
+  /** 发送接口返回的消息 id：回显到了按它合并 */
+  readonly messageId?: string;
 }
 
 /** 一轮消息除了文字以外带的东西。 */
@@ -73,7 +75,7 @@ function initialState(first?: FirstMessage): ChatState {
     attachments: first.attachments,
     mentions: first.mentions,
   });
-  return chatReducer(sent, { type: 'local/delivered', localId });
+  return chatReducer(sent, { type: 'local/delivered', localId, messageId: first.messageId });
 }
 
 export function useConversation(conversationId: string | undefined, first?: FirstMessage): ConversationApi {
@@ -113,14 +115,14 @@ export function useConversation(conversationId: string | undefined, first?: Firs
       try {
         // 先把文件放进会话工作区，再带着附件 id 发消息；有文件没收下就整条不发
         const attachments = await uploadForTurn(conversationId, files);
-        await sendMessage(conversationId, text, mode, {
+        const { messageId } = await sendMessage(conversationId, text, mode, {
           language: currentReplyLanguage(),
           answerMode: currentAnswerMode(),
           attachments,
           droppedConditions: dropped,
           mentions,
         });
-        dispatch({ type: 'local/delivered', localId });
+        dispatch({ type: 'local/delivered', localId, messageId });
       } catch (error) {
         dispatch({ type: 'local/failed', localId });
         rethrow(error, '消息没有发出去，请稍后重试');

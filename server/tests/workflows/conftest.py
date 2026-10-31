@@ -264,10 +264,9 @@ def workflow_zip(workflow: str | None, name: str = "contract-review") -> bytes:
 
 
 async def publish(env: Env, workflow: str | None = REVIEW, *, user: str = "dave", name: str = "contract-review") -> str:
-    """装一个个人技能并发布，返回技能 id。"""
+    """装一个个人技能（上传即发布），返回技能 id。"""
     service = env.skills.service
     view = await service.install(SkillActor(user_id=user, workspace_id="ws1"), "personal", workflow_zip(workflow, name))
-    await service.publish(SkillActor(user_id=user, workspace_id="ws1"), view.id)
     return view.id
 
 

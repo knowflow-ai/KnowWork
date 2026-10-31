@@ -16,6 +16,8 @@ from ..access.api import ProfileLookup
 from ..access.service import AccessService
 from ..attachments.mineru import MinerUProvider
 from ..config import Settings
+from ..conversations.summaries import Contributor
+from ..conversations.turn_context import TurnContextHook
 from ..jobs import JobRunner
 from ..jobs.gate import Gate, LocalGate
 from ..knowledge.links import LinkSigner
@@ -23,6 +25,9 @@ from ..knowledge.provided import ProvidedSources
 from ..models.client import ModelClient
 from ..sandbox.contract import SessionSandbox
 from ..sessionfiles.storage import SessionStores
+from ..skills.platform import PlatformSkillAdmin
+from ..tools.mcp.enterprise import EnterpriseMcpAdmin
+from ..tools.provided import ProvidedTools
 
 ENTRY_GROUP = "knowwork.extensions"
 VERIFIER_GROUP = "knowwork.license"
@@ -44,10 +49,23 @@ class ApiContext:
     stores_for: Callable[[str], SessionStores]
     # 登记扩展提供的知识源（knowledge_search、knowledge_read 与运行配置都会算上它）
     knowledge_sources: ProvidedSources
+    # 登记扩展提供的工具（tools/provided.py）：同内置工具只要求是空间成员，给不给哪个会话由扩展判断
+    tools: ProvidedTools = field(default_factory=ProvidedTools)
+    # 登记每轮补上下文的提供者（conversations/turn_context.py，turn_context.set），例如记忆
+    turn_context: TurnContextHook = field(default_factory=TurnContextHook)
     # 对外检索结果里的短期签名链接（图片等）：扩展的取文件接口用 links.verify 认签名，取时仍按签名里的用户判权
     links: LinkSigner | None = None
-    # 按用户 id 批量取姓名与邮箱（同成员列表），给扩展的页面显示人名；查不到的 id 不出现在结果里
+    # 按用户 id 批量取姓名、邮箱与账号类型（同成员列表），给扩展的页面显示人名、分真人与渠道账号；查不到的 id 不出现在结果里
     profiles: ProfileLookup | None = None
+    # 登记回合结束时要做的事（conversations/summaries.py 的 contribute(名字, 函数)）：拿到这一轮的提问、回答、状态与提问人，
+    # 例如记忆排后台提取；返回的字典写进运行记录的 facts[名字]，返回 None 就不写。没给时登记了也不会被调用
+    on_turn_ended: Callable[[str, Contributor], None] = lambda name, contributor: None
+    # 企业技能的管理（系统管理员）：上传、换版本、发布、启停、删除、发给哪些空间、从空间技能收为企业技能。
+    # 存储与会话里的三段清单在开源，管理的接口与页面由扩展提供；没给时扩展不挂企业技能的管理视图
+    platform_skills: PlatformSkillAdmin | None = None
+    # 企业 MCP 的管理（系统管理员）：登记、改、同步、工具三档、发给哪些空间、删除。会话里的工具、空间管理员的停用与收窄、
+    # 成员的连接都在开源，管理的接口与页面由扩展提供（同企业技能）
+    enterprise_mcp: EnterpriseMcpAdmin | None = None
 
 
 @dataclass(frozen=True)

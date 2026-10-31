@@ -87,10 +87,17 @@ function rowsOf(run: RunView) {
   return [...fromTrail, ...problems];
 }
 
-export function ProcessSummary({ run }: { readonly run: RunView }) {
+export function ProcessSummary({
+  run,
+  preparing,
+}: {
+  readonly run: RunView;
+  /** 模型正在写的工具调用（还没开始跑，events/live.ts） */
+  readonly preparing?: readonly string[];
+}) {
   const [open, setOpen] = useState(false);
   const running = run.endedAt === undefined;
-  const summary = summarizeProcess(run);
+  const summary = summarizeProcess(run, preparing);
   const expandable = hasDetails(run);
   return (
     <div>

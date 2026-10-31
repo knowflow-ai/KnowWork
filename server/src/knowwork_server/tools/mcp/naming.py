@@ -40,6 +40,15 @@ def is_mcp_tool(name: str) -> bool:
     return name.startswith(PREFIX)
 
 
+# 企业 MCP 存的名字是 ent_<名字>：空间服务名不允许下划线，工具名前缀 mcp__ent_<名字>__ 不会和任何空间服务撞
+ENTERPRISE_PREFIX = "ent_"
+
+
+def is_enterprise_tool(name: str) -> bool:
+    """企业 MCP 的工具：给不给、给谁由 MCP 模块判（到达本空间、没停用、收窄时按授权），工具判权那一层不再要 tool 授权。"""
+    return name.startswith(f"{PREFIX}{ENTERPRISE_PREFIX}")
+
+
 def annotated_risk(annotations: dict[str, Any] | None) -> Risk:
     """按 MCP 工具注解给默认风险等级：声明只读的是 read，明确声明有破坏性的是 dangerous，其余是 write。
 

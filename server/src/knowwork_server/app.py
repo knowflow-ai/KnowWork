@@ -41,6 +41,7 @@ from .conversations.replay import EventFeed
 from .conversations.service import ConversationService
 from .conversations.summaries import RunSummaries
 from .conversations.tool_credentials import ToolCredentials, require_membership
+from .conversations.turn_context import TurnContextHook
 from .conversations.writer import BatchWriter
 from .db.base import Base, make_engine, make_sessionmaker, make_workspace_sessionmaker
 from .db.migrate import migrate_for_settings
@@ -70,6 +71,7 @@ from .knowledge.api import build_router as knowledge_router
 from .knowledge.catalog import turn_catalog
 from .knowledge.citation_api import build_router as citations_router
 from .knowledge.citation_observer import CitationObserver
+from .knowledge.cited import CitationNotifier
 from .knowledge.links import LinkSigner
 from .knowledge.mcp_server import PATH as MCP_PATH
 from .knowledge.mcp_server import KnowledgeMcp
@@ -105,7 +107,9 @@ from .setup import build_setup_service
 from .setup.api import build_router as setup_router
 from .setup.service import current_system_admin
 from .skills import Skills, build_skills
+from .skills import build_layers_router as skill_layers_router
 from .skills import build_runs_router as skill_runs_router
+from .skills import build_submissions_router as skill_submissions_router
 from .skills.api import build_router as skills_router
 from .skills.blobstore import BlobStore
 from .skills.claims import DEFAULT_BASIC_TOOLS
@@ -117,7 +121,11 @@ from .system import build_router as system_router
 from .tools import build_tool_service
 from .tools.api import build_internal_router as tools_router
 from .tools.mcp import McpModule, build_mcp
+from .tools.mcp.api import build_enterprise_here_router as mcp_here_router
+from .tools.mcp.api import build_me_router as mcp_me_router
+from .tools.mcp.api import build_oauth_router as mcp_oauth_router
 from .tools.mcp.api import build_router as mcp_router
+from .tools.provided import ProvidedTools
 from .tools.registry import KW_NOW, CompositeToolRegistry, StaticToolRegistry, ToolContext
 from .tools.service import ToolService
 from .workflows import STALE_AFTER, Workflows, build_workflows
@@ -347,21 +355,29 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                 current_turn=summaries.current_turn,
                                 sandbox=sandbox.sandbox if sandbox is not None else None)
     summaries.contribute("knowledge", knowledge.search_log.close_turn)
+    # 回答引用了扩展知识源的哪几份文档、是谁问的，告诉声明了 cited 的知识源（例如按人记常用资料）
+    summaries.contribute("knowledge_cited", CitationNotifier(global_sessionmaker, knowledge.provided).turn_ended)
     # 内置工具（时间、知识检索、沙箱）只要求是空间成员；MCP 工具要 tool:<名字> 授权（默认只有 owner、admin）。
     # 执行时注册表按当前授权再判一次，权限收回立即生效。内置工具排在前面，外部工具不能顶替同名的内置工具。
     builtin_tools = (KW_NOW, *knowledge.tools)
-    clearance = ToolClearance(access, builtin=frozenset(tool.spec.name for tool in builtin_tools))
-    mcp = build_mcp(master_key, global_sessionmaker, access)
-    registry = AuthorizedToolRegistry(CompositeToolRegistry(StaticToolRegistry.of(builtin_tools), mcp.registry),
-                                      clearance)
+    # 扩展提供的工具（例如记忆写入）在扩展装配时登记，排在内置工具之后、MCP 工具之前，同内置工具只要求是空间成员
+    provided_tools = ProvidedTools()
+    clearance = ToolClearance(access, builtin=frozenset(tool.spec.name for tool in builtin_tools),
+                              provided=provided_tools)
+    mcp = build_mcp(master_key, global_sessionmaker, access, public_base_url=settings.public_base_url,
+                    permits=clearance.permits)
+    access.on_member_removed(mcp.connections.forget_member)  # 人走了，他在这个空间的 MCP 连接一起删
+    registry = AuthorizedToolRegistry(CompositeToolRegistry(StaticToolRegistry.of(builtin_tools), provided_tools,
+                                                            mcp.registry), clearance)
     # 路径里没有空间的写操作（登录、建 Key、接受邀请）记在平台配置所在的空间
     audit = build_audit(global_sessionmaker, default_workspace_id=PLATFORM_WORKSPACE_ID)
     tools = build_tool_service(master_key, scoped, registry=registry, token_ttl_seconds=settings.tool_token_ttl_seconds,
-                               audit=audit.tool_hook)
+                               audit=audit.tool_hook, notes=mcp.me.note)  # 告诉模型哪些服务用户还没连接
     blobs = blob_store(settings)
     skills = build_skills(master_key, global_sessionmaker, access, blobs,
                           basic_tools=DEFAULT_BASIC_TOOLS | {tool.spec.name for tool in knowledge.tools},
-                          token_ttl_seconds=settings.tool_token_ttl_seconds)
+                          token_ttl_seconds=settings.tool_token_ttl_seconds, bundled=kernel.bundled_skills)
+    access.on_member_removed(skills.service.forget_member)  # 人走了，他在这个空间的个人技能一起删
     tool_credentials, skill_credentials = _session_credentials(kernel, tools, skills, access, settings)
     models = build_models_service(global_sessionmaker, access, master_key, timezone=settings.usage_timezone)
     usage = _usage_observer(kernel, scoped, models, settings)
@@ -397,13 +413,15 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                               models=models.catalog, knowledge=knowledge.admin,
                               host_denied=() if sandbox else EXECUTION_TOOLS, bindings=bindings)
     # 「本会话内同类操作不再询问」的授权按对话当前绑定的运行配置版本记与查
-    grants = SessionGrants(global_sessionmaker, profiles.bound_version)
+    # 「本会话内不再询问」按宿主相关版本记：工具、权限、技能变了才重新问，只是本轮 @ 变了不重新问
+    grants = SessionGrants(global_sessionmaker, profiles.bound_host_version)
     async def mention_skills(workspace_id: str, user_id: str) -> list[dict]:
-        entries = await skills.delivery.catalog.for_session(workspace_id, user_id)
-        return [{"name": e.name, "description": e.description} for e in entries if e.user_invocable]
+        found = await skills.available.for_user(workspace_id, user_id)  # 含宿主内置的技能
+        return [{"name": s.name, "description": s.description} for s in found if s.user_invocable]
 
     mention_sources = MentionSources(bases=partial(mentionable_bases, knowledge.service), skills=mention_skills,
-                                     documents=partial(mentionable_documents, knowledge.service))
+                                     documents=partial(mentionable_documents, knowledge.service),
+                                     services=lambda workspace_id, user_id: mcp.me.mentionable(user_id, workspace_id))
 
     async def knowledge_catalog(conversation: Conversation, profile: RuntimeProfile) -> KnowledgeCatalog:
         if not profile.knowledge:
@@ -411,10 +429,12 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
         caller = await knowledge.service.caller(conversation.workspace_id, conversation.user_id)
         return turn_catalog(await knowledge.service.bases(caller, bases=profile.bound_knowledge))
 
+    # 扩展给每轮补的上下文（例如记忆）：扩展装配时登记提供者，没登记时这一轮什么都不带
+    turn_context = TurnContextHook()
     service = ConversationService(kernel, scoped, pump, feed, on_host_restart=rotator.rotate_now,
                                   refresh_model_credential=rotator.ensure_fresh, profiles=profiles,
                                   grants=grants, attachments=TurnAttachments(attachments.service),
-                                  knowledge_catalog=knowledge_catalog,
+                                  knowledge_catalog=knowledge_catalog, turn_context=turn_context,
                                   tool_credentials=tool_credentials, skill_credentials=skill_credentials,
                                   erasers=(erase_knowledge, erase_receipts,
                                            attachments.service.erase, artifacts.service.erase,
@@ -438,7 +458,9 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          global_sessionmaker=global_sessionmaker, access=access,
                          models=ModelClient(models.catalog, routed_http),
                          stores_for=lambda namespace: namespaced_stores(settings, namespace),
-                         knowledge_sources=knowledge.provided, links=links, profiles=identity.users.get_many,
+                         knowledge_sources=knowledge.provided, tools=provided_tools, turn_context=turn_context,
+                         links=links, profiles=identity.users.get_many, on_turn_ended=summaries.contribute,
+                         platform_skills=skills.platform, enterprise_mcp=mcp.enterprise,
                          principal=lambda scope: scoped_principal(identity, scope) if scope else bound_principal(identity))
     extensions, extension_routers, extension_internal = _setup_extensions(extensions or installed_extensions(),
                                                                           context)
@@ -503,13 +525,18 @@ def create_public_app(runtime: Runtime) -> FastAPI:
                                      probe_timeout=runtime.settings.model_probe_timeout_seconds))
     app.include_router(docparse_router(runtime.parsers, access, scoped_principal(identity, MODELS_SCOPE)))
     app.include_router(workflows_router(runtime.workflows.service, access, bound_principal(identity)))
-    app.include_router(skills_router(runtime.skills.service, access, bound_principal(identity)))
+    app.include_router(skills_router(runtime.skills, access, bound_principal(identity)))
+    app.include_router(skill_submissions_router(runtime.skills.submissions, access, bound_principal(identity)))
+    app.include_router(skill_layers_router(runtime.skills.layers, access, bound_principal(identity)))
     app.include_router(skill_runs_router(runtime.skills.run_query, access, bound_principal(identity)))
     app.include_router(knowledge_router(runtime.knowledge.admin, scoped_principal(identity, KNOWLEDGE_SCOPE)))
     app.include_router(reader_router(runtime.knowledge_reader, knowledge_reader(identity, access)))
     # MCP 是一个 ASGI 处理器（官方 SDK 的无状态流式 HTTP），外层自己判身份，挂成固定路径
     app.router.routes.append(Route(MCP_PATH, endpoint=runtime.knowledge_mcp, methods=["GET", "POST", "DELETE"]))
     app.include_router(mcp_router(runtime.mcp.admin, scoped_principal(identity, TOOLS_SCOPE)))
+    app.include_router(mcp_here_router(runtime.mcp.here, scoped_principal(identity, TOOLS_SCOPE)))
+    app.include_router(mcp_me_router(runtime.mcp.me, bound_principal(identity)))
+    app.include_router(mcp_oauth_router(runtime.mcp.login, bound_principal(identity)))
     actor = conversation_actor(identity, access)
     app.include_router(mention_router(runtime.mention_sources, actor))  # 排在会话路由前，见 mention_api
     app.include_router(conversation_router(runtime.service, actor, runtime.feedback))
@@ -553,7 +580,9 @@ def create_internal_app(runtime: Runtime) -> FastAPI:
     if runtime.sandbox is not None:
         membership = ToolClearance(runtime.access, builtin=frozenset())
         app.include_router(sandbox_internal_router(runtime.sandbox.sandbox, runtime.tools, membership.member,
-                                                   max_timeout_seconds=runtime.sandbox.max_timeout_seconds))
+                                                   max_timeout_seconds=runtime.sandbox.max_timeout_seconds,
+                                                   skill_env=runtime.skills.environment.for_exec,
+                                                   ssh=runtime.sandbox.ssh))
     for router in runtime.extension_internal_routers:
         app.include_router(router)
     return app

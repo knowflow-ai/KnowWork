@@ -166,17 +166,29 @@ async def test_exec_validates_arguments(make, command, timeout, cap):
         await module.sandbox.exec(WS, SID, command, timeout_seconds=timeout, max_output_bytes=cap)
 
 
-async def test_read_file_parses_size_header(make):
-    table = {scripts.READ_FILE: lambda args: Behavior(stdout=b"10\n" + b"0123456789"[int(args[1]):][:int(args[2])])}
+async def test_read_file_returns_data_with_the_same_version_as_stat(make):
+    """读的同时给出版本（与 stat 同一写法）：宿主读文件不先 stat，编辑用它核对版本，少一次来回。"""
+    header = b"10|1730000000.123456789|42\n"
+    table = {scripts.READ_FILE: lambda args: Behavior(stdout=header + b"0123456789"[int(args[1]):][:int(args[2])])}
     _fake, module = make(FakeDocker(responder=script_responder(table)))
+    await _touch(module)
     chunk = await module.sandbox.read_file(WS, SID, "notes/a.txt", offset=4, limit=3)
     assert (chunk.path, chunk.size, chunk.offset, chunk.data) == ("/workspace/notes/a.txt", 10, 4, b"456")
+    assert chunk.version == "1730000000.123456789:42:10"
+
+
+async def test_read_file_without_sandbox_is_not_found_and_creates_none(make):
+    fake, module = make()
+    with pytest.raises(SandboxError, match="不存在"):
+        await module.sandbox.read_file(WS, SID, "/workspace/a.txt", offset=0, limit=10)
+    assert "create" not in fake.calls
 
 
 @pytest.mark.parametrize("code,message", [(3, "不存在"), (4, "目录"), (7, "权限"), (42, "失败")])
 async def test_read_file_errors(make, code, message):
     table = {scripts.READ_FILE: lambda args: Behavior(exit_code=code)}
     _fake, module = make(FakeDocker(responder=script_responder(table)))
+    await _touch(module)
     with pytest.raises(SandboxError, match=message):
         await module.sandbox.read_file(WS, SID, "a", offset=0, limit=10)
 
@@ -184,6 +196,7 @@ async def test_read_file_errors(make, code, message):
 async def test_read_file_garbage_header_and_bad_range(make):
     table = {scripts.READ_FILE: lambda args: Behavior(stdout=b"nope")}
     _fake, module = make(FakeDocker(responder=script_responder(table)))
+    await _touch(module)
     with pytest.raises(SandboxError):
         await module.sandbox.read_file(WS, SID, "a", offset=0, limit=10)
     with pytest.raises(SandboxError, match="范围"):

@@ -65,6 +65,7 @@ class ModelCreate(_Input):
     name: Annotated[str, Field(min_length=1, max_length=200)]
     capabilities: Annotated[tuple[Capability, ...], Field(min_length=1, max_length=4)] = (Capability.CHAT,)
     context_length: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
+    max_output_tokens: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
     thinking: ThinkingSetting | None = None
     input_price_per_mtok: Price | None = None
     output_price_per_mtok: Price | None = None
@@ -77,6 +78,7 @@ class ModelUpdate(_Input):
     name: Annotated[str | None, Field(default=None, min_length=1, max_length=200)] = None
     capabilities: Annotated[tuple[Capability, ...] | None, Field(default=None, min_length=1, max_length=4)] = None
     context_length: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
+    max_output_tokens: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
     thinking: ThinkingSetting | None = None
     input_price_per_mtok: Price | None = None
     output_price_per_mtok: Price | None = None
@@ -108,6 +110,7 @@ class ModelView:
     currency: str
     enabled: bool
     thinking: str | None = None  # on、off；空是跟随服务默认
+    max_output_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +124,7 @@ class Route:
     api_key: str
     context_length: int | None = None  # 管理员填的上下文长度；嵌入模型就是它的最大输入长度
     thinking: str | None = None  # 对话模型的思考设置，转发时按服务商的写法补参数（models/thinking.py）
+    max_output_tokens: int | None = None  # 对话模型单次最多输出多少 token，网关据此收紧 max_tokens
 
     def __repr__(self) -> str:  # 防止异常栈或日志意外带出密钥
         return f"Route(alias={self.alias!r}, upstream_model={self.upstream_model!r}, base_url={self.base_url!r})"

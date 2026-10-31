@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '../../test/user';
 import { jsonResponse, ME, renderWithApp, routeFetch } from '../../test/render';
+import { browser } from '../admin/tools/login';
 import SettingsPage from './SettingsPage';
 import { expiryFrom } from './expiry';
 
@@ -76,12 +77,110 @@ describe('SettingsPage', () => {
     expect(screen.queryByRole('tab', { name: '知识源 Key' })).not.toBeInTheDocument();
   });
 
+  it('网址里的 tab 直接打开那个标签页（对话里「管理记忆」这类入口用），切换时跟着改；不认识的打开第一个', async () => {
+    api();
+    const { unmount } = renderWithApp(<SettingsPage />, { route: '/settings?tab=usage' });
+    expect(await screen.findByRole('tab', { name: '我的用量' })).toHaveAttribute('aria-selected', 'true');
+    await userEvent.click(screen.getByRole('tab', { name: '账号' }));
+    expect(screen.getByRole('tab', { name: '账号' })).toHaveAttribute('aria-selected', 'true');
+    unmount();
+    renderWithApp(<SettingsPage />, { route: '/settings?tab=nope' });
+    expect(await screen.findByRole('tab', { name: '账号' })).toHaveAttribute('aria-selected', 'true');
+  });
+
   it('我的用量按模型汇总', async () => {
     const calls = api();
     renderWithApp(<SettingsPage />);
     await userEvent.click(screen.getByRole('tab', { name: '我的用量' }));
     expect(await screen.findByText('chat-default')).toBeInTheDocument();
     expect(calls.find('GET', '/api/workspaces/default/usage/me')[0]?.query.get('group_by')).toBe('model');
+  });
+
+  it('连接：列出能用的全部服务与工具；不用连接的可以直接用，要连接的显示说明、发令牌；断开要确认', async () => {
+    const C = '/api/workspaces/default/me/mcp-connections';
+    const calls = api({
+      [`GET ${C}`]: jsonResponse([
+        {
+          serverId: 'mcp_0',
+          title: 'Context7',
+          auth: 'shared',
+          status: 'ready',
+          tools: [
+            { name: 'resolve-library-id', description: '按名字找到库' },
+            { name: 'query-docs', description: '查这个库的文档' },
+          ],
+        },
+        {
+          serverId: 'mcp_1',
+          title: 'GitLab',
+          auth: 'user_token',
+          help: '在偏好设置 → 访问令牌里生成',
+          status: 'none',
+          tools: [{ name: 'list_merge_requests', description: '列出合并请求' }],
+        },
+        {
+          serverId: 'mcp_2',
+          title: 'Jira',
+          auth: 'user_token',
+          help: '',
+          status: 'invalid',
+          display: '****9876',
+          connectedAt: '2026-10-20T08:00:00+00:00',
+        },
+      ]),
+      [`PUT ${C}/mcp_1`]: jsonResponse({ serverId: 'mcp_1', title: 'GitLab', status: 'connected' }),
+      [`DELETE ${C}/mcp_2`]: new Response(null, { status: 204 }),
+    });
+    renderWithApp(<SettingsPage />, { route: '/settings?tab=connections' });
+    const context7 = (await screen.findByText('Context7')).closest('tr') as HTMLElement;
+    expect(within(context7).getByText('可以直接用')).toBeInTheDocument();
+    expect(within(context7).getByText('resolve-library-id、query-docs（2 个）')).toBeInTheDocument();
+    expect(within(context7).queryByRole('button', { name: '连接' })).not.toBeInTheDocument();
+    await userEvent.click(within(context7).getByRole('button', { name: '查看' }));
+    const tools = await screen.findByRole('dialog', { name: '「Context7」的工具' });
+    expect(within(tools).getByText('查这个库的文档')).toBeInTheDocument();
+    await userEvent.click(within(tools).getByRole('button', { name: '知道了' }));
+    const gitlab = screen.getByText('GitLab').closest('tr') as HTMLElement;
+    expect(within(gitlab).getByText('未连接')).toBeInTheDocument();
+    const jira = screen.getByText('Jira').closest('tr') as HTMLElement;
+    expect(within(jira).getByText('已失效，请重新连接')).toBeInTheDocument();
+
+    await userEvent.click(within(gitlab).getByRole('button', { name: '连接' }));
+    const dialog = await screen.findByRole('dialog', { name: '连接「GitLab」' });
+    expect(within(dialog).getByText('在偏好设置 → 访问令牌里生成')).toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText('你的令牌'), ' tok-1 ');
+    await userEvent.click(within(dialog).getByRole('button', { name: '连接' }));
+    await waitFor(() => expect(calls.find('PUT', `${C}/mcp_1`)[0]?.body).toEqual({ token: 'tok-1' }));
+    expect(await screen.findByText('已连接，新开一个对话就能用「GitLab」')).toBeInTheDocument();
+
+    await userEvent.click(within(jira).getByRole('button', { name: '断开' }));
+    const pop = await screen.findByRole('alertdialog', { name: /断开「Jira」/ });
+    await userEvent.click(within(pop).getByRole('button', { name: '断开' }));
+    await waitFor(() => expect(calls.find('DELETE', `${C}/mcp_2`)).toHaveLength(1));
+  });
+
+  it('连接：OAuth 授权的服务点「连接」跳到对方页面；回来时提示结果并去掉网址上的参数', async () => {
+    const go = vi.spyOn(browser, 'go').mockImplementation(() => undefined);
+    const C = '/api/workspaces/default/me/mcp-connections';
+    const calls = api({
+      [`GET ${C}`]: jsonResponse([
+        { serverId: 'mcp_1', title: 'GitHub', auth: 'oauth', status: 'connected', connectedAt: null },
+        { serverId: 'mcp_2', title: 'Notion', auth: 'oauth', status: 'none' },
+      ]),
+      [`POST ${C}/mcp_2/login`]: jsonResponse({ authorizeUrl: 'https://notion.example/authorize' }),
+    });
+    renderWithApp(<SettingsPage />, { route: '/settings?tab=connections&mcpConnected=mcp_1' });
+    expect(await screen.findByText('已连接，新开一个对话就能用')).toBeInTheDocument();
+    const github = (await screen.findByText('GitHub')).closest('tr') as HTMLElement;
+    expect(within(github).getByText('已连接 · OAuth 授权')).toBeInTheDocument();
+    const notion = screen.getByText('Notion').closest('tr') as HTMLElement;
+    await userEvent.click(within(notion).getByRole('button', { name: '连接' }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith('https://notion.example/authorize'));
+    expect(calls.find('POST', `${C}/mcp_2/login`)[0]?.body).toEqual({
+      returnTo: '/settings?tab=connections',
+    });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    go.mockRestore();
   });
 
   it('有效期换算', () => {

@@ -1,16 +1,16 @@
 /**
  * 输入框 @ 的候选与发送格式（server conversations/mention_api.py、conversations/mentions.py）。
  *
- * 五种：知识库、目录（发送时展开成目录下的知识库）、文件、标签（都带所在知识库）、技能。
- * 限定检索只认 id，名字只用来显示和告诉模型。
+ * 六种：知识库、目录（发送时展开成目录下的知识库）、文件、标签（都带所在知识库）、MCP 服务、技能。
+ * 限定检索只认 id，名字只用来显示和告诉模型。@ 的 MCP 服务只是「这一轮优先用它的工具」，不代表授权。
  */
 import { request } from './http';
-import { bool, isRecord, listOf, str, strings, text } from './parse';
+import { bool, isRecord, listOf, num, str, strings, text } from './parse';
 import { workspacePath } from './workspace';
 
-export type MentionType = 'knowledge_base' | 'folder' | 'document' | 'tag' | 'skill';
+export type MentionType = 'knowledge_base' | 'folder' | 'document' | 'tag' | 'mcp' | 'skill';
 
-/** 选中的一个 @。id 按类型：知识库全局 id、目录路径、文档引用、标签、技能名。 */
+/** 选中的一个 @。id 按类型：知识库全局 id、目录路径、文档引用、标签、MCP 服务标识、技能名。 */
 export interface Mention {
   readonly type: MentionType;
   readonly id: string;
@@ -38,6 +38,15 @@ export interface MentionSkill {
   readonly description: string;
 }
 
+/** 能 @ 的 MCP 服务：工具已经在对话里的（不用连接的、已连接的）。 */
+export interface MentionService {
+  /** 服务标识，工具名前缀 mcp__标识__ 里那段 */
+  readonly name: string;
+  readonly title: string;
+  readonly tools: number;
+  readonly status: 'ready' | 'connected' | 'invalid';
+}
+
 export interface MentionDocument {
   readonly id: string;
   readonly title: string;
@@ -47,6 +56,7 @@ export interface MentionDocument {
 
 export interface MentionOptions {
   readonly bases: readonly MentionBase[];
+  readonly services: readonly MentionService[];
   readonly skills: readonly MentionSkill[];
 }
 
@@ -73,6 +83,14 @@ function parseSkill(value: unknown): MentionSkill | undefined {
   return name ? { name, description: str(value.description) ?? '' } : undefined;
 }
 
+function parseService(value: unknown): MentionService | undefined {
+  if (!isRecord(value)) return undefined;
+  const name = text(value.name);
+  if (!name) return undefined;
+  const status = value.status === 'connected' || value.status === 'invalid' ? value.status : 'ready';
+  return { name, title: text(value.title) ?? name, tools: num(value.tools) ?? 0, status };
+}
+
 function parseDocument(value: unknown): MentionDocument | undefined {
   if (!isRecord(value)) return undefined;
   const id = text(value.id);
@@ -84,7 +102,11 @@ function parseDocument(value: unknown): MentionDocument | undefined {
 export async function getMentionOptions(): Promise<MentionOptions> {
   const data = await request<unknown>(base());
   const body = isRecord(data) ? data : {};
-  return { bases: listOf(body.bases, parseBase), skills: listOf(body.skills, parseSkill) };
+  return {
+    bases: listOf(body.bases, parseBase),
+    services: listOf(body.services, parseService),
+    skills: listOf(body.skills, parseSkill),
+  };
 }
 
 export async function findMentionDocuments(query: string): Promise<readonly MentionDocument[]> {

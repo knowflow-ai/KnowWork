@@ -20,7 +20,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from ..access.rls import set_workspace
+from ..access.workspaces import PLATFORM_WORKSPACE_ID
 from .errors import SkillConflict, SkillNotFound
+from .layers import DEFAULT, PLATFORM, reaches, settings_of
 from .models import Skill, SkillRun, SkillStepRun
 from .service import scope_key
 
@@ -134,7 +136,7 @@ class SkillRunStore:
                                 for step in run.steps)
 
     async def skill_ids(self, workspace_id: str, user_id: str, names: Collection[str]) -> dict[str, str]:
-        """技能名 → 技能 ID，与会话清单同一规则：空间技能优先，其次本人的个人技能。
+        """技能名 → 技能 ID，与会话清单同一规则：企业技能（发到本空间、本空间没停用）优先，其次空间技能，再次本人的个人技能。
 
         不看是否仍启用、已发布：这一轮确实加载过它，事后停用不影响记下这次运行。删掉了的技能查不到，调用方跳过。
         """
@@ -146,4 +148,16 @@ class SkillRunStore:
                 Skill.workspace_id == workspace_id, Skill.name.in_(tuple(names)),
                 Skill.scope_key.in_(("workspace", scope_key("personal", user_id)))))).all()
         personal = {row.name: row.id for row in rows if row.scope != "workspace"}
-        return {**personal, **{row.name: row.id for row in rows if row.scope == "workspace"}}
+        workspace = {row.name: row.id for row in rows if row.scope == "workspace"}
+        return {**personal, **workspace, **await self._platform_ids(workspace_id, names)}
+
+    async def _platform_ids(self, workspace_id: str, names: Collection[str]) -> dict[str, str]:
+        """企业技能存在平台配置所在的空间名下；运行事实照旧记在会话所在的空间。"""
+        settings = await settings_of(self._sessionmaker, workspace_id)
+        async with self._sessionmaker() as session, session.begin():
+            await set_workspace(session, PLATFORM_WORKSPACE_ID)
+            rows = (await session.execute(select(Skill.name, Skill.id, Skill.audience).where(
+                Skill.workspace_id == PLATFORM_WORKSPACE_ID, Skill.scope_key == "platform",
+                Skill.name.in_(tuple(names))))).all()
+        return {row.name: row.id for row in rows
+                if reaches(row.audience, workspace_id) and not settings.get(f"{PLATFORM}{row.id}", DEFAULT).off}

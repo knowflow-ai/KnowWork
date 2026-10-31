@@ -104,7 +104,8 @@ async def test_skill_ids_prefer_workspace_skills(env):
 
     async def published(user, scope, name):
         view = await svc.install(actor(user), scope, skill_zip(name))
-        await svc.publish(actor(user), view.id)
+        if scope == "workspace":  # 个人技能上传即发布
+            await svc.publish(actor(user), view.id)
         return view.id
 
     shared = await published("bob", "workspace", "summary")
@@ -114,3 +115,21 @@ async def test_skill_ids_prefer_workspace_skills(env):
     ids = await env.skills.runs.skill_ids("ws1", "dave", {"summary", "my-notes", "carol-notes", "gone"})
     assert ids == {"summary": shared, "my-notes": mine}
     assert await env.skills.runs.skill_ids("ws1", "dave", set()) == {}
+
+
+
+async def test_skill_ids_prefer_platform_skills_that_reach_this_workspace(env):
+    """公共技能顶掉同名的空间技能时，运行记到公共技能上；本空间停用了它就还是空间技能。"""
+    from knowwork_server.skills.layers import UpperSkills
+
+    await env.access.create_workspace(workspace_id="default", name="默认空间", owner_user_id="alice")
+    env.access.set_system_admin("root")
+    svc, platform = env.skills.service, env.skills.platform
+    shared = await svc.install(actor("bob"), "workspace", skill_zip("summary"))
+    await svc.publish(actor("bob"), shared.id)
+    public = await platform.install("root", skill_zip("summary"))
+    assert await env.skills.runs.skill_ids("ws1", "dave", {"summary"}) == {"summary": shared.id}, "还没发给本空间"
+    await platform.set_audience("root", public.id, ["ws1"])
+    assert await env.skills.runs.skill_ids("ws1", "dave", {"summary"}) == {"summary": public.id}
+    await UpperSkills(env.sessionmaker, env.access, None).set_off(actor("bob"), f"platform:{public.id}", True)
+    assert await env.skills.runs.skill_ids("ws1", "dave", {"summary"}) == {"summary": shared.id}

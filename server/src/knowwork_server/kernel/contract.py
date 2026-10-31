@@ -53,12 +53,14 @@ class TurnAttachment(_Frozen):
 
 
 class KnowledgeEntry(_Frozen):
-    """知识库目录里的一项：全局 id（<知识源>.<知识库>）、名字、截短的描述、能筛的字段（「名字（类型）」）。"""
+    """知识库目录里的一项：全局 id（<知识源>.<知识库>）、名字、截短的描述、能筛的字段（「名字（类型）」）、
+    能按次打开的检索方式（knowledge_search 的同名参数：multi_hop 多跳、visual 视觉）。"""
 
     id: str = Field(min_length=3, max_length=200)
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=300)
     fields: tuple[str, ...] = Field(default=(), max_length=30)
+    routes: tuple[Literal["multi_hop", "visual"], ...] = Field(default=(), max_length=2)
 
 
 class KnowledgeCatalog(_Frozen):
@@ -71,26 +73,40 @@ class KnowledgeCatalog(_Frozen):
 
 class TurnMention(_Frozen):
     """用户这一轮 @ 的一项，宿主写进这条消息（模型读得到，业务服务投影时取出来显示在气泡上，重新生成时照原样再发）。
-    type 是 knowledge_base、folder、document、tag、skill；id 同 conversations/mentions.py 的 Mention.id
-    （技能就是技能名，宿主写成 /技能名，官方插件据此注入技能）；base、base_name 是文件、标签所在的知识库。"""
+    type 是 knowledge_base、folder、document、tag、mcp、skill；id 同 conversations/mentions.py 的 Mention.id
+    （技能就是技能名，宿主写成 /技能名，官方插件据此注入技能；mcp 是服务标识，宿主写成「这一轮优先用它的工具」）；
+    base、base_name 是文件、标签所在的知识库。"""
 
-    type: Literal["knowledge_base", "folder", "document", "tag", "skill"]
+    type: Literal["knowledge_base", "folder", "document", "tag", "mcp", "skill"]
     id: str = Field(min_length=1, max_length=300)
     name: str = Field(min_length=1, max_length=200)
     base: str | None = Field(default=None, max_length=200)
     base_name: str | None = Field(default=None, max_length=200)
 
 
+class TurnContext(_Frozen):
+    """扩展给这一轮补的上下文（例如记忆），两段文字，由扩展写好、转义好，宿主原样包进 <system-reminder> 交给模型：
+
+    - standing（常驻）：会话里一直有效的，宿主照知识库目录的办法发——内容没变不重发（不动前缀缓存），变了追加一份新的，
+      从有变成空时追加一句「不再适用」；
+    - turn：只和这一轮有关的（例如按本轮提问召回的几条），宿主紧跟在本轮提问后面追加一次。"""
+
+    standing: str = Field(default="", max_length=8000)
+    turn: str = Field(default="", max_length=4000)
+
+
 class TurnInput(_Frozen):
     text: str = Field(min_length=1, max_length=200_000)
     mode: Literal["followup", "steer"] = "followup"
     language: Literal["zh", "en"] | None = None  # 用户在聊天页指定的语言；不给时按提问判断（kernel/locale.py）
-    # 回答方式：智能体，或只检索知识库的快速问答。宿主在这条消息进入步骤时切换，会话中途可以换
+    # 回答方式：智能体，或只查知识库（检索与阅读）的快速问答。宿主在这条消息进入步骤时切换，会话中途可以换
     answer_mode: Literal["agent", "quick"] = "agent"
     attachments: tuple[TurnAttachment, ...] = Field(default=(), max_length=20)
     # 本轮的知识库目录；None = 这轮没算（宿主沿用上一轮的），空目录 = 没有可查的知识库
     knowledge: KnowledgeCatalog | None = None
     mentions: tuple[TurnMention, ...] = Field(default=(), max_length=30)
+    # 扩展补的上下文（conversations/turn_context.py）；None = 这轮没算（宿主沿用上一轮的常驻那段，也没有这一轮的那段）
+    context: TurnContext | None = None
 
 
 class KernelEvent(_Frozen):
@@ -165,6 +181,14 @@ class QuestionAnswer(_Frozen):
     answers: tuple[QuestionAnswerItem, ...] = Field(min_length=1, max_length=64)
 
 
+class BundledSkill(_Frozen):
+    """宿主内置的技能（KnowWork 随宿主发的 Word、Excel、PPT 这类）：只给名字与说明，「技能」页与 @ 菜单列出来用。"""
+
+    name: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=64)
+    description: str = Field(min_length=1, max_length=2000)
+    user_invocable: bool = True
+
+
 class CancelResult(_Frozen):
     settled: bool
     status: str
@@ -213,5 +237,7 @@ class AgentKernel(Protocol):
     async def rotate_tool_credential(self, session_id: str, token: str) -> None: ...
 
     async def rotate_skill_credential(self, session_id: str, token: str) -> None: ...
+
+    async def bundled_skills(self) -> tuple[BundledSkill, ...]: ...
 
     def subscribe(self, session_id: str, *, after: int = 0, epoch: str | None = None) -> AsyncIterator[KernelEvent]: ...

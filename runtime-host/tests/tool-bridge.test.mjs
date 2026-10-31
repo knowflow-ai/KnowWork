@@ -18,8 +18,8 @@ const turnEndReason = frames => sessionEvents(frames).find(e => e.type === 'turn
 const lastCursor = frames => frames.at(-1)?.cursor ?? 0
 const systemOf = request => String(request.body?.system ?? '')
 
-async function startBridgeHost(mock, toolsByToken, execute) {
-  const stub = await startToolsStub({ toolsByToken, execute })
+async function startBridgeHost(mock, toolsByToken, execute, notes) {
+  const stub = await startToolsStub({ toolsByToken, execute, notes })
   const host = await startHost(mock, { KNOWWORK_TOOLS_BASE_URL: stub.baseUrl })
   return { host, stub, stop: async () => { await host.stop(); await stub.close() } }
 }
@@ -172,14 +172,17 @@ test('审批按工具声明的 approval 决定：never 不问直接执行（风�
   }
 })
 
-test('不合法的审批方式或过长的使用规则：会话打不开（失败关闭）', async () => {
+test('不合法的审批方式、过长的使用规则或认不得的回答方式：会话打不开（失败关闭）', async () => {
+  const TOKEN_C = 'tools-token-c-'.padEnd(40, 'c')
   const env = await startBridgeHost({ sequence: ['success'] }, {
     [TOKEN_A]: [{ ...bizTool('kw_biz_a', 'write'), approval: 'sometimes' }],
     [TOKEN_B]: [{ ...bizTool('kw_biz_b'), guidance: 'x'.repeat(1001) }],
+    [TOKEN_C]: [{ ...bizTool('kw_biz_c'), answerModes: ['quick', 'fast'] }],
   })
   try {
     assert.equal((await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-bad-a', tools: { token: TOKEN_A } })).status, 400)
     assert.equal((await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-bad-b', tools: { token: TOKEN_B } })).status, 400)
+    assert.equal((await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-bad-c', tools: { token: TOKEN_C } })).status, 400)
   } finally {
     await env.stop()
   }
@@ -208,6 +211,20 @@ test('工具的使用规则进系统提示：同一条只写一次，被策略�
     const denied = systemOf(requestOf('tb-guide-deny'))
     assert.ok(denied.includes(shared), '没被禁用的工具的规则应当还在')
     assert.ok(!denied.includes('只属于 C 的规则'), '被禁用工具的规则出现在系统提示里')
+  } finally {
+    await env.stop()
+  }
+})
+
+test('随工具清单来的说明（例如还没连接的服务）也写进系统提示，没有工具规则时同样写', async () => {
+  const notes = '这些服务要用户先连接自己的账号才能用：GitLab。用户要做的事用得上它们时，告诉他到「设置 → 连接」里连接。'
+  const env = await startBridgeHost({ sequence: ['success'] }, { [TOKEN_A]: [bizTool('kw_plain')] }, undefined, notes)
+  try {
+    await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-notes', tools: { token: TOKEN_A } })
+    await env.host.call('POST', '/v1/sessions/tb-notes/messages', { text: '帮我看看 GitLab 上的合并请求' })
+    await collectEvents(env.host, 'tb-notes', isTurnEnd)
+    const request = env.host.llm.requests.find(r => messagesText(r).includes('GitLab 上的合并请求'))
+    assert.ok(systemOf(request).includes('设置 → 连接'), '没连接的服务的说明没进系统提示')
   } finally {
     await env.stop()
   }

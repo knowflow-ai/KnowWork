@@ -4,7 +4,7 @@
 - 服务器主动连飞书，不用公网回调地址（PRD 6.19）。群里默认只有 @ 机器人的消息才处理（SDK 的 require_mention）。
 - 回复挂在原消息下面；流式用 SDK 的 markdown 流式卡片（先建一张开了流式模式的卡片，再按序号更新正文）。
 - 卡片不认外链图片：回答里的图答完时用 SDK 的 upload_media 传上去换 image_key，写成 ![描述](image_key) 接在
-  回答后面（照 WeKnora internal/im/feishu 的 resolveMarkdownImages）；传不上去的跳过。
+  回答后面；传不上去的跳过。
 
 两个线程的事要分清：
 1. SDK 的长连接 start() 会阻塞，放在每个机器人自己的线程里跑；SDK 收到消息后在它自己的后台循环

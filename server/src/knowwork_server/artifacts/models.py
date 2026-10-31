@@ -30,6 +30,8 @@ class Artifact(Base):
     source_sha256: Mapped[str] = mapped_column(String(64))
     sanitized: Mapped[bool] = mapped_column(Boolean, default=False)  # 表格是否做过公式转义
     preview_digest: Mapped[str | None] = mapped_column(String(64))
+    # 模型 present 时写的说明（收成一行，最长 300 字，见 collector.one_line），卡片上显示；没写是 None
+    description: Mapped[str | None] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

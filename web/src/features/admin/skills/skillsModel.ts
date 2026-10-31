@@ -1,5 +1,5 @@
 /** 技能列表的显示规则：状态（同一含义全站同一颜色）与搜索。 */
-import type { Skill } from '../../../api/skills';
+import { missingEnv, type Skill } from '../../../api/skills';
 
 export type SkillState = 'published' | 'draft' | 'disabled';
 
@@ -28,3 +28,26 @@ export function filterSkills(rows: readonly Skill[], keyword: string): readonly 
 
 /** 发布时默认用技能包里写的版本号，没写就让服务端自动编号。 */
 export const defaultVersion = (skill: Skill): string => skill.draft?.version ?? '';
+
+/** 空间技能已发布、已启用，却被企业技能顶掉了（不看企业技能收窄给了谁，提醒管理员）。 */
+export function shadowNote(skill: Skill): string | undefined {
+  if (!skill.enabled || skill.status !== 'published' || !skill.inactive) return undefined;
+  return skill.inactive === 'tool_claimed' ? '工具被企业技能占用，没生效' : '被同名的企业技能顶掉，没生效';
+}
+
+/** 还没填的必填环境变量（列表里提示，技能照样进对话，跑到要用的地方会出错）。 */
+export function envNote(skill: Skill): string | undefined {
+  const missing = missingEnv(skill);
+  return missing.length > 0 ? `还没填环境变量 ${missing.join('、')}` : undefined;
+}
+
+/** 要交给服务端的改动：填了的给新值，勾了清空的给 null，其余不交。 */
+export function envChanges(
+  typed: Readonly<Record<string, string>>,
+  cleared: ReadonlySet<string>,
+): Record<string, string | null> {
+  const changes: Record<string, string | null> = {};
+  for (const [name, value] of Object.entries(typed)) if (value) changes[name] = value;
+  for (const name of cleared) changes[name] = null;
+  return changes;
+}

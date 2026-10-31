@@ -123,7 +123,7 @@ describe('文件预览', () => {
   it('PPT 卡片有预览按钮，打开后取服务端转换的 PDF', async () => {
     const calls = routeFetch({ [`GET ${URL_DOCX}/preview`]: new Response('%PDF-fake') });
     const onPreview = vi.fn();
-    renderWithApp(<FileCard name="简报.pptx" size={1024} url={URL_DOCX} onPreview={onPreview} />);
+    renderWithApp(<FileCard name="简报.pptx" url={URL_DOCX} onPreview={onPreview} />);
     await userEvent.click(screen.getByRole('button', { name: '预览 简报.pptx' }));
     expect(onPreview).toHaveBeenCalledOnce();
     renderWithApp(<FilePreview file={{ name: '简报.pptx', url: URL_DOCX }} onClose={() => undefined} />);

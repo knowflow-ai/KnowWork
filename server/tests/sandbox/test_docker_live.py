@@ -1,4 +1,4 @@
-"""真实 Docker 上的沙箱合同（WeKnora 口径）：容器姿态与能力集、默认 root 且可按调用换账号、超时整组杀、容器内看门狗、
+"""真实 Docker 上的沙箱合同：容器姿态与能力集、默认 root 且可按调用换账号、超时整组杀、容器内看门狗、
 输出截断、产物收集与文件工具、空闲清扫删除容器后重建、销毁。
 
 默认跳过；KNOWWORK_DOCKER_TESTS=1 且本机 Docker 可用时运行。镜像用 KNOWWORK_SANDBOX_TEST_IMAGE（默认本机已有的
@@ -22,7 +22,7 @@ from knowwork_server.sandbox.contract import SandboxError, SandboxTooLarge
 pytestmark = pytest.mark.anyio
 IMAGE = os.environ.get("KNOWWORK_SANDBOX_TEST_IMAGE", "alpine:3.20")
 # CHOWN DAC_OVERRIDE FOWNER FSETID SETGID SETUID KILL 的位图
-WEKNORA_CAPS = sum(1 << bit for bit in (0, 1, 3, 4, 6, 7, 5))
+SANDBOX_CAPS = sum(1 << bit for bit in (0, 1, 3, 4, 6, 7, 5))
 
 
 def _docker_ready() -> bool:
@@ -75,14 +75,14 @@ async def _sh(sandbox, ws, sid, command, timeout=15, **kwargs):
                               **kwargs)
 
 
-async def test_posture_root_by_default_with_weknora_capabilities(factory):
+async def test_posture_root_by_default_with_the_added_back_capabilities(factory):
     module, (ws, sid) = await factory()
     sandbox = module.sandbox
     await sandbox.put_input(ws, sid, "附件.txt", b"hello")
     who = await _sh(sandbox, ws, sid, "id -u; pwd; cat /workspace/input/附件.txt; echo; cat /proc/1/comm")
     assert who.stdout.split() == ["0", "/workspace", "hello", "docker-init"]
     caps = await _sh(sandbox, ws, sid, "grep CapEff /proc/self/status")
-    assert int(caps.stdout.split()[-1], 16) == WEKNORA_CAPS
+    assert int(caps.stdout.split()[-1], 16) == SANDBOX_CAPS
     nnp = await _sh(sandbox, ws, sid, "grep NoNewPrivs /proc/self/status")
     assert nnp.stdout.split()[-1] == "1"
     as_user = await _sh(sandbox, ws, sid, "id -u", user="1000:1000")

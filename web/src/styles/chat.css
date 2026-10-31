@@ -220,6 +220,24 @@
   border-radius: var(--radius-md);
 }
 
+/* 回答里的 mermaid 图：宽了横向滚动；画好之前或画不出来时显示原文 */
+.kw-markdown .kw-mermaid {
+  margin: 12px 0;
+  overflow-x: auto;
+}
+
+.kw-mermaid svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.kw-mermaid-note {
+  margin: 12px 0 4px;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
 .kw-markdown > :first-child {
   margin-top: 0;
 }
@@ -307,6 +325,21 @@
 
 .kw-link:hover {
   text-decoration: underline;
+}
+
+/* 回答下方工具的说明（如「已记住：…… · 管理记忆」）：说明色小字，一行一条 */
+.kw-answer-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kw-answer-notice {
+  margin: 0;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .kw-citation-notice {
@@ -732,18 +765,78 @@ a.kw-source-item:hover {
   border-radius: 50%;
 }
 
+/* 交付的文件，排法照 DSH 官方交付卡片：多个两列（区域窄于 620 时一列）；外观用产品自己的，卡片最宽 360 */
+.kw-file-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  margin: 12px 0;
+  container-type: inline-size;
+}
+
+.kw-file-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 360px));
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kw-file-grid[data-single='true'] {
+  grid-template-columns: minmax(0, 360px);
+}
+
+@container (width <= 620px) {
+  .kw-file-grid {
+    grid-template-columns: minmax(0, 360px);
+  }
+}
+
 .kw-file-card {
+  position: relative;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 12px;
-  max-width: 360px;
-  margin: 12px 0;
+  min-width: 0;
   padding: 10px 12px;
+  overflow: hidden;
   border: 1px solid var(--kw-border-secondary);
   border-radius: var(--kw-radius-card);
+  transition: background-color 0.12s;
+}
+
+/* 只有点得开的卡片悬停变色：不能预览的（如 zip）只能下载，变色像能点 */
+@media (hover: hover) {
+  .kw-file-card:has(.kw-file-card-open):hover {
+    background: var(--kw-hover-bg);
+  }
+}
+
+/* 点卡片本身预览：铺满卡片的透明按钮垫在最下层，图标与文字压在上面但不挡点击，下载按钮单独能点 */
+.kw-file-card-open {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  cursor: pointer;
+}
+
+.kw-file-card-open:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--kw-link);
 }
 
 .kw-file-icon {
+  position: relative;
+  z-index: 2;
   width: 36px;
   height: 36px;
   flex: none;
@@ -753,6 +846,19 @@ a.kw-source-item:hover {
   border-radius: var(--kw-radius-control);
   color: var(--kw-on-color);
   font-size: var(--kw-font-md);
+  pointer-events: none;
+}
+
+.kw-file-body {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
 }
 
 .kw-file-meta {
@@ -762,15 +868,66 @@ a.kw-source-item:hover {
 }
 
 .kw-file-name {
-  font-size: var(--kw-font-base);
   overflow: hidden;
+  font-size: var(--kw-font-base);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .kw-file-sub {
-  font-size: var(--kw-font-xs);
+  overflow: hidden;
   color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kw-file-hint {
+  display: none;
+}
+
+@media (hover: hover) {
+  .kw-file-card:hover .kw-file-sub-text {
+    display: none;
+  }
+
+  .kw-file-card:hover .kw-file-hint {
+    display: inline;
+  }
+}
+
+.kw-file-actions {
+  flex: none;
+  display: inline-flex;
+  pointer-events: auto;
+}
+
+.kw-file-toggle {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 11px;
+  border: 0;
+  border-radius: var(--kw-radius-control);
+  background: none;
+  color: var(--kw-text-tertiary);
+  font: inherit;
+  font-size: var(--kw-font-sm);
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.kw-file-toggle svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+@media (hover: hover) {
+  .kw-file-toggle:hover {
+    background: var(--kw-hover-bg);
+  }
 }
 
 .kw-answer-actions {
@@ -843,11 +1000,22 @@ a.kw-source-item:hover {
   flex: 1;
 }
 
-/* 选中的模式标签（照 ChatGPT 输入框里的「Deep research ×」）：按钮本身是胶囊形，叉号小一号、弱一档 */
-.kw-mode-chip .kw-mode-chip-close {
-  width: 14px;
-  height: 14px;
-  color: var(--color-text-tertiary);
+/* 输入框外左上角的一行：回答方式（AnswerModeSelect）。下拉按钮去掉了左边的留白（opticallyAlign），
+   图标和框里的文字左边对齐 */
+.kw-composer-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 20px 6px;
+}
+
+/* 回答方式下拉里每项的说明：比模式名小一号、灰一档，一眼分得开名字和说明；选中项的名字加粗，说明不跟着加粗 */
+.kw-answer-mode-description {
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+  line-height: var(--font-text-xs-line-height);
+  font-weight: var(--font-weight-normal);
 }
 
 .kw-composer-hint {

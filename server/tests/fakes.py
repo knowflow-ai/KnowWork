@@ -111,6 +111,9 @@ class FakeKernel:
     async def rotate_skill_credential(self, session_id, token):
         self.skill_rotations.append((session_id, token))
 
+    async def bundled_skills(self):
+        return ()
+
 
 def token_actor(token: str, user_id: str = "dev-user", workspace_id: str = "default"):
     """测试用调用者依赖：固定令牌对应固定用户。生产装配用账号体系，见 app.py。"""

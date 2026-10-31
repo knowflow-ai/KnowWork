@@ -52,6 +52,7 @@ function api(extra = {}) {
   return routeFetch({
     'GET /api/auth/me': jsonResponse(ME),
     [`GET ${B}/skills`]: jsonResponse({ skills: SKILLS }),
+    [`GET ${B}/skill-submissions`]: jsonResponse({ submissions: [] }),
     [`GET ${B}/members`]: jsonResponse([{ user_id: 'u1', role: 'owner', name: '李雷', email: 'li@corp.cn' }]),
     ...extra,
   });
@@ -265,5 +266,254 @@ describe('技能显示规则', () => {
   it('按名称或说明搜索', () => {
     expect(filterSkills(skills, '  ')).toBe(skills);
     expect(filterSkills(skills, '标书').map((s) => s.name)).toEqual(['tender-diff']);
+  });
+});
+
+const files = (...pairs: [string, string][]) => pairs.map(([path, sha256]) => ({ path, sha256, size: 10 }));
+
+const pendingSub = {
+  id: 'sub_1',
+  skillId: 'p1',
+  name: 'my-notes',
+  version: '1.1.0',
+  manifest: { ...manifest('my-notes', '1.1.0'), files: files(['SKILL.md', 'b'], ['new.py', 'n']) },
+  note: '部门都用得上',
+  submittedBy: 'u1',
+  status: 'pending',
+  reviewNote: '',
+  createdAt: '2026-10-29T08:00:00+00:00',
+};
+
+function reviewApi(target: unknown, extra = {}) {
+  return api({
+    [`GET ${B}/skill-submissions`]: jsonResponse({ submissions: [pendingSub] }),
+    [`GET ${B}/skill-submissions/sub_1`]: jsonResponse({
+      ...pendingSub,
+      content: '第一步\n改过的第二步',
+      target,
+      nameTaken: false,
+    }),
+    [`GET ${B}/departments`]: jsonResponse([]),
+    [`GET ${B}/groups`]: jsonResponse([]),
+    ...extra,
+  });
+}
+
+describe('技能审核', () => {
+  it('「待审核」标签带数量，列出提交人与附言', async () => {
+    reviewApi(null);
+    renderWithApp(<SkillsPage />, { route: '/admin/skills?tab=pending' });
+    expect(await screen.findByRole('tab', { name: '待审核 1' })).toBeInTheDocument();
+    const row = await rowOf('my-notes');
+    expect(within(row).getByText('李雷')).toBeInTheDocument();
+    expect(within(row).getByText('部门都用得上')).toBeInTheDocument();
+  });
+
+  it('更新已有技能：正文逐行对比、文件增删改，通过只问要不要直接发布', async () => {
+    const calls = reviewApi(
+      {
+        skillId: 'sk_1',
+        publishedVersion: '1.0.0',
+        hasUnpublishedChanges: true,
+        manifest: { ...manifest('my-notes'), files: files(['SKILL.md', 'a'], ['old.md', 'o']) },
+        content: '第一步\n第二步',
+      },
+      { [`POST ${B}/skill-submissions/sub_1/approve`]: jsonResponse(raw({ id: 'sk_1' })) },
+    );
+    renderWithApp(<SkillsPage />, { route: '/admin/skills?tab=pending' });
+    await userEvent.click(within(await rowOf('my-notes')).getByRole('button', { name: '审核' }));
+    const text = await screen.findByLabelText('SKILL.md 正文');
+    expect(within(text).getByText(/- 第二步/)).toBeInTheDocument();
+    expect(within(text).getByText(/\+ 改过的第二步/)).toBeInTheDocument();
+    expect(screen.getByText('空间里这份技能有还没发布的修改，通过会覆盖掉。')).toBeInTheDocument();
+    expect(within((await screen.findByText('new.py')).closest('tr')!).getByText('新增')).toBeInTheDocument();
+    expect(within(screen.getByText('old.md').closest('tr')!).getByText('删除')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: '通过' }));
+    const dialog = await screen.findByRole('dialog', { name: /通过/ });
+    expect(within(dialog).queryByText('给谁用')).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('checkbox'));
+    await userEvent.click(within(dialog).getByRole('button', { name: '通过' }));
+    await waitFor(() =>
+      expect(calls.find('POST', `${B}/skill-submissions/sub_1/approve`)[0]?.body).toEqual({ publish: true }),
+    );
+    expect(calls.find('PUT', `${B}/grants/users`)).toHaveLength(0);
+  });
+
+  it('第一次进空间：通过后按选的对象授权（默认全体成员）', async () => {
+    const calls = reviewApi(null, {
+      [`POST ${B}/skill-submissions/sub_1/approve`]: jsonResponse(raw({ id: 'sk_new', status: 'draft' })),
+      [`PUT ${B}/grants/users`]: jsonResponse({ resource: 'skill:sk_new', subjects: ['role:editor'] }),
+    });
+    renderWithApp(<SkillsPage />, { route: '/admin/skills?tab=pending' });
+    await userEvent.click(within(await rowOf('my-notes')).getByRole('button', { name: '审核' }));
+    await userEvent.click(await screen.findByRole('button', { name: '通过' }));
+    const dialog = await screen.findByRole('dialog', { name: /通过/ });
+    expect(within(dialog).getByText('给谁用')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: '通过' }));
+    await waitFor(() =>
+      expect(calls.find('PUT', `${B}/grants/users`)[0]?.body).toEqual({
+        resource: 'skill:sk_new',
+        subjects: ['role:editor'],
+      }),
+    );
+    expect(calls.find('POST', `${B}/skill-submissions/sub_1/approve`)[0]?.body).toEqual({ publish: false });
+  });
+
+  it('不通过要写原因', async () => {
+    const calls = reviewApi(null, {
+      [`POST ${B}/skill-submissions/sub_1/reject`]: jsonResponse({ ...pendingSub, status: 'rejected' }),
+    });
+    renderWithApp(<SkillsPage />, { route: '/admin/skills?tab=pending' });
+    await userEvent.click(within(await rowOf('my-notes')).getByRole('button', { name: '审核' }));
+    await userEvent.click(await screen.findByRole('button', { name: '不通过' }));
+    const dialog = await screen.findByRole('dialog', { name: /不通过/ });
+    await userEvent.click(within(dialog).getByRole('button', { name: '退回' }));
+    expect(await within(dialog).findByText('请写不通过的原因')).toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText('原因'), '和合同初审重复');
+    await userEvent.click(within(dialog).getByRole('button', { name: '退回' }));
+    await waitFor(() =>
+      expect(calls.find('POST', `${B}/skill-submissions/sub_1/reject`)[0]?.body).toEqual({
+        reason: '和合同初审重复',
+      }),
+    );
+  });
+});
+
+describe('企业技能（技能页的「企业」页签）', () => {
+  const upper = (over: Record<string, unknown>) => ({
+    key: 'platform:pk1',
+    name: 'company-style',
+    description: '公司公文格式',
+    source: 'platform',
+    version: '2.0.0',
+    off: false,
+    narrowed: false,
+    resource: 'skill:pk1',
+    ...over,
+  });
+
+  it('列出到达本空间的企业技能与内置技能，可以在本空间停用、启用', async () => {
+    const calls = api({
+      [`GET ${B}/platform-skills`]: jsonResponse({
+        skills: [
+          upper({}),
+          upper({
+            key: 'bundled:office-pptx',
+            name: 'office-pptx',
+            description: '做 PPT',
+            source: 'bundled',
+            version: '',
+            off: true,
+            resource: 'skill:bundled.office-pptx',
+          }),
+        ],
+      }),
+      [`GET ${B}/grants`]: jsonResponse([]),
+      [`POST ${B}/platform-skills/disable`]: new Response(null, { status: 204 }),
+      [`POST ${B}/platform-skills/enable`]: new Response(null, { status: 204 }),
+    });
+    renderWithApp(<SkillsPage />, { route: '/admin/skills?tab=upper' });
+    expect(screen.getByRole('tab', { name: '企业' })).toBeInTheDocument();
+    const company = await rowOf('company-style');
+    expect(within(company).getByText('企业')).toBeInTheDocument();
+    expect(within(company).getByText('全体成员')).toBeInTheDocument();
+    await userEvent.click(within(company).getByRole('button', { name: '在本空间停用' }));
+    await waitFor(() =>
+      expect(calls.find('POST', `${B}/platform-skills/disable`)[0]?.body).toEqual({ key: 'platform:pk1' }),
+    );
+    const pptx = await rowOf('office-pptx');
+    expect(within(pptx).getByText('内置')).toBeInTheDocument();
+    expect(within(pptx).getByText('本空间已停用')).toBeInTheDocument();
+    await userEvent.click(within(pptx).getByRole('button', { name: '在本空间启用' }));
+    await waitFor(() =>
+      expect(calls.find('POST', `${B}/platform-skills/enable`)[0]?.body).toEqual({
+        key: 'bundled:office-pptx',
+      }),
+    );
+  });
+
+  it('收窄了的写明给了几个对象；改给谁用时带上现在选的对象', async () => {
+    const calls = api({
+      [`GET ${B}/platform-skills`]: jsonResponse({ skills: [upper({ narrowed: true })] }),
+      [`GET ${B}/grants`]: jsonResponse([
+        { subject: 'user:u1', resource: 'skill:pk1', action: 'use' },
+        { subject: 'user:u1', resource: 'skill:other', action: 'use' },
+      ]),
+      [`GET ${B}/departments`]: jsonResponse([]),
+      [`GET ${B}/groups`]: jsonResponse([]),
+      [`PUT ${B}/platform-skills/users`]: jsonResponse({ key: 'platform:pk1', narrowed: true }),
+    });
+    renderWithApp(<SkillsPage />, { route: '/admin/skills?tab=upper' });
+    const company = await rowOf('company-style');
+    expect(within(company).getByText('1 个对象')).toBeInTheDocument();
+    await userEvent.click(within(company).getByRole('button', { name: '给谁用' }));
+    const dialog = await screen.findByRole('dialog', { name: /在本空间给谁用/ });
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(calls.find('PUT', `${B}/platform-skills/users`)[0]?.body).toEqual({
+        key: 'platform:pk1',
+        subjects: ['user:u1'],
+      }),
+    );
+  });
+
+  it('空间技能被同名的企业技能顶掉时写明没生效', async () => {
+    api({ [`GET ${B}/skills`]: jsonResponse({ skills: [raw({ inactive: 'name_taken' })] }) });
+    renderWithApp(<SkillsPage />);
+    expect(
+      within(await rowOf('weekly-report')).getByText('被同名的企业技能顶掉，没生效'),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('技能的环境变量', () => {
+  it('列表提示还没填的必填环境变量；详情里填写，只交改了的项，值不回显', async () => {
+    const calls = api({
+      [`GET ${B}/skills/sk_1`]: jsonResponse({ ...raw({}), releases: [] }),
+      [`PUT ${B}/skills/sk_1/env`]: jsonResponse(raw({ envFilled: ['REPORT_API_KEY'] })),
+    });
+    renderWithApp(<SkillsPage />);
+    const row = await rowOf('weekly-report');
+    expect(within(row).getByText('还没填环境变量 REPORT_API_KEY')).toBeInTheDocument();
+    await userEvent.click(within(row).getByRole('button', { name: '详情' }));
+    const drawer = await screen.findByRole('dialog');
+    expect(await within(drawer).findByText('未填')).toBeInTheDocument();
+    await userEvent.click(within(drawer).getByRole('button', { name: '填写环境变量' }));
+    const dialog = await screen.findByRole('dialog', { name: /的环境变量/ });
+    await userEvent.type(within(dialog).getByLabelText('REPORT_API_KEY'), 'sk-live-123456');
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(calls.find('PUT', `${B}/skills/sk_1/env`)[0]?.body).toEqual({
+        values: { REPORT_API_KEY: 'sk-live-123456' },
+      }),
+    );
+  });
+});
+
+describe('空间技能给谁用', () => {
+  it('列表写明给谁用；详情里改，整体换掉「可用」一档的对象', async () => {
+    const calls = api({
+      [`GET ${B}/grants`]: jsonResponse([
+        { subject: 'role:editor', resource: 'skill:sk_1', action: 'use' },
+        { subject: 'user:u1', resource: 'skill:sk_2', action: 'owner' },
+      ]),
+      [`GET ${B}/skills/sk_1`]: jsonResponse({ ...raw({}), releases: [] }),
+      [`PUT ${B}/grants/users`]: jsonResponse({ resource: 'skill:sk_1', subjects: [] }),
+    });
+    renderWithApp(<SkillsPage />);
+    expect(within(await rowOf('weekly-report')).getByText('全体成员')).toBeInTheDocument();
+    expect(within(await rowOf('contract-review')).getByText('只有管理员')).toBeInTheDocument();
+    await userEvent.click(within(await rowOf('weekly-report')).getByRole('button', { name: '详情' }));
+    const drawer = await screen.findByRole('dialog');
+    await userEvent.click(await within(drawer).findByRole('button', { name: '修改' }));
+    const dialog = await screen.findByRole('dialog', { name: /给谁用/ });
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(calls.find('PUT', `${B}/grants/users`)[0]?.body).toEqual({
+        resource: 'skill:sk_1',
+        subjects: ['role:editor'],
+      }),
+    );
   });
 });

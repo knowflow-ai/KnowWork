@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from ..conversations.events_v1 import user_parts
+from .background import Background
 from .blocks import blocks_of, clip, source_of, text_of
 from .events import Event, TurnSlice, turn_of
 
@@ -77,6 +78,7 @@ class TurnDetail:
     steps: tuple[StepView, ...]
     subagents: tuple[SubagentView, ...]
     events: tuple[str, ...]  # 技能加载、审批、提问这类不属于某一步的事
+    background: tuple[Background, ...] = ()  # 随提问带上的背景（扩展每轮补的上下文，见 background.py）
 
 
 UsageKey = tuple[int, int]

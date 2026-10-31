@@ -15,11 +15,11 @@ pytestmark = pytest.mark.anyio
 EXTRACT = {"allowed": "extract_records kw_now", "completion": "extract_records"}
 
 
-async def test_install_personal_is_draft_and_private(env):
+async def test_install_personal_is_published_at_once_and_private(env):
     svc = env.skills.service
     view = await svc.install(actor("carol"), "personal", skill_zip(version="1.0.0"))
-    assert (view.status, view.scope, view.owner_id, view.draft_revision) == ("draft", "personal", "carol", 1)
-    assert view.has_unpublished_changes and view.enabled
+    assert (view.status, view.scope, view.owner_id, view.draft_revision) == ("published", "personal", "carol", 1)
+    assert (view.published_version, view.has_unpublished_changes, view.enabled) == ("1.0.0", False, True)
     assert view.draft["files"][1]["path"] == "references/guide.md"
     assert [v.name for v in await svc.list(actor("carol"), "personal")] == ["contract-extract"]
     assert await svc.list(actor("dave"), "personal") == ()
@@ -50,6 +50,8 @@ async def test_install_rules(env):
 async def test_workspace_visibility_follows_rbac(env):
     svc = env.skills.service
     view = await svc.install(actor("bob"), "workspace", skill_zip())
+    assert [v.id for v in await svc.list(actor("dave"), "workspace")] == [view.id], "新建的默认全体成员可用"
+    await env.access.set_users("alice", "ws1", f"skill:{view.id}", [])  # 新建的默认全体成员，先收窄才测得出授权
     assert await svc.list(actor("dave"), "workspace") == ()
     with pytest.raises(SkillNotFound):
         await svc.get(actor("dave"), view.id)
@@ -96,11 +98,24 @@ async def test_draft_update_and_publish_state_machine(env):
 
 async def test_version_falls_back_to_digest_prefix(env):
     svc = env.skills.service
-    view = await svc.install(actor("carol"), "personal", skill_zip())
-    release = await svc.publish(actor("carol"), view.id)
+    view = await svc.install(actor("bob"), "workspace", skill_zip())
+    release = await svc.publish(actor("bob"), view.id)
     assert release.version == view.draft_digest[:12]
-    reverted = await svc.replace_draft(actor("carol"), view.id, skill_zip())
+    reverted = await svc.replace_draft(actor("bob"), view.id, skill_zip())
     assert reverted.has_unpublished_changes is False
+
+
+async def test_personal_upload_publishes_and_reuses_versions(env):
+    svc = env.skills.service
+    view = await svc.install(actor("carol"), "personal", skill_zip(version="1.0.0", body="一"))
+    same_label = await svc.replace_draft(actor("carol"), view.id, skill_zip(version="1.0.0", body="二"),
+                                         scope="personal")
+    assert same_label.status == "published" and same_label.published_version == same_label.draft_digest[:12], \
+        "包里的版本号已经发布过、内容又变了，就按摘要编号"
+    back = await svc.replace_draft(actor("carol"), view.id, skill_zip(version="1.0.0", body="一"), scope="personal")
+    assert (back.published_version, back.has_unpublished_changes) == ("1.0.0", False), "换回旧包就用回旧版本"
+    _, releases = await svc.get(actor("carol"), view.id)
+    assert sorted(r.version for r in releases) == sorted(["1.0.0", same_label.draft_digest[:12]])
 
 
 async def test_one_tool_one_skill_across_scopes(env):

@@ -131,7 +131,7 @@ describe('openEventStream', () => {
     await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2));
     close();
     expect(events.map((e) => e.id)).toEqual(['5']);
-    expect(pieces).toEqual([{ runId: 'run-1', step: 1, offset: 0, text: '短剧' }]);
+    expect(pieces).toEqual([{ runId: 'run-1', step: 1, offset: 0, text: '短剧', tools: [] }]);
     expect(calls[1]).toBe('5');
   });
 

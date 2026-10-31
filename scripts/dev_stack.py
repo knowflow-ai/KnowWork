@@ -6,16 +6,22 @@
 
 数据、密钥与日志都在仓库根的 .dev/ 下（已在 .gitignore），重启后数据保留；删掉 .dev/ 即回到全新状态。
 模型不在这里配：初始化后在「管理 → 模型」里添加厂商与模型，模型别名填 default（宿主请求的就是这个名字）。
+
+改了代码不用重启整套（见 watched）：前端是 Vite 热更新；业务服务与 worker 在 server/src、扩展包源码里的 .py 改了
+自动重启；宿主在 runtime-host/plugins 下的文件改了自动重启。runtime-host/profile/ 是启动时拷过去的，改了要重启整套。
 """
 
 import os
 import secrets
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import time
 import urllib.request
+from importlib.metadata import entry_points
+from importlib.util import find_spec
 from pathlib import Path
 
 import pgserver
@@ -26,7 +32,7 @@ PINNED_NODE_BIN = Path.home() / ".nvm/versions/node/v24.18.0/bin"
 
 
 def _node_bin() -> Path:
-    """Node 所在目录：KNOWWORK_NODE_BIN 优先；本机有 nvm 装的固定版本就用它；否则取 PATH 里的 node（要 22.19 以上）。"""
+    """Node 所在目录：KNOWWORK_NODE_BIN 优先；本机有 nvm 装的固定版本就用它；否则取 PATH 里的 node（要 24.9 以上，DSH 0.2.2 起的要求）。"""
     configured = os.environ.get("KNOWWORK_NODE_BIN")
     if configured:
         return Path(configured)
@@ -34,7 +40,7 @@ def _node_bin() -> Path:
         return PINNED_NODE_BIN
     found = shutil.which("node")
     if found is None:
-        sys.exit("找不到 node：请安装 Node.js 22.19 以上，或用 KNOWWORK_NODE_BIN 指定所在目录")
+        sys.exit("找不到 node：请安装 Node.js 24.9 以上，或用 KNOWWORK_NODE_BIN 指定所在目录")
     return Path(found).parent
 
 
@@ -69,6 +75,27 @@ def start(name: str, args: list[str], *, cwd: Path, env: dict) -> subprocess.Pop
     with open(DEV / "logs" / f"{name}.log", "ab") as log:  # 子进程继承文件描述符，父进程这边可以关
         return subprocess.Popen(args, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT,
                                 start_new_session=True)
+
+
+def watched(command: list[str], paths: list[Path], *, python_only: bool) -> list[str]:
+    """改了代码自动重启这个进程：用 watchfiles（uvicorn[standard] 自带）包一层，看到改动先发 SIGINT 让它正常收尾，
+    再起新的。起不来（例如改到一半有语法错）不会带倒整套，等下一次改动再起。
+
+    - 业务服务重启时，进行中的回答接得上：事件泵起来后从库里最后一条接着读宿主的事件，页面的流断一下自己重连；
+    - worker 正在跑的任务被打断，租约到期后重新领；
+    - 宿主重启时正在进行的回答会中断，要重发（宿主的会话状态在它自己进程里）。"""
+    return [sys.executable, "-m", "watchfiles", "--target-type", "command", "--filter",
+            "python" if python_only else "default", "--sigint-timeout", "15", shlex.join(command), *map(str, paths)]
+
+
+def server_sources() -> list[Path]:
+    """业务服务与 worker 的源码：开源的 server/src，加上装了的扩展包（入口组 knowwork.extensions）的源码目录。"""
+    found = [ROOT / "server/src"]
+    for entry in entry_points(group="knowwork.extensions"):
+        spec = find_spec(entry.module.split(".")[0])
+        if spec is not None and spec.submodule_search_locations:
+            found.extend(Path(p) for p in spec.submodule_search_locations)
+    return list(dict.fromkeys(found))
 
 
 def wait_healthy(url: str, proc: subprocess.Popen, timeout: float = 90.0) -> bool:
@@ -108,7 +135,8 @@ def main() -> int:
 
     home = DEV / "dsh"
     install_profile(home)
-    host = start("runtime-host", [str(ROOT / "runtime-host/node_modules/.bin/dsh"), "--profile", "knowwork-host"],
+    host = start("runtime-host", watched([str(ROOT / "runtime-host/node_modules/.bin/dsh"), "--profile", "knowwork-host"],
+                                         [ROOT / "runtime-host/plugins"], python_only=False),
                  cwd=ROOT / "runtime-host", env={
                      **base_env, "DSH_HOME": str(home), "KNOWWORK_HOST_TOKEN": host_token,
                      "KNOWWORK_HOST_PORT": str(HOST_PORT), "KNOWWORK_MODEL": "default",
@@ -123,16 +151,21 @@ def main() -> int:
         "KNOWWORK_HOST_TOKEN": host_token, "KNOWWORK_BLOB_DIR": str(DEV / "blobs"),
         # 会话沙箱：用本机 Docker（Docker Desktop），镜像先构建：
         #   docker build -f deploy/docker/sandbox.Dockerfile -t knowwork-sandbox:dev .
+        # 流式执行（KNOWWORK_SANDBOX_SSH_ENABLED=true，照外面的环境变量传进来）要用这份 Dockerfile 新构建的镜像；
+        # 宿主在本机用 macOS 自带的 ssh 与 nc。
         "KNOWWORK_SANDBOX_DOCKER_ENABLED": os.environ.get("KNOWWORK_SANDBOX_DOCKER_ENABLED", "true"),
         "KNOWWORK_SANDBOX_IMAGE": os.environ.get("KNOWWORK_SANDBOX_IMAGE", "knowwork-sandbox:dev")}
-    server = start("server", [sys.executable, "-m", "knowwork_server"], cwd=ROOT / "server", env={
+    sources = server_sources()
+    server = start("server", watched([sys.executable, "-m", "knowwork_server"], sources, python_only=True),
+                   cwd=ROOT / "server", env={
         **app_env, "KNOWWORK_HOST_BASE_URL": f"http://127.0.0.1:{HOST_PORT}",
         "KNOWWORK_PUBLIC_HOST": "127.0.0.1", "KNOWWORK_PUBLIC_PORT": str(PUBLIC_PORT),
         "KNOWWORK_INTERNAL_HOST": "127.0.0.1", "KNOWWORK_INTERNAL_PORT": str(INTERNAL_PORT),
         "KNOWWORK_PUBLIC_BASE_URL": f"http://127.0.0.1:{WEB_PORT}", "KNOWWORK_COOKIE_SECURE": "false"})
     if not wait_healthy(f"http://127.0.0.1:{PUBLIC_PORT}/health", server):
         print("业务服务没能起来，看 .dev/logs/server.log")
-    worker = start("worker", [sys.executable, "-m", "knowwork_server.ops.worker"], cwd=ROOT / "server", env=app_env)
+    worker = start("worker", watched([sys.executable, "-m", "knowwork_server.ops.worker"], sources, python_only=True),
+                   cwd=ROOT / "server", env=app_env)
     web = start("web", [str(ROOT / "web/node_modules/.bin/vite"), "--host", "127.0.0.1", "--port", str(WEB_PORT),
                         "--strictPort"], cwd=ROOT / "web", env=base_env)
     processes = {"runtime-host": host, "server": server, "worker": worker, "web": web}

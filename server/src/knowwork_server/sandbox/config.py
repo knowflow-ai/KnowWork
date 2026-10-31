@@ -1,10 +1,13 @@
-"""沙箱配置（环境变量前缀 KNOWWORK_SANDBOX_），口径照抄 WeKnora 的 Docker 后端。
+"""沙箱配置（环境变量前缀 KNOWWORK_SANDBOX_）。
 
-- 默认关闭：`KNOWWORK_SANDBOX_DOCKER_ENABLED=true` 才开（对应 WeKnora 的 WEKNORA_SANDBOX_DOCKER_ENABLED）。
+- 默认关闭：`KNOWWORK_SANDBOX_DOCKER_ENABLED=true` 才开。
   能创建容器就等于能控制这个 daemon，本机 docker.sock 等同宿主机 root，所以要部署方明确打开；
 - daemon 地址留空时按 DOCKER_HOST → 当前 docker context → unix:///var/run/docker.sock 检测；
   远端 tcp:// 必须配 TLS 证书目录（ca.pem、cert.pem、key.pem）；
-- 网络只允许 bridge（可出网）或 none（断网），默认 bridge；allow_internet=false 时一律 none。
+- 网络只允许 bridge（可出网）或 none（断网），默认 bridge；allow_internet=false 时一律 none；
+- 流式执行（ssh_enabled，默认关）：宿主的官方 SSH 执行环境经 ssh_pipe 连进会话容器里的 `sshd -i`，
+  执行中能来回通话的官方能力（PTC 控制管道、终端、stdin/stdout 管道）才用得了。要沙箱镜像带 sshd 与
+  和宿主同一 DSH 版本的 dsh-ssh 辅助程序；打开后容器多加 SYS_CHROOT（sshd 的权限分离必须 chroot）。
 """
 
 import hashlib
@@ -40,7 +43,7 @@ class SandboxSettings(BaseSettings):
     network_mode: str = "bridge"
     allow_internet: bool = True
     runtime: str = Field(default="", pattern=r"^([A-Za-z0-9][A-Za-z0-9_.-]{0,63})?$")
-    # 命令与文件操作默认的执行账号：root（WeKnora 口径），也可指定 uid[:gid]（镜像里保留 uid 1000 的 user）
+    # 命令与文件操作默认的执行账号：root，也可指定 uid[:gid]（镜像里保留 uid 1000 的 user）
     exec_user: str = Field(default="root", pattern=r"^(root|\d{1,10}(:\d{1,10})?)$")
 
     idle_ttl_seconds: int = Field(default=1800, ge=1)
@@ -52,6 +55,10 @@ class SandboxSettings(BaseSettings):
     max_input_bytes: int = Field(default=20 * MIB, ge=1)
     max_write_bytes: int = Field(default=1 * MIB, ge=1)
     max_concurrent_execs: int = Field(default=32, ge=1, le=512)
+
+    ssh_enabled: bool = False
+    # 同时开着的流式执行管道上限：每条占两个读写线程，一个打开的执行环境用一条
+    ssh_max_pipes: int = Field(default=64, ge=1, le=1024)
 
     @field_validator("network_mode")
     @classmethod
@@ -90,14 +97,18 @@ class ContainerPosture:
     pids_limit: int
     network_mode: str
     runtime: str
+    ssh: bool = False
 
     @classmethod
     def of(cls, settings: SandboxSettings) -> "ContainerPosture":
         return cls(image=settings.image.strip(), memory_bytes=settings.memory_bytes,
                    nano_cpus=int(settings.cpus * 1_000_000_000), pids_limit=settings.pids_limit,
-                   network_mode=settings.effective_network_mode, runtime=settings.runtime)
+                   network_mode=settings.effective_network_mode, runtime=settings.runtime,
+                   ssh=settings.ssh_enabled)
 
     @property
     def digest(self) -> str:
-        payload = json.dumps({"v": POSTURE_VERSION, **asdict(self)}, sort_keys=True)
+        # 没开流式执行时不写进摘要：摘要和以前一样，已有容器不因为多了这个字段而重建
+        fields = {key: value for key, value in asdict(self).items() if key != "ssh" or value}
+        payload = json.dumps({"v": POSTURE_VERSION, **fields}, sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()[:32]

@@ -3,6 +3,8 @@
 限制：包不超过 100MB、解压后不超过 200MB、文件不超过 256 个、
 单条压缩比不超过 200；拒绝路径穿越、绝对路径、符号链接、加密条目、重复路径；
 `SKILL.md` 只能在根目录或唯一的一级目录下，且全包只能有一个技能。
+声明的环境变量必须在 SKILL.md 正文或包里别的文本文件里出现过（声明了却从不读取的不予通过），
+免得管理员白填一份凭据。
 
 先看中央目录里声明的大小再读内容，声明与实际不符时 zipfile 自己会报 CRC/长度错误。
 """
@@ -10,6 +12,7 @@
 import hashlib
 import io
 import posixpath
+import re
 import stat
 import zipfile
 from dataclasses import dataclass
@@ -21,6 +24,7 @@ from .workflow_def import MAX_BYTES as MAX_WORKFLOW_BYTES
 from .workflow_def import WorkflowDefinition, parse_workflow
 
 IGNORED_PREFIXES = ("__MACOSX/",)
+MAX_SCANNED_BYTES = 4 * 1024 * 1024  # 找环境变量用到没有时，单个文件只看前这么多
 
 
 @dataclass(frozen=True)
@@ -146,11 +150,33 @@ def validate_skill_zip(content: bytes, limits: PackageLimits | None = None) -> V
             skill_info, prefix = _skill_root(entries)
             manifest = parse_skill_md(_read_skill_md(archive, skill_info))
             workflow = _read_workflow(archive, entries, prefix, manifest)
-            files = tuple(PackageFile(path=path[len(prefix):], size=info.file_size,
-                                      sha256=hashlib.sha256(archive.read(info)).hexdigest())
-                          for info, path in entries)
+            files: list[PackageFile] = []
+            unused = {spec.name for spec in manifest.env if not _mentions(manifest.body, spec.name)}
+            for info, path in entries:
+                data = archive.read(info)
+                files.append(PackageFile(path=path[len(prefix):], size=info.file_size,
+                                         sha256=hashlib.sha256(data).hexdigest()))
+                if unused and info is not skill_info:
+                    unused = {name for name in unused if not _mentions(_text_of(data), name)}
+            if unused:
+                name = min(unused)
+                raise PackageInvalid("env_unused", f"声明了环境变量 {name}，但技能包里没有用到它", file="SKILL.md",
+                                     field="env")
         except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, EOFError) as error:
             raise PackageInvalid("invalid_zip", "ZIP 内容损坏") from error
     return ValidatedPackage(manifest=manifest, archive=content, archive_digest=hashlib.sha256(content).hexdigest(),
                             content_digest=hashlib.sha256(manifest.body.encode()).hexdigest(),
-                            root_prefix=prefix, files=files, workflow=workflow)
+                            root_prefix=prefix, files=tuple(files), workflow=workflow)
+
+
+def _text_of(data: bytes) -> str:
+    """二进制文件（解不成 UTF-8 的）当作没用到任何环境变量。"""
+    try:
+        return data[:MAX_SCANNED_BYTES].decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
+def _mentions(text: str, name: str) -> bool:
+    """按整词找：$NAME、${NAME}、os.environ["NAME"]、process.env.NAME 都算；NAME_X 里的 NAME 不算。"""
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text) is not None

@@ -9,14 +9,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from .receipts import ReceiptStore
 from .registry import ToolRegistry, builtin_registry
-from .service import ToolAuditHook, ToolExecution, ToolService
+from .service import ToolAuditHook, ToolExecution, ToolNotes, ToolService
 from .tokens import ToolTokenSigner
 
 
 def build_tool_service(master_key: str, sessionmaker: async_sessionmaker, *, registry: ToolRegistry | None = None,
-                       token_ttl_seconds: int = 900, audit: ToolAuditHook | None = None) -> ToolService:
+                       token_ttl_seconds: int = 900, audit: ToolAuditHook | None = None,
+                       notes: ToolNotes | None = None) -> ToolService:
     return ToolService(registry or builtin_registry(), ToolTokenSigner.from_master_key(master_key),
-                       ReceiptStore(sessionmaker), token_ttl_seconds=token_ttl_seconds, audit=audit)
+                       ReceiptStore(sessionmaker), token_ttl_seconds=token_ttl_seconds, audit=audit, notes=notes)
 
 
-__all__ = ["ToolAuditHook", "ToolExecution", "ToolService", "build_tool_service"]
+__all__ = ["ToolAuditHook", "ToolExecution", "ToolNotes", "ToolService", "build_tool_service"]

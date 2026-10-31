@@ -60,7 +60,8 @@ curl -X POST https://kw.example.com/api/v1/knowledge/search \
 
 可选参数：`knowledge_bases`（只查这几个库，写成列出知识库时返回的 id）、`mode`（`hybrid` 默认，`semantic`
 只按语义，`keyword` 只按字面，适合编号、型号）、`folders`、`tags`、`filters`（按元数据字段筛，字段名与可选值见
-列出知识库的结果）。
+列出知识库的结果）、`multi_hop`、`visual`（这一次开不开多跳检索、视觉检索，`true` 或 `false`；不填按知识库自己的设置。
+只对列出知识库时 `routes` 里有这一项的库起作用，知识库设成检索时关闭的打不开）。
 
 结果里每个片段带 `source_id`、`doc_ref` 和 `span_ref`。要看上下文或整篇原文，接着调阅读：
 

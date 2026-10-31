@@ -117,3 +117,34 @@ async def test_stat_read_write_round_trip_and_error_codes():
 
         listing = await client.post(f"{PREFIX}/list", headers=_auth(), json={"path": "/sessions/s1/none"})
         assert listing.status_code == 400 and listing.json()["error"]["code"] == "sandbox_error"
+
+
+async def test_exec_adds_env_of_loaded_skills_and_masks_their_values_in_output():
+    class Echoing(FakeSandbox):
+        async def exec(self, ws, sid, argv, *, timeout_seconds, max_output_bytes, workdir, env):
+            await super().exec(ws, sid, argv, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes,
+                               workdir=workdir, env=env)
+            return ExecResult(exit_code=0, stdout=f"key={env.get('REPORT_API_KEY')}\n", stderr="x1 9",
+                              timed_out=False, truncated=False)
+
+    asked: list[tuple] = []
+
+    async def skill_env(workspace_id, user_id, loaded):
+        asked.append((workspace_id, user_id, tuple(loaded)))
+        return {"REPORT_API_KEY": "sk-live-123456", "SHORT": "x1"}
+
+    sandbox = Echoing()
+    app = FastAPI()
+    app.include_router(build_internal_router(sandbox, FakeTokens(), lambda _u, _w: True, max_timeout_seconds=600,
+                                             skill_env=skill_env))
+    body = {"argv": ["bash", "-c", "printenv"], "cwd": "/sessions/s1", "timeoutMs": 1000, "maxOutputBytes": 1024}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://internal") as client:
+        plain = await client.post(f"{PREFIX}/exec", headers=_auth(), json=body)
+        loaded = await client.post(f"{PREFIX}/exec", headers=_auth(), json={**body, "skills": ["report-sync"]})
+        bad = await client.post(f"{PREFIX}/exec", headers=_auth(), json={**body, "skills": ["../x"]})
+    assert plain.json()["stdout"] == "key=None\n"
+    assert asked == [("ws1", "u1", ("report-sync",))], "没报技能时不去取环境变量"
+    assert sandbox.calls[1][5]["REPORT_API_KEY"] == "sk-live-123456", "命令里带上了值"
+    assert loaded.json()["stdout"] == "key=******\n", "交回去的输出里不能有原文"
+    assert loaded.json()["stderr"] == "x1 9", "太短的值不替换"
+    assert bad.status_code == 400

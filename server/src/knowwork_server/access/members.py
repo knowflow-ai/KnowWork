@@ -82,7 +82,7 @@ class MembersMixin(WorkspacesMixin):
         return MemberView(user_id, new_role)
 
     async def remove_member(self, actor_id: str, workspace_id: str, user_id: str) -> None:
-        """移出成员：同时移出本空间的部门与用户组，撤销直接授给他的权限。"""
+        """移出成员：同时移出本空间的部门与用户组，撤销直接授给他的权限，再让扩展清理他在本空间的数据。"""
         self._require(actor_id, workspace_id, Action.EDIT)
         async with self._tx(workspace_id) as tx:
             member = await self._member(tx.session, workspace_id, user_id, lock=True)
@@ -94,6 +94,8 @@ class MembersMixin(WorkspacesMixin):
                 await tx.session.execute(delete(table).where(table.workspace_id == workspace_id,
                                                              table.user_id == user_id))
             await tx.remove_rules(*await store.rules_touching(tx.session, workspace_id, R.user_key(user_id)))
+            for hook in self._member_removed:
+                await hook(tx.session, workspace_id, user_id)
 
     def _require_role_manager(self, actor_id: str, workspace_id: str, role: str) -> None:
         """管理成员需要 workspace:edit；涉及所有者角色还需要 workspace:owner。"""

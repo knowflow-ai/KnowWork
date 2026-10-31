@@ -231,3 +231,25 @@ async def test_rolled_back_transaction_does_not_touch_engine(service, ws, monkey
     with pytest.raises(RuntimeError):
         await service.grant("alice", ws, "user:dave", "skill:s1", "use")
     assert not service.check("dave", ws, "skill:s1", "use")
+
+
+async def test_set_users_replaces_only_the_use_level(service, ws):
+    """「给谁用」：整体换掉一个资源上 use 档的授权；edit、owner 档不动也不降；对象必须存在；要能管授权的人才能改。"""
+    group = await service.create_group("alice", ws, "法务")
+    await service.grant("bob", ws, "user:dave", "skill:s1", "use")
+    await service.grant("bob", ws, "user:carol", "skill:s1", "edit")
+    users = await service.set_users("bob", ws, "skill:s1", ["role:editor", f"group:{group}", "user:carol"])
+    assert users == tuple(sorted(["role:editor", f"group:{group}"])), "carol 已经是 edit，不降成 use"
+    grants = {(g.subject, g.action) for g in await service.list_grants("bob", ws, resource="skill:s1")}
+    assert grants == {("role:editor", "use"), (f"group:{group}", "use"), ("user:carol", "edit")}, "dave 那条被换掉"
+    assert service.check("dave", ws, "skill:s1", "use"), "成员角色覆盖到 dave"
+    await service.set_users("bob", ws, "skill:s1", [])
+    assert {(g.subject, g.action) for g in await service.list_grants("bob", ws, resource="skill:s1")} == {
+        ("user:carol", "edit")}
+    assert not service.check("dave", ws, "skill:s1", "use")
+    await service.set_users("bob", ws, "tool:mcp__gh__*", ["role:editor"])  # MCP 服务按前缀授
+    assert service.check("dave", ws, "tool:mcp__gh__search", "use")
+    with pytest.raises(NotFound):
+        await service.set_users("bob", ws, "skill:s1", ["user:nobody"])
+    with pytest.raises(AccessDenied):
+        await service.set_users("dave", ws, "skill:s1", ["role:editor"])

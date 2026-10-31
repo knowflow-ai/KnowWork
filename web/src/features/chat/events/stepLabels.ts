@@ -1,8 +1,9 @@
 /**
  * 步骤的人话说明：执行过程里显示「检索知识库：微短剧 代表作品」，而不是函数名 knowledge_search。
- * MCP 工具（mcp__服务名__工具名）显示成「服务名 · 工具名」；其余不认识的工具照原名显示，
- * 目标取参数里最像目标的那一项。
+ * 扩展提供的工具按它在插槽 chat.tools 里登记的名字显示；MCP 工具（mcp__服务名__工具名）显示成「服务名 · 工具名」；
+ * 其余不认识的工具照原名显示，目标取参数里最像目标的那一项。
  */
+import { slotItems } from '../../../slots/registry';
 import { describeArguments } from '../../../utils/format';
 import type { StepView } from './types';
 
@@ -54,12 +55,15 @@ function presentedNames(args: Record<string, unknown>): string {
 
 const MAX_TARGET = 80;
 
-const MCP_NAME = /^mcp__([a-z][a-z0-9-]*)__(.+)$/;
+// 企业 MCP 的工具名带 ent_ 前缀（mcp__ent_gitlab__search），是内部区分用的，不给人看
+const MCP_NAME = /^mcp__(?:ent_)?([a-z][a-z0-9-]*)__(.+)$/;
+
+const extensionTool = (name: string) => slotItems('chat.tools').find((tool) => tool.name === name);
 
 /** 工具给人看的名字：执行步骤与审批卡片共用。 */
 export function toolLabel(name: string): string {
   const mcp = MCP_NAME.exec(name);
-  return LABELS[name] ?? (mcp ? `${mcp[1]} · ${mcp[2]}` : name);
+  return LABELS[name] ?? extensionTool(name)?.label ?? (mcp ? `${mcp[1]} · ${mcp[2]}` : name);
 }
 
 export function stepLabel(step: StepView): string {
@@ -73,7 +77,7 @@ function clipLine(value: string): string {
 }
 
 export function stepTarget(step: StepView): string {
-  const key = TARGET_KEY[step.name];
+  const key = TARGET_KEY[step.name] ?? extensionTool(step.name)?.target;
   if (key || step.name === 'present') {
     try {
       const args = JSON.parse(step.arguments) as Record<string, unknown>;

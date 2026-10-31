@@ -25,7 +25,7 @@ AUTH = {"authorization": f"Bearer {TOKEN}"}
 
 class Profiles:
     def __init__(self):
-        self.selections, self.fail, self.bound = [], False, {}
+        self.selections, self.fail, self.bindings = [], False, {}
 
     async def compile(self, conversation, selection=None):
         if self.fail:
@@ -34,11 +34,11 @@ class Profiles:
         return compile_profile(ProfileFacts(workspace_id=conversation.workspace_id, user_id=conversation.user_id,
                                             role="editor", member=True, selection=selection))
 
-    async def bound_version(self, conversation):
-        return self.bound.get(conversation.id)
+    async def bound(self, conversation):
+        return self.bindings.get(conversation.id)
 
     async def bind(self, conversation, profile):
-        self.bound[conversation.id] = profile.version
+        self.bindings[conversation.id] = profile
 
 
 def client(sessionmaker, profiles, attachments=None):
@@ -66,7 +66,8 @@ async def test_selection_reaches_compiler(sessionmaker):
         assert bad.status_code == 422
     last = profiles.selections[-1]
     assert last.skills == ("weekly-report",) and last.knowledge_bases == ("k1.ds1", "k2.*")
-    assert len(kernel.opened) == 2, "选择变了，本轮开始前以新配置恢复会话"
+    assert len(kernel.opened) == 1, "只是本轮选择变了：只改绑定，不重开宿主会话"
+    assert profiles.bindings[created["id"]].bound_knowledge == ("k1.ds1", "k2.*")
     await pump.close()
 
 
@@ -87,7 +88,8 @@ async def test_dropped_conditions_reach_the_profile(sessionmaker):
 
 
 async def test_mentions_become_the_turns_selection_and_reach_the_host(sessionmaker):
-    """@ 的知识库、目录整库查；@ 的文件、标签按库点名；技能进选择。名字交给宿主写进消息；插话时不写。"""
+    """@ 的知识库、目录整库查；@ 的文件、标签按库点名；技能进选择；MCP 服务不改选择、只交给宿主写进消息。
+    名字交给宿主写进消息；插话时不写。"""
     profiles = Profiles()
     http, pump, kernel = client(sessionmaker, profiles)
     mentions = [
@@ -95,6 +97,7 @@ async def test_mentions_become_the_turns_selection_and_reach_the_host(sessionmak
         {"type": "folder", "id": "财务/报销", "name": "财务/报销", "bases": ["builtin.kb7", "builtin.kb8"]},
         {"type": "document", "id": "kb2/d1", "name": "差旅办法.pdf", "base": "builtin.kb2", "base_name": "合同库"},
         {"type": "tag", "id": "简报", "name": "简报", "base": "builtin.kb2", "base_name": "合同库"},
+        {"type": "mcp", "id": "context7", "name": "Context7"},
         {"type": "skill", "id": "weekly-report", "name": "周报"},
     ]
     async with http:
@@ -102,7 +105,8 @@ async def test_mentions_become_the_turns_selection_and_reach_the_host(sessionmak
         url = f"{CONV}/{created['id']}/messages"
         assert (await http.post(url, headers=AUTH, json={"text": "报销标准", "mentions": mentions})).status_code == 202
         for bad in ({"type": "document", "id": "kb2/d1", "name": "x"}, {"type": "skill", "id": "周 报", "name": "x"},
-                    {"type": "knowledge_base", "id": "kb1", "name": "x"}, {"type": "folder", "id": "a", "name": "a"}):
+                    {"type": "knowledge_base", "id": "kb1", "name": "x"}, {"type": "folder", "id": "a", "name": "a"},
+                    {"type": "mcp", "id": "mcp__x__y", "name": "x"}):
             assert (await http.post(url, headers=AUTH, json={"text": "x", "mentions": [bad]})).status_code == 422, bad
     chosen = profiles.selections[-1].normalized()
     assert chosen.knowledge_bases == ("builtin.kb1", "builtin.kb2", "builtin.kb7", "builtin.kb8")
@@ -112,7 +116,7 @@ async def test_mentions_become_the_turns_selection_and_reach_the_host(sessionmak
     assert [(m.type, m.id, m.name, m.base, m.base_name) for m in turn.mentions] == [
         ("knowledge_base", "builtin.kb1", "制度库", None, None), ("folder", "财务/报销", "财务/报销", None, None),
         ("document", "kb2/d1", "差旅办法.pdf", "builtin.kb2", "合同库"), ("tag", "简报", "简报", "builtin.kb2", "合同库"),
-        ("skill", "weekly-report", "周报", None, None)]
+        ("mcp", "context7", "Context7", None, None), ("skill", "weekly-report", "周报", None, None)]
     await pump.close()
 
 
@@ -147,7 +151,7 @@ async def test_chosen_language_reaches_the_host(sessionmaker):
 
 
 async def test_answer_mode_reaches_the_host(sessionmaker):
-    """回答方式随消息带给宿主，不传是智能体。快速问答只检索知识库：带附件拒收，选的技能与 @ 的技能这一轮不算。"""
+    """回答方式随消息带给宿主，不传是智能体。快速问答只查知识库：带附件拒收，选的技能与 @ 的技能这一轮不算。"""
     profiles = Profiles()
     http, pump, kernel = client(sessionmaker, profiles, attachments=Files())
     mentions = [{"type": "knowledge_base", "id": "builtin.kb1", "name": "制度库"},

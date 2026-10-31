@@ -248,7 +248,7 @@ function attachmentsOf(value: unknown): readonly AttachmentChip[] {
   });
 }
 
-const MENTION_TYPES: readonly MentionType[] = ['knowledge_base', 'folder', 'document', 'tag', 'skill'];
+const MENTION_TYPES: readonly MentionType[] = ['knowledge_base', 'folder', 'document', 'tag', 'mcp', 'skill'];
 
 /** 用户消息 @ 的东西：服务端从宿主写的说明块里取出来的类型、id、名字与所在知识库。 */
 function mentionsOf(value: unknown): readonly Mention[] {

@@ -59,16 +59,21 @@ class ToolExecution:
 
 
 ToolAuditHook = Callable[[ToolExecution], Awaitable[None]]
+# 交给宿主写进系统提示的一段说明（和工具的使用规则放在一起），例如「这些服务你还没连接」；没有就返回 None
+ToolNotes = Callable[[ToolContext], Awaitable[str | None]]
+MAX_NOTES = 1000
 
 
 class ToolService:
     def __init__(self, registry: ToolRegistry, signer: ToolTokenSigner, receipts: ReceiptStore, *,
-                 token_ttl_seconds: int = 900, audit: ToolAuditHook | None = None) -> None:
+                 token_ttl_seconds: int = 900, audit: ToolAuditHook | None = None,
+                 notes: ToolNotes | None = None) -> None:
         self._registry = registry
         self._signer = signer
         self._receipts = receipts
         self._ttl = token_ttl_seconds
         self._audit = audit  # 可选；回调失败只记日志，不影响这次调用
+        self._notes = notes
 
     async def discard_session(self, session_id: str) -> None:
         await self._receipts.discard_session(session_id)
@@ -99,8 +104,21 @@ class ToolService:
         return claims
 
     async def list_tools(self, claims: ToolTokenClaims) -> list[ToolSpec]:
-        specs = await self._registry.available(_context(claims))
-        return [spec for spec in specs if spec.name in claims.tools]
+        """交给宿主的本会话工具描述：宿主每个会话开始时拉一次，带 tailor 的按会话裁剪。"""
+        ctx = _context(claims)
+        specs = await self._registry.available(ctx)
+        return [await _tailored(ctx, spec) for spec in specs if spec.name in claims.tools]
+
+    async def notes(self, claims: ToolTokenClaims) -> str | None:
+        """随工具清单交给宿主的一段说明；出错只记日志，不影响工具清单。"""
+        if self._notes is None:
+            return None
+        try:
+            text = await self._notes(_context(claims))
+        except Exception:
+            log.exception("tool notes failed; listing tools without them")
+            return None
+        return text[:MAX_NOTES] if text else None
 
     async def execute(self, claims: ToolTokenClaims, request: ExecuteRequest) -> ActionResult:
         ctx = _context(claims)
@@ -180,6 +198,17 @@ def _arguments_digest(arguments: dict[str, Any]) -> str:
 
 def _context(claims: ToolTokenClaims) -> ToolContext:
     return ToolContext(workspace_id=claims.workspace_id, session_id=claims.session_id, user_id=claims.user_id)
+
+
+async def _tailored(ctx: ToolContext, spec: ToolSpec) -> ToolSpec:
+    """裁剪失败就给完整描述：多几个用不上的参数不碍事，执行时照样校验，不能因此整个会话没有这个工具。"""
+    if spec.tailor is None:
+        return spec
+    try:
+        return await spec.tailor(ctx, spec)
+    except Exception:
+        log.exception("tailoring tool %s for session %s failed", spec.name, ctx.session_id)
+        return spec
 
 
 def _validate_call(spec: ToolSpec, request: ExecuteRequest) -> None:

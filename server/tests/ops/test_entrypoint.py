@@ -1,4 +1,4 @@
-"""api 入口：按 Docker 套接字属组补附加组再降权（照抄 WeKnora 的 grant_docker_sock_to_appuser，不 chmod 套接字）。"""
+"""api 入口：按 Docker 套接字属组补附加组再降权（不 chmod 套接字）。"""
 
 import os
 import stat

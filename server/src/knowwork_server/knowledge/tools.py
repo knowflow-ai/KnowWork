@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ..tools.registry import BuiltinTool, ToolContext, ToolFailure, ToolSpec
+from ..tools.registry import AGENT_AND_QUICK, BuiltinTool, ToolContext, ToolFailure, ToolSpec
 from .bases import Selection, base_id
 from .citation_store import CitationStore
 from .errors import KnowledgeError
@@ -75,7 +75,7 @@ DOCUMENTS_SCHEMA = {
 SEARCH_SCHEMA = {
     "type": "object",
     "properties": {
-        # 写法照 WeKnora 的 search_knowledge：语义检索按意思打分，堆关键词反而不准
+        # 语义检索按意思打分，堆关键词反而不准
         "query": {"type": "string", "description": "检索词，1 到 1000 字。hybrid、semantic 写成一句完整的问题，说清对象和想知道"
                                                    "什么，不要堆关键词；keyword 写要原样命中的词"},
         "top_n": {"type": "integer", "description": "返回条数，1 到 20，默认 8"},
@@ -103,10 +103,18 @@ SEARCH_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        # 多加的召回路，和语义、关键词的结果合在一起排；不写按知识库自己的默认。会话里没有能开的库时交给宿主的描述里
+        # 去掉（见 route_tailor），开源版没装扩展、没建索引时模型看不到
+        "multi_hop": {"type": "boolean", "description": "多跳检索：要把几份文档里的内容串起来才答得上（谁和谁什么关系、"
+                                                        "一件事的前因后果、跨文档比较）时设 true，每次多花几秒，一般问题"
+                                                        "不用开。只对知识库目录里标了「可开：多跳检索」的库起作用"},
+        "visual": {"type": "boolean", "description": "视觉检索：要找的是图表、版式、扫描件、截图里的内容时设 true。只对知识库"
+                                                     "目录里标了「可开：视觉检索」的库起作用"},
     },
     "required": ["query"],
     "additionalProperties": False,
 }
+ROUTE_PARAMS = ("multi_hop", "visual")
 
 READ_SCHEMA = {
     "type": "object",
@@ -284,8 +292,17 @@ def knowledge_tools(service: KnowledgeService, citations: CitationStore, *,
     async def bases_of(ctx: ToolContext) -> tuple[str, ...] | None:
         return (await turn_scope(ctx)).bases
 
+    async def route_tailor(ctx: ToolContext, spec: ToolSpec) -> ToolSpec:
+        """会话开始时定 knowledge_search 带不带 multi_hop、visual：这个会话能查的库里有能开的才带。"""
+        caller = await service.caller(ctx.workspace_id, ctx.user_id)
+        listing = await service.bases(caller, bases=await bases_of(ctx))
+        routes = {route for listed in listing.bases for route in listed.info.routes}
+        return _without_params(spec, frozenset(ROUTE_PARAMS) - routes)
+
     fetch = (fetch_tool(service, citations, sandbox, catalog_of=catalog_of, turn_bases=bases_of),) \
         if sandbox is not None else ()
+    # 快速问答也给前四个只读工具（answer_modes）：检索之外读得到原文、看得到库里有什么；拉进工作区的 knowledge_fetch
+    # 要沙箱，只在智能体里
     return (
         BuiltinTool(ToolSpec(SEARCH_NAME, "在本轮可查的知识库里检索。结果按文档分组：每份文档给一次 source_id、"
                                           "doc_ref、标题和元数据 metadata（字段：值），results 里是命中的片段，带引用编号 "
@@ -294,19 +311,22 @@ def knowledge_tools(service: KnowledgeService, citations: CitationStore, *,
                                           "报错码这类才改用 keyword。按标题或文件名找文档用 knowledge_documents。"
                                           "知识库目录里「可筛选」列了每个库能按哪些字段筛；要看可选值、标签集先调 "
                                           "knowledge_bases。",
-                             SEARCH_SCHEMA, "read", guidance=CITATION_GUIDANCE, concurrent=True), search),
+                             SEARCH_SCHEMA, "read", guidance=CITATION_GUIDANCE, concurrent=True,
+                             answer_modes=AGENT_AND_QUICK, tailor=route_tailor), search),
         BuiltinTool(ToolSpec(READ_NAME, f"按文档引用阅读原文，单次最多 {MAX_READ_CHARS} 字，用 next_cursor 续读。"
                                         "长文档先 outline=true 看目录，再用 section 填目录里的编号读那一节；编号以这次"
                                         "拿到的目录为准。回答引用时写段落的 [ref]。", READ_SCHEMA, "read",
-                             guidance=CITATION_GUIDANCE, concurrent=True),
+                             guidance=CITATION_GUIDANCE, concurrent=True, answer_modes=AGENT_AND_QUICK),
                     read),
         BuiltinTool(ToolSpec(BASES_NAME, "查看知识库的说明、元数据字段（类型、可选值）和标签，写 knowledge_search 的 "
-                                         "filters、tags 之前用。", BASES_SCHEMA, "read", concurrent=True), bases),
-        # 照 WeKnora 的 list_documents：看库里有哪些文档、按名字找文档。说清是知识库里的，免得和会话附件、工作区文件混
+                                         "filters、tags 之前用。", BASES_SCHEMA, "read", concurrent=True,
+                             answer_modes=AGENT_AND_QUICK), bases),
+        # 看库里有哪些文档、按名字找文档。说清是知识库里的，免得和会话附件、工作区文件混
         BuiltinTool(ToolSpec(DOCUMENTS_NAME, "列出一个知识库里的文档（最近更新的在前），可以按标题或文件名里的字找。"
                                              "用来看库里有哪些文档、按名字找某份文档；doc_ref 交给 knowledge_read 读，"
                                              "outline 为 true 的可以先看目录。这是知识库里的文档，不是会话里上传的附件或"
-                                             "工作区里的文件。", DOCUMENTS_SCHEMA, "read", concurrent=True),
+                                             "工作区里的文件。", DOCUMENTS_SCHEMA, "read", concurrent=True,
+                             answer_modes=AGENT_AND_QUICK),
                     documents),
         *fetch,
     )
@@ -331,6 +351,14 @@ async def _guard(awaitable):
         raise ToolFailure(str(error)) from error
 
 
+def _without_params(spec: ToolSpec, names: frozenset[str]) -> ToolSpec:
+    if not names:
+        return spec
+    schema = spec.input_schema
+    properties = {key: value for key, value in schema["properties"].items() if key not in names}
+    return replace(spec, input_schema={**schema, "properties": properties})
+
+
 def _base(listed) -> dict:
     info = listed.info
     base: dict[str, Any] = {"id": listed.id, "name": info.name}
@@ -338,6 +366,8 @@ def _base(listed) -> dict:
         base["description"] = info.description
     if listed.filterable:
         base["fields"] = [field.model_dump(exclude_defaults=True) | {"type": field.type} for field in info.fields]
+    if info.routes:  # 这个库能开的检索方式，同 knowledge_search 的同名参数
+        base["routes"] = list(info.routes)
     return base
 
 
@@ -403,7 +433,13 @@ def _search_options(arguments: dict[str, Any]) -> SearchOptions:
     except (ValidationError, TypeError) as error:
         raise ToolFailure("filters 不合法：每个条件要有 field；in 用 values 给候选值，其余用 value") from error
     return SearchOptions(mode=str(arguments.get("mode") or "hybrid"), folders=_strings(arguments.get("folders")),
-                         tags=_strings(arguments.get("tags")), filters=filters)
+                         tags=_strings(arguments.get("tags")), filters=filters,
+                         multi_hop=_flag(arguments.get("multi_hop")), visual=_flag(arguments.get("visual")))
+
+
+def _flag(value: Any) -> bool | None:
+    """开关参数（执行前已按 Schema 校验过是布尔）：没给是 None，按知识库自己的默认。"""
+    return value if isinstance(value, bool) else None
 
 
 async def _chunk_of(citations: CitationStore, workspace_id: str, catalog_id: str, number: Any, source_id: str,
@@ -512,7 +548,7 @@ def _section(evidence: Evidence) -> str | None:
 
 def _grouped(evidence: Sequence[Evidence], numbers: Sequence[int | None],
              seen: frozenset[int]) -> list[dict[str, Any]]:
-    """检索结果按文档分组（照 WeKnora 的 writeKnowledgeMetadataHeader：文档一层的信息每份只写一次）。
+    """检索结果按文档分组（文档一层的信息每份只写一次）。
     原来每条片段都带一遍知识源、知识库、文档引用、标题与元数据，占了结果的三成多。文档按最靠前那条命中的
     名次排，文档里的片段按名次排；这一轮给过原文的片段（seen）只列编号。"""
     documents: dict[tuple[str, str], dict[str, Any]] = {}

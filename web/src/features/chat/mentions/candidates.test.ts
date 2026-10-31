@@ -39,6 +39,10 @@ const OPTIONS: MentionOptions = {
       pinnable: false,
     },
   ],
+  services: [
+    { name: 'context7', title: 'Context7', tools: 2, status: 'ready' },
+    { name: 'gitlab', title: 'GitLab', tools: 8, status: 'connected' },
+  ],
   skills: [{ name: 'weekly-report', description: '写周报' }],
 };
 
@@ -73,6 +77,14 @@ describe('候选', () => {
     expect(groupCandidates('tags', OPTIONS, []).map((c) => c.mention)).toEqual([
       { type: 'tag', id: '简报', name: '简报', base: 'b.kb1', baseName: '报销制度' },
     ]);
+  });
+
+  it('MCP 组：id 是服务标识（工具名前缀那段），名字是服务名称，小字写工具数与状态', () => {
+    expect(groupCandidates('services', OPTIONS, []).map((c) => [c.mention, c.detail])).toEqual([
+      [{ type: 'mcp', id: 'context7', name: 'Context7' }, '2 个工具 · 可以直接用'],
+      [{ type: 'mcp', id: 'gitlab', name: 'GitLab' }, '8 个工具 · 已连接'],
+    ]);
+    expect(sections(OPTIONS, [], 'git', null).map((s) => s.group)).toEqual(['services']);
   });
 
   it('直接输入时跨组查，每组露前几项；进了组就是这一组的全部；文件用服务端搜到的，不再筛', () => {

@@ -6,7 +6,7 @@
 import { createServer } from 'node:http'
 
 /**
- * @param {{ toolsByToken: Record<string, object[]>, execute?: (call: object) => ({ status?: number, body: object } | undefined | Promise<{ status?: number, body: object } | undefined>) }} options
+ * @param {{ toolsByToken: Record<string, object[]>, notes?: string, execute?: (call: object) => ({ status?: number, body: object } | undefined | Promise<{ status?: number, body: object } | undefined>) }} options
  */
 export async function startToolsStub(options) {
   const requests = []
@@ -20,7 +20,9 @@ export async function startToolsStub(options) {
     const reply = (status, payload) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)) }
     const tools = options.toolsByToken[token]
     if (tools === undefined) return reply(401, { error: { code: 'unauthorized', message: '令牌无效' } })
-    if (req.method === 'GET' && req.url.endsWith('/list')) return reply(200, { tools })
+    if (req.method === 'GET' && req.url.endsWith('/list')) {
+      return reply(200, { tools, ...(options.notes === undefined ? {} : { notes: options.notes }) })
+    }
     if (req.method === 'POST' && req.url.endsWith('/execute')) {
       const custom = await options.execute?.(record)
       if (custom !== undefined) return reply(custom.status ?? 200, custom.body)

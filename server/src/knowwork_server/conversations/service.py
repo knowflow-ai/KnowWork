@@ -3,9 +3,11 @@
 - 建会话先写库再在宿主上打开；打开失败就删掉刚写的记录，不留孤儿；
 - 宿主侧会话丢失时（宿主重启）发送方以恢复方式重新打开，并先补发模型令牌再发送；
   同一会话的恢复按会话串行，并发发送不会互相撞上 session_busy；
-- 每轮开始时重算运行配置；版本与会话记住的上一版不同，就在本轮开始前释放宿主会话、
-  以新策略恢复打开（带上已完成的历史），再发送。本该「分叉出后继会话」，
-  宿主还没有分叉接口，所以先用恢复代替：同一会话 id、历史完整、换上新的工具策略与令牌；
+- 每轮开始时重算运行配置。宿主用得到的部分（工具、被拒工具、技能清单）与会话绑定的上一版不同，就在本轮开始前
+  释放宿主会话、以新策略恢复打开（带上已完成的历史），再发送。本该「分叉出后继会话」，宿主还没有分叉接口，
+  所以先用恢复代替：同一会话 id、历史完整、换上新的工具策略与令牌。只是本轮选择变了（@ 的知识库、文件、标签、技能，
+  撤掉的检索条件）只改绑定、不重开：检索工具执行时从绑定读范围，宿主用不到；而释放会话会结束它还在跑的后台任务、
+  结算待决的审批与提问（官方释放会话的行为），不能为每一轮的 @ 付这个代价；
 - 回答提问时宿主侧会话不在（宿主重启过），同样先以恢复方式打开再交回答：官方把中断的提问记成未知结果，
   问题转入 continued，回答会开新一轮。回答不触发「配置变了就重开」：重开会把正在前台等待的提问取消掉；
 - API 层只经这里拿事件流，不接触泵与表。
@@ -44,6 +46,7 @@ from .pump import EventPump
 from .replay import Cursor, EventFeed, Outgoing
 from .search import SearchHit, search_conversations
 from .tool_credentials import ToolCredentials
+from .turn_context import TurnContextHook, TurnContextRequest
 
 # 删除会话时一并清掉的关联数据（引用目录、动作回执等），由装配方按模块给出
 Eraser = Callable[[Conversation], Awaitable[None]]
@@ -76,7 +79,7 @@ class ProfileProvider(Protocol):
 
     async def compile(self, conversation: Conversation, selection: TurnSelection = NO_SELECTION) -> RuntimeProfile: ...
 
-    async def bound_version(self, conversation: Conversation) -> str | None: ...
+    async def bound(self, conversation: Conversation) -> RuntimeProfile | None: ...
 
     async def bind(self, conversation: Conversation, profile: RuntimeProfile) -> None: ...
 
@@ -108,6 +111,7 @@ class ConversationService:
                  grants: GrantRecorder | None = None,
                  attachments: AttachmentSource | None = None,
                  knowledge_catalog: KnowledgeCatalogOf | None = None,
+                 turn_context: TurnContextHook | None = None,
                  resume_retry_delays: tuple[float, ...] = RESUME_RETRY_DELAYS) -> None:
         self._kernel = kernel
         self._sessionmaker = sessionmaker
@@ -123,6 +127,7 @@ class ConversationService:
         self._grants = grants
         self._attachments = attachments
         self._knowledge_catalog = knowledge_catalog
+        self._turn_context = turn_context
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
     @staticmethod
@@ -217,12 +222,12 @@ class ConversationService:
         lock = self._lock(conversation.id)
         async with lock:
             profile = await self._profile(conversation, selection)
-            # 插话（steer）发生在进行中的回合里，重开会话会打断它：新配置留到下一轮生效，执行时的重判照样拦得住
-            if (profile is not None and turn.mode == "followup"
-                    and await self._profiles.bound_version(conversation) != profile.version):
-                await self._reopen(conversation, profile)
+            # 插话（steer）发生在进行中的回合里，重开或改绑定都会打断它：新配置留到下一轮生效，执行时的重判照样拦得住
+            if profile is not None and turn.mode == "followup":
+                await self._follow(conversation, profile)
             await self._refresh_credentials(conversation)
             turn = await self._with_catalog(conversation, turn, profile)
+            turn = await self._with_context(conversation, turn)
             try:
                 message_id = await self._kernel.send(conversation.id, turn)
             except SessionNotFound:
@@ -242,6 +247,15 @@ class ConversationService:
             log.warning("knowledge catalog for conversation %s unavailable", conversation.id, exc_info=True)
             return turn
         return turn.model_copy(update={"knowledge": catalog})
+
+    async def _with_context(self, conversation: Conversation, turn: TurnInput) -> TurnInput:
+        """带上扩展补的上下文（turn_context.py）。没有扩展提供时不带；插话（steer）进的是正在跑的那一轮，不另算。"""
+        if not self._turn_context or turn.mode != "followup":
+            return turn
+        context = await self._turn_context.collect(TurnContextRequest(
+            workspace_id=conversation.workspace_id, user_id=conversation.user_id, conversation_id=conversation.id,
+            text=turn.text, answer_mode=turn.answer_mode))
+        return turn if context is None else turn.model_copy(update={"context": context})
 
     async def _refresh_credentials(self, conversation: Conversation) -> None:
         """每轮开始前把到期的令牌续上：电脑刚从睡眠醒来时，续期循环可能还没轮到，令牌却已按墙上时间过期。
@@ -297,6 +311,16 @@ class ConversationService:
             await session.execute(delete(RunEvent).where(RunEvent.conversation_id == conversation.id))
             await session.execute(delete(Conversation).where(Conversation.id == conversation.id))
             await session.commit()
+
+    async def _follow(self, conversation: Conversation, profile: RuntimeProfile) -> None:
+        """跟上本轮的配置：宿主相关部分变了（或还没绑定）才重开宿主会话；只是本轮选择变了只改绑定。"""
+        bound = await self._profiles.bound(conversation)
+        if bound is not None and bound.version == profile.version:
+            return
+        if bound is None or bound.host_version != profile.host_version:
+            await self._reopen(conversation, profile)
+        else:
+            await self._bind(conversation, profile)
 
     async def _reopen(self, conversation: Conversation, profile: RuntimeProfile) -> None:
         """配置版本变了：释放宿主会话，以新策略恢复打开，再记下新版本。

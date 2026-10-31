@@ -235,7 +235,7 @@ test('stdin 关闭时宿主仍持续服务（服务端部署形态）', async ()
     const health = await fetch(`${host.base}/health`)
     assert.equal(health.status, 200)
     // 版本号与锁定的 DSH 版本一致，系统信息页靠它显示
-    assert.equal((await health.json()).dsh, '0.2.1-rc.2')
+    assert.equal((await health.json()).dsh, '0.2.2-alpha.2')
   } finally {
     await host.stop()
   }

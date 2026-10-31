@@ -99,6 +99,9 @@ class ProfileKnowledgeSource(_Frozen):
     bases: tuple[str, ...] = ()
 
 
+HOST_FIELDS = ("schema_version", "workspace_id", "user_id", "role", "member", "tools", "denied_tools", "skills")
+
+
 class RuntimeProfile(_Frozen):
     schema_version: Literal["knowwork.runtime-profile.v1"] = SCHEMA_VERSION
     workspace_id: str
@@ -123,6 +126,20 @@ class RuntimeProfile(_Frozen):
     @property
     def version(self) -> str:
         return content_version(self.payload())
+
+    def host_payload(self) -> dict[str, Any]:
+        """宿主用得到的部分：身份、工具、被拒工具、技能清单（不含本轮选中）。宿主打开会话时按它拉工具与技能、收窄工具，
+        它变了才要重开宿主会话。本轮选择（选的知识库、@ 的文件与标签、撤掉的条件、技能的选中）不在这里：
+        它们只在业务服务执行工具时从绑定读出来生效，知识库目录每轮随消息下发，宿主用不到。"""
+        payload = self.model_dump(mode="json", include=set(HOST_FIELDS))
+        payload["skills"] = [{key: value for key, value in skill.items() if key != "selected"}
+                             for skill in payload["skills"]]
+        return payload
+
+    @property
+    def host_version(self) -> str:
+        """宿主相关部分的版本：变了才释放并重开宿主会话，「本会话内不再询问」的审批授权也按它记。"""
+        return content_version(self.host_payload())
 
     def policy(self) -> SessionPolicy:
         """宿主侧策略：被拒的工具名。业务工具与全局工具都可以出现在这里（宿主按类分别收窄）。"""

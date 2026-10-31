@@ -24,6 +24,10 @@ TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")  # 与工具桥的工�
 MAX_TOOLS = 64
 VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+# 沙箱里命令要靠这些才能跑、或能改变程序怎么加载的，技能不能声明（填了值也不注入）
+RESERVED_ENV = frozenset({"PATH", "HOME", "USER", "SHELL", "PWD", "LANG", "LC_ALL", "TERM", "TMPDIR", "HOSTNAME",
+                          "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "NODE_OPTIONS", "NODE_PATH",
+                          "DSH_HOME", "DSH_PROFILE_DIR"})
 MAX_ENV = 32
 MAX_DESCRIPTION = 2000
 MAX_FRONTMATTER = 64 * 1024
@@ -104,6 +108,8 @@ def _env_specs(lines: list[str]) -> tuple[EnvSpec, ...]:
             description = line[len(parts[0]):].strip()
         if not ENV_NAME.match(parts[0]) or len(description) > 200:
             raise _invalid("invalid_env", f"环境变量声明不合法：{line[:80]}", "env")
+        if parts[0] in RESERVED_ENV:
+            raise _invalid("env_reserved", f"环境变量 {parts[0]} 是沙箱自己要用的，技能不能声明", "env")
         specs.append(EnvSpec(name=parts[0], required=marker == "required", description=description))
     if len(specs) > MAX_ENV or len({s.name for s in specs}) != len(specs):
         raise _invalid("invalid_env", f"环境变量最多 {MAX_ENV} 个且不能重名", "env")

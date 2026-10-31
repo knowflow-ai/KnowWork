@@ -39,9 +39,17 @@ describe('运行调试接口', () => {
         ],
         subagents: [{ sessionId: 's', label: '子任务', steps: [] }],
         events: ['加载技能 report 1.0.0'],
+        background: [
+          { kind: 'standing', text: '<user_memory>…</user_memory>', sentTurn: 1 },
+          { kind: 'other', text: 'x', sentTurn: 2 },
+          { kind: 'turn', text: '', sentTurn: 2 },
+        ],
       }),
     });
     const turn = await d.getTurn(d.ownRun('c1'), 2);
+    expect(turn.background).toEqual([
+      { kind: 'standing', text: '<user_memory>…</user_memory>', sentTurn: 1 },
+    ]);
     expect(turn.summary).toMatchObject({ turn: 2, status: 'completed', cost: '0.01' });
     expect(turn.steps).toHaveLength(1);
     expect(turn.steps[0]?.toolCalls[0]).toMatchObject({ name: 'bash', result: null, isError: true });

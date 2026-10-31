@@ -1,7 +1,7 @@
-"""Docker daemon 地址：校验、TLS、建客户端（对应 WeKnora 的 docker_host.go 与 docker_engine.go 的连接部分）。
+"""Docker daemon 地址：校验、TLS、建客户端。
 
 - 留空：用 docker-py 的 `DockerClient.from_env()`，它与 Docker CLI 同一顺序：DOCKER_HOST → 当前 docker context
-  （DOCKER_CONTEXT 或 ~/.docker/config.json）→ unix:///var/run/docker.sock，与 WeKnora 的 DetectLocalDockerHost 一致；
+  （DOCKER_CONTEXT 或 ~/.docker/config.json）→ unix:///var/run/docker.sock；
 - unix://：路径必须是绝对路径；
 - tcp:// / http:// / https://：远端 daemon，必须给 TLS 证书目录（ca.pem、cert.pem、key.pem，Docker 自己的
   DOCKER_CERT_PATH 布局），并且总是校验 daemon 证书。能创建容器的远端 API 等于那台机器的 root shell，

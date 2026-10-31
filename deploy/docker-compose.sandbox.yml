@@ -8,10 +8,14 @@ services:
   api:
     environment:
       KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-true}
+      # 流式执行（默认关）：见 .env.example
+      KNOWWORK_SANDBOX_SSH_ENABLED: ${KNOWWORK_SANDBOX_SSH_ENABLED:-false}
     volumes:
       - ${KNOWWORK_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
   worker:
     environment:
       KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-true}
+      # 必须与 api 一致：流式执行改容器姿态，两边不一致会互相把对方建的容器删掉重建（工作区清空）
+      KNOWWORK_SANDBOX_SSH_ENABLED: ${KNOWWORK_SANDBOX_SSH_ENABLED:-false}
     volumes:
       - ${KNOWWORK_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock

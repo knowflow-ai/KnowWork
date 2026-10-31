@@ -27,7 +27,7 @@ SettleHook = Callable[[str], Awaitable[None]]
 
 def artifact_json(item: ArtifactView) -> dict:
     return {"id": item.id, "filename": item.filename, "contentType": item.content_type, "size": item.size,
-            "runId": item.run_id, "sanitized": item.sanitized,
+            "runId": item.run_id, "sanitized": item.sanitized, "description": item.description,
             "createdAt": item.created_at.isoformat() if item.created_at else None}
 
 

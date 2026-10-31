@@ -3,6 +3,7 @@
  *
  * 宿主插件回调业务服务统一走 `/internal/extensions/{plugin}/{operation}`，这里是 `skills` 的两个操作：
  * - `GET /catalog`：本会话可用技能清单（已发布版本），每项带 allowedTools / completionTools / unlocks；
+ *   bundledOff 是本空间停用了的自带技能名字（bundled-skills 不给这个会话注册它们）；
  * - `GET /content?name=&digest=`：一个技能的 SKILL.md 正文。
  * 令牌是业务服务签发的受众 skills 短期令牌，宿主只转交不解读。
  *
@@ -86,6 +87,15 @@ export function catalogOf(body) {
   return Object.freeze(skills)
 }
 
+/** 本空间停用了的自带技能：只认技能名，最多 MAX_SKILLS 个；缺了当作没停用。 */
+export function bundledOffOf(body) {
+  const list = body?.bundledOff ?? []
+  if (!Array.isArray(list) || list.length > MAX_SKILLS || list.some(n => typeof n !== 'string' || !SKILL_NAME.test(n))) {
+    throw new SkillCatalogError('停用的自带技能格式错误')
+  }
+  return Object.freeze([...new Set(list)])
+}
+
 async function readBody(response) {
   const text = await response.text()
   if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES) throw new SkillCatalogError('业务服务响应过大')
@@ -119,8 +129,10 @@ export function createSkillClient({ baseUrl }) {
   }
 
   return {
+    /** @returns {Promise<{ skills: readonly CatalogSkill[], bundledOff: readonly string[] }>} */
     async catalog(token) {
-      return catalogOf(await get('/catalog', token))
+      const body = await get('/catalog', token)
+      return { skills: catalogOf(body), bundledOff: bundledOffOf(body) }
     },
 
     /** 拉一个技能的正文并按清单里的摘要校验。 */
@@ -146,14 +158,15 @@ export function skillClient() {
 }
 
 /**
- * 根会话的技能清单，只拉一次。会话打开时没带技能令牌的返回空清单。
+ * 根会话的技能清单，只拉一次。会话打开时没带技能令牌的返回空清单。同时记下本空间停用的自带技能
+ * （root.bundledOff，没带令牌时为空）。
  * 拉取失败时抛出，调用方（agent/created）据此让会话打开失败（失败关闭）。
  * @returns {Promise<readonly CatalogSkill[]>}
  */
 export function ensureCatalog(root) {
   if (root.skillAccess === undefined) return Promise.resolve(Object.freeze([]))
   root.skillCatalogPromise ??= skillClient().catalog(root.skillAccess.token).then(
-    catalog => { root.skillCatalog = catalog; return catalog },
+    ({ skills, bundledOff }) => { root.skillCatalog = skills; root.bundledOff = bundledOff; return skills },
     error => {
       const reason = error instanceof SkillCatalogError ? error.message : '拉取失败'
       throw new Error(`knowwork-skills: 会话 ${root.id} 拉取技能清单失败：${reason}`)

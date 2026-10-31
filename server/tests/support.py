@@ -18,6 +18,7 @@ from starlette.routing import Route
 
 RUNTIME_HOST = Path(__file__).resolve().parents[2] / "runtime-host"
 PINNED_NODE_BIN = Path.home() / ".nvm/versions/node/v24.18.0/bin"  # 与 scripts/dev_stack.py 同一版本
+STOP_TIMEOUT = 30  # 秒：宿主收到 SIGTERM 后最多等这么久
 
 
 def _node_bin() -> Path:
@@ -167,10 +168,20 @@ class HostProcess:
             self.stderr = (self.stderr + chunk)[-20000:]
 
     async def __aexit__(self, *exc):
+        stuck = False
         if self.proc and self.proc.returncode is None:
             self.proc.terminate()
-            await self.proc.wait()
+            # 不设上限地等，宿主偶尔没退干净时整个测试就卡死、也看不出卡在哪（2026-10-30 全量跑时卡了半小时）
+            try:
+                await asyncio.wait_for(self.proc.wait(), timeout=STOP_TIMEOUT)
+            except TimeoutError:
+                stuck = True
+                self.proc.kill()
+                await self.proc.wait()
         for task in getattr(self, "_drains", []):
             await task
         if not self.keep_home:
             shutil.rmtree(self.home, ignore_errors=True)
+        if stuck and exc[0] is None:
+            raise AssertionError(f"宿主收到 SIGTERM {STOP_TIMEOUT} 秒没退出，已强制结束。最后的输出：\n"
+                                 + self.stderr.decode(errors="replace")[-4000:])

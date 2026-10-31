@@ -37,7 +37,7 @@ export function PdfPage({
   /** 这一页上要高亮的框（占页面宽高的比例） */
   readonly marks?: readonly Box[];
   /**
-   * 页面的高宽比（PdfView 打开时量第一页，照 WeKnora 的 PdfSourceViewer）：没画的页按它占位，画出来时高度不变。
+   * 页面的高宽比（PdfView 打开时量第一页）：没画的页按它占位，画出来时高度不变。
    * 原来一律按竖版 3:4 占位，横版幻灯片画出来缩掉一大截，刚滚到的引用位置被顶偏。不给时用样式表的默认值（A4）
    */
   readonly ratio?: number;

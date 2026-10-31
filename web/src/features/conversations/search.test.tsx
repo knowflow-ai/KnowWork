@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '../../test/user';
 import { jsonResponse, ME, renderWithApp, routeFetch } from '../../test/render';
@@ -6,12 +6,21 @@ import { AppLayout } from '../../layout/AppLayout';
 import { useConversationSearch } from '../../stores/conversationSearch';
 import { groupByTime, splitHits } from './search';
 
+const now = new Date(2026, 9, 28, 15, 0).getTime();
+
+// 搜索框按打开那一刻分「今天」「昨天」……：钉住当前时间，不然过了写测试那天，「今天」那组就空了。只换 Date，
+// 不动定时器，界面上的等待照常
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(now);
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   useConversationSearch.setState({ open: false });
 });
 
-const now = new Date(2026, 9, 28, 15, 0).getTime();
 const at = (daysAgo: number) => new Date(now - daysAgo * 24 * 60 * 60 * 1000).toISOString();
 const item = (id: string, title: string, daysAgo: number) => ({
   id,

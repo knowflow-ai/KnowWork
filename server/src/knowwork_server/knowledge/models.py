@@ -21,12 +21,16 @@ MAX_CONTEXT = 5
 LocatorType = Literal["pdf", "docx", "slide", "sheet", "text"]
 # 检索方式：hybrid 语义加关键词（默认）；keyword 只按字面匹配，编号、报错码、型号这类要原样命中的用它
 SearchMode = Literal["hybrid", "semantic", "keyword"]
+# 能按次打开的检索方式：multi_hop 多跳（把几份文档里的内容串起来）、visual 视觉（按页面的样子找图表、版式、扫描件）。
+# 建了索引不等于每次都用：知识库自己定默认（关闭、按需、开启），每次检索可以覆盖（关闭除外），见 SearchRequest。
+# 不算可选能力（FEATURES）：它们只多加召回、不收窄范围，不认的知识源照常检索就行，不用另外说明
+Route = Literal["multi_hop", "visual"]
 FilterOp = Literal["eq", "ne", "in", "gt", "gte", "lt", "lte", "contains"]
 # 知识源可以声明支持的可选能力（KnowledgeSource.features）。不支持的参数由业务服务去掉并在结果里说明，不静默
 # pins：检索范围里按知识库点名文档与标签（用户 @ 的）；document_query：列文档时按名字找（@ 菜单搜文件）；
 # fetch：取文件（原文件、单张图、页图），knowledge_fetch 放进会话工作区给智能体用
 FEATURES = frozenset({"mode", "folders", "tags", "filters", "section", "chunk", "find", "pins", "document_query",
-                      "fetch"})
+                      "fetch", "cited"})
 MAX_FETCH_PAGES = 5  # 一次最多取几页页图：页图大，取多了放进会话也看不过来
 MAX_PINNED = 50
 
@@ -38,6 +42,14 @@ class Caller:
     workspace_id: str
     user_id: str
     email: str | None = None
+
+
+@dataclass(frozen=True)
+class CitedDocument:
+    """一轮回答引用到的一份文档（knowledge/cited.py 回合结束时交给声明了 cited 的知识源）。"""
+
+    doc_ref: str
+    title: str
 
 
 class _Frozen(BaseModel):
@@ -152,8 +164,8 @@ class Evidence(_Frozen):
     # 片段里每个版面块的位置与原文（按正文先后，可选）。前端点开引用时整块高亮；回答里原样出现了某处原文时只标那几处
     locators: tuple[Locator, ...] = Field(default=(), max_length=MAX_LOCATORS)
     # 这一条由哪几块拼成（按正文先后，可选）：知识源把相邻命中合并、把短块补足成一段时给。排序、条数按整条算；
-    # 交给模型、登记引用前拆回一块一块（expand_parts），每块单独编号、带自己的定位，模型引用哪块点开就是哪块
-    # （照 WeKnora 的 citation sources）。组成块自己不再带 parts
+    # 交给模型、登记引用前拆回一块一块（expand_parts），每块单独编号、带自己的定位，模型引用哪块点开就是哪块。
+    # 组成块自己不再带 parts
     parts: tuple["Evidence", ...] = Field(default=(), max_length=MAX_PARTS)
     open_url: str | None = None
     score: float | None = None  # 知识源自己的分数，只用于同源排序，不跨源比较
@@ -225,6 +237,8 @@ class BaseInfo(_Frozen):
     fields: tuple[FieldInfo, ...] = ()
     # 所在目录，从顶层往下的名字（知识源有目录时给）：@ 菜单里写在库名后面，也能整个目录一起选
     path: tuple[str, ...] = ()
+    # 这个库能按次打开的检索方式（建了索引、检索时不是「关闭」）：目录里标给模型，告诉它哪些库开 multi_hop、visual 有用
+    routes: tuple[Route, ...] = ()
 
 
 class Cursor(_Frozen):
@@ -273,6 +287,10 @@ class SearchRequest(_Frozen):
     folders: tuple[str, ...] = Field(default=(), max_length=20)  # 知识库内的文件夹（相对路径，含子文件夹）
     tags: tuple[str, ...] = Field(default=(), max_length=20)     # 文档带其中任何一个标签就算（按主题限定范围）
     filters: tuple[MetaFilter, ...] = Field(default=(), max_length=10)
+    # 这一次开不开多跳、视觉检索：None 按知识库自己的默认（按需的不用、开启的用）；True、False 覆盖默认，
+    # 但覆盖不了知识库设成「关闭」的
+    multi_hop: bool | None = None
+    visual: bool | None = None
 
     def wants(self) -> frozenset[str]:
         """这次用到的可选能力（点名范围不在这里：不支持时业务服务另行处理，见 Scope）。"""
@@ -429,4 +447,9 @@ class KnowledgeSource(Protocol):
 
     async def fetch(self, caller: Caller, request: FetchRequest) -> tuple[FetchedFile, ...]:
         """取文件（features 里声明了 fetch 才会被调用）：原文件、单张图或几页页图。取不到抛 KnowledgeError。"""
+        ...
+
+    async def cited(self, caller: Caller, documents: tuple[CitedDocument, ...]) -> None:
+        """回合结束时告诉知识源：调用者这一轮的回答引用了它的这几份文档（features 里声明了 cited 才会被调用，
+        只给扩展提供的知识源）。例如按人记常用资料，检索时给常用的加一点分。"""
         ...

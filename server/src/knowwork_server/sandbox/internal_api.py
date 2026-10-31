@@ -6,9 +6,14 @@
 - `POST /internal/extensions/sandbox/stat`：路径元数据（follow 决定是否跟随最后一级符号链接）；
 - `POST /internal/extensions/sandbox/read`：按字节区间读；
 - `POST /internal/extensions/sandbox/list`：列目录的直接子项；
-- `POST /internal/extensions/sandbox/write`：整文件写入。
+- `POST /internal/extensions/sandbox/write`：整文件写入；
+- `POST /internal/extensions/sandbox/ssh-identity`：流式执行的登录账号与本会话容器的主机公钥（打开流式执行才有）；
+- `WS /internal/extensions/sandbox/ssh`：流式执行的字节管道，宿主的 ssh 客户端经它连进容器里的 `sshd -i`
+  （令牌放 Authorization，本次的临时公钥放 X-KnowWork-SSH-Key，见 ssh_pipe.py）。
 
 鉴权沿用本会话的工具令牌（受众 tools），另按当前授权再判一次是不是空间成员，权限收回立即生效。
+exec 带上宿主报的「本会话加载过的技能」（skills），这里按此刻的会话清单取它们的环境变量加进命令（skill_env，技能那边判），
+输出交回之前把这些值换成 ******：值只在业务服务与容器里，宿主与模型都看不到原文。
 路径只认 `/sessions/<令牌里的会话>` 下面的，换成容器里的 /workspace 再走沙箱自己的校验。
 错误统一为 `{"error": {"code", "message"}}`，message 可以直接给模型看。
 """
@@ -17,10 +22,11 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -28,7 +34,11 @@ from ..tools.service import ToolAccessError
 from ..tools.tokens import ToolTokenClaims
 from .contract import SandboxError, SandboxTooLarge
 from .docker_sandbox import DockerSessionSandbox, PathStat, SandboxFileError
+from .output import mask
 from .paths import InvalidPath, from_session_path
+from .ssh_pipe import InvalidKey, SshPipes, SshUnavailable
+
+log = logging.getLogger(__name__)
 
 PREFIX = "/internal/extensions/sandbox"
 MAX_READ_BYTES = 8 * 1024 * 1024
@@ -41,6 +51,8 @@ class TokenVerifier(Protocol):
 
 
 MemberCheck = Callable[[str, str], bool]
+# (空间, 用户, 本会话加载过的技能名) → 要加进命令的环境变量
+SkillEnv = Callable[[str, str, list[str]], Awaitable[dict[str, str]]]
 
 
 class _Body(BaseModel):
@@ -53,6 +65,8 @@ class _ExecBody(_Body):
     timeout_ms: int = Field(alias="timeoutMs", ge=1, le=3_600_000)
     max_output_bytes: int = Field(alias="maxOutputBytes", ge=1, le=MAX_OUTPUT_BYTES)
     env: dict[str, str] = Field(default_factory=dict, max_length=256)
+    skills: list[Annotated[str, Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=64)]] = Field(
+        default_factory=list, max_length=64)
 
 
 class _PathBody(_Body):
@@ -83,6 +97,8 @@ def _sandbox_error(error: SandboxError) -> JSONResponse:
         return _error(413, "too_large", str(error))
     if isinstance(error, SandboxFileError):
         return _error(404 if error.code == "not_found" else 400, error.code, str(error))
+    if isinstance(error, SshUnavailable):
+        return _error(409, "ssh_unavailable", str(error))
     return _error(400, "sandbox_error", str(error))
 
 
@@ -109,8 +125,35 @@ async def _until_disconnected(request: Request, work: Awaitable[Any]) -> Any:
             task.cancel()
 
 
+class _WebSocketPeer:
+    def __init__(self, websocket: WebSocket) -> None:
+        self._ws = websocket
+
+    async def receive(self) -> bytes | None:
+        while True:
+            try:
+                message = await self._ws.receive()
+            except (WebSocketDisconnect, RuntimeError):
+                return None
+            if message["type"] == "websocket.disconnect":
+                return None
+            if message.get("bytes"):
+                return message["bytes"]
+
+    async def send(self, data: bytes) -> None:
+        try:
+            await self._ws.send_bytes(data)
+        except (WebSocketDisconnect, RuntimeError) as error:
+            raise ConnectionError("宿主已断开") from error
+
+
+# 关闭码：握手阶段被拒用 4xxx（宿主据此区分「没有权限」与「部署不支持」），之后出错用 1011
+WS_UNAUTHORIZED, WS_FORBIDDEN, WS_UNAVAILABLE, WS_INVALID = 4401, 4403, 4409, 4400
+
+
 def build_internal_router(sandbox: DockerSessionSandbox, tokens: TokenVerifier, is_member: MemberCheck, *,
-                          max_timeout_seconds: float) -> APIRouter:
+                          max_timeout_seconds: float, skill_env: SkillEnv | None = None,
+                          ssh: SshPipes | None = None) -> APIRouter:
     router = APIRouter()
 
     async def guarded(authorization: str | None, request: Request, model: type[_Body],
@@ -136,11 +179,15 @@ def build_internal_router(sandbox: DockerSessionSandbox, tokens: TokenVerifier, 
 
     async def do_exec(claims: ToolTokenClaims, body: _ExecBody, request: Request) -> dict[str, Any]:
         timeout = min(body.timeout_ms / 1000, max_timeout_seconds)
+        secrets = await skill_env(claims.workspace_id, claims.user_id, body.skills) \
+            if skill_env is not None and body.skills else {}
         result = await _until_disconnected(request, sandbox.exec(
             claims.workspace_id, claims.session_id, body.argv, timeout_seconds=timeout,
-            max_output_bytes=body.max_output_bytes, workdir=container_path(claims, body.cwd), env=body.env))
-        return {"exitCode": result.exit_code, "stdout": result.stdout, "stderr": result.stderr,
-                "timedOut": result.timed_out, "truncated": result.truncated}
+            max_output_bytes=body.max_output_bytes, workdir=container_path(claims, body.cwd),
+            env={**body.env, **secrets}))
+        hidden = list(secrets.values())
+        return {"exitCode": result.exit_code, "stdout": mask(result.stdout, hidden),
+                "stderr": mask(result.stderr, hidden), "timedOut": result.timed_out, "truncated": result.truncated}
 
     async def do_stat(claims: ToolTokenClaims, body: _StatBody, _request: Request) -> dict[str, Any]:
         stat = await sandbox.stat_path(claims.workspace_id, claims.session_id, container_path(claims, body.path),
@@ -152,7 +199,8 @@ def build_internal_router(sandbox: DockerSessionSandbox, tokens: TokenVerifier, 
             return {"data": ""}
         chunk = await sandbox.read_file(claims.workspace_id, claims.session_id, container_path(claims, body.path),
                                         offset=body.offset, limit=body.length)
-        return {"size": chunk.size, "data": base64.b64encode(chunk.data).decode("ascii")}
+        return {"size": chunk.size, "data": base64.b64encode(chunk.data).decode("ascii"),
+                "stat": {"kind": "f", "size": chunk.size, "version": chunk.version}}
 
     async def do_list(claims: ToolTokenClaims, body: _PathBody, _request: Request) -> dict[str, Any]:
         entries = await sandbox.list_dir(claims.workspace_id, claims.session_id, container_path(claims, body.path))
@@ -167,9 +215,15 @@ def build_internal_router(sandbox: DockerSessionSandbox, tokens: TokenVerifier, 
         await sandbox.write_file(claims.workspace_id, claims.session_id, path, data)
         return {"stat": _stat(await sandbox.stat_path(claims.workspace_id, claims.session_id, path, follow=True))}
 
+    async def do_ssh_identity(claims: ToolTokenClaims, _body: _Body, _request: Request) -> dict[str, Any]:
+        if ssh is None:
+            raise SshUnavailable("这个部署没有打开流式执行")
+        identity = await ssh.identity(claims.workspace_id, claims.session_id)
+        return {"user": identity.user, "hostKey": identity.host_key}
+
     routes: dict[str, tuple[type[_Body], Callable[[ToolTokenClaims, Any, Request], Awaitable[dict[str, Any]]]]] = {
         "exec": (_ExecBody, do_exec), "stat": (_StatBody, do_stat), "read": (_ReadBody, do_read),
-        "list": (_PathBody, do_list), "write": (_WriteBody, do_write),
+        "list": (_PathBody, do_list), "write": (_WriteBody, do_write), "ssh-identity": (_Body, do_ssh_identity),
     }
 
     for operation, (model, run) in routes.items():
@@ -180,4 +234,37 @@ def build_internal_router(sandbox: DockerSessionSandbox, tokens: TokenVerifier, 
 
         router.add_api_route(f"{PREFIX}/{operation}", endpoint(), methods=["POST"])
 
+    async def ssh_pipe(websocket: WebSocket) -> None:
+        authorization = websocket.headers.get("authorization", "")
+        public_key = websocket.headers.get("x-knowwork-ssh-key", "")
+        try:
+            if not authorization.startswith("Bearer "):
+                raise ToolAccessError(401, "unauthorized", "令牌无效")
+            claims = tokens.verify(authorization[7:])
+        except ToolAccessError:
+            await websocket.close(code=WS_UNAUTHORIZED)
+            return
+        if not is_member(claims.user_id, claims.workspace_id):
+            await websocket.close(code=WS_FORBIDDEN)
+            return
+        if ssh is None:
+            await websocket.close(code=WS_UNAVAILABLE)
+            return
+        await websocket.accept()
+        try:
+            await ssh.relay(claims.workspace_id, claims.session_id, public_key, _WebSocketPeer(websocket),
+                            still_allowed=lambda: is_member(claims.user_id, claims.workspace_id))
+        except SshUnavailable:
+            code = WS_UNAVAILABLE
+        except InvalidKey:
+            code = WS_INVALID
+        except SandboxError as error:
+            log.warning("流式执行管道没有建起来：%s", error)
+            code = 1011
+        else:
+            code = 1000
+        with contextlib.suppress(Exception):
+            await websocket.close(code=code)
+
+    router.add_api_websocket_route(f"{PREFIX}/ssh", ssh_pipe)
     return router

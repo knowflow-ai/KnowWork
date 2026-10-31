@@ -7,7 +7,9 @@
 - 入队（queue_check，在 close_turn 的事务里）：检索过知识库、正常答完的一轮记一条待判断，排一条任务，主体是空间、
   延后一小时。同一空间排队中的同类任务合并、执行时间取早的，所以每个空间一小时一批：一轮一判太费模型调用。
 - 执行：取这个空间最早的 PER_RUN 轮，每次调用判 PER_CALL 轮。给模型看问题、最终回答，和这一轮检索到的知识库片段
-  （判的是「知识库里的内容答上了没有」，智能体拿自己的常识答的不算）。
+  （判的是「知识库里的内容答上了没有」，智能体拿自己的常识答的不算）。回答标了编号的片段给到 CITED_CHARS 字、带上
+  图的描述，按名次补进来的只给 SNIPPET_CHARS 字：原来一律截 400 字，回答出自片段后半段的内容判断看不到，答对了的
+  被判成只答了一部分（2026-10-29：《招惹》的主演、播放量在片段第 400 字之后）。
 - 分级加预设原因，不打分（不用定阈值）：answered 答上了、partial 只答了一部分、unanswered 没答上；
   没答全时写一句缺什么，原因选 kb_lacks（知识库里没有）、own_knowledge（用的是模型自己的知识）、off_topic（答非所问）。
   不看回答引用了几条：智能体答不上来时常常还会引用沾边的背景，引用条数说明不了答没答上。
@@ -35,7 +37,9 @@ from ..conversations.summaries import TurnEnded
 from ..jobs import Done, JobContext, JobError, JobKind, JobRunner, enqueue
 from ..models.catalog import DEFAULT_ALIAS
 from ..models.client import ModelCallError, ModelClient
+from ..profile.facts import VISION_TOOLS
 from .citations import marked_numbers
+from .fetch_tool import FETCH_NAME
 from .tables import Citation, KnowledgeAnswerCheck, KnowledgeSearchHit, KnowledgeSearchLog
 
 log = logging.getLogger(__name__)
@@ -49,7 +53,10 @@ PER_RUN = 50
 # 永远挡住，还每小时白调一次模型
 MAX_CHECK_TRIES = 3
 MAX_SNIPPETS = 10
-SNIPPET_CHARS = 400
+CITED_CHARS = 1500  # 回答标了编号的片段：回答依据的原文要给全，判断才核对得了
+SNIPPET_CHARS = 400  # 按名次补进来的：只帮判断看出知识库里有没有，截短
+SNIPPETS_BUDGET = 6000  # 一轮所有片段合计，一次判 PER_CALL 轮，别把上下文撑爆
+CAPTION_CHARS = 200
 ANSWER_CHARS = 4000
 VERDICTS = frozenset({"answered", "partial", "unanswered"})
 VERDICT_KEYS = frozenset({"verdict", "missing", "reason"})  # 判断写进知识事实的几项
@@ -57,14 +64,23 @@ REASONS = frozenset({"kb_lacks", "own_knowledge", "off_topic"})
 MAX_MISSING = 200
 
 PROMPT = """你在给企业知识库做质检。下面每一项是用户的一个问题、智能体的最终回答，以及知识库里的片段（ref 是片段编号，
-回答里的 [n] 指编号为 n 的片段）。判断：知识库里的内容答上这个问题了没有。
+回答里的 [n] 指编号为 n 的片段，[IMG:n:k] 是把片段 n 的第 k 张图放进了回答，k 从 0 数）。判断：知识库里的内容答上这个问题了没有。
 
-- answered：问题的每一部分都答上了，关键内容在片段里有依据；问题本来就不需要知识库（写作、计算、闲聊）的也算。
-- partial：只答上了一部分，或者一部分关键内容在片段里找不到依据。
+- answered：用户问的都答上了，回答的主体内容在片段里有依据；问题本来就不需要知识库（写作、计算、闲聊）的也算。
+- partial：用户问的有一部分没答上，或者回答的主体内容有一部分在片段里找不到依据。
 - unanswered：没答上：说找不到、答非所问，或者答案不是出自片段。
 
+怎么判：
+- 只按用户实际问的判断，不要替用户把问题扩大。问「有哪些」，回答列出了知识库里有的那些、并说明库里只有这些，算答上；
+  用户没问的细节（主创、评分、日期之类）回答没写，不算缺。
+- 回答里顺带的背景、建议、提示缺依据，不影响结论；只看回答问题的那部分。
+- 片段结尾是「…」的截短了，回答依据的内容可能在截掉的部分，回答引用了这个片段、内容又和片段前文对得上的，不算没依据。
+- images 是片段里图的描述，按图的顺序。图本身你看不到。用户只是要找这张图，回答把图放出来了，算答上；用户问图里画了
+  什么，回答要说出画面才算答上，说出的画面和图的描述对得上，或者这一项带 looked_at_images（智能体这一轮把知识库里的图
+  取出来看过了），都算有依据，不是模型自己的知识；回答说描述不了画面的，不算答上。
+
 不是 answered 时：
-- missing：一句话写知识库该补上的资料是哪一类（如「会员续费的退款规则」「微短剧代表作品名单」），不超过 60 字；
+- missing：一句话写知识库该补上的资料是哪一类（如「会员续费的退款规则」「差旅住宿标准」），不超过 60 字；
   写资料的名称，不要抄回答或片段里的原句；
 - reason：kb_lacks（片段里没有相关内容）、own_knowledge（回答里有片段之外的内容，是模型自己的知识）、
   off_topic（片段里有，但回答没答到点上）三选一。
@@ -81,6 +97,9 @@ class Pending:
     question: str
     answer: str
     snippets: tuple[dict[str, Any], ...]  # {"ref": 编号, "title", "text"}
+    # 这一轮把知识库里的图取进沙箱、用 read_image 看过：回答里描述画面的内容出自它看到的图，判断看不到这一步，
+    # 不告诉它就会当成模型自己的知识（2026-10-29：看过《东栏雪》海报、描述对了，被判成没答上）
+    looked_at_images: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,8 +152,8 @@ def parse_verdicts(text: str, ids: Sequence[str]) -> dict[str, Verdict]:
 
 
 def _messages(batch: Sequence[Pending]) -> list[dict[str, str]]:
-    items = [{"id": p.id, "question": p.question, "answer": p.answer[:ANSWER_CHARS], "snippets": list(p.snippets)}
-             for p in batch]
+    items = [{"id": p.id, "question": p.question, "answer": p.answer[:ANSWER_CHARS], "snippets": list(p.snippets),
+              **({"looked_at_images": True} if p.looked_at_images else {})} for p in batch]
     return [{"role": "system", "content": PROMPT},
             {"role": "user", "content": json.dumps(items, ensure_ascii=False)}]
 
@@ -176,7 +195,8 @@ class AnswerChecker:
                 KnowledgeAnswerCheck.workspace_id == workspace_id)
                 .order_by(KnowledgeAnswerCheck.created_at).limit(PER_RUN))).all()
             return [Pending(c.id, c.conversation_id, c.turn, c.question, c.answer,
-                            await _snippets(session, c.conversation_id, c.turn, c.answer)) for c in checks]
+                            await _snippets(session, c.conversation_id, c.turn, c.answer),
+                            await _looked_at_images(session, c.conversation_id, c.turn)) for c in checks]
 
     async def _judge(self, workspace_id: str, batch: Sequence[Pending]) -> dict[str, Verdict]:
         try:
@@ -221,19 +241,48 @@ class AnswerChecker:
 async def _snippets(session: AsyncSession, conversation_id: str, turn: int,
                     answer: str) -> tuple[dict[str, Any], ...]:
     """给判断看的片段原文，带编号：先放回答里标了 [n] 的（回答所依据的原文，可能是这一轮名次靠后的、或者前几轮查到
-    的），再按这一轮检索的名次补满，最多 MAX_SNIPPETS 段、每段截短，从引用目录按编号取。只按名次取前几段时，回答
-    用到的第 13 段没给出去，判断看不到出处，把答上的判成了只答了一部分（2026-10-27 联调发现）。这里不是看引用了
-    几条来判答上没有，是把回答依据的原文交给判断去核对。"""
+    的），再按这一轮检索的名次补满，最多 MAX_SNIPPETS 段，从引用目录按编号取。只按名次取前几段时，回答用到的第 13 段
+    没给出去，判断看不到出处，把答上的判成了只答了一部分（2026-10-27 联调发现）。这里不是看引用了几条来判答上没有，
+    是把回答依据的原文交给判断去核对，所以标了编号的给得长、带图的描述，按名次补的截短，合计不超过 SNIPPETS_BUDGET。"""
     ranked = (await session.scalars(
         select(KnowledgeSearchHit.number).join(KnowledgeSearchLog, KnowledgeSearchLog.id == KnowledgeSearchHit.log_id)
         .where(KnowledgeSearchLog.conversation_id == conversation_id, KnowledgeSearchLog.turn == turn,
                KnowledgeSearchHit.number.is_not(None))
         .order_by(KnowledgeSearchHit.rank, KnowledgeSearchLog.created_at))).all()
-    wanted = list(dict.fromkeys([*marked_numbers(answer), *ranked]))[:MAX_SNIPPETS]
+    cited = marked_numbers(answer)
+    wanted = list(dict.fromkeys([*sorted(cited), *ranked]))[:MAX_SNIPPETS]
     if not wanted:
         return ()
-    rows = (await session.execute(select(Citation.number, Citation.title, Citation.text).where(
+    rows = (await session.execute(select(Citation.number, Citation.title, Citation.text, Citation.images).where(
         Citation.catalog_id == conversation_id, Citation.number.in_(wanted)))).all()
-    found = {number: (title, text) for number, title, text in rows}
-    return tuple({"ref": number, "title": found[number][0], "text": " ".join(found[number][1].split())[:SNIPPET_CHARS]}
-                 for number in wanted if number in found)
+    found = {row.number: row for row in rows}
+    snippets: list[dict[str, Any]] = []
+    left = SNIPPETS_BUDGET
+    for number in wanted:
+        row = found.get(number)
+        if row is None or left <= 0:
+            continue
+        text = _clip(row.text, min(CITED_CHARS if number in cited else SNIPPET_CHARS, left))
+        left -= len(text)
+        captions = _captions(row.images) if number in cited else ()
+        snippets.append({"ref": number, "title": row.title, "text": text, **({"images": captions} if captions else {})})
+    return tuple(snippets)
+
+
+async def _looked_at_images(session: AsyncSession, conversation_id: str, turn: int) -> bool:
+    """这一轮既取过知识库的文件（knowledge_fetch），又看过图（read_image）。只看过图的可能是用户传的附件，不算。"""
+    tools = await session.scalar(select(RunSummary.tools).where(
+        RunSummary.conversation_id == conversation_id, RunSummary.turn == turn))
+    return {FETCH_NAME, *VISION_TOOLS} <= set(tools or ())
+
+
+def _clip(text: str, limit: int) -> str:
+    """压掉空白后截到 limit 字；截了的以「…」结尾，判断知道后面还有、看不到的不算没依据。"""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[:max(limit - 1, 0)] + "…"
+
+
+def _captions(images: list | None) -> list[str]:
+    """片段里图的描述（图注、补的描述），按图的顺序，和回答里 [IMG:n:k] 的 k 对得上；没有描述的写「无描述」占位。"""
+    return [" ".join(str(image.get("caption") or "").split())[:CAPTION_CHARS] or "无描述" for image in images or ()
+            if isinstance(image, dict)]

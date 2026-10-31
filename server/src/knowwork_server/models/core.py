@@ -75,5 +75,6 @@ def model_view(row: Model) -> ModelView:
     return ModelView(id=row.id, provider_id=row.provider_id, alias=row.alias, name=row.name,
                      capabilities=tuple(row.capabilities or ()), context_length=row.context_length,
                      input_price_per_mtok=row.input_price_per_mtok, output_price_per_mtok=row.output_price_per_mtok,
-                     currency=row.currency, enabled=row.enabled, thinking=row.thinking)
+                     currency=row.currency, enabled=row.enabled, thinking=row.thinking,
+                     max_output_tokens=row.max_output_tokens)
 

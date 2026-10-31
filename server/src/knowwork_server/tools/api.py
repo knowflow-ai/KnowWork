@@ -73,7 +73,8 @@ def build_internal_router(service: ToolService, grants: GrantCheck | None = None
             specs = await service.list_tools(claims)
         except ToolAccessError as error:
             return _error(error.status, error.code, str(error))
-        return {"tools": [spec.describe() for spec in specs]}
+        notes = await service.notes(claims)
+        return {"tools": [spec.describe() for spec in specs], **({"notes": notes} if notes else {})}
 
     @router.post(f"{PREFIX}/execute")
     async def execute(request: Request, authorization: str | None = Header(default=None),

@@ -32,7 +32,7 @@ const ANSWER_MODES: readonly { readonly value: AnswerMode; readonly label: strin
       label: '智能体',
       help: '能查资料、多步完成任务；需要人工确认的操作机器人做不了，会停下说明',
     },
-    { value: 'quick', label: '快速问答', help: '只检索知识库作答，回答更快' },
+    { value: 'quick', label: '快速问答', help: '只查知识库作答，回答更快' },
   ];
 
 function initial(channel?: Channel): ChannelInput {

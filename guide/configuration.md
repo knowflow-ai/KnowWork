@@ -12,7 +12,7 @@
 |---|---|---|
 | `KNOWWORK_PORT` | `8080` | 网关对外端口 |
 | `KNOWWORK_BIND_ADDRESS` | `0.0.0.0` | 只想本机访问时改成 `127.0.0.1` |
-| `KNOWWORK_PUBLIC_BASE_URL` | 本机 IP 加端口 | 浏览器访问的外部地址，邀请链接、OIDC 回调都据此拼出 |
+| `KNOWWORK_PUBLIC_BASE_URL` | 本机 IP 加端口 | 浏览器访问的外部地址，邀请链接、OIDC 回调、MCP OAuth 授权的回调都据此拼出 |
 | `KNOWWORK_COOKIE_SECURE` | `false` | 配好 HTTPS 后改成 `true`；用 http 访问时必须是 `false`，否则登录不了 |
 
 ## 单点登录（OIDC）
@@ -58,6 +58,14 @@
   钉钉没开「企业内机器人发送消息」权限时只有文字。
 - 同一个机器人只能配一个渠道。不同的群要查不同的知识库，就建不同的机器人。
 
+## 运行时宿主
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `KNOWWORK_HOST_SESSION_IDLE_MINUTES` | `30` | 对话空闲多久（分钟）从宿主内存里释放，下次发消息自动恢复、历史不丢；还在跑、有待确认的操作或待回答的问题、有后台命令没跑完的不释放。`0` 表示不释放（宿主内存会随用过的对话一直涨） |
+| `KNOWWORK_HOST_SSH_IDLE_MINUTES` | `10` | 打开流式执行时，一个对话的执行环境没有进程在跑多久（分钟）就关掉，释放容器里约 85 MB 内存；下次用到自动重开 |
+| `KNOWWORK_MODEL_CONTEXT_WINDOW` | `131072` | 宿主按它判断什么时候压缩对话历史；用的模型上下文更小时调小 |
+
 ## 会话沙箱
 
 | 配置项 | 默认 | 说明 |
@@ -66,6 +74,8 @@
 | `KNOWWORK_SANDBOX_ALLOW_INTERNET` | `true` | `false` 时沙箱完全断网 |
 | `KNOWWORK_SANDBOX_RUNTIME` | 空 | 可选的 OCI runtime，例如已安装的 `runsc`（gVisor） |
 | `KNOWWORK_SANDBOX_DOCKER_HOST` | 空 | 远端 Docker，见[部署](deploy.md#会话沙箱) |
+| `KNOWWORK_SANDBOX_SSH_ENABLED` | `false` | 流式执行：宿主经业务服务的管道连进会话容器里的 sshd，执行中要来回通话的能力（程序化调用工具、终端、实时读写进程的输入输出）才用得了。要与宿主同版本的沙箱镜像；打开后沙箱容器多一项 `SYS_CHROOT` 能力，已有的会话容器按新配置重建（工作区不保留） |
+| `KNOWWORK_SANDBOX_SSH_MAX_PIPES` | `64` | 流式执行同时开着的连接上限，一个用到流式执行的对话占一条 |
 
 ## 外部服务
 

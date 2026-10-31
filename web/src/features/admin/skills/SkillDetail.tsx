@@ -3,7 +3,9 @@
  * 「最近运行」：按版本汇总与每一次运行，只给空间管理员看（与运行记录同一口径）。
  */
 import { Badge } from '@openai/apps-sdk-ui/components/Badge';
-import type { Skill, SkillManifest, SkillRelease } from '../../../api/skills';
+import { Button } from '@openai/apps-sdk-ui/components/Button';
+import { useState } from 'react';
+import type { Skill, SkillEnv, SkillManifest, SkillRelease } from '../../../api/skills';
 import { readableError } from '../../../api/http';
 import { formatDateTime } from '../../../utils/format';
 import { DescriptionList } from '../../../ui/DescriptionList';
@@ -13,7 +15,10 @@ import { Table } from '../../../ui/Table';
 import { Tabs } from '../../../ui/Tabs';
 import { useIsWorkspaceAdmin } from '../../auth/queries';
 import { useMembers } from '../queries';
-import { useSkillDetail } from './queries';
+import { EnvDialog } from './EnvDialog';
+import { UsersDialog } from '../grants/UsersSelect';
+import { useGrantsList, usersOf, usersText, useUsersAction } from '../grants/users';
+import { useSkillActions, useSkillDetail } from './queries';
 import { SkillRuns } from './SkillRuns';
 import { SKILL_STATE, skillState } from './skillsModel';
 
@@ -30,7 +35,14 @@ function Tools({ names, none }: { readonly names: readonly string[]; readonly no
   );
 }
 
-function Manifest({ manifest }: { readonly manifest: SkillManifest }) {
+interface EnvEditing {
+  /** 已经填了值的名字 */
+  readonly filled: readonly string[];
+  /** 有权限填时给：打开填写对话框 */
+  readonly onEdit?: () => void;
+}
+
+export function Manifest({ manifest, env }: { readonly manifest: SkillManifest; readonly env?: EnvEditing }) {
   return (
     <>
       <DescriptionList
@@ -42,7 +54,14 @@ function Manifest({ manifest }: { readonly manifest: SkillManifest }) {
       />
       {manifest.env.length > 0 ? (
         <section className="kw-detail-section">
-          <h3>需要的环境变量</h3>
+          <div className="kw-detail-section-head">
+            <h3>需要的环境变量</h3>
+            {env?.onEdit ? (
+              <Button color="secondary" variant="outline" size="sm" onClick={env.onEdit}>
+                填写环境变量
+              </Button>
+            ) : null}
+          </div>
           <Table
             rowKey={(row) => row.name}
             pageSize={false}
@@ -50,6 +69,21 @@ function Manifest({ manifest }: { readonly manifest: SkillManifest }) {
             columns={[
               { key: 'name', title: '名称', width: 200, render: (row) => row.name },
               { key: 'required', title: '必填', width: 70, render: (row) => (row.required ? '是' : '否') },
+              ...(env
+                ? [
+                    {
+                      key: 'filled',
+                      title: '值',
+                      width: 90,
+                      render: (row: SkillEnv) =>
+                        env.filled.includes(row.name) ? (
+                          '已填写'
+                        ) : (
+                          <span className="kw-secondary-text">未填</span>
+                        ),
+                    },
+                  ]
+                : []),
               { key: 'description', title: '说明', ellipsis: true, render: (row) => row.description },
             ]}
           />
@@ -72,6 +106,12 @@ function Overview({
     return member?.name || member?.email || userId;
   };
   const manifest = skill.draft ?? skill.published;
+  const { env } = useSkillActions();
+  const [editingEnv, setEditingEnv] = useState(false);
+  const grants = useGrantsList();
+  const saveUsers = useUsersAction();
+  const [editingUsers, setEditingUsers] = useState(false);
+  const users = usersOf(grants.data, `skill:${skill.id}`);
   return (
     <>
       <DescriptionList
@@ -81,9 +121,41 @@ function Overview({
           { label: '当前发布版本', value: skill.publishedVersion ?? '还没发布' },
           { label: '草稿版本', value: skill.draft?.version || '未写版本号' },
           { label: '有未发布的修改', value: skill.hasUnpublishedChanges ? '是' : '否' },
+          {
+            label: '给谁用',
+            value: (
+              <span className="kw-labeled">
+                <span>{usersText(users)}</span>
+                <Button color="secondary" variant="ghost" size="sm" onClick={() => setEditingUsers(true)}>
+                  修改
+                </Button>
+              </span>
+            ),
+          },
         ]}
       />
-      {manifest ? <Manifest manifest={manifest} /> : null}
+      {editingUsers ? (
+        <UsersDialog
+          title={`「${skill.name}」给谁用`}
+          initial={users}
+          pending={saveUsers.pending}
+          onSave={(subjects) => saveUsers.run({ resource: `skill:${skill.id}`, subjects })}
+          onClose={() => setEditingUsers(false)}
+        />
+      ) : null}
+      {manifest ? (
+        <Manifest manifest={manifest} env={{ filled: skill.envFilled, onEdit: () => setEditingEnv(true) }} />
+      ) : null}
+      {editingEnv && manifest ? (
+        <EnvDialog
+          name={skill.name}
+          env={manifest.env}
+          filled={skill.envFilled}
+          pending={env.pending}
+          onSave={(values) => env.run({ skill, values })}
+          onClose={() => setEditingEnv(false)}
+        />
+      ) : null}
       <section className="kw-detail-section">
         <h3>发布记录</h3>
         <Table

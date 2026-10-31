@@ -9,7 +9,14 @@ describe('artifacts api', () => {
     const api = routeFetch({
       'GET /api/workspaces/default/conversations/*/artifacts': jsonResponse({
         items: [
-          { id: 'art_1', filename: '总结.docx', contentType: 'application/x', size: 2048, runId: 'run-2' },
+          {
+            id: 'art_1',
+            filename: '总结.docx',
+            contentType: 'application/x',
+            size: 2048,
+            runId: 'run-2',
+            description: '本季度的结论与下一步',
+          },
           { id: 'art_2', filename: '无轮次.md', contentType: 'text/markdown', size: 3, runId: null },
           { filename: '缺 id' },
           'not-an-object',
@@ -25,6 +32,7 @@ describe('artifacts api', () => {
         mimeType: 'application/x',
         size: 2048,
         runId: 'run-2',
+        description: '本季度的结论与下一步',
         url: '/api/workspaces/default/conversations/a%2Fb/artifacts/art_1',
       },
       {
@@ -33,6 +41,7 @@ describe('artifacts api', () => {
         mimeType: 'text/markdown',
         size: 3,
         runId: undefined,
+        description: undefined,
         url: '/api/workspaces/default/conversations/a%2Fb/artifacts/art_2',
       },
     ]);

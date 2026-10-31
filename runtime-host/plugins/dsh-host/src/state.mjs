@@ -51,11 +51,17 @@ const BUFFER_BYTES = 8 * 1024 * 1024
  *   loaded：本轮根会话加载过的技能 → 它的 completionTools
  * @property {{ token: string } | undefined} toolAccess 工具桥回调业务服务用的短期令牌（受众 tools）
  * @property {object[] | undefined} bridgeTools 会话打开时从业务服务拉取的工具描述
+ * @property {string | undefined} toolNotes 随工具清单来的一段说明（例如「这些服务用户还没连接」），写进系统提示
  * @property {{ token: string } | undefined} skillAccess 技能提供方回调业务服务用的短期令牌（受众 skills）
  * @property {readonly object[] | undefined} skillCatalog 本会话可用技能清单（已发布版本）
  * @property {Promise<readonly object[]> | undefined} skillCatalogPromise 清单拉取（只拉一次）
+ * @property {Set<string>} loadedSkills 本会话（含子 Agent）加载过的技能：执行命令时报给业务服务，由它加上这些技能的环境变量。
+ *   只在内存里，宿主重启后会话恢复时为空，技能再加载一次才带上
+ * @property {readonly string[] | undefined} bundledOff 本空间停用了的自带技能（随清单拿到）
  * @property {'zh' | 'en' | undefined} language 最近一轮的交互语言，由业务服务随消息下发
  * @property {{ bases: readonly object[], omitted: number } | undefined} knowledgeCatalog 最近一次下发的知识库目录
+ * @property {string | undefined} turnContext 扩展补的常驻上下文（turn-context），最近一次下发的；空串是「现在没有」
+ * @property {Map<string, string>} turnTexts 已收下、还没进入步骤的消息各自带的这一轮上下文，键是消息 id
  * @property {'agent' | 'quick'} answerMode 当前步骤按哪种回答方式（answer-mode）：随消息进入步骤切换
  * @property {Map<string, 'agent' | 'quick'>} answerModes 已收下、还没进入步骤的消息各自的回答方式，键是消息 id
  */
@@ -77,11 +83,15 @@ export function createSession(sessionId, policy) {
     gate: { turn: -1, succeeded: new Set(), nudges: 0, loaded: new Map() },
     toolAccess: undefined,
     bridgeTools: undefined,
+    toolNotes: undefined,
     skillAccess: undefined,
     skillCatalog: undefined,
     skillCatalogPromise: undefined,
+    loadedSkills: new Set(),
     language: undefined,
     knowledgeCatalog: undefined,
+    turnContext: undefined,
+    turnTexts: new Map(),
     answerMode: 'agent',
     answerModes: new Map(),
   }
@@ -123,9 +133,35 @@ export function resolveRootSession(session) {
   return undefined
 }
 
+/**
+ * 按会话 id 找它所属的根会话 id（根会话就是自己；子 Agent 顺着父子记录往上找，记录在它的 agent/created 里写下）。
+ * 找不到返回 undefined。远程执行据此核对：调用方只能落到自己根会话的工作目录。
+ */
+export function rootSessionIdOf(sessionId) {
+  const id = String(sessionId)
+  if (sessions.has(id)) return id
+  let current = lineage.get(id)
+  for (let depth = 0; current !== undefined && depth < MAX_DEPTH; depth += 1) {
+    if (sessions.has(current)) return current
+    current = lineage.get(current)
+  }
+  return undefined
+}
+
 /** 子会话释放后删掉它的父子记录。 */
 export function forgetLineage(sessionId) {
   lineage.delete(String(sessionId))
+}
+
+const dropListeners = new Set()
+
+/**
+ * 会话状态删除时回调（会话 id）。流式执行据此关掉这个会话的 SSH 执行环境。返回取消订阅的函数。
+ * @param {(sessionId: string) => void} listener
+ */
+export function onSessionDropped(listener) {
+  dropListeners.add(listener)
+  return () => dropListeners.delete(listener)
 }
 
 /** 删除会话状态：结算待决审批与提问、结束全部订阅。只删传入的那份对象。 */
@@ -136,6 +172,9 @@ export function dropSession(state) {
   for (const pending of [...state.questions.values()]) pending.cancel()
   for (const subscriber of [...state.subscribers]) subscriber.end()
   state.subscribers.clear()
+  for (const listener of [...dropListeners]) {
+    try { listener(state.id) } catch { /* 回调出错不影响释放会话 */ }
+  }
 }
 
 /** 当前缓冲里最早一帧的游标；缓冲为空时返回 undefined。 */

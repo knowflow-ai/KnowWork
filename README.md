@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.3-2b7de9" alt="Version: v0.0.3"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.4-2b7de9" alt="Version: v0.0.4"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -158,7 +158,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 | 能力 | 说明 |
 |---|---|
 | 执行过程可见 | 流式展示模型的每一步，调了哪个工具、参数和结果都能看到，默认收起，随时展开；回答逐字输出 |
-| 快速问答 | 只检索知识库、按检索到的内容带出处作答，不走完整的智能体流程；会话中途可以在智能体和快速问答之间切换 |
+| 快速问答 | 只查知识库（检索，片段不全时读命中处前后）、带出处作答，不走完整的智能体流程；会话中途可以在智能体和快速问答之间切换 |
 | 思考开关 | 对话模型可以开关思考，按各服务商自己的参数写法传 |
 | @ 点名 | 输入框里 @ 知识库，这一轮只查点到的库；@ 技能等于显式调用它 |
 | 插话与取消 | 回车把消息排到当前任务完成后发送，组合键补充给正在跑的任务；随时可以取消 |
@@ -250,7 +250,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 
 ## 现状与路线图
 
-当前版本 v0.0.3，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 v0.0.4，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
 
 接下来要做：技能验证台（用例、结构断言、草稿版对比发布版）、场景包、固定工作流的界面、备份与恢复、修改密码与禁用账号。
 
@@ -281,7 +281,7 @@ KnowWork 和下面几个项目同属一个产品家族：KnowFlow 管知识，Kn
 KnowWork 以 [Apache License 2.0](LICENSE) 发布。
 
 - [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)，Agent 内核（MIT）。
-- [WeKnora](https://github.com/Tencent/WeKnora)，会话沙箱的 Docker 后端与部署编排参照了它的做法（MIT）。
+- [WeKnora](https://github.com/Tencent/WeKnora)，会话沙箱的 Docker 后端与部署编排、IM 渠道、知识检索与引用、回答方式与输入框的 @ 菜单参照了它的做法（MIT）。
 - [@openai/apps-sdk-ui](https://www.npmjs.com/package/@openai/apps-sdk-ui)，界面组件（MIT）。
 
 第三方声明见 [NOTICE](NOTICE)。

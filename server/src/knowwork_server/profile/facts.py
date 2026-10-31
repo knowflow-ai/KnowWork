@@ -92,7 +92,7 @@ class ProfileCompiler:
         return ProfileFacts(
             workspace_id=workspace_id, user_id=user_id, role=await self._s.role_of(user_id, workspace_id),
             member=True, tools=specs, permitted_tools=clearance.permitted(user_id, workspace_id, [s.name for s in specs]),
-            builtin_tools=clearance.builtin, skills=tuple(await self._s.skills.for_session(workspace_id, user_id)),
+            builtin_tools=clearance.builtin_names(), skills=tuple(await self._s.skills.for_session(workspace_id, user_id)),
             knowledge=await self._s.knowledge(user_id, workspace_id), selection=selection,
             host_denied=host_denied)
 

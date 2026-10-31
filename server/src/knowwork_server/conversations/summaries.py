@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -35,7 +35,8 @@ MAX_QUESTION = 2000
 
 @dataclass(frozen=True)
 class TurnEnded:
-    """结束的一轮，交给各模块算自己的事实。answer 是最后一条助手回答的全文。"""
+    """结束的一轮，交给各模块算自己的事实、做自己的事。answer 是最后一条助手回答的全文；user_id 是会话的主人
+    （提问的人），查不到时为 None。"""
 
     workspace_id: str
     conversation_id: str
@@ -43,6 +44,7 @@ class TurnEnded:
     question: str
     answer: str
     status: str
+    user_id: str | None = None
 
 
 Contributor = Callable[[TurnEnded], Awaitable[Mapping[str, Any] | None]]
@@ -52,6 +54,7 @@ OwnerLookup = Callable[[str], Awaitable[str | None]]
 @dataclass(frozen=True)
 class _Turn:
     turn: int | None = None
+    started: datetime | None = None
     question: str | None = None  # 用户这一轮亲自发的第一条消息；后面的插话不算
     answer: str = ""             # 最后一条助手回答
     tools: tuple[str, ...] = ()
@@ -79,7 +82,8 @@ class RunSummaries:
         self._tasks: set[asyncio.Task] = set()
 
     def contribute(self, name: str, contributor: Contributor) -> None:
-        """登记一个模块在回合结束时给的事实，写进 facts[name]；给 None 就不写。装配时调用。"""
+        """登记一个模块在回合结束时要做的事与给的事实，事实写进 facts[name]；给 None 就不写。装配时调用。
+        各模块互不影响：一个出错只记日志。"""
         self._contributors = {**self._contributors, name: contributor}
 
     def current_turn(self, conversation_id: str) -> int | None:
@@ -96,10 +100,10 @@ class RunSummaries:
             turn = _int(payload.get("turn"))
             # 提问一般在开始帧之后到；上一轮结束后、这一轮开始前就到了的（排队的消息）也算这一轮的
             question = current.question if current.turn is None else None
-            self._put(conversation_id, _Turn(turn=turn, question=question))
+            started = _time(data.get("time"))
+            self._put(conversation_id, _Turn(turn=turn, started=started, question=question))
             if turn is not None:
-                self._spawn(self._started(workspace_id, conversation_id, turn, question or "",
-                                          _time(data.get("time"))))
+                self._spawn(self._started(workspace_id, conversation_id, turn, question or "", started))
         elif event == "user/message" and current.question is None:
             # 宿主也用 user/message 注入运行时上下文、子 Agent 回报，source.kind 不是 user 的不算提问
             source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
@@ -107,7 +111,8 @@ class RunSummaries:
                 question = user_parts(payload.get("content"))[0]
                 self._put(conversation_id, replace(current, question=question))
                 if current.turn is not None:  # 进行中的那一行也看得到在问什么
-                    self._spawn(self._asked(workspace_id, conversation_id, current.turn, question))
+                    self._spawn(self._asked(workspace_id, conversation_id, current.turn, question,
+                                            current.started or _time(data.get("time"))))
         elif event == "assistant/message":
             text = assistant_text(payload)
             if text:
@@ -150,21 +155,29 @@ class RunSummaries:
         except Exception:
             log.exception("recording the start of %s turn %s failed", conversation_id, turn)
 
-    async def _asked(self, workspace_id: str, conversation_id: str, turn: int, question: str) -> None:
-        """提问补写到进行中的那一行。行还没插进去时什么都不改，结束时照样会写。"""
+    async def _asked(self, workspace_id: str, conversation_id: str, turn: int, question: str,
+                     started: datetime) -> None:
+        """提问补写到进行中的那一行。开始那一行也在后台写，负载高时这次可能先落库：没有那一行就连行一起插，
+        有就只在还没写提问时补上（结束时照样会写）。"""
         try:
+            user_id = await self._owner_of(conversation_id)
+            if user_id is None:
+                return
+            statement = insert(RunSummary).values(
+                conversation_id=conversation_id, turn=turn, workspace_id=workspace_id, user_id=user_id,
+                question=question[:MAX_QUESTION], status=RUNNING, started_at=started, tools=[], facts={})
             async with self._sessionmaker() as session, session.begin():
                 await set_workspace(session, workspace_id)
-                await session.execute(update(RunSummary).where(
-                    RunSummary.conversation_id == conversation_id, RunSummary.turn == turn,
-                    RunSummary.question == "").values(question=question[:MAX_QUESTION]))
+                await session.execute(statement.on_conflict_do_update(
+                    index_elements=["conversation_id", "turn"], set_={"question": statement.excluded.question},
+                    where=RunSummary.question == ""))
         except Exception:
             log.exception("recording the question of %s turn %s failed", conversation_id, turn)
 
     async def _ended(self, ended: TurnEnded, reason: str | None, tools: tuple[str, ...], at: datetime) -> None:
         try:
-            facts = await self._facts(ended)
             user_id = await self._owner_of(ended.conversation_id)
+            facts = await self._facts(replace(ended, user_id=user_id))
             if user_id is None:
                 return
             row = {"conversation_id": ended.conversation_id, "turn": ended.turn, "workspace_id": ended.workspace_id,

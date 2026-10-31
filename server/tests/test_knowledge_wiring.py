@@ -106,7 +106,7 @@ async def test_mention_menu_lists_what_can_really_be_mentioned(fresh_url):
         options = (await client.get(f"{CONV}/mention-options")).json()
         assert [(b["id"], b["path"], b["tags"], b["pinnable"]) for b in options["bases"]] == [
             ("builtin.kb1", ["财务"], ["简报", "制度"], True), ("builtin.kb2", [], [], True)]
-        assert options["skills"] == []
+        assert options["skills"] == [] and options["services"] == []
         found = (await client.get(f"{CONV}/mention-options/documents", params={"q": "差旅"})).json()
         assert found["documents"] == [{"id": "kb1/d1", "title": "差旅办法", "base": "builtin.kb1", "base_name": "制度库"}]
         recent = (await client.get(f"{CONV}/mention-options/documents")).json()

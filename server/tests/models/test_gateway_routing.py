@@ -85,6 +85,23 @@ async def test_the_models_thinking_setting_is_added_to_the_request():
                                           "chat_template_kwargs": {"enable_thinking": False}}
 
 
+async def test_max_tokens_is_capped_at_the_models_output_limit():
+    """宿主按全局默认请求 max_tokens，模型上限更小时厂商会直接拒：填了「最大输出」就收紧到它，没填原样转发。"""
+    routed = Upstream()
+    small = Route(model_id="m", alias="small", upstream_model="deepseek-chat", base_url="http://provider/v1",
+                  api_key="", max_output_tokens=8192)
+    async with _client(Resolver(small), routed=httpx.MockTransport(routed)) as client:
+        await client.post(URL, json={"model": "small", "messages": MESSAGES, "max_tokens": 32768}, headers=_auth())
+        await client.post(URL, json={"model": "small", "messages": MESSAGES, "max_tokens": 1000}, headers=_auth())
+        await client.post(URL, json={"model": "small", "messages": MESSAGES}, headers=_auth())
+    assert [r["body"].get("max_tokens") for r in routed.requests] == [8192, 1000, None]
+    unlimited = Upstream()
+    free = Route(model_id="m", alias="free", upstream_model="x", base_url="http://provider/v1", api_key="")
+    async with _client(Resolver(free), routed=httpx.MockTransport(unlimited)) as client:
+        await client.post(URL, json={"model": "free", "messages": MESSAGES, "max_tokens": 32768}, headers=_auth())
+    assert unlimited.requests[0]["body"]["max_tokens"] == 32768
+
+
 async def test_route_without_key_sends_no_authorization():
     routed = Upstream()
     keyless = Route(model_id="m", alias="local", upstream_model="llama", base_url="http://vllm/v1", api_key="")

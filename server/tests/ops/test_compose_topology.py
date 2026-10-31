@@ -62,7 +62,7 @@ def _socket_mounts(services: dict) -> dict[str, list[str]]:
 
 
 def test_main_compose_file_alone_keeps_sandbox_off_and_socket_unmounted():
-    """照抄 WeKnora：不再有 Docker API 代理。主编排文件单独用时沙箱关闭、不挂 docker.sock（挂了等于宿主机 root）。"""
+    """不再有 Docker API 代理。主编排文件单独用时沙箱关闭、不挂 docker.sock（挂了等于宿主机 root）。"""
     assert "sandbox-proxy" not in _services() and "sandbox-control" not in _config()["networks"]
     api = _services()["api"]
     assert api["environment"]["KNOWWORK_SANDBOX_DOCKER_ENABLED"] == "false"
@@ -81,6 +81,14 @@ def test_sandbox_overlay_turns_it_on_and_mounts_socket_only_for_api_and_worker()
             f"crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai/knowwork-sandbox:{VERSION}"), name
     assert {name: targets for name, targets in _socket_mounts(services).items() if targets} == {
         "api": ["/var/run/docker.sock"], "worker": ["/var/run/docker.sock"]}
+
+
+def test_api_and_worker_agree_on_streaming_execution():
+    """流式执行会改容器姿态（多加 SYS_CHROOT、换入口），姿态摘要写在容器 label 上、对不上就重建。worker 也建、也用会话容器
+    （放附件），两边开关不一致时会互相把对方建的容器当成「配置已变更」删掉重建，工作区被清空。"""
+    services = _config(SANDBOX)["services"]
+    assert services["api"]["environment"]["KNOWWORK_SANDBOX_SSH_ENABLED"] == "false"
+    assert services["worker"]["environment"]["KNOWWORK_SANDBOX_SSH_ENABLED"] == "false"
 
 
 def test_sandbox_is_on_by_default_through_compose_file_in_env_example():

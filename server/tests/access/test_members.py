@@ -1,9 +1,11 @@
 """空间与成员：四档角色、所有者保护、越权与跨空间。"""
 
 import pytest
+from sqlalchemy import select
 
 from knowwork_server.access.errors import AccessDenied, Conflict, NotFound
 from knowwork_server.access.members import DEFAULT_WORKSPACE_ID
+from knowwork_server.access.models import WorkspaceMember
 from knowwork_server.access.vocab import InvalidInput
 
 pytestmark = pytest.mark.anyio
@@ -115,3 +117,30 @@ async def test_reload_restores_identical_decisions(service, ws):
     before = service.check("dave", ws, "tool:t1", "edit")
     assert await service.reload()
     assert before and service.check("dave", ws, "tool:t1", "edit")
+
+
+async def test_member_removed_hooks_run_in_the_same_transaction(service, ws):
+    """扩展在移出成员的同一个事务里清理这个人在本空间的数据（例如长期记忆）：看到的已是移出后的状态。"""
+    seen = []
+
+    async def record(session, workspace_id, user_id):
+        left = await session.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace_id,
+                                                                  WorkspaceMember.user_id == user_id))
+        seen.append((workspace_id, user_id, left is None))
+
+    service.on_member_removed(record)
+    await service.remove_member("alice", ws, "dave")
+    assert seen == [(ws, "dave", True)]
+
+
+async def test_a_failing_hook_keeps_the_member(service, ws):
+    """清理失败就整个不移出：不留下「人走了、数据还在」。"""
+
+    async def fail(session, workspace_id, user_id):
+        raise RuntimeError("清理失败")
+
+    service.on_member_removed(fail)
+    with pytest.raises(RuntimeError):
+        await service.remove_member("alice", ws, "dave")
+    assert "dave" in {m.user_id for m in await service.list_members("alice", ws)}
+    assert service.check("dave", ws, "workspace", "use")

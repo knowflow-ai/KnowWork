@@ -1,5 +1,5 @@
-"""每轮的知识库目录：照 DSH 官方技能目录的形态，给模型名字、截短的描述和能筛的字段
-（只有名字和类型）；可选值、标签集由模型按需调 knowledge_bases 取（不用过滤的回合不多花 token）。
+"""每轮的知识库目录：照 DSH 官方技能目录的形态，给模型名字、截短的描述、能筛的字段
+（只有名字和类型）和能开的检索方式（多跳、视觉）；可选值、标签集由模型按需调 knowledge_bases 取（不用过滤的回合不多花 token）。
 原来只给名字和描述，要多调一次 knowledge_bases 才知道有哪些字段，模型多数时候直接搜、不筛。宿主负责渲染、按内容去重。"""
 
 from ..kernel.contract import KnowledgeCatalog, KnowledgeEntry
@@ -24,6 +24,7 @@ def _field(field: FieldInfo) -> str:
 
 def turn_catalog(listing: BaseListing) -> KnowledgeCatalog:
     entries = tuple(KnowledgeEntry(id=b.id, name=b.info.name[:200] or b.id, description=_short(b.info.description),
-                                   fields=tuple(_field(f) for f in b.info.fields[:MAX_FIELDS]) if b.filterable else ())
+                                   fields=tuple(_field(f) for f in b.info.fields[:MAX_FIELDS]) if b.filterable else (),
+                                   routes=tuple(dict.fromkeys(b.info.routes)))
                     for b in listing.bases[:MAX_ENTRIES])
     return KnowledgeCatalog(bases=entries, omitted=max(0, len(listing.bases) - MAX_ENTRIES))

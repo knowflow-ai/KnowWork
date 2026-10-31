@@ -1,4 +1,4 @@
-"""渠道与平台无关的部分：入站消息、各平台要实现的回发能力（照 WeKnora internal/im 的 Adapter / StreamSender）。"""
+"""渠道与平台无关的部分：入站消息、各平台要实现的回发能力。"""
 
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -24,7 +24,7 @@ class IncomingMessage:
 
     @property
     def session_key(self) -> str:
-        """对话位置：私聊按人，群里按（群, 人），同一群里每人一个会话（照 WeKnora 默认的按人模式）。"""
+        """对话位置：私聊按人，群里按（群, 人），同一群里每人一个会话。"""
         if self.chat_type == "group":
             return f"group:{self.chat_id}:{self.external_id}"
         return f"dm:{self.external_id}"

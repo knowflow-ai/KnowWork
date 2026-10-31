@@ -81,6 +81,7 @@ async def test_owner_sees_turns_steps_and_reconstructed_input(sessionmaker, seed
         assert turn["steps"][0]["toolCalls"][0]["durationMs"] == 300
         assert turn["steps"][0]["usage"]["inputTokens"] == 100
         assert turn["subagents"][0]["label"] == "子任务"
+        assert turn["background"] == [], "没有扩展补的上下文"
         step_input = (await http.get(f"{base}/turns/1/steps/2/input")).json()
         assert [m["role"] for m in step_input["messages"]] == ["user", "user", "assistant", "tool"]
         assert step_input["messages"][3]["toolCallId"] == "call1"

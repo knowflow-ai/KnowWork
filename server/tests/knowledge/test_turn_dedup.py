@@ -141,3 +141,16 @@ def test_only_read_only_tools_may_run_side_by_side():
     assert "concurrent" not in ToolSpec("kw_w", "写入", {"type": "object"}, "write").describe()
     with pytest.raises(ValueError, match="不是只读"):
         ToolSpec("kw_w", "写入", {"type": "object"}, "write", concurrent=True)
+
+
+def test_read_only_knowledge_tools_are_offered_in_quick_answers():
+    """快速问答里检索、阅读、看库、列文档都给；没写回答方式的工具只在智能体里，描述里不带这个字段。"""
+    from knowwork_server.tools.registry import ToolSpec
+
+    specs = {t.spec.name: t.spec.describe() for t in knowledge_tools(Fixed(), None)}
+    assert {name: spec["answerModes"] for name, spec in specs.items()} == {
+        name: ["agent", "quick"] for name in ("knowledge_search", "knowledge_read", "knowledge_bases", "knowledge_documents")}
+    assert "answerModes" not in ToolSpec("kw_w", "写入", {"type": "object"}, "write").describe()
+    for bad in (frozenset(), frozenset({"fast"})):
+        with pytest.raises(ValueError, match="回答方式"):
+            ToolSpec("kw_w", "写入", {"type": "object"}, "write", answer_modes=bad)

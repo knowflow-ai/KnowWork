@@ -43,6 +43,8 @@ test('经官方 pi-ai 适配器走 OpenAI 兼容网关：带令牌、流式、�
     assert.equal(req.body.model, 'kw-chat')
     assert.equal(req.body.stream, true)
     assert.ok(JSON.stringify(req.body.messages).includes('请回答'))
+    // 输出上限要显式声明：0.2.2 起没声明的模型默认 128000（0.2.1 是 32768），超过很多模型服务自己的上限会被拒
+    assert.equal(req.body.max_tokens ?? req.body.max_completion_tokens, 32768)
     // 记录网关能否知道请求来自哪个会话（用于计量与审计）：打印实际情况，结论写进报告。
     const raw = JSON.stringify({ headers: req.headers, body: { ...req.body, messages: undefined, tools: undefined } })
     assert.equal(raw.includes('gw-1'), false, '网关已能看到会话标识，报告结论需要更新')

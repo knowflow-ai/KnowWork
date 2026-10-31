@@ -28,6 +28,9 @@ class SearchBody(_In):
     folders: Annotated[list[str], Field(max_length=20)] = []
     tags: Annotated[list[str], Field(max_length=20)] = []
     filters: Annotated[list[MetaFilter], Field(max_length=10)] = []
+    # 这一次开不开多跳、视觉检索；不填按知识库自己的默认（知识库设成关闭的打不开）
+    multi_hop: bool | None = None
+    visual: bool | None = None
 
 
 class ReadBody(_In):
@@ -53,7 +56,7 @@ class KnowledgeReader:
 
     async def search(self, caller: Caller, body: SearchBody) -> dict[str, Any]:
         options = SearchOptions(mode=body.mode, folders=tuple(body.folders), tags=tuple(body.tags),
-                                filters=tuple(body.filters))
+                                filters=tuple(body.filters), multi_hop=body.multi_hop, visual=body.visual)
         outcome = await self.service.search(caller, body.query, top_n=body.top_n,
                                             bases=tuple(body.knowledge_bases) if body.knowledge_bases else None,
                                             options=options)
@@ -96,4 +99,6 @@ def _base(listed) -> dict[str, Any]:
                             "description": info.description, "filterable": listed.filterable}
     if listed.filterable:
         base["fields"] = [field.model_dump() for field in info.fields]
+    if info.routes:
+        base["routes"] = list(info.routes)  # 能按次打开的检索方式：multi_hop、visual
     return base

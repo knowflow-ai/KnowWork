@@ -53,6 +53,7 @@ export function ModelDialog({ model, providers, onClose }: Props) {
       name: model?.name ?? '',
       capabilities: [...(model?.capabilities ?? ['chat'])],
       contextLength: model?.contextLength ?? null,
+      maxOutputTokens: model?.maxOutputTokens ?? null,
       thinking: model?.thinking ?? null,
       inputPrice: model?.inputPrice ?? null,
       outputPrice: model?.outputPrice ?? null,
@@ -125,6 +126,22 @@ export function ModelDialog({ model, providers, onClose }: Props) {
             value={values.thinking ?? 'default'}
             onChange={(option) => set('thinking', thinkingFrom(option.value))}
           />
+        </Field>
+      ) : null}
+      {values.capabilities.includes('chat') ? (
+        <Field
+          label="最大输出（token）"
+          help="这个模型一次最多输出多少。智能体默认按 32768 请求，模型上限更小时厂商会直接拒绝；填了就按它收紧，不填不限"
+        >
+          {(id) => (
+            <NumberInput
+              id={id}
+              min={1}
+              max={10_000_000}
+              value={values.maxOutputTokens}
+              onChange={(n) => set('maxOutputTokens', n)}
+            />
+          )}
         </Field>
       ) : null}
       <Field

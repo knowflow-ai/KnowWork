@@ -34,7 +34,7 @@ _FILE_HANDLE = re.compile(r'^\[File (?P<name>"(?:[^"\\]|\\.)*") \((?P<bytes>\d+)
 _EXTRACTED_HANDLE = "[Markdown extracted from "
 # 宿主写的 @ 说明块（runtime-host mentions.mjs）：第一行是这个前缀加 JSON，不进显示文字，换成气泡上的小标签
 _MENTION_PREFIX = "[用户这一轮 @ 点名的范围] "
-MENTION_TYPES = ("knowledge_base", "folder", "document", "tag", "skill")
+MENTION_TYPES = ("knowledge_base", "folder", "document", "tag", "mcp", "skill")
 MAX_MENTIONS = 30
 FIELD_LIMIT = 2000
 LABEL_LIMIT = 1000

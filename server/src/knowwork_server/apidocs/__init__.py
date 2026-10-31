@@ -56,8 +56,8 @@ TAGS: tuple[tuple[str, str], ...] = (
 
 _SEGMENTS = {
     "conversations": "对话", "runs": "运行记录", "usage": "用量", "insights": "问答大盘", "channels": "IM 渠道",
-    "knowledge-sources": "知识源", "knowledge-bases": "知识源", "mcp-servers": "工具（MCP）", "skills": "技能",
-    "workflow-runs": "工作流", "jobs": "后台任务", "audit-logs": "审计", "members": "成员与权限",
+    "knowledge-sources": "知识源", "knowledge-bases": "知识源", "mcp-servers": "工具（MCP）", "enterprise-mcp": "工具（MCP）", "skills": "技能",
+    "skill-submissions": "技能", "platform-skills": "技能", "workflow-runs": "工作流", "jobs": "后台任务", "audit-logs": "审计", "members": "成员与权限",
     "departments": "成员与权限", "groups": "成员与权限", "grants": "成员与权限", "invitations": "成员与权限",
     "users": "成员与权限",
 }
@@ -77,6 +77,8 @@ def tag_of(path: str) -> str | None:
         return "对外知识接口"
     if path.startswith("/api/auth/"):
         return "账号与登录"
+    if path.startswith("/api/mcp/"):
+        return "工具（MCP）"
     if path.startswith("/api/setup"):
         return "初始化"
     if path.startswith(("/api/brand", "/api/system/brand")) or path in ("/api/system/check", "/api/system/info"):
@@ -88,7 +90,9 @@ def tag_of(path: str) -> str | None:
     if path.startswith(WORKSPACE):
         rest = path[len(WORKSPACE):].split("/")
         if rest[0] == "me":
-            return "技能" if len(rest) > 1 and rest[1] == "skills" else "成员与权限"
+            if len(rest) > 1 and rest[1] == "skills":
+                return "技能"
+            return "工具（MCP）" if len(rest) > 1 and rest[1] == "mcp-connections" else "成员与权限"
         return _SEGMENTS.get(rest[0])
     return None
 

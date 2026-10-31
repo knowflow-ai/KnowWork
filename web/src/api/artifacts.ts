@@ -1,7 +1,7 @@
 /**
  * 会话产物接口（server/src/knowwork_server/artifacts/api.py）。
  *
- * 回合结束时后端把沙箱 /workspace/output 顶层的文件收成产物，runId 与 events.v1 的 run_id 同为 `run-<轮次>`。
+ * 回合结束时后端把模型用 present 交付的文件收成产物（连同交付时写的说明），runId 与 events.v1 的 run_id 同为 `run-<轮次>`。
  * 下载走同源鉴权接口，浏览器自动带 Cookie；后端一律按附件返回。
  */
 import type { ArtifactView } from '../features/chat/events/types';
@@ -24,6 +24,7 @@ function parseArtifact(conversationId: string, value: unknown): ArtifactView | u
     mimeType: str(value.contentType),
     size: num(value.size),
     runId: text(value.runId),
+    description: text(value.description),
     url: artifactUrl(conversationId, id),
   };
 }

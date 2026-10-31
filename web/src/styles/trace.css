@@ -32,6 +32,18 @@
   -webkit-line-clamp: 3;
 }
 
+/* 随提问带上的背景：收起时只占一行，展开后每段一个灰底框 */
+.kw-trace-background {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.kw-trace-background .kw-trace-block {
+  align-self: stretch;
+}
+
 .kw-trace-meta {
   color: var(--color-text-secondary);
   font-size: var(--font-text-sm-size);

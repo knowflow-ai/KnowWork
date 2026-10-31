@@ -3,6 +3,7 @@
  * 用在要按层级挑的地方，例如授权时选知识源下的目录或知识库：平铺的下拉看不出层级，同名目录也分不清。
  * 浮层放进 portal（Radix Popover，对话框的滚动区裁不掉）；打开时焦点交给搜索框（照 Combobox 自己管，
  * 组件库 Popover 的自动聚焦放在对话框里会被焦点陷阱拉回）。分组节点（selectable: false）只用来展开收起。
+ * multiple 时可以选多个（「给谁用」挑部门、用户组、成员）：点一下选上或取消、浮层不收，框里列出选中项的名字。
  */
 import { useRef, useState, type ReactNode } from 'react';
 import { Popover } from 'radix-ui';
@@ -21,10 +22,8 @@ export interface TreeSelectNode {
   readonly icon?: ReactNode;
 }
 
-interface Props {
+interface Common {
   readonly nodes: readonly TreeSelectNode[];
-  readonly value: string;
-  readonly onChange: (key: string) => void;
   readonly placeholder: string;
   readonly searchPlaceholder: string;
   readonly emptyMessage: string;
@@ -33,6 +32,20 @@ interface Props {
   /** 树的名字（读屏、测试按它找） */
   readonly 'aria-label': string;
 }
+
+interface Single extends Common {
+  readonly multiple?: false;
+  readonly value: string;
+  readonly onChange: (key: string) => void;
+}
+
+interface Multiple extends Common {
+  readonly multiple: true;
+  readonly value: readonly string[];
+  readonly onChange: (keys: string[]) => void;
+}
+
+type Props = Single | Multiple;
 
 /** 只留名字里有 query 的节点和它们的上级；节点本身匹配时整棵子树都留（搜目录名时连同下面的一起看到）。 */
 export function filterTree(nodes: readonly TreeSelectNode[], query: string): readonly TreeSelectNode[] {
@@ -43,6 +56,16 @@ export function filterTree(nodes: readonly TreeSelectNode[], query: string): rea
     const children = filterTree(node.children, wanted);
     return children.length > 0 ? [{ ...node, children }] : [];
   });
+}
+
+/** 节点自己的名字；找不到返回 undefined。 */
+export function labelOf(nodes: readonly TreeSelectNode[], key: string): string | undefined {
+  for (const node of nodes) {
+    if (node.key === key) return node.label;
+    const below = labelOf(node.children, key);
+    if (below !== undefined) return below;
+  }
+  return undefined;
 }
 
 /** 节点从根起的完整路径（「扩展知识库 / 产品资料 / 电风扇说明书」）；找不到返回 undefined。 */
@@ -73,25 +96,32 @@ function toTree(nodes: readonly TreeSelectNode[]): readonly TreeNode[] {
   }));
 }
 
-export function TreeSelect({
-  nodes,
-  value,
-  onChange,
-  placeholder,
-  searchPlaceholder,
-  emptyMessage,
-  disabled,
-  invalid,
-  ...rest
-}: Props) {
+/** 框里显示什么：单选是完整路径，多选是各项的名字（顿号隔开，太长时由控件截断）。 */
+function display(props: Props): string | undefined {
+  if (!props.multiple) return props.value ? pathOf(props.nodes, props.value) : undefined;
+  const names = props.value.flatMap((key) => labelOf(props.nodes, key) ?? []);
+  return names.length > 0 ? names.join('、') : undefined;
+}
+
+export function TreeSelect(props: Props) {
+  const { nodes, placeholder, searchPlaceholder, emptyMessage, disabled, invalid } = props;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const search = useRef<HTMLInputElement>(null);
   const shown = filterTree(nodes, query);
-  const selected = value ? pathOf(nodes, value) : undefined;
+  const selected = display(props);
   const toggle = (next: boolean) => {
     setOpen(next);
     if (!next) setQuery('');
+  };
+  const pick = (key: string) => {
+    if (!props.multiple) {
+      props.onChange(key);
+      toggle(false);
+      return;
+    }
+    const chosen = props.value.includes(key);
+    props.onChange(chosen ? props.value.filter((k) => k !== key) : [...props.value, key]);
   };
   return (
     <Popover.Root open={open} onOpenChange={toggle}>
@@ -134,14 +164,12 @@ export function TreeSelect({
             <Tree
               // 搜索时换一棵树：之前收起过的节点全部重新展开，匹配的都看得到
               key={query.trim() ? 'search' : 'all'}
-              aria-label={rest['aria-label']}
+              aria-label={props['aria-label']}
               className="kw-tree-select-tree"
               nodes={toTree(shown)}
-              selected={value}
-              onSelect={(key) => {
-                onChange(key);
-                toggle(false);
-              }}
+              selected={props.value}
+              multiple={props.multiple}
+              onSelect={pick}
             />
           )}
         </Popover.Content>
