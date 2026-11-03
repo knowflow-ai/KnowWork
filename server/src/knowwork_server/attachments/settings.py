@@ -9,13 +9,10 @@ MIB = 1024 * 1024
 class AttachmentSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="KNOWWORK_", extra="ignore", frozen=True)
 
-    # MinerU 3.x 的 API 地址，例如 http://mineru:8000；为空即「未配置文档解析服务」
+    # MinerU 4.1+ 的 API 地址，例如 http://mineru:8000；为空即「未配置文档解析服务」
     mineru_base_url: str = ""
-    # VLM 推理服务地址（sglang / vllm，常见是 30000 端口），MinerU 的 vlm、hybrid 后端去访问它；由 MinerU 那台机器访问，
-    # 和 MinerU 装在一起时常写 http://127.0.0.1:30000。不配时要它的后端退回 pipeline
-    mineru_server_url: str = ""
-    mineru_backend: str = "pipeline"
-    mineru_lang: str = "ch"
+    # 解析档位：auto 是让 MinerU 自动推荐，也可以强制 flash / basic / standard / advanced
+    mineru_tier: str = "auto"
     mineru_request_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
     # 一次解析（提交 + 轮询 + 取结果）的总时限；超过按「服务超时」处理，可重试
     mineru_parse_timeout_seconds: float = Field(default=600.0, gt=0, le=6 * 3600)
@@ -31,12 +28,20 @@ class AttachmentSettings(BaseSettings):
     # 解析任务的租约：执行中每 30 秒续一次，worker 崩溃后最多这么久被别的 worker 接手
     attachment_parse_lease_seconds: float = Field(default=120.0, gt=0, le=24 * 3600)
 
-    @field_validator("mineru_base_url", "mineru_server_url")
+    @field_validator("mineru_base_url")
     @classmethod
     def _http_url(cls, value: str) -> str:
         value = value.strip().rstrip("/")
         if value and not value.startswith(("http://", "https://")):
-            raise ValueError("MinerU 与 VLM 服务的地址必须是 http(s) URL")
+            raise ValueError("MinerU 的地址必须是 http(s) URL")
+        return value
+
+    @field_validator("mineru_tier")
+    @classmethod
+    def _tier(cls, value: str) -> str:
+        value = value.strip().lower() or "auto"
+        if value not in ("auto", "flash", "basic", "standard", "advanced"):
+            raise ValueError("解析档位只能是 auto、flash、basic、standard 或 advanced")
         return value
 
     @property

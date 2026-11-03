@@ -11,10 +11,9 @@ const ENV = {
   source: 'env',
   enabled: true,
   base_url: 'http://env-mineru:8000',
-  server_url: '',
+  tier: 'auto',
   api_key_set: false,
   api_key_last4: null,
-  lang: 'ch',
   max_concurrency: 3,
   updated_at: null,
 };
@@ -52,36 +51,26 @@ describe('模型 → 文档解析', () => {
 
     await userEvent.clear(url);
     await userEvent.type(url, 'http://mineru:8000');
-    await userEvent.type(screen.getByLabelText('VLM 服务地址'), 'http://127.0.0.1:30000');
     await userEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(calls.find('PUT', PATH)).toHaveLength(1));
     expect(calls.find('PUT', PATH)[0]?.body).toEqual({
       enabled: true,
       base_url: 'http://mineru:8000',
-      server_url: 'http://127.0.0.1:30000',
-      backend: 'auto',
-      lang: 'ch',
+      tier: 'auto',
       max_concurrency: 3,
     });
     expect(await screen.findByText('正在使用这里的配置。')).toBeInTheDocument();
     expect(screen.getByText(/末四位 1234/)).toBeInTheDocument();
   });
 
-  it('可以强制 VLM 模式；VLM、hybrid 模式没填 VLM 服务地址时不让保存', async () => {
+  it('可以强制解析档位', async () => {
     const calls = api();
     renderWithApp(<ParserTab />);
     await screen.findByText(/现在用的是部署时的环境变量/);
-    await pickOption(document.body, '解析模式', /^VLM/);
-    await userEvent.click(screen.getByRole('button', { name: '保存' }));
-    expect(await screen.findByText('VLM、hybrid 模式要填 VLM 服务地址')).toBeInTheDocument();
-    expect(calls.find('PUT', PATH)).toHaveLength(0);
-    await userEvent.type(screen.getByLabelText('VLM 服务地址'), 'http://127.0.0.1:30000');
+    await pickOption(document.body, '解析档位', /^高级/);
     await userEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(calls.find('PUT', PATH)).toHaveLength(1));
-    expect(calls.find('PUT', PATH)[0]?.body).toMatchObject({
-      backend: 'vlm-http-client',
-      server_url: 'http://127.0.0.1:30000',
-    });
+    expect(calls.find('PUT', PATH)[0]?.body).toMatchObject({ tier: 'advanced' });
   });
 
   it('测试连接把原因显示出来；新令牌一起带上', async () => {

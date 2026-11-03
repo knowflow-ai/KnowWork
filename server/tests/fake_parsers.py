@@ -14,6 +14,6 @@ class EnvParsers:
         settings = self._settings
         if not settings.mineru_configured:
             return None
-        return SimpleNamespace(base_url=settings.mineru_base_url, api_key=None, lang=settings.mineru_lang,
-                               max_concurrency=settings.mineru_max_concurrency,
-                               server_url=settings.mineru_server_url or None)
+        return SimpleNamespace(base_url=settings.mineru_base_url, api_key=None,
+                               tier=None if settings.mineru_tier == "auto" else settings.mineru_tier,
+                               max_concurrency=settings.mineru_max_concurrency)

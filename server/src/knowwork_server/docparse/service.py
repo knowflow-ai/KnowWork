@@ -1,16 +1,14 @@
-"""文档解析服务（MinerU）的运行时配置：管理员在「模型 → 文档解析」里填，保存后几秒内生效，不用重启。
+"""文档解析服务（MinerU 4.1+）的运行时配置：管理员在「模型 → 文档解析」里填，保存后几秒内生效，不用重启。
 
 - 全平台共用一份：存在平台配置所在的空间（PLATFORM_WORKSPACE_ID）名下，系统管理员在「系统设置」里改，所有空间都用它；
 - 读配置（current）：有配置行就以它为准（停用即「没配」），没有就用部署时的环境变量；缓存 5 秒，
   业务服务与 worker 每次解析前都来取，管理员改完不用重启；
 - 令牌：MinerU 前面有网关要令牌时才填，加密存（同模型厂商的密钥），只回显末四位；
 - 测试连接：取 MinerU 的 /openapi.json，核对有解析接口，分清「连不上」「令牌不对」「不是 MinerU」；
-- VLM 推理服务地址（server_url，常见 30000 端口）是给 MinerU 用的：MinerU 的 vlm、hybrid 后端去访问它，KnowWork 不直连，
-  所以测试连接不测它；没配时知识库要它的 hybrid 后端退回 pipeline；
-- 解析模式（backend）：auto 不强制，按用途定（知识库 hybrid-http-client、附件 pipeline）；也可以强制 vlm-http-client、
-  hybrid-http-client 或 pipeline，附件与知识库都按它走。hybrid 自动判断版面有时效果不好，整页交给 VLM 更稳。
-  选了要 VLM 服务的模式就必须填地址，保存时拦住，不让它悄悄退回 pipeline；
-- 会话附件与扩展共用这一份（档位、图片解析增强各自按用途定，不在这里配）。
+- 解析档位（tier）：auto 不强制，让 MinerU 按文档自动推荐；也可以强制 flash / basic / standard / advanced，
+  附件与知识库都按它走。VLM 推理服务地址（sglang / vllm）与识别语言都不再是这里的设置：4.1 起它们由
+  MinerU 侧部署配置，语言自动识别；
+- 会话附件与扩展共用这一份。
 """
 
 import time
@@ -21,12 +19,11 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..access.members import PLATFORM_WORKSPACE_ID
 from ..access.rls import set_workspace
-from ..attachments.mineru import HTTP_CLIENT_BACKENDS
 from ..attachments.settings import AttachmentSettings
 from ..models.crypto import SecretBox, SecretError, last4
 from .models import DocumentParserRow
@@ -34,8 +31,7 @@ from .models import DocumentParserRow
 CACHE_SECONDS = 5.0
 SECRET_SCOPE = "document-parser"  # 加密时的关联数据：解不开别处的密文
 PROBE_TIMEOUT = 10.0
-Lang = Literal["ch", "en", "japan", "korean", "chinese_cht", "latin", "arabic", "cyrillic", "devanagari"]
-Backend = Literal["auto", "vlm-http-client", "hybrid-http-client", "pipeline"]  # attachments.mineru.CHOOSABLE_BACKENDS
+Tier = Literal["auto", "flash", "basic", "standard", "advanced"]  # attachments.mineru.MinerUOptions.tier
 AUTO = "auto"
 
 
@@ -45,11 +41,9 @@ class ParserConfig:
 
     base_url: str
     api_key: str | None
-    lang: str
     max_concurrency: int
     source: str
-    server_url: str | None = None  # VLM 推理服务；不配时要它的后端退回 pipeline
-    backend: str | None = None     # 强制的解析模式；None 是自动（按调用方的默认）
+    tier: str | None = None  # 强制的解析档位；None 是自动（让 MinerU 推荐）
 
 
 @dataclass(frozen=True)
@@ -59,11 +53,9 @@ class ParserView:
     source: str               # settings | env | none
     enabled: bool
     base_url: str
-    server_url: str
-    backend: str
+    tier: str
     api_key_set: bool
     api_key_last4: str | None
-    lang: str
     max_concurrency: int
     updated_at: datetime | None
 
@@ -88,24 +80,11 @@ class ParserSave(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = True
     base_url: Annotated[str, Field(max_length=500)]
-    server_url: Annotated[str, Field(max_length=500)] = ""  # 空字符串是不用 VLM 服务
-    backend: Backend = AUTO
+    tier: Tier = AUTO
     api_key: Annotated[str | None, Field(max_length=500)] = None
-    lang: Lang = "ch"
     max_concurrency: Annotated[int, Field(ge=1, le=64)] = 3
 
     _url = field_validator("base_url")(_clean_url)
-
-    @field_validator("server_url")
-    @classmethod
-    def _vlm(cls, value: str) -> str:
-        return _clean_url(value) if value.strip() else ""
-
-    @model_validator(mode="after")
-    def _vlm_needed(self) -> "ParserSave":
-        if self.enabled and self.backend in HTTP_CLIENT_BACKENDS and not self.server_url:
-            raise ValueError("VLM、hybrid 模式要填 VLM 服务地址；没有 VLM 服务时选 pipeline 或自动")
-        return self
 
 
 class ParserTest(BaseModel):
@@ -153,17 +132,15 @@ class DocumentParsers:
     def _config(self, row: DocumentParserRow) -> ParserConfig | None:
         if not row.enabled or not row.base_url:
             return None
-        return ParserConfig(base_url=row.base_url, api_key=self._secret(row), lang=row.lang,
-                            max_concurrency=row.max_concurrency, source="settings", server_url=row.server_url or None,
-                            backend=None if row.backend == AUTO else row.backend)
+        return ParserConfig(base_url=row.base_url, api_key=self._secret(row), max_concurrency=row.max_concurrency,
+                            source="settings", tier=None if row.tier == AUTO else row.tier)
 
     def _from_env(self) -> ParserConfig | None:
         env = self._env
         if not env.mineru_configured:
             return None
-        return ParserConfig(base_url=env.mineru_base_url, api_key=None, lang=env.mineru_lang,
-                            max_concurrency=env.mineru_max_concurrency, source="env",
-                            server_url=env.mineru_server_url or None)
+        return ParserConfig(base_url=env.mineru_base_url, api_key=None, max_concurrency=env.mineru_max_concurrency,
+                            source="env", tier=None if env.mineru_tier == AUTO else env.mineru_tier)
 
     def _secret(self, row: DocumentParserRow) -> str | None:
         if not row.api_key_ciphertext:
@@ -178,13 +155,12 @@ class DocumentParsers:
             row = await self._row(session)
         if row is not None:
             return ParserView(source="settings", enabled=row.enabled, base_url=row.base_url,
-                              server_url=row.server_url or "", backend=row.backend or AUTO,
-                              api_key_set=bool(row.api_key_ciphertext), api_key_last4=row.api_key_last4,
-                              lang=row.lang, max_concurrency=row.max_concurrency, updated_at=row.updated_at)
+                              tier=row.tier or AUTO, api_key_set=bool(row.api_key_ciphertext),
+                              api_key_last4=row.api_key_last4, max_concurrency=row.max_concurrency,
+                              updated_at=row.updated_at)
         env = self._env
         return ParserView(source="env" if env.mineru_configured else "none", enabled=env.mineru_configured,
-                          base_url=env.mineru_base_url, server_url=env.mineru_server_url, backend=AUTO,
-                          api_key_set=False, api_key_last4=None, lang=env.mineru_lang,
+                          base_url=env.mineru_base_url, tier=AUTO, api_key_set=False, api_key_last4=None,
                           max_concurrency=env.mineru_max_concurrency, updated_at=None)
 
     async def save(self, actor: str, body: ParserSave) -> ParserView:
@@ -193,8 +169,7 @@ class DocumentParsers:
             if row is None:
                 row = DocumentParserRow(workspace_id=PLATFORM_WORKSPACE_ID, kind="mineru")
                 session.add(row)
-            row.enabled, row.base_url, row.lang = body.enabled, body.base_url, body.lang
-            row.server_url, row.backend = body.server_url or None, body.backend
+            row.enabled, row.base_url, row.tier = body.enabled, body.base_url, body.tier
             row.max_concurrency, row.updated_by = body.max_concurrency, actor
             if body.api_key is not None:
                 key = body.api_key.strip()
@@ -228,8 +203,8 @@ class DocumentParsers:
             paths = response.json().get("paths", {})
         except ValueError:
             paths = {}
-        if not any(path in paths for path in ("/tasks", "/file_parse")):
-            return ProbeView(False, "连上了，但没找到 MinerU 的解析接口（/tasks 或 /file_parse），确认是 MinerU 3.x 的 API 地址",
+        if not any(path in paths for path in ("/v1/tasks", "/v1/file_parse")):
+            return ProbeView(False, "连上了，但没找到 MinerU 的解析接口（/v1/tasks 或 /v1/file_parse），确认是 MinerU 4.1+ 的 API 地址",
                              elapsed)
         return ProbeView(True, "连接正常", elapsed)
 

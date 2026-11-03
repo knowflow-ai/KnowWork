@@ -19,13 +19,10 @@ class DocumentParserRow(Base):
     kind: Mapped[str] = mapped_column(String(16), default="mineru")  # mineru：自己部署的 MinerU；以后加官方在线 API
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     base_url: Mapped[str] = mapped_column(String(500))
-    # VLM 推理服务（sglang / vllm，常见 30000 端口）：MinerU 的 vlm、hybrid 后端去访问它，是 MinerU 那台机器看到的地址
-    server_url: Mapped[str | None] = mapped_column(String(500))
-    # 解析模式：auto（知识库 hybrid、附件 pipeline）或强制 vlm-http-client / hybrid-http-client / pipeline
-    backend: Mapped[str] = mapped_column(String(32), default="auto")
+    # 解析档位（MinerU 4.1 的 tier）：auto 是让 MinerU 自动推荐，也可以强制 flash / basic / standard / advanced
+    tier: Mapped[str] = mapped_column(String(16), default="auto")
     api_key_ciphertext: Mapped[str | None] = mapped_column(Text)  # 服务前面有网关要令牌时才填，加密存
     api_key_last4: Mapped[str | None] = mapped_column(String(4))
-    lang: Mapped[str] = mapped_column(String(16), default="ch")
     max_concurrency: Mapped[int] = mapped_column(Integer, default=3)
     updated_by: Mapped[str | None] = mapped_column(ID)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),

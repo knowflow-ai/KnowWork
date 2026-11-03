@@ -74,7 +74,7 @@ deploy/install.sh --timeout 600
 
 ## 附件解析
 
-PDF、Office 等附件的解析用 MinerU。部署后在「管理后台 → 模型 → 文档解析」里填 MinerU 地址，保存后几秒内生效，不用重启；也可以在 `.env` 里用 `KNOWWORK_MINERU_BASE_URL` 给个默认值，后台配了以后台为准。两边都没配时，上传这类附件会明确提示未配置。
+PDF、Office 等附件的解析用 MinerU，要求 4.1 以上（V1 HTTP API；旧版 3.x、4.0 的接口已被 MinerU 移除，连上会提示版本不受支持）。部署后在「管理后台 → 模型 → 文档解析」里填 MinerU 地址，保存后几秒内生效，不用重启；也可以在 `.env` 里用 `KNOWWORK_MINERU_BASE_URL` 给个默认值，后台配了以后台为准。两边都没配时，上传这类附件会明确提示未配置。VLM 推理服务（sglang 或 vllm）与识别语言在 MinerU 侧配置；只部署同步解析服务（file-parse-server，默认 8003 端口）时，把地址填成它的一样能解析。
 
 ## 升级
 

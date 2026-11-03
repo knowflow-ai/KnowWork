@@ -2,6 +2,22 @@
 
 每个版本要注意的事（升级步骤、不兼容的改动）都写在这里。发布流程会把对应版本这一节当作 GitHub Release 的说明。
 
+## [未发布]
+
+### 升级须知
+
+- 文档解析服务要求 MinerU 4.1 以上：4.1 改成了 V1 HTTP API（`/v1/tasks` 异步任务、`/v1/file_parse` 同步解析），
+  旧版 3.x、4.0 的接口已被 MinerU 移除，KnowWork 不再去猜旧协议，连上会提示「版本不受支持」，先把 MinerU 升到 4.1+。
+- 管理后台「模型 → 文档解析」的设置跟着 4.1 的字段改了：「解析模式」（自动 / VLM / hybrid / pipeline）换成
+  「解析档位」（自动 / 快速 flash / 基础 basic / 标准 standard / 高级 advanced）；「VLM 服务地址」与「识别语言」
+  两项移除——4.1 的请求里没有这些字段了，VLM 推理服务（sglang / vllm）改在 MinerU 侧部署配置，语言自动识别。
+  数据库迁移自动执行：document_parser 表的 backend 列改成 tier（旧值就近映射：pipeline→basic，VLM、hybrid→standard），
+  server_url、lang 列删掉。
+- 环境变量：`KNOWWORK_MINERU_BACKEND`、`KNOWWORK_MINERU_SERVER_URL`、`KNOWWORK_MINERU_LANG` 不再读取（留着不报错），
+  新增 `KNOWWORK_MINERU_TIER`（默认 `auto`）。
+- 解析结果的取回方式变了：4.1 的结果是一个 ZIP（markdown.md、middle_json.json、images/），附件与知识库从里面取需要的部分；
+  上传走回执给的上传地址（PUT），下载结果的签名地址（对象存储）不携带解析服务的令牌。会话附件只解析出 Markdown，用法不变。
+
 ## [v0.0.6] - 2026-11-04
 
 ### 升级须知

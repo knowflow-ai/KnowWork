@@ -1,5 +1,5 @@
 /**
- * 模型 → 文档解析：配置 MinerU（会话附件与扩展解析 PDF、Word、PPT 用）。保存后几秒内生效，不用重启；
+ * 模型 → 文档解析：配置 MinerU 4.1+（会话附件与扩展解析 PDF、Word、PPT 用）。保存后几秒内生效，不用重启；
  * 没在这里配时用部署时的环境变量。令牌只在 MinerU 前面有网关要求时才填，保存后只显示末四位。
  */
 import { Warning } from '@openai/apps-sdk-ui/components/Icon';
@@ -12,15 +12,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { readableError } from '../../../api/http';
 import {
   getDocumentParser,
-  PARSER_BACKENDS,
-  PARSER_LANGS,
+  PARSER_TIERS,
   saveDocumentParser,
   testDocumentParser,
   validateParserUrl,
-  validateServerUrl,
   type DocumentParser,
-  type ParserBackend,
   type ParserProbe,
+  type ParserTier,
 } from '../../../api/documentParser';
 import { Empty } from '../../../ui/Empty';
 import { Field } from '../../../ui/Field';
@@ -45,12 +43,9 @@ function ParserForm({ parser }: { readonly parser: DocumentParser }) {
   const client = useQueryClient();
   const [enabled, setEnabled] = useState(parser.source === 'none' ? true : parser.enabled);
   const [baseUrl, setBaseUrl] = useState(parser.baseUrl);
-  const [serverUrl, setServerUrl] = useState(parser.serverUrl);
-  const [backend, setBackend] = useState<ParserBackend>(parser.backend);
-  const [serverProblem, setServerProblem] = useState<string>();
+  const [tier, setTier] = useState<ParserTier>(parser.tier);
   const [apiKey, setApiKey] = useState('');
   const [clearKey, setClearKey] = useState(false);
-  const [lang, setLang] = useState(parser.lang);
   const [concurrency, setConcurrency] = useState<number | null>(parser.maxConcurrency);
   const [problem, setProblem] = useState<string>();
   const [probe, setProbe] = useState<ParserProbe>();
@@ -69,20 +64,16 @@ function ParserForm({ parser }: { readonly parser: DocumentParser }) {
   });
   const check = () => {
     const found = enabled ? validateParserUrl(baseUrl) : undefined;
-    const vlm = validateServerUrl(serverUrl, enabled ? backend : 'auto');
     setProblem(found);
-    setServerProblem(vlm);
-    return !found && !vlm;
+    return !found;
   };
   const submit = () => {
     if (!check()) return;
     save.mutate({
       enabled,
       baseUrl: baseUrl.trim() || parser.baseUrl,
-      serverUrl: serverUrl.trim(),
-      backend,
+      tier,
       apiKey: clearKey ? '' : apiKey.trim() || undefined,
-      lang,
       maxConcurrency: concurrency ?? 3,
     });
   };
@@ -97,7 +88,7 @@ function ParserForm({ parser }: { readonly parser: DocumentParser }) {
         <Field
           label="MinerU 地址"
           error={problem}
-          help="MinerU 3.x 的 API 地址，业务服务与 worker 都要能访问到"
+          help="MinerU 4.1+ 的 API 地址，业务服务与 worker 都要能访问到"
         >
           {(id) => (
             <Input
@@ -110,33 +101,15 @@ function ParserForm({ parser }: { readonly parser: DocumentParser }) {
           )}
         </Field>
         <Field
-          label="解析模式"
-          help="会话附件与知识库都按这里的模式解析；自动时各按用途选。hybrid 自动判断版面效果不好时，可以改用 VLM"
+          label="解析档位"
+          help="决定解析质量与速度；自动时 MinerU 按文档推荐。VLM 推理服务、识别语言由 MinerU 侧部署配置，这里不用填"
         >
           <Select
             block
-            options={PARSER_BACKENDS.map((b) => ({ ...b }))}
-            value={backend}
-            onChange={(option) => {
-              setBackend(option.value as ParserBackend);
-              setServerProblem(undefined);
-            }}
+            options={PARSER_TIERS.map((t) => ({ ...t }))}
+            value={tier}
+            onChange={(option) => setTier(option.value as ParserTier)}
           />
-        </Field>
-        <Field
-          label="VLM 服务地址"
-          error={serverProblem}
-          help="MinerU 的 VLM 推理服务（sglang 或 vllm，常见 30000 端口）。这是 MinerU 去访问的地址，和 MinerU 装在同一台机器时填 http://127.0.0.1:30000。VLM、hybrid 模式必填；自动模式下不填就用 pipeline"
-        >
-          {(id) => (
-            <Input
-              id={id}
-              placeholder="http://127.0.0.1:30000"
-              value={serverUrl}
-              invalid={Boolean(serverProblem)}
-              onChange={(event) => setServerUrl(event.target.value)}
-            />
-          )}
         </Field>
         <Field label="访问令牌" help={keyHelp}>
           {(id) => (
@@ -153,14 +126,6 @@ function ParserForm({ parser }: { readonly parser: DocumentParser }) {
         {parser.apiKeySet ? (
           <Switch label="清除已保存的令牌" checked={clearKey} onCheckedChange={setClearKey} />
         ) : null}
-        <Field label="识别语言" help="扫描件、图片里文字的语言">
-          <Select
-            block
-            options={[...PARSER_LANGS]}
-            value={lang}
-            onChange={(option) => setLang(option.value)}
-          />
-        </Field>
         <Field
           label="同时解析上限"
           help="按 MinerU 的 max_concurrent_requests 设；附件与知识库、所有 worker 一起算"
