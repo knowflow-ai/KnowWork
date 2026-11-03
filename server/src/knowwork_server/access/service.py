@@ -12,10 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import rules as R
 from . import store
-from .core import Tx
+from .core import Tx, notify_policy_change
+from .enterprise import ACTIVE as ORG_ACTIVE
+from .enterprise import EnterpriseMixin
 from .errors import NotFound
-from .groups import GroupsMixin
-from .models import Department, UserGroup
+from .models import Department, OrgDepartment, UserGroup
 from .rules import RuleChange
 from .vocab import Action, InvalidInput, Resource, Subject, grantable, parse_action
 
@@ -28,31 +29,58 @@ class GrantView:
 
 
 MAX_USERS = 200  # 「给谁用」一次最多选这么多对象
+MAX_RESOURCES = 200  # 授权页一次最多选这么多资源
+MAX_GRANTS = 2000  # 一次最多授这么多条（对象数 × 资源数）
 
 
-class AccessService(GroupsMixin):
+class AccessService(EnterpriseMixin):
     async def grant(self, actor_id: str, workspace_id: str, subject: str, resource: str, action: str) -> GrantView:
         """授权。同一主体对同一资源只保留一档动作，再次授权即改档。"""
+        return (await self.grant_many(actor_id, workspace_id, (subject,), (resource,), action))[0]
+
+    async def grant_many(self, actor_id: str, workspace_id: str, subjects: Sequence[str], resources: Sequence[str],
+                         action: str) -> tuple[GrantView, ...]:
+        """一次授多条（授权页里同一类对象多选、同一类资源多选）：每个对象对每个资源各授一档，同一个事务，
+        要么都授上、要么都不授。每条同 grant：对这个资源只保留一档，再授即改档。"""
         self._require(actor_id, workspace_id, Action.EDIT)
-        sub = Subject.parse(subject)
-        obj = grantable(Resource.parse(resource, types=self.resource_types), self._hierarchy.resource_types)
+        wanted = tuple(dict.fromkeys(Subject.parse(subject) for subject in subjects))
+        if not wanted:
+            raise InvalidInput("请选择授权对象")
+        if len(wanted) > MAX_USERS:
+            raise InvalidInput(f"一次最多选 {MAX_USERS} 个对象")
+        types = self._hierarchy.resource_types
+        objects = tuple(dict.fromkeys(grantable(Resource.parse(resource, types=self.resource_types), types)
+                                      for resource in resources))
+        if not objects:
+            raise InvalidInput("请选择资源")
+        if len(objects) > MAX_RESOURCES or len(wanted) * len(objects) > MAX_GRANTS:
+            raise InvalidInput(f"一次最多授 {MAX_GRANTS} 条（对象数 × 资源数），请分几次授")
         act = parse_action(action)
+        keys = {sub.key for sub in wanted}
+        # 空间角色的默认权限（管理员对全部技能「完全管理」等）不算旧档：给「管理员」授低一档时不能把它删掉降了权
+        defaults = set(R.default_role_policies(workspace_id))
         async with self._tx(workspace_id) as tx:
-            await self._require_subject(tx, sub)
-            existing = await store.permissions_of(tx.session, workspace_id, sub.key, obj.key)
-            target = R.permission(sub.key, workspace_id, obj.key, act)
-            stale = tuple(rule for rule in existing if rule != target)
-            await tx.remove_rules(*stale)
-            if target not in existing:
-                await tx.add_rules(target)
-        return GrantView(sub.key, obj.key, act)
+            for sub in wanted:
+                await self._require_subject(tx, sub)
+            for obj in objects:
+                # 一个资源上已有的授权一次取回来，再按对象挑：对象多时不用一人一查
+                existing = [rule for rule in await store.permissions_of(tx.session, workspace_id, None, obj.key)
+                            if rule.values[0] in keys and rule not in defaults]
+                targets = [R.permission(sub.key, workspace_id, obj.key, act) for sub in wanted]
+                await tx.remove_rules(*(rule for rule in existing if rule not in targets))
+                # 和默认权限一模一样的不再写一条
+                await tx.add_rules(*(target for target in targets if target not in existing and target not in defaults))
+        return tuple(GrantView(sub.key, obj.key, act) for obj in objects for sub in wanted)
 
     async def revoke(self, actor_id: str, workspace_id: str, subject: str, resource: str) -> None:
         self._require(actor_id, workspace_id, Action.EDIT)
         sub = Subject.parse(subject)
         obj = Resource.parse(resource, types=self.resource_types)
+        # 空间角色的默认权限不是授出去的，撤销时不动：撤掉给「管理员」另授的一档，不能连默认的「完全管理」一起删
+        defaults = set(R.default_role_policies(workspace_id))
         async with self._tx(workspace_id) as tx:
-            existing = await store.permissions_of(tx.session, workspace_id, sub.key, obj.key)
+            existing = [rule for rule in await store.permissions_of(tx.session, workspace_id, sub.key, obj.key)
+                        if rule not in defaults]
             if not existing:
                 raise NotFound("没有这条授权")
             await tx.remove_rules(*existing)
@@ -99,6 +127,8 @@ class AccessService(GroupsMixin):
         obj = grantable(Resource.parse(resource, types=self.resource_types), self._hierarchy.resource_types)
         rules = tuple(R.permission(Subject.parse(subject).key, workspace_id, obj.key, Action.USE) for subject in subjects)
         await store.insert_rules(session, rules)
+        if rules:
+            await notify_policy_change(session, self._origin)
         return RuleChange(added=rules)
 
     async def purge_grants(self, session: AsyncSession, workspace_id: str, *, resources: tuple[str, ...] = (),
@@ -113,6 +143,8 @@ class AccessService(GroupsMixin):
         defaults = set(R.default_role_policies(workspace_id))
         stale = tuple(rule for rule in found if rule not in defaults)
         await store.delete_rules(session, stale)
+        if stale:
+            await notify_policy_change(session, self._origin)  # 删知识库这类任务常在 worker 里跑
         return RuleChange(removed=stale)
 
     async def settle(self, change: RuleChange) -> None:
@@ -131,3 +163,9 @@ class AccessService(GroupsMixin):
                                                                    model.workspace_id == tx.workspace_id))
             if found is None:
                 raise NotFound("授权主体不存在")
+        elif sub.kind == "org":
+            # 企业组织的部门全系统一份；新授权只能给在用的部门（已移除的部门上原有的授权保留、不再匹配到人）
+            found = await tx.session.scalar(select(OrgDepartment.id).where(OrgDepartment.id == sub.id,
+                                                                           OrgDepartment.status == ORG_ACTIVE))
+            if found is None:
+                raise NotFound("企业部门不存在")

@@ -75,6 +75,22 @@ async def test_disabled_user_cannot_log_in_and_sessions_die(client, identity, al
     assert await identity.users.set_disabled("missing", True) is False
 
 
+async def test_disable_records_who_did_it_and_enable_clears_it(identity, sessionmaker, alice):
+    """停用记下是谁停的：同步停用的人重新在职时能自动恢复，管理员手工停用的不能。"""
+    from knowwork_server.identity.models import User
+
+    await identity.users.set_disabled(alice.id, True, by="directory")
+    async with sessionmaker() as session:
+        assert (await session.get(User, alice.id)).disabled_by == "directory"
+    await identity.users.set_disabled(alice.id, False)
+    async with sessionmaker() as session:
+        user = await session.get(User, alice.id)
+    assert user.status == "active" and user.disabled_by is None
+    await identity.users.set_disabled(alice.id, True)
+    async with sessionmaker() as session:
+        assert (await session.get(User, alice.id)).disabled_by == "manual"
+
+
 async def test_disabled_user_is_rejected_even_with_unrevoked_session(identity, sessionmaker, alice):
     """即使会话记录没被吊销（例如直接改库禁用），解析时也按用户状态拒绝。"""
     issued = await identity.sessions.create(alice.id)

@@ -59,12 +59,14 @@ _SEGMENTS = {
     "knowledge-sources": "知识源", "knowledge-bases": "知识源", "mcp-servers": "工具（MCP）", "enterprise-mcp": "工具（MCP）", "skills": "技能",
     "skill-submissions": "技能", "platform-skills": "技能", "workflow-runs": "工作流", "jobs": "后台任务", "audit-logs": "审计", "members": "成员与权限",
     "departments": "成员与权限", "groups": "成员与权限", "grants": "成员与权限", "invitations": "成员与权限",
-    "users": "成员与权限",
+    "users": "成员与权限", "org-departments": "成员与权限", "member-rules": "成员与权限",
 }
 
 # 不用认证就能调的
 PUBLIC = frozenset({
     "/api/auth/login", "/api/auth/oidc/login", "/api/auth/oidc/callback", "/api/auth/invitations/accept",
+    "/api/auth/methods", "/api/auth/sso/{provider_id}/login", "/api/auth/sso/{provider_id}/callback",
+    "/api/auth/password/{method_id}", "/api/auth/verify-files/{name}",
     "/api/setup", "/api/brand", "/api/brand/logo", "/health", "/ready",
 })
 
@@ -75,7 +77,7 @@ def tag_of(path: str) -> str | None:
         return "运维"
     if path.startswith("/api/v1/"):
         return "对外知识接口"
-    if path.startswith("/api/auth/"):
+    if path.startswith(("/api/auth/", "/api/system/login-providers")):
         return "账号与登录"
     if path.startswith("/api/mcp/"):
         return "工具（MCP）"

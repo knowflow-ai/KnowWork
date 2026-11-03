@@ -50,6 +50,14 @@ def role_key(role: str) -> str:
     return f"role:{role}"
 
 
+def org_key(dept_id: str) -> str:
+    """企业组织的部门（全系统一份，物化进各空间），和空间里手工建的部门 dept: 分开。"""
+    return f"org:{dept_id}"
+
+
+ORG_PREFIX = "org:"
+
+
 def link(child: str, parent: str, workspace_id: str) -> Rule:
     return Rule("g", (child, parent, workspace_id))
 
@@ -68,6 +76,14 @@ def dept_member(user_id: str, dept_id: str, workspace_id: str) -> Rule:
 
 def dept_parent(child_id: str, parent_id: str, workspace_id: str) -> Rule:
     return link(dept_key(child_id), dept_key(parent_id), workspace_id)
+
+
+def org_member(user_id: str, dept_id: str, workspace_id: str) -> Rule:
+    return link(user_key(user_id), org_key(dept_id), workspace_id)
+
+
+def org_parent(child_id: str, parent_id: str, workspace_id: str) -> Rule:
+    return link(org_key(child_id), org_key(parent_id), workspace_id)
 
 
 def permission(subject: str, workspace_id: str, obj: str, action: str) -> Rule:

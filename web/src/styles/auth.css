@@ -43,6 +43,17 @@
   font-size: var(--font-text-sm-size);
 }
 
+/* 工作邮箱 / 域账号的切换，在表单上方 */
+.kw-login-switch {
+  margin-bottom: 16px;
+}
+
+/* 登录方式按钮（单点登录、企业微信等），可能有好几个，竖排 */
+.kw-login-methods {
+  display: grid;
+  gap: 8px;
+}
+
 .kw-login-divider {
   display: flex;
   align-items: center;

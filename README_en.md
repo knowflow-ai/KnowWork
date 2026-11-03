@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.4-2b7de9" alt="Version: v0.0.4"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.5-2b7de9" alt="Version: v0.0.5"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -83,7 +83,7 @@ https://github.com/user-attachments/assets/e4ac1c88-32c2-4976-8381-e954add99ef6
 
 ### Deploy to a server
 
-You need a Linux (x86_64) server with Docker 24+ and Compose v2.24+. The session sandbox is the largest image at about
+You need a Linux server (x86_64 or ARM64) with Docker 24+ and Compose v2.24+. The session sandbox is the largest image at about
 2.2 GB, so leave enough disk space.
 
 ```sh
@@ -270,7 +270,7 @@ communication with the host are not available for now.
 
 ## Status and roadmap
 
-The current version is v0.0.4. APIs and data structures may still change before 1.0. Known
+The current version is v0.0.5. APIs and data structures may still change before 1.0. Known
 limitations are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Next up: a skill test bench (cases, structural assertions, draft versus published comparison), scenario packs, a UI for

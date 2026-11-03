@@ -2,7 +2,9 @@
 
 ## 环境要求
 
-- Linux，x86_64（镜像只发布 linux/amd64）；
+- Linux，x86_64 或 ARM64（aarch64）：镜像同时发布 linux/amd64 与 linux/arm64，同一个标签，按机器架构自动拉取（v0.0.5 起）。
+  ARM 服务器先看一眼 `getconf PAGESIZE`：已验证的是 4096（4K 内存页）；65536（64K 内存页，部分国产操作系统默认）还没验证过，
+  上线前先在同款系统上把整套跑一遍；
 - Docker 24 以上，Docker Compose v2.24 以上；
 - 能访问阿里云容器镜像服务（`crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com`）。镜像里会话沙箱最大，约 2.2 GB。
 
@@ -77,7 +79,7 @@ PDF、Office 等附件的解析用 MinerU。部署后在「管理后台 → 模�
 ## 升级
 
 1. 先备份数据（见下一节）；
-2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.4`（换成要升级到的版本）。编排文件
+2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.5`（换成要升级到的版本）。编排文件
    可能随版本变，只改版本号会用旧的编排文件跑新镜像。`deploy/.env` 不在仓库里，切换版本不会动它；
 3. 把 `deploy/.env` 的 `KNOWWORK_VERSION` 改成新版本；
 4. 重新执行 `deploy/install.sh`：它会拉新镜像（包括会话沙箱镜像）并重启服务。

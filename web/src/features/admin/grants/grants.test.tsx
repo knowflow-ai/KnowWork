@@ -5,16 +5,25 @@ import { jsonResponse, renderWithApp, routeFetch } from '../../../test/render';
 import { RESOURCE_TYPES } from '../../../api/workspace';
 import { register } from '../../../slots/registry';
 import GrantsPage from './GrantsPage';
-import { resourceKey, validateGrant, subjectOptions } from './form';
+import { resourceKeys, validateGrant, subjectNodes } from './form';
 import { resourceLabel, subjectLabel, type Directory } from './labels';
 import type { ReactElement } from 'react';
 import { BookClosed, BookOpen, Folder, Folders } from '@openai/apps-sdk-ui/components/Icon';
 import { knowledgeNodes } from './KnowledgeBasePicker';
-import type { TreeSelectNode } from '../../../ui/TreeSelect';
+import { pathOf, type TreeSelectNode } from '../../../ui/TreeSelect';
 
 afterEach(() => vi.unstubAllGlobals());
 
 const B = '/api/workspaces/default';
+const BATCH = `${B}/grants/batch`;
+
+/** 授权对象是树形多选：点开一次、点上要的几个，按 Esc 收起浮层（多选时点了不自动收）。 */
+async function pickSubjects(dialog: HTMLElement, ...names: string[]) {
+  await userEvent.click(within(within(dialog).getByRole('group', { name: '授权对象' })).getByRole('button'));
+  const tree = await screen.findByRole('tree', { name: '授权对象' });
+  for (const name of names) await userEvent.click(within(tree).getByRole('button', { name }));
+  await userEvent.keyboard('{Escape}');
+}
 
 function api(extra = {}) {
   return routeFetch({
@@ -32,7 +41,13 @@ function api(extra = {}) {
     ]),
     [`GET ${B}/groups`]: jsonResponse([{ id: 'g1', name: '客服', members: [] }]),
     [`GET ${B}/departments`]: jsonResponse([
-      { id: 'd1', name: '总部', parent_id: null, members: [], children: [] },
+      {
+        id: 'd1',
+        name: '总部',
+        parent_id: null,
+        members: [],
+        children: [{ id: 'd2', name: '法务部', parent_id: 'd1', members: [], children: [] }],
+      },
     ]),
     [`GET ${B}/knowledge-bases`]: jsonResponse([
       {
@@ -62,7 +77,7 @@ function api(extra = {}) {
         ],
       },
     ]),
-    [`POST ${B}/grants`]: jsonResponse({}, 201),
+    [`POST ${B}/grants/batch`]: jsonResponse({ grants: [] }, 201),
     [`DELETE ${B}/grants`]: new Response(null, { status: 204 }),
     ...extra,
   });
@@ -106,15 +121,65 @@ describe('GrantsPage', () => {
     const dialog = await screen.findByRole('dialog');
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     expect(await within(dialog).findByText('请选择授权对象')).toBeInTheDocument();
-    await pickOption(dialog, '授权对象', '李雷');
+    await pickSubjects(dialog, '李雷');
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     expect(await within(dialog).findByText('请选择知识库')).toBeInTheDocument();
     await pickTreeNode(dialog, '知识库', '员工手册');
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     await waitFor(() =>
-      expect(calls.find('POST', `${B}/grants`)[0]?.body).toEqual({
-        subject: 'user:u1',
-        resource: 'knowledge_base:s1.d1',
+      expect(calls.find('POST', BATCH)[0]?.body).toEqual({
+        subjects: ['user:u1'],
+        resources: ['knowledge_base:s1.d1'],
+        action: 'use',
+      }),
+    );
+  });
+
+  it('同一类对象可以选几个；部门按层级成树', async () => {
+    const calls = api();
+    renderWithApp(<GrantsPage />);
+    await screen.findByText('制度库 · 全部知识库');
+    await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
+    const dialog = await screen.findByRole('dialog');
+    await pickSubjects(dialog, '李雷', '韩梅梅');
+    expect(within(dialog).getByRole('button', { name: '李雷、韩梅梅' })).toBeInTheDocument();
+    // 换了对象类型，已选的清掉
+    await pickOption(dialog, '对象类型', '部门');
+    await userEvent.click(
+      within(within(dialog).getByRole('group', { name: '授权对象' })).getByRole('button'),
+    );
+    const tree = await screen.findByRole('tree', { name: '授权对象' });
+    const parent = within(tree).getByRole('button', { name: '总部' }).closest('li') as HTMLElement;
+    expect(within(parent).getByRole('button', { name: '法务部' })).toBeInTheDocument();
+    await userEvent.click(within(tree).getByRole('button', { name: '法务部' }));
+    await userEvent.keyboard('{Escape}');
+    await pickTreeNode(dialog, '知识库', '员工手册');
+    await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
+    await waitFor(() =>
+      expect(calls.find('POST', BATCH)[0]?.body).toEqual({
+        subjects: ['dept:d2'],
+        resources: ['knowledge_base:s1.d1'],
+        action: 'use',
+      }),
+    );
+  });
+
+  it('同一类资源可以选几个：几个对象 × 几个资源一次授上', async () => {
+    const calls = api();
+    renderWithApp(<GrantsPage />);
+    expect(await screen.findByText('周报')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
+    const dialog = await screen.findByRole('dialog');
+    await pickSubjects(dialog, '李雷', '韩梅梅');
+    await pickOption(dialog, '资源类型', '技能');
+    await pickOption(dialog, '技能', '周报');
+    await userEvent.click(await screen.findByRole('option', { name: '合同审查' }));
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
+    await waitFor(() =>
+      expect(calls.find('POST', BATCH)[0]?.body).toEqual({
+        subjects: ['user:u1', 'user:u2'],
+        resources: ['skill:sk_7f3a', 'skill:sk_9c1e'],
         action: 'use',
       }),
     );
@@ -126,15 +191,15 @@ describe('GrantsPage', () => {
     expect(await screen.findByText('周报')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
     const dialog = await screen.findByRole('dialog');
-    await pickOption(dialog, '授权对象', '李雷');
+    await pickSubjects(dialog, '李雷');
     await pickOption(dialog, '资源类型', '技能');
     expect(within(dialog).queryByLabelText('资源 ID')).toBeNull();
     await pickOption(dialog, '技能', '合同审查');
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     await waitFor(() =>
-      expect(calls.find('POST', `${B}/grants`)[0]?.body).toEqual({
-        subject: 'user:u1',
-        resource: 'skill:sk_9c1e',
+      expect(calls.find('POST', BATCH)[0]?.body).toEqual({
+        subjects: ['user:u1'],
+        resources: ['skill:sk_9c1e'],
         action: 'use',
       }),
     );
@@ -146,13 +211,13 @@ describe('GrantsPage', () => {
     await screen.findByText('制度库 · 全部知识库');
     await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
     const dialog = await screen.findByRole('dialog');
-    await pickOption(dialog, '授权对象', '李雷');
+    await pickSubjects(dialog, '李雷');
     await pickOption(dialog, '资源类型', '工具');
     await pickTreeNode(dialog, '工具', 'ask_wiki_question');
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     await waitFor(() =>
-      expect(calls.find('POST', `${B}/grants`)[0]?.body).toMatchObject({
-        resource: 'tool:mcp__deepwiki__ask_wiki_question',
+      expect(calls.find('POST', BATCH)[0]?.body).toMatchObject({
+        resources: ['tool:mcp__deepwiki__ask_wiki_question'],
       }),
     );
   });
@@ -163,14 +228,14 @@ describe('GrantsPage', () => {
     await screen.findByText('制度库 · 全部知识库');
     await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
     const dialog = await screen.findByRole('dialog');
-    await pickOption(dialog, '授权对象', '李雷');
+    await pickSubjects(dialog, '李雷');
     await pickOption(dialog, '资源类型', '工具');
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     expect(await within(dialog).findByText('请选择工具')).toBeInTheDocument();
     await pickTreeNode(dialog, '工具', '全部工具');
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     await waitFor(() =>
-      expect(calls.find('POST', `${B}/grants`)[0]?.body).toMatchObject({ resource: 'tool:mcp__deepwiki__*' }),
+      expect(calls.find('POST', BATCH)[0]?.body).toMatchObject({ resources: ['tool:mcp__deepwiki__*'] }),
     );
   });
 
@@ -180,11 +245,11 @@ describe('GrantsPage', () => {
     await screen.findByText('制度库 · 全部知识库');
     await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
     const dialog = await screen.findByRole('dialog');
-    await pickOption(dialog, '授权对象', '李雷');
+    await pickSubjects(dialog, '李雷');
     await pickTreeNode(dialog, '知识库', '全部知识库');
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     await waitFor(() =>
-      expect(calls.find('POST', `${B}/grants`)[0]?.body).toMatchObject({ resource: 'knowledge_base:s1.*' }),
+      expect(calls.find('POST', BATCH)[0]?.body).toMatchObject({ resources: ['knowledge_base:s1.*'] }),
     );
     expect(within(dialog).queryByRole('option', { name: '知识源' })).toBeNull();
   });
@@ -196,7 +261,7 @@ describe('GrantsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
     const dialog = await screen.findByRole('dialog');
     await pickOption(dialog, '对象类型', '用户组');
-    await pickOption(dialog, '授权对象', '客服');
+    await pickSubjects(dialog, '客服');
     await pickTreeNode(dialog, '知识库', '员工手册');
     // 写明是全部什么；勾上以后不再显示具体选哪个，之前选的也不算
     await userEvent.click(
@@ -205,9 +270,9 @@ describe('GrantsPage', () => {
     expect(within(dialog).queryByRole('group', { name: '知识库' })).toBeNull();
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     await waitFor(() =>
-      expect(calls.find('POST', `${B}/grants`)[0]?.body).toEqual({
-        subject: 'group:g1',
-        resource: 'knowledge_base:*',
+      expect(calls.find('POST', BATCH)[0]?.body).toEqual({
+        subjects: ['group:g1'],
+        resources: ['knowledge_base:*'],
         action: 'use',
       }),
     );
@@ -245,16 +310,16 @@ describe('扩展给的知识源层级树', () => {
     expect(screen.getByText('制度库 · 产品资料 / 说明书 / 员工手册')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
     const dialog = await screen.findByRole('dialog');
-    await pickOption(dialog, '授权对象', '李雷');
+    await pickSubjects(dialog, '李雷');
     await pickTreeNode(dialog, '知识库', '产品资料');
     expect(
       within(within(dialog).getByRole('group', { name: '知识库' })).getByRole('button'),
-    ).toHaveTextContent('制度库 / 产品资料');
+    ).toHaveTextContent('产品资料');
     await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
     await waitFor(() =>
-      expect(calls.find('POST', `${B}/grants`)[0]?.body).toEqual({
-        subject: 'user:u1',
-        resource: 'knowledge_folder:f1',
+      expect(calls.find('POST', BATCH)[0]?.body).toEqual({
+        subjects: ['user:u1'],
+        resources: ['knowledge_folder:f1'],
         action: 'use',
       }),
     );
@@ -266,6 +331,8 @@ describe('授权的纯函数', () => {
     members: [],
     groups: [],
     departments: [{ id: 'd1', name: '总部', parentId: null, members: [], children: [] }],
+    orgDepartments: [],
+    orgLoaded: false,
     resources: {},
     knowledge: [],
     knowledgeLoaded: false,
@@ -273,6 +340,32 @@ describe('授权的纯函数', () => {
     typeLabels: Object.fromEntries(RESOURCE_TYPES.map((t) => [t.value, t.label])),
     trees: {},
   };
+
+  it('组织架构：用完整路径区分同名部门，目录里删掉的标出来', () => {
+    const org = (id: string, name: string, parentId: string | null) => ({
+      id,
+      sourceId: 'ad',
+      parentId,
+      name,
+      sort: 0,
+      memberCount: 0,
+    });
+    const withOrg: Directory = {
+      ...dir,
+      orgDepartments: [
+        org('o1', '集团', null),
+        org('o2', '总部', 'o1'),
+        org('o3', '研发中心', 'o1'),
+        org('o4', '财务部', 'o2'),
+        org('o5', '财务部', 'o3'),
+      ],
+      orgLoaded: true,
+    };
+    expect(subjectLabel('org:o4', withOrg)).toEqual({ kind: '组织架构', name: '集团 / 总部 / 财务部' });
+    expect(subjectLabel('org:gone', withOrg).name).toBe('已从目录移除的部门');
+    expect(subjectLabel('org:gone', dir).name, '还没取到时不下结论').toBe('gone');
+    expect(pathOf(subjectNodes('org', withOrg), 'org:o5')).toBe('集团 / 研发中心 / 财务部');
+  });
 
   it('名称查不到时显示 id', () => {
     expect(subjectLabel('user:x', dir)).toEqual({ kind: '成员', name: 'x' });
@@ -313,30 +406,48 @@ describe('授权的纯函数', () => {
   it('校验与选项', () => {
     const base = {
       subjectKind: 'user' as const,
+      subjects: [] as string[],
       resourceType: 'skill',
-      resourceId: 'bad id',
+      resourceIds: ['bad id'],
       all: false,
       action: 'use' as const,
     };
     expect(validateGrant(base)).toBe('请选择授权对象');
-    expect(validateGrant({ ...base, subjectId: 'u' })).toMatch(/资源 ID/);
-    expect(validateGrant({ ...base, subjectId: 'u', all: true })).toBeNull();
-    const kb = { ...base, subjectId: 'u', resourceType: 'knowledge_base' };
-    expect(validateGrant({ ...kb, resourceId: '' })).toBe('请选择知识库');
+    expect(validateGrant({ ...base, subjects: ['user:u'] })).toMatch(/资源 ID/);
+    expect(validateGrant({ ...base, subjects: ['user:u'], all: true })).toBeNull();
+    const kb = { ...base, subjects: ['user:u'], resourceType: 'knowledge_base' };
+    expect(validateGrant({ ...kb, resourceIds: [] })).toBe('请选择知识库');
     // 知识库那一栏是树形选择，值就是完整资源（知识库或目录）
-    expect(validateGrant({ ...kb, resourceId: 'knowledge_base:s1.*' })).toBeNull();
-    expect(validateGrant({ ...kb, resourceId: 'knowledge_folder:f1' })).toBeNull();
-    expect(validateGrant({ ...kb, resourceId: 'knowledge_folder:bad id' })).toMatch(/资源 ID/);
-    expect(resourceKey({ ...kb, resourceId: 'knowledge_folder:f1' })).toBe('knowledge_folder:f1');
+    expect(validateGrant({ ...kb, resourceIds: ['knowledge_base:s1.*'] })).toBeNull();
+    expect(validateGrant({ ...kb, resourceIds: ['knowledge_folder:f1'] })).toBeNull();
+    expect(validateGrant({ ...kb, resourceIds: ['knowledge_folder:bad id'] })).toMatch(/资源 ID/);
+    expect(resourceKeys({ ...kb, resourceIds: ['knowledge_folder:f1'] })).toEqual(['knowledge_folder:f1']);
     // 工具也是树形选择，值就是完整资源（单个工具或一个 MCP 服务的全部工具）
-    const tool = { ...base, subjectId: 'u', resourceType: 'tool' };
-    expect(validateGrant({ ...tool, resourceId: '' })).toBe('请选择工具');
-    expect(validateGrant({ ...tool, resourceId: 'tool:mcp__a__*' })).toBeNull();
-    expect(resourceKey({ ...tool, resourceId: 'tool:mcp__a__*' })).toBe('tool:mcp__a__*');
-    expect(resourceKey({ ...tool, resourceId: 'tool:mcp__a__x', all: true })).toBe('tool:*');
-    expect(resourceKey({ ...kb, resourceId: 'knowledge_folder:f1', all: true })).toBe('knowledge_base:*');
-    expect(subjectOptions('dept', dir)).toEqual([{ value: 'd1', label: '总部' }]);
-    expect(subjectOptions('role', dir).map((o) => o.value)).toEqual(['owner', 'admin', 'editor']);
+    const tool = { ...base, subjects: ['user:u'], resourceType: 'tool' };
+    expect(validateGrant({ ...tool, resourceIds: [] })).toBe('请选择工具');
+    expect(validateGrant({ ...tool, resourceIds: ['tool:mcp__a__*'] })).toBeNull();
+    expect(resourceKeys({ ...tool, resourceIds: ['tool:mcp__a__*'] })).toEqual(['tool:mcp__a__*']);
+    expect(resourceKeys({ ...tool, resourceIds: ['tool:mcp__a__x'], all: true })).toEqual(['tool:*']);
+    expect(resourceKeys({ ...kb, resourceIds: ['knowledge_folder:f1'], all: true })).toEqual([
+      'knowledge_base:*',
+    ]);
+    // 同一类资源可以选几个：有一个 id 不对就不让提交
+    const skills = { ...base, subjects: ['user:u'], resourceIds: ['sk_1', 'sk_2'] };
+    expect(resourceKeys(skills)).toEqual(['skill:sk_1', 'skill:sk_2']);
+    expect(validateGrant(skills)).toBeNull();
+    expect(validateGrant({ ...skills, resourceIds: ['sk_1', 'bad id'] })).toMatch(/资源 ID/);
+    // 部门按层级成树，其余平铺；键是完整的授权对象
+    const nested = {
+      ...dir,
+      departments: [{ ...dir.departments[0]!, children: [{ ...dir.departments[0]!, id: 'd2' }] }],
+    };
+    expect(subjectNodes('dept', nested).map((n) => [n.key, n.children.map((c) => c.key)])).toEqual([
+      ['dept:d1', ['dept:d2']],
+    ]);
+    expect(subjectNodes('role', dir).map((n) => n.key)).toEqual(['role:owner', 'role:admin', 'role:editor']);
+    expect(subjectNodes('group', { ...dir, groups: [{ id: 'g1', name: '客服', members: [] }] })).toEqual([
+      { key: 'group:g1', label: '客服', children: [] },
+    ]);
   });
 });
 

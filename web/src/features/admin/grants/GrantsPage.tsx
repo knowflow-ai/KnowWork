@@ -16,7 +16,7 @@ import { includesText } from '../table';
 import { SearchInput } from '../../../ui/SearchInput';
 import { Skeleton } from '../../../ui/Skeleton';
 import { Table, type Column } from '../../../ui/Table';
-import { KEYS, useDepartments, useGroups, useMembers } from '../queries';
+import { KEYS, useDepartments, useGroups, useMembers, useOrgDepartments } from '../queries';
 import { SOURCE_TEXT } from '../skills/here';
 import { SKILL_KEYS, useUpperSkills } from '../skills/queries';
 import { useEnterpriseHere } from '../tools/queries';
@@ -49,6 +49,7 @@ function useDirectory(): Directory {
   const members = useMembers();
   const groups = useGroups();
   const departments = useDepartments();
+  const orgDepartments = useOrgDepartments();
   const knowledge = useQuery({ queryKey: KEYS.knowledgeBases, queryFn: listKnowledgeBases });
   const mcpServers = useQuery({ queryKey: KEYS.mcpServers, queryFn: listServers });
   // 技能授权记的是技能的内部 id：按名称列出来选，已有授权也显示名称
@@ -85,6 +86,8 @@ function useDirectory(): Directory {
       members: members.data ?? [],
       groups: groups.data ?? [],
       departments: departments.data ?? [],
+      orgDepartments: orgDepartments.data ?? [],
+      orgLoaded: orgDepartments.isSuccess,
       resources,
       knowledge: knowledge.data ?? [],
       knowledgeLoaded: knowledge.isSuccess,
@@ -99,6 +102,8 @@ function useDirectory(): Directory {
     members.data,
     groups.data,
     departments.data,
+    orgDepartments.data,
+    orgDepartments.isSuccess,
     knowledge.data,
     knowledge.isSuccess,
     mcpServers.data,

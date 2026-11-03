@@ -834,6 +834,19 @@
   margin-right: 6px;
 }
 
+/* 多选时被已选项包含了的（选了目录，它下面的知识库）：说明色、点不了，行尾写「已包含」 */
+.kw-tree-title.is-covered {
+  color: var(--color-text-secondary);
+  cursor: default;
+}
+
+.kw-tree-covered {
+  flex: none;
+  margin-right: 6px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-text-xs-size);
+}
+
 /* ---------- 树形选择框 ---------- */
 .kw-tree-select-menu {
   display: flex;

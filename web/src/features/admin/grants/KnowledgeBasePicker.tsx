@@ -45,7 +45,10 @@ export function knowledgeNodes(
       // 知识源和管理后台「知识源」菜单同一个图标
       icon: <BookOpen />,
       selectable: false,
-      children: [{ key: all, label: '全部知识库', icon: resourceIcon(all), children: [] }, ...below],
+      children: [
+        { key: all, label: '全部知识库', icon: resourceIcon(all), coversSiblings: true, children: [] },
+        ...below,
+      ],
     };
   });
 }
@@ -60,13 +63,14 @@ export function KnowledgeBasePicker({
 }: {
   readonly sources: readonly SourceBases[];
   readonly trees: Readonly<Record<string, readonly GrantTreeNode[]>>;
-  readonly value: string;
+  readonly value: readonly string[];
   readonly disabled?: boolean;
   readonly invalid?: boolean;
-  readonly onChange: (resource: string) => void;
+  readonly onChange: (resources: string[]) => void;
 }) {
   return (
     <TreeSelect
+      multiple
       aria-label="知识库"
       nodes={knowledgeNodes(sources, trees)}
       value={value}

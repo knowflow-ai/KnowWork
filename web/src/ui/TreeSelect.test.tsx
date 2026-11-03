@@ -4,7 +4,15 @@ import { describe, expect, it } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '../test/user';
 import { renderWithApp } from '../test/render';
-import { filterTree, labelOf, pathOf, TreeSelect, type TreeSelectNode } from './TreeSelect';
+import {
+  coveredBy,
+  filterTree,
+  labelOf,
+  pathOf,
+  toggleKey,
+  TreeSelect,
+  type TreeSelectNode,
+} from './TreeSelect';
 
 const NODES: readonly TreeSelectNode[] = [
   {
@@ -119,5 +127,53 @@ describe('树的纯函数', () => {
     expect(pathOf(NODES, 'nope')).toBeUndefined();
     expect(labelOf(NODES, 'knowledge_base:builtin.kb1')).toBe('电风扇说明书');
     expect(labelOf(NODES, 'nope')).toBeUndefined();
+  });
+});
+
+describe('多选时选上级即含下级', () => {
+  const ALL = 'knowledge_base:builtin.*';
+  const FOLDER = 'knowledge_folder:f1';
+  const KB = 'knowledge_base:builtin.kb1';
+  // 「全部知识库」包含同组的其他项
+  const nodes = NODES.map((source) => ({
+    ...source,
+    children: source.children.map((n) => (n.key === ALL ? { ...n, coversSiblings: true } : n)),
+  }));
+
+  it('选了目录，下面的知识库算已包含；选了「全部」，同组的都算已包含；分组本身不算', () => {
+    expect([...coveredBy(nodes, [FOLDER])]).toEqual([KB]);
+    expect([...coveredBy(nodes, [ALL])].sort()).toEqual([KB, FOLDER].sort());
+    expect(coveredBy(nodes, [ALL]).has('source:builtin')).toBe(false);
+    expect(coveredBy(nodes, ['knowledge_base:kf.d1']).size).toBe(0);
+  });
+
+  it('先选下级再选上级：下级从已选里去掉；再点一次取消', () => {
+    expect(toggleKey(nodes, [KB, 'knowledge_base:kf.d1'], FOLDER)).toEqual(['knowledge_base:kf.d1', FOLDER]);
+    expect(toggleKey(nodes, [FOLDER, 'knowledge_base:kf.d1'], ALL)).toEqual(['knowledge_base:kf.d1', ALL]);
+    expect(toggleKey(nodes, [FOLDER], FOLDER)).toEqual([]);
+  });
+
+  it('树里已包含的写「已包含」、点不了', async () => {
+    function Multi() {
+      const [value, setValue] = useState<string[]>([FOLDER]);
+      return (
+        <TreeSelect
+          multiple
+          aria-label="知识库"
+          nodes={nodes}
+          value={value}
+          onChange={setValue}
+          placeholder="选择知识库"
+          searchPlaceholder="搜索"
+          emptyMessage="没有"
+        />
+      );
+    }
+    renderWithApp(<Multi />);
+    await userEvent.click(screen.getByRole('button', { name: '产品资料' }));
+    const tree = await screen.findByRole('tree', { name: '知识库' });
+    const kb = within(tree).getByRole('button', { name: '电风扇说明书' });
+    expect(kb).toBeDisabled();
+    expect(within(kb.closest('li') as HTMLElement).getByText('已包含')).toBeInTheDocument();
   });
 });

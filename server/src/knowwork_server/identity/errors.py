@@ -21,5 +21,17 @@ class InvalidInput(IdentityError):
     pass
 
 
-class OidcFailure(IdentityError):
-    """单点登录失败。具体原因只用于内部判断，不返回给调用方。"""
+class SsoFailure(IdentityError):
+    """外部登录失败（单点登录、域账号、企业微信等）。具体原因只用于内部判断，不返回给调用方。"""
+
+
+class OidcFailure(SsoFailure):
+    """OIDC 单点登录失败。"""
+
+
+class NotFound(IdentityError):
+    pass
+
+
+class Conflict(IdentityError):
+    """操作和现状冲突，例如改环境变量配的登录方式。"""

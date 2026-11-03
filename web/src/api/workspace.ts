@@ -54,6 +54,8 @@ export interface Member {
   readonly email: string | null;
   /** channel：渠道账号（IM 机器人回答时用的身份），不是人 */
   readonly kind: 'person' | 'channel';
+  /** rule：按成员规则从组织架构自动加入，随部门进出、不能手工移出；manual：手工加、邀请、默认空间 */
+  readonly origin: 'manual' | 'rule';
 }
 
 function parseMember(value: unknown): Member | undefined {
@@ -66,6 +68,7 @@ function parseMember(value: unknown): Member | undefined {
     name: text(value.name) ?? null,
     email: text(value.email) ?? null,
     kind: value.kind === 'channel' ? 'channel' : 'person',
+    origin: value.origin === 'rule' ? 'rule' : 'manual',
   };
 }
 
@@ -234,11 +237,13 @@ export const RESOURCE_TYPES = [
   { value: 'knowledge_base', label: '知识库' },
 ] as const;
 
-export type SubjectKind = 'user' | 'group' | 'dept' | 'role';
+/** org：组织架构的部门（目录同步来，全系统一份）；dept：本空间手工建的部门。 */
+export type SubjectKind = 'user' | 'group' | 'dept' | 'org' | 'role';
 export const SUBJECT_KINDS: readonly { readonly value: SubjectKind; readonly label: string }[] = [
   { value: 'user', label: '成员' },
   { value: 'group', label: '用户组' },
   { value: 'dept', label: '部门' },
+  { value: 'org', label: '组织架构' },
   { value: 'role', label: '角色' },
 ];
 
@@ -262,6 +267,15 @@ export async function listGrants(): Promise<readonly Grant[]> {
 
 export function grant(subject: string, resource: string, action: Action): Promise<unknown> {
   return request(base('/grants'), { method: 'POST', body: { subject, resource, action } });
+}
+
+/** 几个对象 × 几个资源一次授上：一个事务，要么都授上、要么都不授。 */
+export function grantMany(
+  subjects: readonly string[],
+  resources: readonly string[],
+  action: Action,
+): Promise<unknown> {
+  return request(base('/grants/batch'), { method: 'POST', body: { subjects, resources, action } });
 }
 
 /** 设置一个资源「给谁用」：把它上面「可用」一档的授权整体换成 subjects（全体成员是 role:editor）。 */

@@ -13,7 +13,11 @@ name: release
 #   变量 ACR_REGISTRY   crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai（与 KnowFlow 同一个阿里云个人版实例，命名空间 knowflow-ai；地址加命名空间，与 deploy/.env.example 一致）
 #   新仓库第一次推送时自动创建、默认私有，要在阿里云控制台改成公开，用户才能不登录直接拉取
 #   密钥 ACR_USERNAME、ACR_PASSWORD   阿里云容器镜像服务的登录账号与固定密码
-# 只发布 linux/amd64。
+#
+# 发布 linux/amd64 与 linux/arm64（v0.0.5 起）：两个架构各在自己的原生构建机上构建（公开仓库的 ARM 构建机免费，
+# 不用 QEMU 模拟，沙箱镜像装 LibreOffice 模拟起来很慢），先推带架构后缀的标签 vX.Y.Z-amd64、vX.Y.Z-arm64，
+# 再合成一个多架构标签 vX.Y.Z 与 latest，客户的机器按自己的架构自动拉到对应的那个，部署文件不用分两套。
+# 上一版的镜像没有 arm64 的不复用、照常重建；依赖镜像同样两个架构都同步。
 
 on:
   push:
@@ -70,15 +74,24 @@ jobs:
             target="${pair#*=}"
             grep -q "/$target}" deploy/docker-compose.yml || { echo "docker-compose.yml 里没有 $target，同步列表过期了"; exit 1; }
           done
+      - uses: docker/setup-buildx-action@v3
       - name: 哪些镜像要重建
         id: plan
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
         run: |
           previous="$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)"
+          # 上一版的镜像两个架构都有才复用（公开镜像，不登录就能看清单）；看不到也按没有处理，照常重建
+          both_arches() {
+            docker buildx imagetools inspect --raw "$1" 2>/dev/null \
+              | jq -e '[.manifests[]?.platform.architecture] | index("amd64") != null and index("arm64") != null' > /dev/null
+          }
           build=(); reuse=()
           while IFS='=' read -r name paths; do
             [ -n "$name" ] || continue
             # shellcheck disable=SC2086  # paths 是空格分开的路径列表
-            if [ -n "$previous" ] && git diff --quiet "$previous" "$TAG" -- $paths; then reuse+=("$name"); else build+=("$name"); fi
+            if [ -n "$previous" ] && git diff --quiet "$previous" "$TAG" -- $paths \
+              && both_arches "$ACR_REGISTRY/knowwork-$name:$previous"; then reuse+=("$name"); else build+=("$name"); fi
           done <<< "$IMAGE_INPUTS"
           as_json() { printf '%s\n' "$@" | jq -R . | jq -cs 'map(select(length > 0))'; }
           echo "上一个版本：${previous:-无}；重建：${build[*]:-无}；复用：${reuse[*]:-无}"
@@ -97,10 +110,11 @@ jobs:
           path: notes.md
 
   images:
-    name: 镜像 ${{ matrix.name }}
+    name: 镜像 ${{ matrix.name }}（${{ matrix.arch }}）
     needs: check
     if: needs.check.outputs.build != '[]'
-    runs-on: ubuntu-24.04
+    # 各架构在自己的原生构建机上构建
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     env:
       # build-push-action 默认把构建记录（*.dockerbuild）也传成产物，发布任务一并下载时解包会失败；用不上，关掉
@@ -109,6 +123,7 @@ jobs:
       fail-fast: false
       matrix:
         name: ${{ fromJSON(needs.check.outputs.build) }}
+        arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -129,15 +144,15 @@ jobs:
           registry: ${{ env.REGISTRY_HOST }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-      - name: 构建并推送
+      - name: 构建并推送（带架构后缀的标签，合成多架构标签在下一步）
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/docker/${{ matrix.name }}.Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           push: true
           # 阿里云个人版不认 buildx 默认附带的来源证明（OCI 空配置清单），推送会报 unknown manifest class；
-          # 关掉它，推普通的镜像清单。依赖与许可证清单由下面单独生成的 SBOM 提供
+          # 关掉它，推普通的镜像清单。依赖与许可证清单由合成那一步单独生成的 SBOM 提供
           provenance: false
           sbom: false
           build-args: KNOWWORK_VERSION=${{ env.TAG }}
@@ -146,15 +161,43 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             io.knowwork.inputs=${{ env.INPUTS_FINGERPRINT }}
-          tags: |
-            ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:${{ env.TAG }}
-            ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:latest
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
-      - name: 生成 SBOM（依赖与许可证清单）
+          tags: ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:${{ env.TAG }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.name }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}-${{ matrix.arch }}
+
+  manifests:
+    name: 合成多架构标签 ${{ matrix.name }}
+    needs: [check, images]
+    if: needs.check.outputs.build != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.check.outputs.build) }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: 取仓库主机名（ACR_REGISTRY 带命名空间，登录只要主机）
+        run: echo "REGISTRY_HOST=${ACR_REGISTRY%%/*}" >> "$GITHUB_ENV"
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+      - name: 登录阿里云容器镜像服务
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_HOST }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: 两个架构合成 vX.Y.Z 与 latest（在仓库里写清单，不传镜像层）
+        run: |
+          image="${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}"
+          docker buildx imagetools create --tag "$image:$TAG" --tag "$image:latest" "$image:$TAG-amd64" "$image:$TAG-arm64"
+          arches="$(docker buildx imagetools inspect --raw "$image:$TAG" | jq -r '[.manifests[].platform.architecture] | sort | join(",")')"
+          test "$arches" = "amd64,arm64" || { echo "$image:$TAG 的架构是 $arches，应该是 amd64,arm64"; exit 1; }
+          echo "$image:$TAG：$arches"
+      - name: 生成 SBOM（依赖与许可证清单，取 amd64 那份）
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:${{ env.TAG }}
+          image: ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:${{ env.TAG }}-amd64
           registry-username: ${{ secrets.ACR_USERNAME }}
           registry-password: ${{ secrets.ACR_PASSWORD }}
           format: spdx-json
@@ -226,24 +269,29 @@ jobs:
           registry: ${{ env.REGISTRY_HOST }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-      - name: 原样复制（只取 linux/amd64；已经同步过的跳过）
+      - name: 原样复制 linux/amd64 与 linux/arm64（两个架构都有了的跳过）
         run: |
+          arches() { docker buildx imagetools inspect --raw "$1" 2>/dev/null | jq -r '[.manifests[]?.platform.architecture] | sort | join(",")'; }
           for pair in $MIRRORS; do
             source="${pair%%=*}"; target="${{ vars.ACR_REGISTRY }}/${pair#*=}"
-            if docker buildx imagetools inspect "$target" > /dev/null 2>&1; then
-              echo "已有 $target，跳过"
+            if [ "$(arches "$target" | grep -o 'amd64\|arm64' | sort -u | paste -sd, -)" = "amd64,arm64" ]; then
+              echo "已有 $target（amd64、arm64），跳过"
               continue
             fi
-            digest="$(docker buildx imagetools inspect "$source" --format '{{json .Manifest}}' \
-              | jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest')"
-            docker buildx imagetools create --tag "$target" "${source%%:*}@${digest}"
-            echo "已同步 $source → $target"
+            # 只取这两个架构，各取一份；以前只同步过 amd64 的标签在这里重写成两个架构，amd64 那份的摘要不变，在用的部署不受影响
+            digests="$(docker buildx imagetools inspect --raw "$source" \
+              | jq -r '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))]
+                       | unique_by(.platform.architecture) | .[].digest')"
+            [ "$(printf '%s\n' "$digests" | grep -c .)" = 2 ] || { echo "$source 没有 amd64、arm64 两个架构"; exit 1; }
+            # shellcheck disable=SC2046  # 每个摘要一个参数
+            docker buildx imagetools create --tag "$target" $(printf '%s\n' "$digests" | sed "s|^|${source%%:*}@|")
+            echo "已同步 $source → $target（$(arches "$target")）"
           done
 
   release:
     name: GitHub Release
-    needs: [check, images, reuse, mirrors]
-    # images、reuse 有一个可能因为没有要做的而跳过，跳过不算失败；检查没过或任何一步失败都不建 Release
+    needs: [check, images, manifests, reuse, mirrors]
+    # images（连同 manifests）、reuse 有一个可能因为没有要做的而跳过，跳过不算失败；检查没过或任何一步失败都不建 Release
     if: >-
       always() && needs.check.result == 'success' && needs.mirrors.result == 'success'
       && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')

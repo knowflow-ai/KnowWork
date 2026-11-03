@@ -40,8 +40,14 @@ describe('前端插槽', () => {
 
   it('扩展的系统菜单项（例如空间管理）排在「模型」后面，内置的系统分组不被改动', () => {
     register('system.nav', { to: '/admin/workspaces', label: '空间管理', icon: <BookOpen /> });
-    expect(systemNav().items.map((item) => item.label)).toEqual(['模型', '空间管理', '系统设置', '运行面板']);
-    expect(SYSTEM_NAV.items).toHaveLength(3);
+    expect(systemNav().items.map((item) => item.label)).toEqual([
+      '模型',
+      '空间管理',
+      '登录方式',
+      '系统设置',
+      '运行面板',
+    ]);
+    expect(SYSTEM_NAV.items).toHaveLength(4);
   });
 
   it('扩展的页面挂在兜底跳转之前', () => {

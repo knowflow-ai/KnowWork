@@ -11,6 +11,7 @@ import {
   type UserGroup,
 } from '../../../api/workspace';
 import type { SourceBases } from '../../../api/knowledge';
+import { orgPath, type OrgDepartment } from '../../../api/org';
 import type { McpServer } from '../../../api/mcp';
 import type { GrantTreeNode } from '../../../slots/registry';
 
@@ -21,6 +22,10 @@ export interface Directory {
   readonly members: readonly Member[];
   readonly groups: readonly UserGroup[];
   readonly departments: readonly Department[];
+  /** 组织架构的部门（目录同步来，全系统一份）；没接目录时为空。 */
+  readonly orgDepartments: readonly OrgDepartment[];
+  /** 组织架构里的部门取到了：只有取到了，才能说某个部门已从目录移除。 */
+  readonly orgLoaded: boolean;
   /** 资源名称：`类型:id` → 名称（知识库、MCP 工具这类有接口可查的）。 */
   readonly resources: Readonly<Record<string, string>>;
   /** 按知识源分组的知识库，给授权时的选择树。 */
@@ -45,6 +50,12 @@ export function subjectLabel(key: string, dir: Directory): { readonly kind: stri
   if (kind === 'group') return { kind: kindText, name: dir.groups.find((g) => g.id === id)?.name ?? id };
   if (kind === 'dept') {
     return { kind: kindText, name: flattenDepartments(dir.departments).find((d) => d.id === id)?.name ?? id };
+  }
+  if (kind === 'org') {
+    if (dir.orgDepartments.some((d) => d.id === id))
+      return { kind: kindText, name: orgPath(id, dir.orgDepartments) };
+    // 部门从目录里删了：授权还留着，但匹配不到人了
+    return { kind: kindText, name: dir.orgLoaded ? '已从目录移除的部门' : id };
   }
   if (kind === 'role') return { kind: kindText, name: roleLabel(id) };
   return { kind: kindText, name: id };

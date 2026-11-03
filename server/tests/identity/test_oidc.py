@@ -36,7 +36,7 @@ async def idp_http(idp):
 @pytest.fixture
 def identity(sessionmaker, clock, oidc_config, idp_http):
     config = IdentityConfig(public_base_url=BASE_URL, oidc=oidc_config)
-    return build_identity(sessionmaker, config, clock=clock, oidc_http=idp_http)
+    return build_identity(sessionmaker, config, clock=clock, sso_http=idp_http)
 
 
 async def _authorize(client, idp_http) -> dict:
@@ -82,7 +82,7 @@ async def test_invited_user_is_created(client, idp_http, idp, identity):
 
 async def test_open_registration_creates_user(sessionmaker, clock, oidc_config, idp_http, idp, admins):
     config = IdentityConfig(public_base_url=BASE_URL, oidc=replace(oidc_config, allow_only_known_users=False))
-    identity = build_identity(sessionmaker, config, clock=clock, oidc_http=idp_http)
+    identity = build_identity(sessionmaker, config, clock=clock, sso_http=idp_http)
     idp.email = "open@example.com"
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=make_app(identity, admins)),
                                  base_url=BASE_URL) as client:
@@ -167,7 +167,7 @@ async def test_provider_unavailable(sessionmaker, clock, oidc_config, admins):
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(broken))
     identity = build_identity(sessionmaker, IdentityConfig(public_base_url=BASE_URL, oidc=oidc_config),
-                              clock=clock, oidc_http=http)
+                              clock=clock, sso_http=http)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=make_app(identity, admins)),
                                  base_url=BASE_URL) as client:
         assert (await client.get("/api/auth/oidc/login")).status_code == 502
@@ -178,3 +178,29 @@ async def test_provider_unavailable(sessionmaker, clock, oidc_config, admins):
 def test_config_rejects_unsafe_algorithms(algorithms):
     with pytest.raises(ValueError):
         OidcConfig(issuer=ISSUER, client_id="c", client_secret="s", redirect_uri=REDIRECT_URI, algorithms=algorithms)
+
+
+async def test_login_methods_list_oidc_when_configured(client):
+    body = (await client.get("/api/auth/methods")).json()
+    assert body == {"password": True, "methods": [{
+        "id": "oidc", "kind": "oidc", "label": "企业账号", "style": "redirect",
+        "url": "/api/auth/oidc/login", "inClientAgents": []}]}
+
+
+async def test_login_methods_without_oidc(sessionmaker, clock, admins):
+    identity = build_identity(sessionmaker, IdentityConfig(public_base_url=BASE_URL), clock=clock)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=make_app(identity, admins)),
+                                 base_url=BASE_URL) as client:
+        assert (await client.get("/api/auth/methods")).json() == {"password": True, "methods": []}
+
+
+async def test_login_state_is_bound_to_its_method(client, idp_http, sessionmaker, alice):
+    """state 记下是哪种登录方式发的：别的方式的回调拿它来用不行（以后多种跳转登录共用一张表）。"""
+    from sqlalchemy import update
+
+    from knowwork_server.identity.models import LoginState
+
+    params = await _authorize(client, idp_http)
+    async with sessionmaker() as session, session.begin():
+        await session.execute(update(LoginState).values(method="wecom"))
+    assert (await client.get(CALLBACK, params=params)).status_code == 401

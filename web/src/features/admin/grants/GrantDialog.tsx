@@ -1,11 +1,15 @@
-/** 新增授权：选授权对象、资源与权限档位。同一对象对同一资源只保留一档，再授即改档。 */
+/**
+ * 新增授权：选授权对象、资源与权限档位。同一对象对同一资源只保留一档，再授即改档。
+ * 对象、资源都是先选类型，再在这一类里多选（部门、组织架构、知识库、工具按层级成树）；不混着选几类，一次授权看得清
+ * 授给了谁、授的是什么。几个对象 × 几个资源一次授上，一个事务。
+ */
 import { useState } from 'react';
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
 import { Select } from '@openai/apps-sdk-ui/components/Select';
 import {
   ACTIONS,
-  grant,
+  grantMany,
   RESOURCE_TYPES,
   SUBJECT_KINDS,
   type Action,
@@ -13,10 +17,18 @@ import {
 } from '../../../api/workspace';
 import { Dialog, DialogActions } from '../../../ui/Dialog';
 import { Field } from '../../../ui/Field';
+import { TreeSelect } from '../../../ui/TreeSelect';
 import { useAction } from '../useAction';
 import { KEYS } from '../queries';
 import type { Directory } from './labels';
-import { resourceKey, resourceOptions, subjectOptions, validateGrant, type GrantInput } from './form';
+import {
+  resourceKeys,
+  resourceOptions,
+  subjectNodes,
+  subjectSearchHint,
+  validateGrant,
+  type GrantInput,
+} from './form';
 import { KnowledgeBasePicker } from './KnowledgeBasePicker';
 import { ToolPicker } from './ToolPicker';
 
@@ -38,15 +50,16 @@ function problemField(problem: string | null): 'subject' | 'resource' | null {
 export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonly onClose: () => void }) {
   const [value, setValue] = useState<GrantInput>({
     subjectKind: 'user',
+    subjects: [],
     resourceType: 'knowledge_base',
-    resourceId: '',
+    resourceIds: [],
     all: false,
     action: 'use',
   });
   const [problem, setProblem] = useState<string | null>(null);
   const patch = (next: Partial<GrantInput>) => setValue((v) => ({ ...v, ...next }));
   const action = useAction(
-    (input: GrantInput) => grant(`${input.subjectKind}:${input.subjectId}`, resourceKey(input), input.action),
+    (input: GrantInput) => grantMany(input.subjects, resourceKeys(input), input.action),
     { invalidate: [KEYS.grants], success: '已授权', failure: '授权没有成功，请稍后重试' },
   );
   const submit = async () => {
@@ -69,19 +82,25 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
           <Select
             block
             value={value.subjectKind}
-            options={SUBJECT_KINDS.map((k) => ({ ...k }))}
-            onChange={(option) => patch({ subjectKind: option.value as SubjectKind, subjectId: undefined })}
+            options={SUBJECT_KINDS.filter((k) => k.value !== 'org' || dir.orgDepartments.length > 0).map(
+              (k) => ({
+                ...k,
+              }),
+            )}
+            onChange={(option) => patch({ subjectKind: option.value as SubjectKind, subjects: [] })}
           />
         </Field>
         <Field label="授权对象" error={at === 'subject' ? problem : undefined}>
-          <Select
-            block
-            value={value.subjectId ?? ''}
-            placeholder="请选择"
-            searchPlaceholder="搜索"
-            searchEmptyMessage="没有匹配的选项"
-            options={[...subjectOptions(value.subjectKind, dir)]}
-            onChange={(option) => patch({ subjectId: option.value })}
+          <TreeSelect
+            multiple
+            aria-label="授权对象"
+            nodes={subjectNodes(value.subjectKind, dir)}
+            value={value.subjects}
+            invalid={at === 'subject'}
+            onChange={(subjects) => patch({ subjects })}
+            placeholder="请选择，可多选"
+            searchPlaceholder={subjectSearchHint(value.subjectKind)}
+            emptyMessage="没有匹配的选项"
           />
         </Field>
       </div>
@@ -91,7 +110,7 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
             block
             value={value.resourceType}
             options={RESOURCE_TYPES.map((t) => ({ ...t }))}
-            onChange={(option) => patch({ resourceType: option.value, resourceId: '' })}
+            onChange={(option) => patch({ resourceType: option.value, resourceIds: [] })}
           />
         </Field>
         {value.all ? null : value.resourceType === 'knowledge_base' ? (
@@ -99,30 +118,31 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
             <KnowledgeBasePicker
               sources={dir.knowledge}
               trees={dir.trees}
-              value={value.resourceId}
+              value={value.resourceIds}
               invalid={at === 'resource'}
-              onChange={(resource) => patch({ resourceId: resource })}
+              onChange={(resourceIds) => patch({ resourceIds })}
             />
           </Field>
         ) : value.resourceType === 'tool' ? (
           <Field label="工具" error={at === 'resource' ? problem : undefined}>
             <ToolPicker
               servers={dir.tools}
-              value={value.resourceId}
+              value={value.resourceIds}
               invalid={at === 'resource'}
-              onChange={(resource) => patch({ resourceId: resource })}
+              onChange={(resourceIds) => patch({ resourceIds })}
             />
           </Field>
         ) : known.length > 0 ? (
           <Field label={typeLabel(value.resourceType)} error={at === 'resource' ? problem : undefined}>
             <Select
               block
-              value={value.resourceId}
-              placeholder="请选择"
+              multiple
+              value={[...value.resourceIds]}
+              placeholder="请选择，可多选"
               searchPlaceholder="搜索"
               searchEmptyMessage="没有匹配的选项"
               options={[...known]}
-              onChange={(option) => patch({ resourceId: option.value })}
+              onChange={(options) => patch({ resourceIds: options.map((option) => option.value) })}
             />
           </Field>
         ) : (
@@ -130,10 +150,10 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
             {(id) => (
               <Input
                 id={id}
-                value={value.resourceId}
+                value={value.resourceIds[0] ?? ''}
                 placeholder="资源 ID"
                 maxLength={64}
-                onChange={(e) => patch({ resourceId: e.target.value })}
+                onChange={(e) => patch({ resourceIds: [e.target.value] })}
               />
             )}
           </Field>
@@ -145,7 +165,7 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
         <Checkbox
           label={allLabel(value.resourceType)}
           checked={value.all}
-          onCheckedChange={(checked) => patch({ all: checked, resourceId: '' })}
+          onCheckedChange={(checked) => patch({ all: checked, resourceIds: [] })}
         />
       </div>
       <Field label="权限" help="使用 < 编辑 < 完全管理，高档包含低档">

@@ -1,13 +1,14 @@
 """调用者身份（不可变）。
 
-- 浏览器会话（session）与 OIDC 登录（oidc）不受权限范围限制，scopes 为 None，权限完全由 RBAC 判定；
+- 浏览器会话（账号密码 session，或外部登录 oidc、oauth2、ldap、wecom 等）不受权限范围限制，scopes 为 None，
+  权限完全由 RBAC 判定；
 - API Key（api_key）只能做它的 scopes 允许的事，且同样要过所属用户的 RBAC。
 """
 
 from dataclasses import dataclass
-from typing import Literal
 
-AuthMethod = Literal["session", "api_key", "oidc"]
+# api_key，或会话的登录方式（session 账号密码，其余是外部登录方式的 kind，见 identity/sessions.py 的格式校验）
+AuthMethod = str
 
 
 @dataclass(frozen=True, slots=True)

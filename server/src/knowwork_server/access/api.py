@@ -24,7 +24,7 @@ class Profile(Protocol):
     """成员资料：姓名、邮箱与账号类型（person 真人、channel 渠道账号）。由账号模块提供，本模块不读账号表。"""
 
     name: str
-    email: str
+    email: str | None  # 目录来的人可能没有邮箱
     kind: str
 
 
@@ -74,6 +74,18 @@ class GrantBody(BaseModel):
     action: str
 
 
+class GrantsBody(BaseModel):
+    subjects: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(min_length=1, max_length=200)
+    resources: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(min_length=1, max_length=200)
+    action: str
+
+
+class MemberRuleBody(BaseModel):
+    department_id: str = Field(min_length=1, max_length=64)
+    include_children: bool = True
+    role: str = "editor"
+
+
 class UsersBody(BaseModel):
     resource: str = Field(min_length=1, max_length=120)
     subjects: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(max_length=200)
@@ -102,6 +114,7 @@ def build_router(service: AccessService, current_principal: Callable[..., Awaita
     _departments(router, service, Who)
     _groups(router, service, Who)
     _grants(router, service, Who)
+    _enterprise(router, service, Who, profiles)
     mine = APIRouter(tags=["access"])
 
     @mine.get("/api/workspaces")
@@ -192,6 +205,54 @@ def _departments(router: APIRouter, service: AccessService, Who) -> None:
         return Response(status_code=204)
 
 
+def _enterprise(router: APIRouter, service: AccessService, Who, profiles: ProfileLookup | None) -> None:
+    @router.get("/org-departments")
+    async def org_departments(workspace_id: IdPath, who: Who):
+        """列出组织架构的部门
+
+        目录来源（AD、企业微信等）同步来的部门，全系统一份；给授权、成员规则选部门用。没接目录时为空。
+        """
+        return [asdict(d) for d in await _call(service.org_departments(who.user_id, workspace_id))]
+
+    @router.get("/org-departments/{department_id}/members")
+    async def org_department_members(workspace_id: IdPath, department_id: IdPath, who: Who):
+        """列出组织架构里一个部门的人
+
+        只这一级、不含下级部门；标出谁在本空间、什么角色。只给本空间管理员，只给姓名、不给邮箱。
+        """
+        members = await _call(service.org_department_members(who.user_id, workspace_id, department_id))
+        found: dict = {}
+        if profiles is not None and members:
+            try:
+                found = await profiles(tuple(m.user_id for m in members))
+            except Exception:
+                log.warning("org member profile lookup failed; returning members without names", exc_info=True)
+        return [{**asdict(m), "name": getattr(found.get(m.user_id), "name", None)} for m in members]
+
+    @router.get("/member-rules")
+    async def member_rules(workspace_id: IdPath, who: Who):
+        """列出成员规则"""
+        return [asdict(r) for r in await _call(service.member_rules(who.user_id, workspace_id))]
+
+    @router.post("/member-rules", status_code=201)
+    async def add_member_rule(workspace_id: IdPath, body: MemberRuleBody, who: Who):
+        """新建成员规则
+
+        某个企业部门（可含下级）的人自动成为本空间成员；人离开部门时随之移出，手工加的成员不受影响。
+        """
+        return asdict(await _call(service.add_member_rule(who.user_id, workspace_id, body.department_id,
+                                                          include_children=body.include_children, role=body.role)))
+
+    @router.delete("/member-rules/{rule_id}", status_code=204)
+    async def remove_member_rule(workspace_id: IdPath, rule_id: IdPath, who: Who):
+        """删除成员规则
+
+        只靠这条规则进来的人随之移出。
+        """
+        await _call(service.remove_member_rule(who.user_id, workspace_id, rule_id))
+        return Response(status_code=204)
+
+
 def _groups(router: APIRouter, service: AccessService, Who) -> None:
     @router.get("/groups")
     async def list_groups(workspace_id: IdPath, who: Who):
@@ -240,6 +301,18 @@ def _grants(router: APIRouter, service: AccessService, Who) -> None:
         """授权"""
         annotate(subject=body.subject, resource=body.resource, grantedAction=body.action)
         return asdict(await _call(service.grant(who.user_id, workspace_id, body.subject, body.resource, body.action)))
+
+    @router.post("/grants/batch", status_code=201)
+    async def grant_many(workspace_id: IdPath, body: GrantsBody, who: Who):
+        """一次授权给多个对象、多个资源
+
+        授权页里同一类对象多选、同一类资源多选时用：每个对象对每个资源各授一档，同一个事务，要么都授上、要么都不授；
+        同一对象对同一资源只保留一档，再授即改档。一次最多 2000 条（对象数 × 资源数）。
+        """
+        annotate(subjects=body.subjects, resources=body.resources, grantedAction=body.action)
+        views = await _call(service.grant_many(who.user_id, workspace_id, body.subjects, body.resources,
+                                               body.action))
+        return {"grants": [asdict(view) for view in views]}
 
     @router.put("/grants/users")
     async def set_users(workspace_id: IdPath, body: UsersBody, who: Who):

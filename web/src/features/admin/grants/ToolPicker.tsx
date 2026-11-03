@@ -22,7 +22,13 @@ export function toolNodes(servers: readonly McpServer[]): readonly TreeSelectNod
     icon: <Tools />,
     selectable: false,
     children: [
-      { key: `tool:${server.grantPattern}`, label: '全部工具', icon: <Tools />, children: [] },
+      {
+        key: `tool:${server.grantPattern}`,
+        label: '全部工具',
+        icon: <Tools />,
+        coversSiblings: true,
+        children: [],
+      },
       ...server.tools.map((tool) => ({
         key: `tool:${tool.name}`,
         label: tool.rawName,
@@ -40,12 +46,13 @@ export function ToolPicker({
   onChange,
 }: {
   readonly servers: readonly McpServer[];
-  readonly value: string;
+  readonly value: readonly string[];
   readonly invalid?: boolean;
-  readonly onChange: (resource: string) => void;
+  readonly onChange: (resources: string[]) => void;
 }) {
   return (
     <TreeSelect
+      multiple
       aria-label="工具"
       nodes={toolNodes(servers)}
       value={value}

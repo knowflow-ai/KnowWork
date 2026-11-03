@@ -26,6 +26,7 @@ const MEMBERS = [
 function api(extra = {}) {
   return routeFetch({
     [`GET ${B}/departments`]: jsonResponse(TREE),
+    [`GET ${B}/org-departments`]: jsonResponse([]),
     [`GET ${B}/members`]: jsonResponse(MEMBERS),
     [`GET ${B}/groups`]: jsonResponse([{ id: 'g1', name: '客服', members: ['u1'] }]),
     [`POST ${B}/departments`]: jsonResponse({ id: 'd3' }, 201),
@@ -154,5 +155,52 @@ describe('用户组', () => {
     await nameDialog('  ', '新建');
     expect(await screen.findByText('请输入名称')).toBeInTheDocument();
     expect(calls.find('POST', `${B}/groups`)).toHaveLength(0);
+  });
+});
+
+describe('组织架构', () => {
+  const org = (id: string, name: string, parent: string | null, count: number) => ({
+    id,
+    source_id: 'ds_1',
+    external_id: id,
+    parent_id: parent,
+    name,
+    sort: 0,
+    member_count: count,
+  });
+
+  it('接了企业目录：最后多一个只读的组织架构，选部门看这一级的人和在不在本空间', async () => {
+    api({
+      [`GET ${B}/org-departments`]: jsonResponse([org('o1', '集团', null, 1), org('o2', '法务部', 'o1', 2)]),
+      [`GET ${B}/org-departments/o2/members`]: jsonResponse([
+        { user_id: 'u1', is_primary: true, role: 'owner', name: '李雷' },
+        { user_id: 'u9', is_primary: false, role: null, name: '王五' },
+      ]),
+    });
+    renderWithApp(<OrgPage />);
+    const orgTab = await screen.findByRole('tab', { name: '组织架构' });
+    // 排在最后，默认仍停在部门
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['部门', '用户组', '组织架构']);
+    expect(screen.getByRole('tab', { name: '部门', selected: true })).toBeInTheDocument();
+    expect(screen.getByText(/组织架构从企业目录同步来/)).toBeInTheDocument();
+    await userEvent.click(orgTab);
+    const tree = screen.getByRole('tree', { name: '组织架构' });
+    await userEvent.click(within(tree).getByRole('button', { name: '法务部（2）' }));
+    const panel = await screen.findByRole('region', { name: '组织架构：集团 / 法务部' });
+    expect(await within(panel).findByText('王五')).toBeInTheDocument();
+    const wang = within(panel).getByText('王五').closest('tr') as HTMLElement;
+    expect(within(wang).getByText('不在本空间')).toBeInTheDocument();
+    const li = within(panel).getByText('李雷').closest('tr') as HTMLElement;
+    expect(within(li).getByText('所有者')).toBeInTheDocument();
+    expect(within(li).getByText('主部门')).toBeInTheDocument();
+    // 只读：没有新建、移出这些操作
+    expect(within(panel).queryByRole('button', { name: /更多|移出|加入/ })).toBeNull();
+  });
+
+  it('没接目录时和原来一样，只有部门与用户组', async () => {
+    api();
+    renderWithApp(<OrgPage />);
+    expect(await screen.findByRole('tab', { name: '部门', selected: true })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: '组织架构' })).toBeNull();
   });
 });

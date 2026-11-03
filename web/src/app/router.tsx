@@ -30,6 +30,7 @@ const RunsPage = lazy(() => import('../features/admin/runs/RunsPage'));
 const InsightsPage = lazy(() => import('../features/admin/insights/InsightsPage'));
 const ToolsPage = lazy(() => import('../features/admin/tools/ToolsPage'));
 const SystemPage = lazy(() => import('../features/admin/system/SystemPage'));
+const LoginMethodsPage = lazy(() => import('../features/admin/login/LoginMethodsPage'));
 const JobsPage = lazy(() => import('../features/admin/jobs/JobsPage'));
 
 const page = (node: ReactNode) => (
@@ -51,6 +52,7 @@ const adminRoutes = (): RouteObject[] => [
   { path: 'channels', element: page(<ChannelsPage />) },
   { path: 'runs', element: page(<RunsPage />) },
   { path: 'audit', element: page(<AuditPage />) },
+  { path: 'login-methods', element: page(<LoginMethodsPage />) },
   { path: 'system', element: page(<SystemPage />) },
   { path: 'jobs', element: page(<JobsPage />) },
   ...slotItems('admin.routes'),

@@ -25,7 +25,7 @@ ACTION_RANK: dict[str, int] = {Action.USE: 1, Action.EDIT: 2, Action.OWNER: 3}
 # 可授权的资源类型；工作空间自身的管理权用保留资源 WORKSPACE_RESOURCE 表达，不能经授权接口授出
 RESOURCE_TYPES: frozenset[str] = frozenset({"skill", "tool", "knowledge_base", "knowledge_source"})
 WORKSPACE_RESOURCE = "workspace"
-SUBJECT_KINDS: frozenset[str] = frozenset({"user", "group", "dept", "role"})
+SUBJECT_KINDS: frozenset[str] = frozenset({"user", "group", "dept", "org", "role"})  # org：企业组织的部门
 
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 TYPE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -84,7 +84,7 @@ class Subject:
     def parse(text: str) -> "Subject":
         kind, sep, ident = (text or "").partition(":")
         if not sep or kind not in SUBJECT_KINDS:
-            raise InvalidInput("授权主体须为 user:<id>、group:<id>、dept:<id> 或 role:<角色>")
+            raise InvalidInput("授权主体须为 user:<id>、group:<id>、dept:<id>、org:<id> 或 role:<角色>")
         if kind == "role":
             parse_role(ident)
         else:

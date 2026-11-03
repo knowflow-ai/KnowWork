@@ -623,3 +623,28 @@ async def test_0029_binds_unbound_api_keys_to_the_default_workspace(fresh_url):
     await upgrade_to_head(fresh_url)
     assert await _execute(fresh_url, "SELECT json_agg(json_build_array(id, workspace_id) ORDER BY id) FROM api_key") \
         == [["k1", "default"], ["k2", "w2"]]
+
+
+async def test_0040_moves_oidc_identities_into_external_identity(fresh_url):
+    """OIDC 的绑定原样搬进通用的外部身份表（身份域 = 发行方），旧表删掉；之后用户邮箱可空。"""
+    await _alembic(fresh_url, command.upgrade, "0039")
+    engine = create_async_engine(fresh_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("""INSERT INTO "user" (id, email, name, status) VALUES ('u1', 'u1@x', 'U1', 'active')"""))
+            await connection.execute(text(
+                "INSERT INTO oidc_identity (issuer, subject, user_id, created_at)"
+                " VALUES ('https://idp.example.com', 'sub-1', 'u1', '2026-10-01T00:00:00Z')"))
+            await connection.execute(text(
+                "INSERT INTO oidc_login_state (state_hash, nonce_hash, verifier_hash, expires_at)"
+                " VALUES ('s', 'n', 'v', now())"))
+    finally:
+        await engine.dispose()
+    await upgrade_to_head(fresh_url)
+    assert await _execute(fresh_url, "SELECT json_agg(json_build_array(realm, subject, user_id))"
+                                     " FROM external_identity") == [["https://idp.example.com", "sub-1", "u1"]]
+    assert await _execute(fresh_url, "SELECT to_regclass('oidc_identity') IS NULL") is True
+    # 进行中的单点登录状态只活 10 分钟，升级时直接丢掉，不搬
+    assert await _execute(fresh_url, "SELECT count(*) FROM login_state") == 0
+    await _execute(fresh_url, """INSERT INTO "user" (id, email, name, status) VALUES ('u2', NULL, '张三', 'active')""")
+    assert await _execute(fresh_url, """SELECT count(*) FROM "user" WHERE email IS NULL""") == 1

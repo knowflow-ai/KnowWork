@@ -5,8 +5,10 @@ ARG NODE_IMAGE=node:24.18.0-bookworm-slim
 ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.28-alpine
 
 # FROM 都经 ARG 指定镜像，版本钉在 ARG 默认值里；hadolint 看不穿 ARG，按行忽略 DL3006。
-# hadolint ignore=DL3006
-FROM ${NODE_IMAGE} AS web
+# 前端产物是静态文件，和目标架构无关：编译固定在构建机本机架构上跑（$BUILDPLATFORM），多架构构建时
+# arm64 不用在 QEMU 里跑 npm 和 vite，只有下面 nginx 那一层按目标架构。
+# hadolint ignore=DL3006,DL3029
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \

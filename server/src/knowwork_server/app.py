@@ -3,8 +3,9 @@
 部署时两个应用监听不同端口；内部端口只在容器内网，网关不转发。生产入口见 __main__.py。
 """
 
+import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 
 import httpx
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from starlette.routing import Route
 
 from .access.api import build_router as access_router
+from .access.deps import require_system_admin
 from .access.members import PLATFORM_WORKSPACE_ID
 from .access.service import AccessService
 from .access.vocab import WORKSPACE_RESOURCE, Action
@@ -59,6 +61,8 @@ from .gateway.model_gateway import build_router as gateway_router
 from .identity.api import build_router as identity_router
 from .identity.config import IdentityConfig, OidcConfig
 from .identity.container import Identity, build_identity
+from .identity.providers import SECRET_PURPOSE as LOGIN_SECRET_PURPOSE
+from .identity.providers_api import build_router as login_providers_router
 from .insights import InsightsService, build_insights
 from .insights import build_router as insights_router
 from .jobs.admin import JobsAdmin
@@ -72,6 +76,7 @@ from .knowledge.catalog import turn_catalog
 from .knowledge.citation_api import build_router as citations_router
 from .knowledge.citation_observer import CitationObserver
 from .knowledge.cited import CitationNotifier
+from .knowledge.crypto import SecretBox
 from .knowledge.links import LinkSigner
 from .knowledge.mcp_server import PATH as MCP_PATH
 from .knowledge.mcp_server import KnowledgeMcp
@@ -184,11 +189,14 @@ class Runtime:
     # 按模型目录转发到各厂商、做连通测试：不带 base_url 与默认鉴权头，免得把固定上游的密钥带给别的厂商
     routed_http: httpx.AsyncClient
     host_http: httpx.AsyncClient  # 就绪探针查宿主 /health 用
-    oidc_http: httpx.AsyncClient | None
+    sso_http: httpx.AsyncClient  # 外部登录（OIDC、OAuth2）出去请求身份中台用
     # 按授权启用的扩展与它们的路由（装配失败的已从启用里去掉、记下原因）；内部端口的单独一份
     extensions: Extensions
     extension_routers: tuple[APIRouter, ...]
     extension_internal_routers: tuple[APIRouter, ...] = ()
+    # 跟着别的进程（worker 里的组织同步、删知识库的任务）改的权限规则重新加载；见 access/core.py 的 follow_changes
+    policy_stop: asyncio.Event = field(default_factory=asyncio.Event)
+    policy_follower: asyncio.Task | None = None
 
     async def start(self, *, create_schema: bool = False) -> None:
         if create_schema or self.settings.create_schema:
@@ -203,6 +211,7 @@ class Runtime:
         await self.workflows.engine.reconcile(STALE_AFTER)  # 上次没跑完的运行标为中断，可续跑
         if not await self.access.reload():
             raise RuntimeError("权限规则加载失败，拒绝启动")
+        self.policy_follower = asyncio.create_task(self.access.follow_changes(self.engine, self.policy_stop))
         # 系统管理员能进任何空间：从初始化记录读回来交给权限模块（还没初始化时为空）
         self.access.set_system_admin(await current_system_admin(self.global_sessionmaker))
         for extension in self.extensions.active:
@@ -218,6 +227,9 @@ class Runtime:
         await self.channels.supervisor.start()  # 机器人长连接放最后：会话要用到的都已就绪
 
     async def stop(self) -> None:
+        self.policy_stop.set()
+        if self.policy_follower is not None:
+            await self.policy_follower
         await self.channels.supervisor.stop()
         await self.knowledge_mcp.stop()
         await self.workflows.engine.aclose()
@@ -237,8 +249,7 @@ class Runtime:
         await self.routed_http.aclose()
         await self.host_http.aclose()
         await self.knowledge.client.aclose()
-        if self.oidc_http is not None:
-            await self.oidc_http.aclose()
+        await self.sso_http.aclose()
         await self.audit.close()
         if self.sandbox is not None:
             await self.sandbox.aclose()
@@ -439,7 +450,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                   erasers=(erase_knowledge, erase_receipts,
                                            attachments.service.erase, artifacts.service.erase,
                                            *((sandbox.eraser(),) if sandbox else ())))
-    oidc_http = httpx.AsyncClient(timeout=10.0) if config.oidc is not None else None
+    # 后台随时可能加上 OIDC、OAuth2 登录方式，客户端常备；不跟随重定向（httpx 默认），凭证不会被带到别的主机
+    sso_http = httpx.AsyncClient(timeout=10.0)
     upstream = httpx.AsyncClient(
         base_url=settings.model_upstream_base_url,
         headers=({"authorization": f"Bearer {upstream_key}"} if (upstream_key := settings.model_upstream_api_key
@@ -448,7 +460,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     )
     routed_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=300.0))
     host_http = httpx.AsyncClient(base_url=settings.host_base_url, timeout=3.0)
-    identity = build_identity(global_sessionmaker, config, oidc_http=oidc_http,
+    identity = build_identity(global_sessionmaker, config, sso_http=sso_http,
+                              secrets=SecretBox.from_master_key(master_key, LOGIN_SECRET_PURPOSE),
                               on_user_created=place_new_user(access))
     debug = build_debugview(scoped, models.recorder, knowledge.search_log)
     links = LinkSigner(derive_key(master_key, "knowledge-links"))
@@ -460,7 +473,9 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          stores_for=lambda namespace: namespaced_stores(settings, namespace),
                          knowledge_sources=knowledge.provided, tools=provided_tools, turn_context=turn_context,
                          links=links, profiles=identity.users.get_many, on_turn_ended=summaries.contribute,
-                         platform_skills=skills.platform, enterprise_mcp=mcp.enterprise,
+                         platform_skills=skills.platform, enterprise_mcp=mcp.enterprise, accounts=identity.accounts,
+                         login_methods=identity.methods, password_logins=identity.password_logins,
+                         redirect_logins=identity.redirect_logins, verify_files=identity.verify_files,
                          principal=lambda scope: scoped_principal(identity, scope) if scope else bound_principal(identity))
     extensions, extension_routers, extension_internal = _setup_extensions(extensions or installed_extensions(),
                                                                           context)
@@ -485,7 +500,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                    jobs=JobsAdmin(global_sessionmaker), parsers=parsers,
                    global_sessionmaker=global_sessionmaker,
                    engine=engine, upstream=upstream, routed_http=routed_http, host_http=host_http,
-                   oidc_http=oidc_http, extensions=extensions, extension_routers=extension_routers,
+                   sso_http=sso_http, extensions=extensions, extension_routers=extension_routers,
                    extension_internal_routers=extension_internal)
 
 
@@ -518,6 +533,7 @@ def create_public_app(runtime: Runtime) -> FastAPI:
     identity, access = runtime.identity, runtime.access
     app.include_router(identity_router(identity, is_admin=workspace_admin(access),
                                        can_bind_workspace=workspace_member(access)))
+    app.include_router(login_providers_router(identity.providers, require_system_admin(access, identity.get_principal)))
     app.include_router(access_router(access, scoped_principal(identity, WORKSPACE_SCOPE),
                                      profiles=identity.users.get_many))
     app.include_router(models_router(runtime.models.catalog, runtime.models.recorder, access,

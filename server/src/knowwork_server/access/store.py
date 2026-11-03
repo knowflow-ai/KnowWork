@@ -27,19 +27,29 @@ def _match(rule: Rule):
                 CasbinRule.v2 == v2, CasbinRule.v3 == v3)
 
 
+# 一条语句最多带多少条规则：asyncpg 一条语句的参数不能超过 32767 个，插入每条 6 个、删除每条 5 个。
+# 企业组织第一次同步进来，一个空间就是上万条
+BATCH = 1000
+
+
+def _batches(rules: tuple[Rule, ...]):
+    for start in range(0, len(rules), BATCH):
+        yield rules[start:start + BATCH]
+
+
 async def insert_rules(session: AsyncSession, rules: tuple[Rule, ...]) -> None:
-    if not rules:
-        return
-    rows = []
-    for rule in rules:
-        v0, v1, v2, v3 = rule.padded()
-        rows.append({"workspace_id": rule.workspace_id, "ptype": rule.ptype, "v0": v0, "v1": v1, "v2": v2, "v3": v3})
-    await session.execute(insert(CasbinRule).values(rows).on_conflict_do_nothing(constraint="uk_casbin_rule"))
+    for batch in _batches(rules):
+        rows = []
+        for rule in batch:
+            v0, v1, v2, v3 = rule.padded()
+            rows.append({"workspace_id": rule.workspace_id, "ptype": rule.ptype, "v0": v0, "v1": v1, "v2": v2,
+                         "v3": v3})
+        await session.execute(insert(CasbinRule).values(rows).on_conflict_do_nothing(constraint="uk_casbin_rule"))
 
 
 async def delete_rules(session: AsyncSession, rules: tuple[Rule, ...]) -> None:
-    if rules:
-        await session.execute(delete(CasbinRule).where(or_(*(_match(rule) for rule in rules))))
+    for batch in _batches(rules):
+        await session.execute(delete(CasbinRule).where(or_(*(_match(rule) for rule in batch))))
 
 
 async def rules_touching(session: AsyncSession, workspace_id: str, subject_key: str) -> tuple[Rule, ...]:
@@ -48,6 +58,14 @@ async def rules_touching(session: AsyncSession, workspace_id: str, subject_key: 
         CasbinRule.workspace_id == workspace_id,
         or_(CasbinRule.v0 == subject_key, and_(CasbinRule.ptype == "g", CasbinRule.v1 == subject_key)),
     )
+    return tuple(_rule_of(row) for row in (await session.scalars(stmt)).all())
+
+
+async def rules_of_users(session: AsyncSession, workspace_id: str, user_keys: tuple[str, ...]) -> tuple[Rule, ...]:
+    """这些用户在本空间的全部规则（用户只会出现在规则的第一个字段：p 的主体、g 的下级）。"""
+    if not user_keys:
+        return ()
+    stmt = select(CasbinRule).where(CasbinRule.workspace_id == workspace_id, CasbinRule.v0.in_(user_keys))
     return tuple(_rule_of(row) for row in (await session.scalars(stmt)).all())
 
 

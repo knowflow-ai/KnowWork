@@ -27,6 +27,12 @@ export default defineConfig(({ mode }) => ({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
+      // 企业微信验证可信域名的根目录校验文件，同网关（deploy/gateway/nginx.conf）
+      '^/WW_verify_[A-Za-z0-9]{1,64}\\.txt$': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        rewrite: (path) => `/api/auth/verify-files${path}`,
+      },
     },
   },
   build: {

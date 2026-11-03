@@ -38,6 +38,7 @@ class IdentityConfig:
     invitation_ttl: timedelta = timedelta(days=3)
     invite_path: str = "/invite"
     oidc_state_cookie_name: str = "kw_oidc"
+    sso_state_cookie_name: str = "kw_sso"  # 后台配的登录方式用；只发给各自的回调路径
     oidc: OidcConfig | None = None
     login_failure_window: timedelta = timedelta(minutes=15)
     login_max_failures_per_account: int = 5

@@ -12,13 +12,18 @@ from ..auth.principal import Principal
 from .api_keys import ApiKeyService
 from .config import IdentityConfig
 from .credentials import Clock, utcnow
+from .directory_accounts import DirectoryAccounts
+from .external import ExternalSignIn
 from .hooks import UserCreatedHook
 from .invitations import InvitationService
-from .oidc_client import OidcClient
-from .oidc_login import OidcLoginService
+from .methods import LoginMethods
+from .password_logins import PasswordLogins
+from .providers import LoginProviders, Sealer
 from .sessions import SessionService
+from .sso import RedirectLogins, SsoLogin
 from .throttle import InMemoryLoginThrottle, Limits, LoginThrottle
 from .users import UserService
+from .verify_files import VerifyFiles
 
 UNAUTHORIZED = "未登录或凭证无效"
 FORBIDDEN_SCOPE = "凭证的权限范围不足"
@@ -37,7 +42,22 @@ class Identity:
     invitations: InvitationService
     api_keys: ApiKeyService
     throttle: LoginThrottle
-    oidc: OidcLoginService | None
+    # 登录方式：环境变量配的 OIDC 与后台配的 OIDC、OAuth2（取用、增删改）
+    providers: LoginProviders
+    # 跳转登录的公共流程（state、PKCE、回调核对）
+    sso: SsoLogin
+    # 外部登录的最后一段（认人、签发会话），各种外部登录方式共用
+    external: ExternalSignIn
+    # 目录同步的账号部分（按人员快照建号、对上、停用、恢复），组织同步任务用
+    accounts: DirectoryAccounts
+    # 登录页显示哪些入口；扩展提供的登录方式也登记到这里
+    methods: LoginMethods
+    # 账号密码类的外部登录（域账号等），扩展按登录方式 id 登记提供方
+    password_logins: PasswordLogins
+    # 跳转类的外部登录：后台配的 OIDC、OAuth2，扩展按登录方式 id 登记的（企业微信等）
+    redirect_logins: RedirectLogins
+    # 域名根目录的校验文件（企业微信验证可信域名），扩展登记按文件名查内容的函数
+    verify_files: VerifyFiles
 
     async def get_principal(self, request: Request) -> Principal:
         """先认 Cookie 会话，再认 `Authorization: Bearer ak_...`；都不成立统一 401，不区分原因。"""
@@ -69,19 +89,22 @@ class Identity:
 
 
 def build_identity(sessionmaker: async_sessionmaker, config: IdentityConfig, *,
-                   oidc_http: httpx.AsyncClient | None = None, clock: Clock = utcnow,
+                   sso_http: httpx.AsyncClient | None = None, secrets: Sealer | None = None, clock: Clock = utcnow,
                    throttle: LoginThrottle | None = None,
                    on_user_created: UserCreatedHook | None = None) -> Identity:
-    """oidc_http 由调用方持有并负责关闭；配置了 OIDC 却没给时内部新建一个。"""
+    """sso_http：外部登录出去请求身份中台用，由调用方持有并负责关闭；没给时用到才内部新建。
+    secrets：后台登录方式的密钥加解密；没给时不能在后台保存登录方式（环境变量的 OIDC 照常可用）。"""
     sessions = SessionService(sessionmaker, ttl=config.session_ttl, sliding=config.session_sliding, clock=clock)
     link_base = config.public_base_url.rstrip("/") + config.invite_path
     invitations = InvitationService(sessionmaker, sessions, ttl=config.invitation_ttl, link_base=link_base,
                                     clock=clock, on_user_created=on_user_created)
-    oidc = None
-    if config.oidc is not None:
-        client = OidcClient(config.oidc, oidc_http or httpx.AsyncClient())
-        oidc = OidcLoginService(sessionmaker, client, sessions, invitations, clock=clock,
-                                on_user_created=on_user_created)
+    external = ExternalSignIn(sessionmaker, sessions, invitations, clock=clock, on_user_created=on_user_created)
+    providers = LoginProviders(sessionmaker, public_base_url=config.public_base_url, env_oidc=config.oidc,
+                               http=sso_http, sealer=secrets, clock=clock)
+    methods = LoginMethods()
+    methods.add(providers.login_methods)
+    redirect_logins = RedirectLogins()
+    redirect_logins.add(providers.resolve)
     limits = Limits(window_seconds=config.login_failure_window.total_seconds(),
                     per_account=config.login_max_failures_per_account, per_ip=config.login_max_failures_per_ip)
     return Identity(
@@ -91,5 +114,12 @@ def build_identity(sessionmaker: async_sessionmaker, config: IdentityConfig, *,
         invitations=invitations,
         api_keys=ApiKeyService(sessionmaker, touch_interval=config.api_key_touch_interval, clock=clock),
         throttle=throttle or InMemoryLoginThrottle(limits),
-        oidc=oidc,
+        providers=providers,
+        sso=SsoLogin(sessionmaker, external, clock=clock),
+        external=external,
+        accounts=DirectoryAccounts(sessionmaker, clock=clock),
+        methods=methods,
+        password_logins=PasswordLogins(),
+        redirect_logins=redirect_logins,
+        verify_files=VerifyFiles(),
     )

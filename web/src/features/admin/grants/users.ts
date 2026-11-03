@@ -9,22 +9,33 @@ import {
   type Department,
   type Grant,
 } from '../../../api/workspace';
+import { orgTree, type OrgNode } from '../../../api/org';
 import type { TreeSelectNode } from '../../../ui/TreeSelect';
-import { KEYS, useDepartments, useGroups, useMembers } from '../queries';
+import { KEYS, useDepartments, useGroups, useMembers, useOrgDepartments } from '../queries';
 import { useAction } from '../useAction';
 
 /** 「全体成员」：成员角色（所有者、管理员本来就有全部资源的权限）。 */
 export const EVERYONE = 'role:editor';
 
 /** 部门按层级成树：平铺时看不出下级部门属于谁，同名部门也分不清。 */
-function departmentNodes(tree: readonly Department[]): TreeSelectNode[] {
+export function departmentNodes(tree: readonly Department[]): TreeSelectNode[] {
   return tree.map((d) => ({ key: `dept:${d.id}`, label: d.name, children: departmentNodes(d.children) }));
 }
 
-/** 「给谁用」的选择树：全体成员一项，部门、用户组、成员三组（组本身不能选，只展开收起），空的组不出现。 */
+/** 组织架构里的部门（目录同步来）按层级成树；选上级即含下级。 */
+export function orgNodes(tree: readonly OrgNode[]): TreeSelectNode[] {
+  return tree.map((n) => ({
+    key: `org:${n.department.id}`,
+    label: n.department.name,
+    children: orgNodes(n.children),
+  }));
+}
+
+/** 「给谁用」的选择树：全体成员一项，组织架构、部门、用户组、成员几组（组本身不能选，只展开收起），空的组不出现。 */
 export function useSubjectTree(): readonly TreeSelectNode[] {
   const members = useMembers();
   const departments = useDepartments();
+  const orgDepartments = useOrgDepartments();
   const groups = useGroups();
   return useMemo(() => {
     const kind = (key: string, label: string, children: readonly TreeSelectNode[]): TreeSelectNode => ({
@@ -34,7 +45,8 @@ export function useSubjectTree(): readonly TreeSelectNode[] {
       children,
     });
     return [
-      { key: EVERYONE, label: '全体成员', children: [] },
+      { key: EVERYONE, label: '全体成员', coversSiblings: true, children: [] },
+      kind('kind:org', '组织架构', orgNodes(orgTree(orgDepartments.data ?? []))),
       kind('kind:dept', '部门', departmentNodes(departments.data ?? [])),
       kind(
         'kind:group',
@@ -51,7 +63,7 @@ export function useSubjectTree(): readonly TreeSelectNode[] {
         })),
       ),
     ].filter((node) => node.selectable !== false || node.children.length > 0);
-  }, [members.data, departments.data, groups.data]);
+  }, [members.data, departments.data, orgDepartments.data, groups.data]);
 }
 
 /** 一个资源现在「可用」一档给了谁（从全部授权里挑）。 */

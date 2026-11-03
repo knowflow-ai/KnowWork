@@ -5,6 +5,7 @@ import {
   Bolt,
   BookOpen,
   Chats,
+  EnterLogin,
   Groups,
   History,
   Members,
@@ -59,11 +60,12 @@ export const ADMIN_NAV: readonly NavGroup[] = [
   },
 ];
 
-/** 系统级设置，只有系统管理员（初始化时建的账号）看得到。模型与文档解析全平台共用，也在这里。 */
+/** 系统级设置，只有系统管理员（初始化时建的账号）看得到。模型与文档解析、登录方式全平台共用，也在这里。 */
 export const SYSTEM_NAV: NavGroup = {
   label: '系统',
   items: [
     { to: '/admin/models', label: '模型', icon: <Sparkle /> },
+    { to: '/admin/login-methods', label: '登录方式', icon: <EnterLogin /> },
     { to: '/admin/system', label: '系统设置', icon: <Settings /> },
     { to: '/admin/jobs', label: '运行面板', icon: <Pulse /> },
   ],

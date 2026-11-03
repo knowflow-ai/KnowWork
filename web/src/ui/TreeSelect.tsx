@@ -4,6 +4,8 @@
  * 浮层放进 portal（Radix Popover，对话框的滚动区裁不掉）；打开时焦点交给搜索框（照 Combobox 自己管，
  * 组件库 Popover 的自动聚焦放在对话框里会被焦点陷阱拉回）。分组节点（selectable: false）只用来展开收起。
  * multiple 时可以选多个（「给谁用」挑部门、用户组、成员）：点一下选上或取消、浮层不收，框里列出选中项的名字。
+ * 选上级即含下级：选了上级，下级显示「已包含」、不能再单独选；先选了下级再选上级，下级从已选里去掉。
+ * 「全部知识库」这类项（coversSiblings）同理包含同组的其他项。
  */
 import { useRef, useState, type ReactNode } from 'react';
 import { Popover } from 'radix-ui';
@@ -20,6 +22,8 @@ export interface TreeSelectNode {
   readonly selectable?: boolean;
   /** 名字前面的类型图标（目录、知识库……），只在树里显示；搜索与选中后的路径只用 label */
   readonly icon?: ReactNode;
+  /** 「全部知识库」「全部工具」「全体成员」：选它就包含同组的其他项（及其下级） */
+  readonly coversSiblings?: boolean;
 }
 
 interface Common {
@@ -78,6 +82,43 @@ export function pathOf(nodes: readonly TreeSelectNode[], key: string): string | 
   return undefined;
 }
 
+/** 下级里能选的项（分组本身只展开收起，不算）。 */
+function descendants(node: TreeSelectNode, into: Set<string>): void {
+  for (const child of node.children) {
+    if (child.selectable !== false) into.add(child.key);
+    descendants(child, into);
+  }
+}
+
+/** 已选项包含了的节点：已选项的下级；选了「全部…」（coversSiblings）的，同组的其他项及其下级。 */
+export function coveredBy(nodes: readonly TreeSelectNode[], selected: readonly string[]): Set<string> {
+  const chosen = new Set(selected);
+  const covered = new Set<string>();
+  const walk = (siblings: readonly TreeSelectNode[]) => {
+    const all = siblings.some((node) => node.coversSiblings && chosen.has(node.key));
+    for (const node of siblings) {
+      if (all && !(node.coversSiblings && chosen.has(node.key))) {
+        if (node.selectable !== false) covered.add(node.key);
+        descendants(node, covered);
+      } else if (chosen.has(node.key)) {
+        descendants(node, covered);
+      } else {
+        walk(node.children);
+      }
+    }
+  };
+  walk(nodes);
+  return covered;
+}
+
+/** 多选点一下：已选的取消；没选的选上，并去掉被它包含了的已选项。 */
+export function toggleKey(nodes: readonly TreeSelectNode[], value: readonly string[], key: string): string[] {
+  if (value.includes(key)) return value.filter((k) => k !== key);
+  const next = [...value, key];
+  const covered = coveredBy(nodes, next);
+  return next.filter((k) => !covered.has(k));
+}
+
 function toTree(nodes: readonly TreeSelectNode[]): readonly TreeNode[] {
   return nodes.map((node) => ({
     key: node.key,
@@ -120,8 +161,7 @@ export function TreeSelect(props: Props) {
       toggle(false);
       return;
     }
-    const chosen = props.value.includes(key);
-    props.onChange(chosen ? props.value.filter((k) => k !== key) : [...props.value, key]);
+    props.onChange(toggleKey(nodes, props.value, key));
   };
   return (
     <Popover.Root open={open} onOpenChange={toggle}>
@@ -169,6 +209,7 @@ export function TreeSelect(props: Props) {
               nodes={toTree(shown)}
               selected={props.value}
               multiple={props.multiple}
+              covered={props.multiple ? coveredBy(nodes, props.value) : undefined}
               onSelect={pick}
             />
           )}

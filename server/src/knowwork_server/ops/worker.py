@@ -21,11 +21,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from ..access.models import Workspace
+from ..access.service import AccessService
 from ..attachments import Attachments, build_attachments
 from ..config import Settings, get_settings
 from ..db.base import make_engine, make_sessionmaker, make_workspace_sessionmaker
 from ..docparse import DocumentParsers
 from ..extensions import Extensions, WorkerContext, installed_extensions
+from ..identity.directory_accounts import DirectoryAccounts
 from ..jobs import JobRunner, listen
 from ..jobs.gate import build_gate
 from ..jobs.heartbeat import Heartbeat
@@ -35,6 +37,7 @@ from ..models import ModelClient, catalog_for_worker
 from ..sandbox import SandboxModule, SandboxSettings, build_sandbox
 from ..sandbox.unavailable import UnavailableSandbox
 from ..storage import namespaced_stores, session_stores
+from . import logredact
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +113,8 @@ def build_worker(settings: Settings, jobs: JobSettings | None = None, *,
     AnswerChecker(scoped, models).register(runner)
     context = WorkerContext(settings=settings, engine=engine, sessionmaker=scoped, runner=runner, stores=stores,
                             sandbox=session_sandbox, models=models, gate=gate, mineru=attachments.mineru,
-                            stores_for=lambda namespace: namespaced_stores(settings, namespace))
+                            stores_for=lambda namespace: namespaced_stores(settings, namespace),
+                            access=AccessService(plain, mirror=False), accounts=DirectoryAccounts(plain))
     extensions = _setup_extensions(extensions or installed_extensions(), context)
     heartbeat = Heartbeat(plain, runner, gate, version=settings.version)  # 心跳表不分空间
     return Worker(engine=engine, sessionmaker=plain, runner=runner, attachments=attachments, sandbox=sandbox, settings=jobs,
@@ -146,6 +150,7 @@ async def run(stop: asyncio.Event | None = None) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logredact.install()
     asyncio.run(run())
 
 

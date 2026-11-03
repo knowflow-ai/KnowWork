@@ -23,7 +23,7 @@ MAX_QUERY_LENGTH = 100
 @dataclass(frozen=True)
 class UserInfo:
     id: str
-    email: str
+    email: str | None  # 目录来的人可能没有邮箱
     name: str
     status: str
     kind: str = USER_PERSON
@@ -53,11 +53,14 @@ def check_password_policy(password: str) -> None:
         raise InvalidInput(f"密码长度需在 {MIN_PASSWORD_LENGTH} 到 {MAX_PASSWORD_LENGTH} 之间")
 
 
-async def insert_user(session: AsyncSession, *, email: str, name: str, password: str | None) -> User:
-    """在调用方的事务里建号（邀请注册、OIDC 首次登录共用）。"""
+async def insert_user(session: AsyncSession, *, email: str | None, name: str, password: str | None) -> User:
+    """在调用方的事务里建号（邀请注册、外部登录首次登录共用）。没有邮箱的账号只能用外部登录，不能设密码。"""
     if password is not None:
+        if email is None:
+            raise InvalidInput("没有邮箱的账号不能设密码")
         check_password_policy(password)
-    user = User(id=new_id(), email=normalize_email(email), name=name.strip()[:200], status=USER_ACTIVE,
+    user = User(id=new_id(), email=normalize_email(email) if email is not None else None, name=name.strip()[:200],
+                status=USER_ACTIVE,
                 password_hash=hash_password(password) if password is not None else None)
     session.add(user)
     try:
@@ -130,14 +133,16 @@ class UserService:
                 user.password_hash = hash_password(password)
             return to_info(user)
 
-    async def set_disabled(self, user_id: str, disabled: bool) -> bool:
-        """禁用时吊销该用户全部浏览器会话；API Key 在解析时按用户状态拒绝，重新启用后恢复可用。"""
+    async def set_disabled(self, user_id: str, disabled: bool, *, by: str = "manual") -> bool:
+        """禁用时吊销该用户全部浏览器会话；API Key 在解析时按用户状态拒绝，重新启用后恢复可用。
+        by 记下是谁停用的（manual 管理员，directory 组织同步），启用时清掉。"""
         now: datetime = self._clock()
         async with self._sessionmaker() as session, session.begin():
             user = await session.get(User, user_id, with_for_update=True)
             if user is None:
                 return False
             user.status = USER_DISABLED if disabled else USER_ACTIVE
+            user.disabled_by = by if disabled else None
             if disabled:
                 await session.execute(update(AuthSession)
                                       .where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))

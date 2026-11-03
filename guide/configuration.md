@@ -12,13 +12,28 @@
 |---|---|---|
 | `KNOWWORK_PORT` | `8080` | 网关对外端口 |
 | `KNOWWORK_BIND_ADDRESS` | `0.0.0.0` | 只想本机访问时改成 `127.0.0.1` |
-| `KNOWWORK_PUBLIC_BASE_URL` | 本机 IP 加端口 | 浏览器访问的外部地址，邀请链接、OIDC 回调、MCP OAuth 授权的回调都据此拼出 |
+| `KNOWWORK_PUBLIC_BASE_URL` | 本机 IP 加端口 | 浏览器访问的外部地址，邀请链接、单点登录（OIDC、OAuth2）与 MCP OAuth 授权的回调都据此拼出 |
 | `KNOWWORK_COOKIE_SECURE` | `false` | 配好 HTTPS 后改成 `true`；用 http 访问时必须是 `false`，否则登录不了 |
 
-## 单点登录（OIDC）
+## 单点登录（OIDC、OAuth2）
 
-`KNOWWORK_OIDC_ISSUER` 留空即不启用。启用时同时填 `KNOWWORK_OIDC_CLIENT_ID`、`KNOWWORK_OIDC_CLIENT_SECRET`、
-`KNOWWORK_OIDC_REDIRECT_URI`，回调地址是 `<访问地址>/api/auth/oidc/callback`。
+在「管理后台 → 登录方式」里添加（只有系统管理员能改），可以配多个，登录页按启用的方式各显示一个按钮：
+
+- **OIDC**：Keycloak、Azure AD、Okta、Authing 等身份中台。填发行方地址（和对方发现文档里的 issuer 一字不差）、客户端 ID 与密钥；
+- **OAuth2**：没有 OIDC、要拿访问令牌调对方用户信息接口的统一认证。填授权、令牌、用户信息三个地址，客户端 ID 与密钥，
+  以及用户信息里 ID、姓名、邮箱的字段路径（如 `data.user.id`）；客户端凭证放 Basic 头还是表单、令牌放请求头还是查询参数、
+  要不要 PKCE，按对方文档选。
+
+保存后页面上会给出回调地址（`<访问地址>/api/auth/sso/<id>/callback`），登记到对方才能登录。地址必须是 https（本机地址除外），
+客户端密钥加密存在库里，保存后不再显示明文。
+
+谁能登录：默认只允许已经在系统里的人（含被邀请的），可以改成首次登录自动建号。认人的规则：用这个方式登录过的按对方的用户 ID 认；
+第一次登录按邮箱对上已有账号，但只认可信的邮箱（OIDC 要对方说明邮箱已验证；OAuth2 要管理员确认邮箱由企业统一分配后打开「邮箱可信」），
+否则不按邮箱对人，免得有人在自己的身份中台里填别人的邮箱登进别人的账号。
+
+也可以照旧用环境变量配一个 OIDC：`KNOWWORK_OIDC_ISSUER` 留空即不启用，启用时同时填 `KNOWWORK_OIDC_CLIENT_ID`、
+`KNOWWORK_OIDC_CLIENT_SECRET`、`KNOWWORK_OIDC_REDIRECT_URI`，回调地址是 `<访问地址>/api/auth/oidc/callback`。
+它在「登录方式」里显示为只读的「企业账号」，要改就改环境变量。
 
 ## 模型
 

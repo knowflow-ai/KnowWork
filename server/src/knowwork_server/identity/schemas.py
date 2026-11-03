@@ -17,6 +17,13 @@ class LoginBody(_Strict):
     password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
 
 
+class DirectoryLoginBody(_Strict):
+    # 域账号：sAMAccountName、UPN（user@domain）或 uid
+    username: str = Field(min_length=1, max_length=256)
+    # 空密码在 LDAP 里会被当成匿名绑定而「成功」，这里先挡掉（提供方也会再挡）
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
 class InviteBody(_Strict):
     email: str = Field(min_length=3, max_length=320)
     # 邀请只能定成员或管理员；所有者由现任所有者在成员页任命（同空间角色的规矩）

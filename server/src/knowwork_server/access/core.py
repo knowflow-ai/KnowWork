@@ -1,12 +1,20 @@
-"""服务的公共部分：事务（设置行级安全变量、收集规则变更、提交后回放）、调用者授权、判定。"""
+"""服务的公共部分：事务（设置行级安全变量、收集规则变更、提交后回放）、调用者授权、判定、跨进程刷新。
 
+判定器是每个进程内存里的镜像。本进程写的规则提交后增量回放；别的进程（worker 里的组织同步、删知识库的任务，
+多开的业务服务）写的，靠数据库通知：写规则的事务里 NOTIFY kw_policy（随提交送达、回滚就不发），
+follow_changes 收到别的进程发的就整体重新加载。
+"""
+
+import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from ..db.listen import listen
 from . import store
 from .engine import NOTHING_VISIBLE, PolicyEngine, VisibleSet
 from .errors import AccessDenied, NotFound
@@ -30,6 +38,18 @@ log = logging.getLogger(__name__)
 
 # 移出成员时扩展清理这个人在本空间的数据：(会话, 空间, 用户)，在移出的同一个事务里调用（会话已声明这个空间）
 MemberRemoved = Callable[[AsyncSession, str, str], Awaitable[None]]
+POLICY_CHANNEL = "kw_policy"
+# 一次改动超过这么多条规则就整体重载，不逐条回放（逐条加 p 规则每条都要扫一遍，上万条时比整体重载慢得多）
+APPLY_LIMIT = 2000
+# 收到通知后等这么久再重载，把一阵连发的通知（一次同步改好几个空间）合成一次
+RELOAD_DEBOUNCE_SECONDS = 0.2
+# 跟着别的进程重新加载失败（数据库抖了一下）时隔这么久再试：失败后判定器是「全部拒绝」，不能等到下一次有人改权限
+RELOAD_RETRY_SECONDS = 5.0
+
+
+async def notify_policy_change(session: AsyncSession, origin: str) -> None:
+    """在写规则的事务里调用：提交时通知别的进程重新加载（回滚则不发）。"""
+    await session.execute(text("SELECT pg_notify(:channel, :origin)"), {"channel": POLICY_CHANNEL, "origin": origin})
 
 
 class Tx:
@@ -49,10 +69,36 @@ class Tx:
         self.change = self.change.merge(RuleChange(removed=rules))
 
 
+class MultiTx:
+    """跨多个空间的一个写事务（企业组织同步：组织表是全系统的，规则要写进每个空间）。
+    workspace() 切到某个空间再写它的规则（行级安全按当前空间判），各空间依次处理，切走后不再用前一个的 Tx。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self._txs: list[Tx] = []
+
+    async def workspace(self, workspace_id: str) -> Tx:
+        await set_workspace(self.session, workspace_id)
+        tx = Tx(self.session, workspace_id)
+        self._txs.append(tx)
+        return tx
+
+    @property
+    def change(self) -> RuleChange:
+        merged = RuleChange()
+        for tx in self._txs:
+            merged = merged.merge(tx.change)
+        return merged
+
+
 class AccessCore:
-    def __init__(self, sessionmaker: async_sessionmaker, engine: PolicyEngine | None = None) -> None:
+    def __init__(self, sessionmaker: async_sessionmaker, engine: PolicyEngine | None = None, *,
+                 mirror: bool = True) -> None:
+        """mirror=False：只写库、不在内存里维护判定器（worker：它不判定，写完由通知让业务服务重新加载）。"""
         self._sessionmaker = sessionmaker
         self._engine = engine or PolicyEngine()
+        self._mirror = mirror
+        self._origin = uuid.uuid4().hex  # 本进程发的通知自己不用重载
         self._hierarchy: ResourceHierarchy = NO_HIERARCHY
         # 系统管理员（初始化向导建的那一个账号）：在任何空间里都按所有者处理，不必是成员。
         # 由应用在启动时、初始化完成时告诉这里（权限模块不去查初始化记录，免得和 setup 互相依赖）
@@ -113,7 +159,18 @@ class AccessCore:
             await set_workspace(session, workspace_id)
             tx = Tx(session, workspace_id)
             yield tx
+            if not tx.change.empty:
+                await notify_policy_change(session, self._origin)
         await self._after_commit(tx.change)
+
+    @asynccontextmanager
+    async def _tx_all(self) -> AsyncIterator[MultiTx]:
+        async with self._sessionmaker() as session, session.begin():
+            multi = MultiTx(session)
+            yield multi
+            if not multi.change.empty:
+                await notify_policy_change(session, self._origin)
+        await self._after_commit(multi.change)
 
     @asynccontextmanager
     async def _read(self, workspace_id: str) -> AsyncIterator[AsyncSession]:
@@ -122,11 +179,46 @@ class AccessCore:
             yield session
 
     async def _after_commit(self, change: RuleChange) -> None:
+        if change.empty or not self._mirror:
+            return
+        if len(change.added) + len(change.removed) > APPLY_LIMIT:
+            await self.reload()
+            return
         try:
             self._engine.apply(change)
         except Exception:
             log.exception("applying policy change failed; reloading")
             await self.reload()
+
+    async def follow_changes(self, engine: AsyncEngine, stop: asyncio.Event, *,
+                             ready: asyncio.Event | None = None, retry_seconds: float = RELOAD_RETRY_SECONDS) -> None:
+        """跟着别的进程改的规则走：收到它们的通知就整体重新加载（合并一阵连发的）。每次（重新）连上也加载一次，
+        补上断开期间漏掉的通知；加载失败隔几秒再试，直到成功。stop 置位后返回。业务服务进程启动时开着它；
+        worker 不判定，不用开。"""
+        pending = asyncio.Event()
+
+        def on_message(origin: str) -> None:
+            if origin != self._origin:
+                pending.set()
+
+        async def reloader() -> None:
+            while not stop.is_set():
+                await pending.wait()
+                await asyncio.sleep(RELOAD_DEBOUNCE_SECONDS)
+                pending.clear()
+                if not await self.reload():
+                    await asyncio.sleep(retry_seconds)
+                    pending.set()
+
+        task = asyncio.create_task(reloader())
+        try:
+            await listen(engine, POLICY_CHANNEL, on_message, stop, ready=ready, on_connected=pending.set)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     def _require(self, actor_id: str, workspace_id: str, action: Action) -> None:
         if workspace_id in self._closed:

@@ -14,7 +14,9 @@ from joserfc.errors import JoseError
 from joserfc.jwk import KeySet
 
 from .config import OidcConfig
+from .credentials import digest, same
 from .errors import OidcFailure
+from .external import ExternalProfile
 
 METADATA_TTL_SECONDS = 3600
 
@@ -119,3 +121,25 @@ class OidcClient:
             except ValueError as error:
                 raise OidcFailure("ID Token 格式不正确") from error
         raise OidcFailure("ID Token 签名校验失败") from last_error
+
+
+class OidcRedirect:
+    """把 OIDC 套进跳转登录的公共流程（sso.py）：换令牌、校验 id_token 与 nonce，给出外部身份（身份域 = 发行方）。"""
+
+    def __init__(self, client: OidcClient) -> None:
+        self._client = client
+
+    async def authorization_url(self, *, state: str, nonce: str, code_verifier: str, in_client: bool = False) -> str:
+        return await self._client.authorization_url(state=state, nonce=nonce, code_verifier=code_verifier)
+
+    async def profile(self, *, code: str, code_verifier: str, nonce_hash: str) -> ExternalProfile:
+        id_token = await self._client.exchange_code(code=code, code_verifier=code_verifier)
+        claims = await self._client.validate_id_token(id_token)
+        if not same(digest(str(claims["nonce"])), nonce_hash):
+            raise OidcFailure("nonce 不匹配")
+        config = self._client.config
+        email, name = claims.get("email"), claims.get("name")
+        return ExternalProfile(realm=config.issuer, subject=str(claims["sub"]),
+                               name=name if isinstance(name, str) else "",
+                               email=email if isinstance(email, str) else None,
+                               email_trusted=claims.get("email_verified") is True or config.trust_unverified_email)

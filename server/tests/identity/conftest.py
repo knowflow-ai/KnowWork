@@ -13,7 +13,7 @@ from knowwork_server.db.base import Base, make_engine, make_sessionmaker
 from knowwork_server.identity import IdentityConfig, build_identity
 from knowwork_server.identity.api import build_router
 
-IDENTITY_TABLES = '"user", auth_session, auth_invitation, api_key, oidc_login_state, oidc_identity'
+IDENTITY_TABLES = '"user", auth_session, auth_invitation, api_key, login_state, external_identity, login_provider'
 BASE_URL = "https://kw.test"
 PASSWORD = "correct horse battery"
 

@@ -33,7 +33,7 @@ export function UserPicker({ id, onChange, exclude, invalid }: Props) {
   });
   const options = (result.data ?? [])
     .filter((user) => !exclude.has(user.id))
-    .map((user) => ({ value: user.id, label: `${user.name}（${user.email}）` }));
+    .map((user) => ({ value: user.id, label: user.email ? `${user.name}（${user.email}）` : user.name }));
   return (
     <Combobox
       id={id}

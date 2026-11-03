@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from . import org_links
 from . import rules as R
 from .core import AccessCore
 from .errors import AccessDenied, Conflict, NotFound
@@ -54,6 +55,7 @@ class WorkspacesMixin(AccessCore):
                 await tx.session.flush()
                 await tx.add_rules(*R.default_role_policies(workspace_id),
                                    R.member_role(owner_user_id, Role.OWNER, workspace_id))
+                await org_links.sync_workspace(tx)  # 企业组织的部门树（与所有者所属的部门）
         except IntegrityError as error:
             raise Conflict("工作空间已存在") from error
 

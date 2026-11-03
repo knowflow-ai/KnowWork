@@ -1,27 +1,31 @@
-"""身份的公开接口：登录登出、当前用户、邀请注册、API Key、OIDC 单点登录。
+"""身份的公开接口：登录登出、当前用户、登录方式列表、邀请注册、API Key、单点登录（OIDC、OAuth2）。
 
 邀请与查找账号按工作空间（/api/workspaces/{ws}/invitations、/api/workspaces/{ws}/users），
 「是不是这个空间的管理员」由调用方注入（身份模块不认识空间）；默认谁都不是。
 """
 
 import inspect
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
+from fastapi.responses import PlainTextResponse
 
 from ..audit.context import annotate
 from ..auth.principal import Principal
 from .container import Identity, unauthorized
-from .errors import EmailTaken, InvalidInput, InvalidInvitation, NotAllowed
+from .errors import EmailTaken, InvalidInput, InvalidInvitation, NotAllowed, SsoFailure
 from .hooks import Placement
-from .oidc_routes import add_oidc_routes
-from .schemas import AcceptInviteBody, CreateApiKeyBody, InviteBody, LoginBody, api_key_view
+from .schemas import AcceptInviteBody, CreateApiKeyBody, DirectoryLoginBody, InviteBody, LoginBody, api_key_view
 from .sessions import IssuedSession
+from .sso_routes import add_sso_routes
 from .throttle import account_key, ip_key
 from .users import MAX_QUERY_LENGTH, MAX_SEARCH_LIMIT
 
+log = logging.getLogger(__name__)
 LOGIN_FAILED = "邮箱或密码错误"
+DIRECTORY_LOGIN_FAILED = "账号或密码错误"
 TOO_MANY_ATTEMPTS = "尝试次数过多，请稍后再试"
 
 # 调用者在某个工作空间里是否满足要求：管理员（邀请、查找账号），或成员（把新 Key 绑定到这个空间）。
@@ -81,6 +85,34 @@ def build_router(identity: Identity, *, is_admin: WorkspaceCheck = _no_workspace
         annotate(actor_id=user.id, resource_id=user.id)
         set_session_cookie(response, identity, await identity.sessions.create(user.id))
         return _user_view(user)
+
+    @router.post("/password/{method_id}")
+    async def directory_login(method_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_.\-]{1,64}$")],
+                              body: DirectoryLoginBody, request: Request, response: Response):
+        """域账号登录
+
+        账号密码类的外部登录（LDAP / AD 等，由扩展提供）。失败一律「账号或密码错误」，按（登录方式 + 账号）与 IP 限流。
+        """
+        account = f"{method_id}:{body.username.strip().lower()}"
+        keys = (account_key(account), ip_key(_client_ip(request)))
+        annotate(account=account[:320])
+        if identity.throttle.blocked(keys):
+            raise HTTPException(status_code=429, detail=TOO_MANY_ATTEMPTS)
+        try:
+            provider = await identity.password_logins.resolve(method_id)
+            if provider is None:
+                raise HTTPException(status_code=404, detail="没有这个登录方式")
+            profile = await provider.verify(body.username.strip(), body.password)
+            issued = await identity.external.sign_in(profile, method=provider.kind, allow_signup=provider.allow_signup)
+        except SsoFailure as error:
+            identity.throttle.record_failure(keys)
+            log.info("directory login rejected for %s: %s", method_id, error)
+            raise HTTPException(status_code=401, detail=DIRECTORY_LOGIN_FAILED) from error
+        identity.throttle.reset(keys[:1])
+        annotate(actor_id=issued.user_id, resource_id=issued.user_id)
+        set_session_cookie(response, identity, issued)
+        user = await identity.users.get(issued.user_id)
+        return _user_view(user) if user else {"id": issued.user_id, "email": None, "name": ""}
 
     @router.post("/logout", status_code=204)
     async def logout(request: Request, response: Response):
@@ -176,7 +208,27 @@ def build_router(identity: Identity, *, is_admin: WorkspaceCheck = _no_workspace
             raise HTTPException(status_code=403, detail="无权查找用户")
         return [_user_view(user) for user in await identity.users.search(q, limit=limit)]
 
-    add_oidc_routes(router, identity, set_session_cookie)
+    @router.get("/methods")
+    async def login_methods():
+        """可用的登录方式
+
+        登录页按它显示入口：账号密码，以及单点登录、域账号、企业微信等外部登录方式。不用登录就能取。
+        """
+        return {"password": True, "methods": [method.view() for method in await identity.methods.list()]}
+
+    @router.get("/verify-files/{name}", response_class=PlainTextResponse)
+    async def verify_file(name: Annotated[str, Path(max_length=100)]):
+        """取域名校验文件
+
+        企业微信等平台验证可信域名时访问域名根目录下的校验文件（WW_verify_xxx.txt），网关转到这里；
+        内容在管理后台上传。不用登录就能取。
+        """
+        content = await identity.verify_files.find(name)
+        if content is None:
+            raise HTTPException(status_code=404, detail="没有这个文件")
+        return PlainTextResponse(content)
+
+    add_sso_routes(router, identity, set_session_cookie)
     combined = APIRouter()
     combined.include_router(router)
     combined.include_router(workspace)

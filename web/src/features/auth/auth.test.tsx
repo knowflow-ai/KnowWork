@@ -3,6 +3,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '../../test/user';
 import { jsonResponse, ME, renderWithApp, routeFetch, testClient } from '../../test/render';
 import LoginPage from './LoginPage';
+import { inClientTarget, navigation } from './inClient';
 import { safeRedirect } from './redirect';
 import InvitePage from './InvitePage';
 import SetupPage from './SetupPage';
@@ -10,6 +11,7 @@ import { RequireAuth } from './RequireAuth';
 import { RequireAdmin } from './RequireAdmin';
 import { useSessionStore } from '../../stores/session';
 import { ME_KEY } from './queries';
+import type { LoginMethod } from '../../api/auth';
 import type { WorkspaceSummary } from '../../api/workspace';
 import { pickWorkspace, useWorkspaceStore } from '../../stores/workspace';
 
@@ -17,12 +19,23 @@ const DEFAULT_WS: WorkspaceSummary = { id: 'default', name: '默认空间', role
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  window.sessionStorage.clear();
   useSessionStore.getState().reset();
 });
 
+const NO_METHODS = { password: true, methods: [] };
 const initialized = {
   'GET /api/setup': jsonResponse({ initialized: true }),
-  'GET /api/auth/oidc/login': jsonResponse({ detail: '未启用单点登录' }, 404),
+  'GET /api/auth/methods': jsonResponse(NO_METHODS),
+};
+const OIDC_METHOD = {
+  id: 'oidc',
+  kind: 'oidc',
+  label: '企业账号',
+  style: 'redirect',
+  url: '/api/auth/oidc/login',
+  inClientAgents: [],
 };
 
 async function fillLogin(email: string, password: string) {
@@ -72,26 +85,145 @@ describe('LoginPage', () => {
     expect(api.find('POST', '/api/auth/login')).toHaveLength(0);
   });
 
-  it('配了单点登录时显示企业账号入口', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) =>
-        url === '/api/setup'
-          ? jsonResponse({ initialized: true })
-          : ({ type: 'opaqueredirect', status: 0 } as Response),
-      ),
-    );
+  it('按服务端给的登录方式显示入口', async () => {
+    const wecom = {
+      ...OIDC_METHOD,
+      id: 'wx',
+      kind: 'wecom',
+      label: '企业微信',
+      url: '/api/auth/sso/wx/login',
+    };
+    const ad = {
+      ...OIDC_METHOD,
+      id: 'ad',
+      kind: 'ldap',
+      label: '域账号',
+      style: 'password',
+      url: '/api/auth/password/ad',
+    };
+    routeFetch({
+      ...initialized,
+      'GET /api/auth/methods': jsonResponse({ password: true, methods: [OIDC_METHOD, wecom, ad] }),
+    });
     renderWithApp(<LoginPage />, { route: '/login', path: '/login' });
     expect(await screen.findByRole('link', { name: '使用企业账号登录' })).toHaveAttribute(
       'href',
       '/api/auth/oidc/login',
     );
+    expect(screen.getByRole('link', { name: '使用企业微信登录' })).toHaveAttribute(
+      'href',
+      '/api/auth/sso/wx/login',
+    );
+    // 账号密码类（域账号）的入口随域账号登录一起做，现在不显示成跳转链接
+    expect(screen.queryByRole('link', { name: '使用域账号登录' })).not.toBeInTheDocument();
+  });
+
+  it('在企业微信里打开：直接走企业微信的免登', async () => {
+    const wecom = {
+      ...OIDC_METHOD,
+      id: 'ds_wx',
+      kind: 'wecom',
+      label: '企业微信',
+      url: '/api/auth/sso/ds_wx/login',
+      inClientAgents: ['wxwork'],
+    };
+    routeFetch({
+      ...initialized,
+      'GET /api/auth/methods': jsonResponse({ password: true, methods: [OIDC_METHOD, wecom] }),
+    });
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 wxwork/4.1.30 MicroMessenger/7.0.1');
+    const go = vi.spyOn(navigation, 'go').mockImplementation(() => undefined);
+    renderWithApp(<LoginPage />, { route: '/login', path: '/login' });
+    await waitFor(() => expect(go).toHaveBeenCalledWith('/api/auth/sso/ds_wx/login?in_client=1'));
+  });
+
+  it('自动免登一分钟内只跳一次，?local=1 不跳', () => {
+    const oidc: LoginMethod = { ...OIDC_METHOD, style: 'redirect' };
+    const wecom: LoginMethod = {
+      ...oidc,
+      id: 'ds_wx',
+      kind: 'wecom',
+      label: '企业微信',
+      url: '/api/auth/sso/ds_wx/login',
+      inClientAgents: ['wxwork'],
+    };
+    const ua = 'Mozilla/5.0 wxwork/4.1.30';
+    expect(inClientTarget([oidc, wecom], 'Mozilla/5.0 Chrome/130', '', 0)).toBeNull();
+    expect(inClientTarget([wecom], ua, '?local=1', 0)).toBeNull();
+    expect(inClientTarget([wecom], ua, '', 1_000)).toBe('/api/auth/sso/ds_wx/login?in_client=1');
+    expect(inClientTarget([wecom], ua, '', 30_000)).toBeNull();
+    expect(inClientTarget([wecom], ua, '', 70_000)).not.toBeNull();
+  });
+
+  it('开了域账号登录：切到域账号，用账号密码登录', async () => {
+    const ad = {
+      ...OIDC_METHOD,
+      id: 'ad',
+      kind: 'ldap',
+      label: '集团域账号',
+      style: 'password',
+      url: '/api/auth/password/ad',
+    };
+    const api = routeFetch({
+      ...initialized,
+      'GET /api/auth/methods': jsonResponse({ password: true, methods: [ad] }),
+      'POST /api/auth/password/ad': jsonResponse({ id: 'u', email: null, name: '张三' }),
+    });
+    const client = testClient();
+    renderWithApp(<LoginPage />, {
+      route: '/login',
+      path: '/login',
+      client,
+      extraRoutes: { '/chat': <div>对话页</div> },
+    });
+    await userEvent.click(await screen.findByRole('radio', { name: '集团域账号' }));
+    expect(screen.getByText('使用集团域账号登录')).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('账号'), 'zhangsan');
+    await userEvent.type(screen.getByLabelText('密码'), 'Corp-Pass-1');
+    await userEvent.click(screen.getByRole('button', { name: '登录' }));
+    expect(await screen.findByText('对话页')).toBeInTheDocument();
+    expect(api.find('POST', '/api/auth/password/ad')[0]?.body).toEqual({
+      username: 'zhangsan',
+      password: 'Corp-Pass-1',
+    });
+    expect(client.getQueryData(ME_KEY)).toMatchObject({ id: 'u', email: null });
+  });
+
+  it('域账号密码不对时说清楚', async () => {
+    const ad = {
+      ...OIDC_METHOD,
+      id: 'ad',
+      kind: 'ldap',
+      label: '域账号',
+      style: 'password',
+      url: '/api/auth/password/ad',
+    };
+    routeFetch({
+      ...initialized,
+      'GET /api/auth/methods': jsonResponse({ password: true, methods: [ad] }),
+      'POST /api/auth/password/ad': jsonResponse({ detail: '账号或密码错误' }, 401),
+    });
+    renderWithApp(<LoginPage />, { route: '/login', path: '/login' });
+    await userEvent.click(await screen.findByRole('radio', { name: '域账号' }));
+    await userEvent.click(screen.getByRole('button', { name: '登录' }));
+    expect(await screen.findAllByText('请输入账号')).not.toHaveLength(0);
+    await userEvent.type(screen.getByLabelText('账号'), 'zhangsan');
+    await userEvent.type(screen.getByLabelText('密码'), 'nope');
+    await userEvent.click(screen.getByRole('button', { name: '登录' }));
+    expect(await screen.findByText('账号或密码不正确')).toBeInTheDocument();
+  });
+
+  it('取不到登录方式时照常能用账号密码登录', async () => {
+    routeFetch({ ...initialized, 'GET /api/auth/methods': jsonResponse({ detail: 'x' }, 500) });
+    renderWithApp(<LoginPage />, { route: '/login', path: '/login' });
+    expect(await screen.findByLabelText('邮箱')).toBeInTheDocument();
+    expect(screen.queryByText('或')).not.toBeInTheDocument();
   });
 
   it('系统未初始化时转去初始化向导', async () => {
     routeFetch({
       'GET /api/setup': jsonResponse({ initialized: false }),
-      'GET /api/auth/oidc/login': jsonResponse({}, 404),
+      'GET /api/auth/methods': jsonResponse(NO_METHODS),
     });
     renderWithApp(<LoginPage />, {
       route: '/login',

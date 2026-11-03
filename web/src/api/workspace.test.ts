@@ -14,14 +14,17 @@ describe('成员', () => {
         { user_id: 'u1', role: 'owner', name: '李雷', email: 'li@corp.cn' },
         { user_id: 'u2', role: 'editor', kind: 'channel' },
         { user_id: 'u3', role: 'god' },
+        { user_id: 'u4', role: 'editor', name: '孙七', email: null, origin: 'rule' },
       ]),
     });
     const members = await ws.listMembers();
     expect(members).toEqual([
-      { userId: 'u1', role: 'owner', name: '李雷', email: 'li@corp.cn', kind: 'person' },
-      { userId: 'u2', role: 'editor', name: null, email: null, kind: 'channel' },
+      { userId: 'u1', role: 'owner', name: '李雷', email: 'li@corp.cn', kind: 'person', origin: 'manual' },
+      { userId: 'u2', role: 'editor', name: null, email: null, kind: 'channel', origin: 'manual' },
+      // 按成员规则从组织架构加进来的
+      { userId: 'u4', role: 'editor', name: '孙七', email: null, kind: 'person', origin: 'rule' },
     ]);
-    expect(members.map(ws.memberLabel)).toEqual(['李雷', 'u2']);
+    expect(members.map(ws.memberLabel)).toEqual(['李雷', 'u2', '孙七']);
     expect(ws.memberLabel({ userId: 'u', name: null, email: 'e@x.cn' })).toBe('e@x.cn');
     expect(ws.roleLabel('admin')).toBe('管理员');
     expect(ws.roleLabel('x')).toBe('x');

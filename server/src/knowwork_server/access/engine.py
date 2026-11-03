@@ -41,6 +41,9 @@ m = r.dom == p.dom && keyMatch(r.obj, p.obj) && actImplies(r.act, p.act) && g(r.
 
 # FastModel 的索引键：p 规则的第 1、2 个字段，即域与资源
 _INDEX_ORDER = (1, 2)
+# 角色链最多走几层（用户 → 部门 → 上级部门 → ……）。Casbin 默认 10 层，企业目录常常更深；只在真有这么深的链时才多走，
+# 判定的成本不变。企业组织的深度上限（enterprise.MAX_ORG_DEPTH）按它留了余量
+MAX_ROLE_CHAIN = 32
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,8 @@ def _new_enforcer(rules: Iterable[Rule]) -> casbin.Enforcer:
     # 带域角色管理器默认装了一个「名字相等」的匹配函数，语义上与不装相同，但它让每次 add_link
     # 都扫一遍全部角色（O(n²)），1000 条 g 规则时首次判定要 0.8 秒。主体名不用模式匹配，去掉它。
     enforcer.get_role_manager().matching_func = None
+    # 各域的角色管理器按这个值新建（DomainManager 里），要在加规则之前设
+    enforcer.get_role_manager().max_hierarchy_level = MAX_ROLE_CHAIN
     unique = dict.fromkeys(rules)  # 去重且保序；批量接口遇到重复会整批失败
     links = [r for r in unique if r.ptype == "g"]
     _add_batch(enforcer, [r for r in unique if r.ptype == "p"], links)

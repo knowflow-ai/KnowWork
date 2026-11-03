@@ -1,5 +1,6 @@
 """服务端浏览器会话：可吊销、可过期、可选滑动续期；用户被禁用后立即失效。"""
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -10,7 +11,9 @@ from ..auth.principal import Principal
 from .credentials import Clock, digest, new_id, new_token, utcnow
 from .models import USER_ACTIVE, AuthSession, User
 
-SESSION_METHODS = frozenset({"session", "oidc"})
+# 会话记下是怎么登录的：session 是账号密码，其余是各种外部登录方式的 kind（oidc、oauth2、ldap、wecom……）。
+# 按格式校验而不是列白名单：扩展提供的登录方式不用改这里。api_key 是 API Key 身份专用，会话不能冒用。
+SESSION_METHOD = re.compile(r"^[a-z][a-z0-9_]{1,15}$")
 MAX_TOKEN_LENGTH = 128
 
 
@@ -36,7 +39,7 @@ class SessionService:
 
     async def create_in(self, session: AsyncSession, user_id: str, *, method: str = "session") -> IssuedSession:
         """在调用方的事务里签发会话（邀请注册后直接登录、OIDC 回调共用）。"""
-        if method not in SESSION_METHODS:
+        if not SESSION_METHOD.match(method) or method == "api_key":
             raise ValueError("未知的会话类型")
         now = self._clock()
         token = new_token()

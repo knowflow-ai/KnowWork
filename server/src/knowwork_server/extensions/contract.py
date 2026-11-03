@@ -18,6 +18,11 @@ from ..attachments.mineru import MinerUProvider
 from ..config import Settings
 from ..conversations.summaries import Contributor
 from ..conversations.turn_context import TurnContextHook
+from ..identity.directory_accounts import DirectoryAccounts
+from ..identity.methods import LoginMethods
+from ..identity.password_logins import PasswordLogins
+from ..identity.sso import RedirectLogins
+from ..identity.verify_files import VerifyFiles
 from ..jobs import JobRunner
 from ..jobs.gate import Gate, LocalGate
 from ..knowledge.links import LinkSigner
@@ -66,6 +71,14 @@ class ApiContext:
     # 企业 MCP 的管理（系统管理员）：登记、改、同步、工具三档、发给哪些空间、删除。会话里的工具、空间管理员的停用与收窄、
     # 成员的连接都在开源，管理的接口与页面由扩展提供（同企业技能）
     enterprise_mcp: EnterpriseMcpAdmin | None = None
+    # 目录同步的账号部分：按人员快照建号、对上已有账号、停用离职的、恢复重新在职的（组织同步用）
+    accounts: DirectoryAccounts | None = None
+    # 登录页的入口列表（登记一个来源，列表时现取）与账号密码类、跳转类登录的提供方（域账号、企业微信），
+    # 扩展的登录方式登记到这里；平台验证域名用的根目录校验文件也由扩展按文件名给内容
+    login_methods: LoginMethods | None = None
+    password_logins: PasswordLogins | None = None
+    redirect_logins: RedirectLogins | None = None
+    verify_files: VerifyFiles | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +97,10 @@ class WorkerContext:
     gate: Gate = field(default_factory=LocalGate)
     # 文档解析服务（MinerU）：按空间取管理后台里当前的配置，已经过闸门；没给时扩展自己看环境变量
     mineru: MinerUProvider | None = None
+    # 权限与企业组织的写入（组织同步写部门、成员规则）。worker 不判定：只写库，提交时通知业务服务重新加载
+    access: AccessService | None = None
+    # 目录同步的账号部分（同 ApiContext.accounts）
+    accounts: DirectoryAccounts | None = None
 
 
 class Extension(Protocol):

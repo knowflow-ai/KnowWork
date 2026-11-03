@@ -15,6 +15,7 @@ import uvicorn
 
 from .app import build_runtime, create_internal_app, create_public_app
 from .config import Settings, get_settings
+from .ops import logredact
 
 
 def _server(app, host: str, port: int) -> uvicorn.Server:
@@ -45,6 +46,7 @@ async def serve(settings: Settings, stop: asyncio.Event) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":%(message)r}')
+    logredact.install()
 
     async def run() -> None:
         stop = asyncio.Event()

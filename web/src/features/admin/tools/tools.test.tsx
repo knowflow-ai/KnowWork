@@ -452,9 +452,9 @@ describe('MCP 显示与校验规则', () => {
   });
 
   it('授权表单：工具资源可以写成「前缀*」，其他类型不行', () => {
-    const base = { subjectKind: 'user', subjectId: 'u1', all: false, action: 'use' } as const;
+    const base = { subjectKind: 'user', subjects: ['user:u1'], all: false, action: 'use' } as const;
     // 工具在授权对话框里按树选，值是完整资源
-    expect(validateGrant({ ...base, resourceType: 'tool', resourceId: 'tool:mcp__github__*' })).toBeNull();
-    expect(validateGrant({ ...base, resourceType: 'skill', resourceId: 'report*' })).not.toBeNull();
+    expect(validateGrant({ ...base, resourceType: 'tool', resourceIds: ['tool:mcp__github__*'] })).toBeNull();
+    expect(validateGrant({ ...base, resourceType: 'skill', resourceIds: ['report*'] })).not.toBeNull();
   });
 });

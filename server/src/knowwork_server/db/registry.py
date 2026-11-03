@@ -38,6 +38,7 @@ RLS_TABLES = (
     "user_group",
     "user_group_member",
     "casbin_rule",
+    "workspace_member_rule",
     "action_receipt",
     "action_result_blob",
     "mcp_server",
