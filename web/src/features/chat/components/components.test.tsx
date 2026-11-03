@@ -358,6 +358,26 @@ describe('Markdown 与引用', () => {
     expect(await screen.findByText('可能已有新版《差旅管理办法（2025版）》（待确认）')).toBeInTheDocument();
   });
 
+  it('出处正文里提到的图在气泡里显示（知识源内嵌 <img> 解析而来），带图注', async () => {
+    renderWithApp(
+      <Markdown
+        text="机动车出入口的设置要求[1]"
+        sources={{
+          1: {
+            title: '《城市道路开口设置指引》.pdf',
+            excerpt: '机动车出入口的设置应符合以下要求',
+            figures: [{ url: 'http://kf/minio/fig1.jpg', caption: '图 4.0.1 机动车出入口的设置要求' }],
+          },
+        }}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '查看出处 1' }));
+    expect(await screen.findByRole('img', { name: '图 4.0.1 机动车出入口的设置要求' })).toHaveAttribute(
+      'src',
+      'http://kf/minio/fig1.jpg',
+    );
+  });
+
   it('没有出处数据时说明暂不可用，不渲染原始 HTML', async () => {
     const { container } = renderWithApp(<Markdown text={'<script>x</script>\n\n见[^2]'} />);
     expect(container.querySelector('script')).toBeNull();

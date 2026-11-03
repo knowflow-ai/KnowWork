@@ -318,6 +318,26 @@
   -webkit-line-clamp: 6;
 }
 
+/* 出处里正文提到的图（知识源内嵌 <img> 解析而来）：图限高防撑破气泡，图注说明色小字居中 */
+.kw-citation-figure {
+  margin: 0;
+}
+
+.kw-citation-figure img {
+  display: block;
+  max-height: 180px;
+  max-width: 100%;
+  margin: 0 auto;
+  border-radius: 6px;
+}
+
+.kw-citation-figure figcaption {
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
 .kw-link {
   color: var(--kw-link);
   text-decoration: none;

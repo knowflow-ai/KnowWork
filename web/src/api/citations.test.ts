@@ -15,6 +15,7 @@ describe('citations api', () => {
             excerpt: '付款期限 30 天',
             page: 3,
             openUrl: 'http://kf/doc?page=3',
+            figures: [{ url: 'http://kf/minio/fig.jpg', caption: '图 1 付款流程' }],
           },
           { number: 2, title: '无页码.md', excerpt: '', page: null, openUrl: null, versionNote: null },
           { number: 4, title: '旧版.md', excerpt: '', versionNote: '已被新版《新版》替代' },
@@ -27,7 +28,13 @@ describe('citations api', () => {
     const sources = await listCitations('a/b');
     expect(api.calls[0]?.path).toBe('/api/workspaces/default/conversations/a%2Fb/citations');
     expect(sources).toEqual({
-      1: { title: '合同.pdf', excerpt: '付款期限 30 天', page: 3, url: 'http://kf/doc?page=3' },
+      1: {
+        title: '合同.pdf',
+        excerpt: '付款期限 30 天',
+        page: 3,
+        url: 'http://kf/doc?page=3',
+        figures: [{ url: 'http://kf/minio/fig.jpg', caption: '图 1 付款流程' }],
+      },
       2: { title: '无页码.md', excerpt: undefined, page: undefined, url: undefined },
       4: {
         title: '旧版.md',

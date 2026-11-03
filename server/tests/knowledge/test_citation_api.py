@@ -52,7 +52,7 @@ async def test_lists_the_sources_of_a_conversation_for_its_owner(env):
     async with client(env) as http:
         body = (await http.get(f"{CONV}/c1/citations")).json()
     first, second = body["items"]
-    assert first == {"number": 1, "title": "合同1.pdf", "excerpt": "付款期限 30 天", "page": 3,
+    assert first == {"number": 1, "title": "合同1.pdf", "excerpt": "付款期限 30 天", "figures": [], "page": 3,
                      "openUrl": "http://kf.local/document/doc1?page=3", "sourceId": "src1", "docRef": "doc1",
                      # 预览里高亮用：页码、框、引用原文、原文件版本
                      "locator": {"type": "pdf", "page": 3, "boxes": [{"page": 3, "x0": 0.1, "y0": 0.2, "x1": 0.5,
@@ -61,6 +61,38 @@ async def test_lists_the_sources_of_a_conversation_for_its_owner(env):
                      "locators": [], "images": []}
     assert second["number"] == 2 and len(second["excerpt"]) <= EXCERPT_LIMIT + 1 and second["excerpt"].endswith("…")
     assert body["truncated"] is False
+
+
+async def test_excerpt_strips_markup_from_chunk_text(env):
+    """KnowFlow 图片、表格块的正文内嵌 <img>/<table> 标签（它库内的表示），摘录是给人读的纯文本：白名单
+    标签整个剥掉、属性里带中文的图注照剥（实测 RAGFlow 的 <img> 总带中文 alt），单元格文字不粘连；
+    正文里偶发的比较符号与不在白名单里的标签（x<y、<b>）原样保留。"""
+    text = ('<img src="/minio/30c72aa0acb511f1a3b0a244f6e97b96/doc_page_26_image_1.jpg" '
+            'style="max-width: 300px;max-height: 500px;" alt="图 4.0.13 距离学校、医院等人流密集场所或建筑的慢行出入口">'
+            '沿一条城市道路宜只开设一个机动车出入口<table><tr><td>30</td><td>50</td></tr></table>'
+            '间距 x<y 且 z>w 的情形<b>不是白名单标签')
+    await env.knowledge.citations.register("ws1", "c1", [evidence(1, text=text)])
+    async with client(env) as http:
+        [item] = (await http.get(f"{CONV}/c1/citations")).json()["items"]
+    assert item["excerpt"] == ("沿一条城市道路宜只开设一个机动车出入口 30 50 "
+                               "间距 x<y 且 z>w 的情形<b>不是白名单标签")
+    # 正文里的 <img> 解析成图（alt 当图注）：相对地址按 open_url 的站点补全（minio 匿名可读，气泡里显示）
+    assert item["figures"] == [{"url": "http://kf.local/minio/30c72aa0acb511f1a3b0a244f6e97b96/doc_page_26_image_1.jpg",
+                                "caption": "图 4.0.13 距离学校、医院等人流密集场所或建筑的慢行出入口"}]
+
+
+async def test_figures_need_an_absolute_url_and_a_cap(env):
+    """没有 open_url 可补全的相对地址丢弃；绝对地址原样给；最多 3 张（气泡放不下更多）。"""
+    text = ('<img src="/minio/a.jpg">无站点的相对地址不算'
+            '<img src="http://other.local/b.jpg" alt="第一张"><img src=\'http://other.local/c.jpg\'>'
+            '<img src=http://other.local/d.jpg alt="第四张"><img src="http://other.local/e.jpg">')
+    row = evidence(1, text=text).model_copy(update={"open_url": None})
+    await env.knowledge.citations.register("ws1", "c1", [row])
+    async with client(env) as http:
+        [item] = (await http.get(f"{CONV}/c1/citations")).json()["items"]
+    assert [figure["url"] for figure in item["figures"]] == ["http://other.local/b.jpg", "http://other.local/c.jpg",
+                                                             "http://other.local/d.jpg"]
+    assert item["figures"][0]["caption"] == "第一张" and item["figures"][1]["caption"] == ""
 
 
 async def test_images_come_with_signed_urls_for_the_answer(env):

@@ -40,6 +40,8 @@ function parseCitation(value: unknown): readonly [number, CitationSource] | unde
   const title = text(value.title);
   if (number === undefined || !Number.isInteger(number) || !title) return undefined;
   const images = listOf(value.images, imageOf);
+  // 正文里内嵌的 <img> 解析出来的图：气泡里显示，服务端已补全成绝对地址
+  const figures = listOf(value.figures, imageOf);
   const spots = listOf(value.locators, spotOf);
   // 摘录截过长度，不拿来定整块的结尾，按每处的原文逐处找
   const whole = Array.isArray(value.locators) ? mergeLocators(value.locators) : undefined;
@@ -55,6 +57,7 @@ function parseCitation(value: unknown): readonly [number, CitationSource] | unde
       locate: whole ?? locateOf(value.locator),
       ...(spots.length ? { spots } : {}),
       ...(images.length ? { images } : {}),
+      ...(figures.length ? { figures } : {}),
       ...(text(value.versionNote) ? { versionNote: text(value.versionNote) } : {}),
     },
   ];
