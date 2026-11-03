@@ -8,6 +8,8 @@ MinerU 4.1 改成了 V1 API，请求里不再有解析模式（backend）、语�
 取而代之的是解析档位（tier）：auto 让 MinerU 自动推荐，flash / basic / standard / advanced 强制指定。
 backend 列改名成 tier 并按旧值就近映射（pipeline→basic，vlm、hybrid→standard）；server_url、lang 列删掉，
 VLM 服务地址改到 MinerU 侧部署配置，语言自动识别。
+降级是有损的：server_url、lang 的数据回不来，tier 映射回的 vlm-http-client 没有服务地址，旧代码会按
+「没配 VLM 服务」退回 pipeline 解析（不报错），管理员重新保存一次配置才恢复 VLM 模式。
 """
 
 from collections.abc import Sequence

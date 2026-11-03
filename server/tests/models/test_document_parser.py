@@ -42,7 +42,12 @@ async def test_env_is_the_default_and_settings_take_over(sessionmaker, access):
     parsers = DocumentParsers(sessionmaker, MASTER_KEY, ENV, clock=clock)
     env = await parsers.current("ws1")
     assert (env.base_url, env.source, env.max_concurrency) == ("http://env-mineru:8000", "env", 2)
-    assert (await parsers.view()).source == "env"
+    assert (await parsers.view()).source == "env" and (await parsers.view()).tier == "auto"
+    forced = DocumentParsers(sessionmaker, MASTER_KEY,
+                             AttachmentSettings(mineru_base_url="http://env-mineru:8000", mineru_tier="advanced"),
+                             clock=clock)
+    assert (await forced.view()).tier == "advanced", "环境变量配了档位要在界面上如实显示"
+    assert (await forced.current("ws1")).tier == "advanced"
 
     view = await parsers.save("root", ParserSave(base_url="http://mineru:8000/", api_key="secret-token-1234",
                                                       max_concurrency=5, tier="basic"))

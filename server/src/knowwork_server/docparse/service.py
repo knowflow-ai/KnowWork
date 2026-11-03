@@ -160,8 +160,8 @@ class DocumentParsers:
                               updated_at=row.updated_at)
         env = self._env
         return ParserView(source="env" if env.mineru_configured else "none", enabled=env.mineru_configured,
-                          base_url=env.mineru_base_url, tier=AUTO, api_key_set=False, api_key_last4=None,
-                          max_concurrency=env.mineru_max_concurrency, updated_at=None)
+                          base_url=env.mineru_base_url, tier=env.mineru_tier or AUTO, api_key_set=False,
+                          api_key_last4=None, max_concurrency=env.mineru_max_concurrency, updated_at=None)
 
     async def save(self, actor: str, body: ParserSave) -> ParserView:
         async with self._tx() as session:

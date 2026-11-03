@@ -97,9 +97,9 @@ def task_failure(payload: Any) -> MinerUError:
 def _status_error(status: int) -> MinerUError:
     if status == 415:
         return unsupported()
-    if status in (400, 413, 422) or status == 500:
+    if status in (400, 413, 422):  # 服务拒收这个文件（格式、大小）
         return corrupt()
-    if status in _UNAVAILABLE:
+    if status == 500 or status in _UNAVAILABLE:  # 500 大多是服务自己崩了（解析进程崩溃、缺资源），按服务问题可重试
         return unavailable()
     return bad_protocol()
 
@@ -111,6 +111,9 @@ class MinerUOptions:
     parse_timeout_seconds: float = 600.0
     poll_interval_seconds: float = 2.0
     poll_max_interval_seconds: float = 10.0
+    # 单个 HTTP 请求的超时（与 MinerUProvider 给 http 客户端的一致）：同步接口的 wait_timeout 不能超过它，
+    # 不然服务还在按 wait_timeout 等结果，连接先被客户端掐断，202 恢复路径走不到
+    request_timeout_seconds: float = 60.0
 
 
 DEFAULT_OPTIONS = MinerUOptions()
@@ -142,9 +145,11 @@ class MinerUClient:
         return (await self.parse_full(filename, data, mime)).markdown
 
     async def parse_full(self, filename: str, data: bytes, mime: str) -> MinerUResult:
-        """结果 ZIP 里 markdown.md、middle_json.json（版面、块坐标、标题、表格 HTML）、images/ 都有，全取回来。"""
+        """结果 ZIP 里 markdown.md、middle_json.json（版面、块坐标、标题、表格 HTML）、images/ 都有，全取回来。
+        一次解析（提交、上传、轮询、下载）共用同一个总时限，超了按「服务超时」处理。"""
+        deadline = self._clock() + self._options.parse_timeout_seconds
         try:
-            return await self._parse(filename, data, mime)
+            return await self._parse(filename, data, mime, deadline)
         except MinerUError:
             raise
         except httpx.TimeoutException as error:
@@ -155,14 +160,14 @@ class MinerUClient:
             log.warning("mineru returned malformed payload: %s", type(error).__name__)
             raise bad_protocol() from error
 
-    async def _parse(self, filename: str, data: bytes, mime: str) -> MinerUResult:
+    async def _parse(self, filename: str, data: bytes, mime: str, deadline: float) -> MinerUResult:
         manifest: dict[str, Any] = {"files": [{"file_name": filename, "bytes": len(data)}],
                                     "output_formats": ["default"]}
         if self._options.tier:
             manifest["tier"] = self._options.tier
         response = await self._http.post("/v1/tasks", json=manifest)
         if response.status_code in _NO_ASYNC:
-            return await self._parse_sync(filename, data, mime)
+            return await self._parse_sync(filename, data, mime, deadline)
         if response.status_code >= 400:
             raise _status_error(response.status_code)
         receipt = response.json()
@@ -173,7 +178,7 @@ class MinerUClient:
         upload = _field(files[0], "upload")
         if isinstance(upload, dict):
             await self._upload(upload, data)
-        result_url = await self._wait(receipt["task_id"], _field(files[0], "file_id"))
+        result_url = await self._wait(receipt["task_id"], _field(files[0], "file_id"), deadline)
         return _unzip(await self._download(result_url))
 
     async def _upload(self, upload: dict[str, Any], data: bytes) -> None:
@@ -182,7 +187,8 @@ class MinerUClient:
             raise bad_protocol()
         headers = {str(key): str(value) for key, value in (_field(upload, "headers") or {}).items()}
         request = self._http.build_request("PUT", url, content=data, headers=headers)
-        if not self._same_origin(url):  # 签名上传地址可能跨源（对象存储）：解析服务的令牌不发过去，地址原样用
+        if not url.startswith("/") and not self._same_origin(url):
+            # 相对路径就是解析服务自己；跨源的签名上传地址（对象存储）不带令牌，地址原样用
             request.headers.pop("authorization", None)
         response = await self._http.send(request)
         if response.status_code == 410:  # upload_expired：链接过期了，整次重来还来得及
@@ -192,10 +198,11 @@ class MinerUClient:
 
     def _same_origin(self, url: str) -> bool:
         base, target = urlsplit(str(self._http.base_url)), urlsplit(url)
-        return (base.scheme, base.hostname, base.port) == (target.scheme, target.hostname, target.port)
+        default_port = {"https": 443, "http": 80}
+        return (base.scheme, base.hostname, base.port or default_port.get(base.scheme)) == \
+            (target.scheme, target.hostname, target.port or default_port.get(target.scheme))
 
-    async def _wait(self, task_id: str, file_id: Any) -> str:
-        deadline = self._clock() + self._options.parse_timeout_seconds
+    async def _wait(self, task_id: str, file_id: Any, deadline: float) -> str:
         interval = self._options.poll_interval_seconds
         while self._clock() < deadline:
             response = await self._http.get(f"/v1/tasks/{task_id}")
@@ -205,7 +212,7 @@ class MinerUClient:
                 raise _status_error(response.status_code)
             payload = response.json()
             state = str(_field(payload, "status") or "").strip().lower()
-            if state in ("completed", "partial", "failed", "canceled"):
+            if state in SUCCESS_STATES or state in FAILURE_STATES or state == "partial":
                 entry = _entry(payload, file_id)
                 file_state = str(_field(entry, "status") or state).strip().lower()
                 if file_state in SUCCESS_STATES:
@@ -230,9 +237,13 @@ class MinerUClient:
             raise _status_error(response.status_code)
         return response.content
 
-    async def _parse_sync(self, filename: str, data: bytes, mime: str) -> MinerUResult:
+    async def _parse_sync(self, filename: str, data: bytes, mime: str, deadline: float) -> MinerUResult:
+        remaining = deadline - self._clock()
+        # wait_timeout 封顶在 http 客户端自己的请求超时内（留几秒余量给提交与响应本身），也不超过这次解析的总预算：
+        # 服务按它等结果后回 200（ZIP）或 202（还没完，按 request_id 接着轮询）
+        wait_timeout = int(max(0, min(3600, self._options.request_timeout_seconds - 5, remaining)))
         form: dict[str, Any] = {"output_formats": "default", "request_id": uuid4().hex,
-                                "wait_timeout": int(min(3600, max(0, self._options.parse_timeout_seconds)))}
+                                "wait_timeout": wait_timeout}
         if self._options.tier:
             form["tier"] = self._options.tier
         files = {"file": (filename, data, mime)}
@@ -241,13 +252,12 @@ class MinerUClient:
             raise MinerUError("parser_version_unsupported", "文档解析服务版本不受支持（需要 MinerU 4.1+）",
                               retryable=False)
         if response.status_code == 202:  # 服务等不到解析完成：按 request_id 接着等（同一请求可以恢复）
-            return _unzip(await self._wait_sync(form["request_id"], response.json()))
+            return _unzip(await self._wait_sync(form["request_id"], response.json(), deadline))
         if response.status_code >= 400:
             raise _status_error(response.status_code)
         return _unzip(response.content)
 
-    async def _wait_sync(self, request_id: str, status: Any) -> bytes:
-        deadline = self._clock() + self._options.parse_timeout_seconds
+    async def _wait_sync(self, request_id: str, status: Any, deadline: float) -> bytes:
         interval = self._options.poll_interval_seconds
         while self._clock() < deadline:
             state = str(_field(status, "status") or "").strip().lower()

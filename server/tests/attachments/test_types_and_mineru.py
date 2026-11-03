@@ -165,6 +165,14 @@ async def test_sync_202_keeps_waiting_by_request_id():
     assert len(polls) == 1 and polls[0].method == "GET", "轮询的路径带着提交时的 request_id"
 
 
+async def test_sync_wait_timeout_stays_inside_the_request_timeout():
+    """同步接口的 wait_timeout 不能超过 http 客户端自己的请求超时：连接先被掐断的话，202 恢复路径走不到。"""
+    stub = MinerUStub({("POST", "/v1/tasks"): [(404, b"")],
+                       ("POST", "/v1/file_parse"): [(200, result_zip())]})
+    assert await client(stub, request_timeout_seconds=30).parse("a.pdf", PDF, "application/pdf") == "# 解析结果"
+    assert b'name="wait_timeout"\r\n\r\n25' in stub.requests[1].content, "30 秒请求超时减去几秒余量"
+
+
 async def test_old_mineru_is_reported_not_guessed():
     """3.x（/tasks、/file_parse）与 4.0（/v1/uploads、/v1/parse/jobs）的接口都没有：报版本不支持，不猜旧协议。"""
     stub = MinerUStub({})
@@ -175,7 +183,7 @@ async def test_old_mineru_is_reported_not_guessed():
 
 @pytest.mark.parametrize(("status", "code", "retryable"), [
     (415, "unsupported_format", False), (400, "file_corrupt", False), (422, "file_corrupt", False),
-    (500, "file_corrupt", False), (503, "service_unavailable", True), (429, "service_unavailable", True),
+    (500, "service_unavailable", True), (503, "service_unavailable", True), (429, "service_unavailable", True),
     (401, "parser_protocol", False),
 ])
 async def test_submit_status_mapping(status, code, retryable):
@@ -317,3 +325,18 @@ async def test_token_stays_on_mineru_and_skips_signed_urls():
                        ("GET", "/v1/files/f1/content"): [(200, result_zip())]})
     await client(same, headers={"Authorization": "Bearer tok"}).parse("a.pdf", PDF, "application/pdf")
     assert same.requests[-1].headers["authorization"] == "Bearer tok", "同源的结果地址带着令牌"
+
+
+async def test_relative_urls_and_implicit_ports_count_as_same_origin():
+    """本地部署给相对路径（上传、结果）或带默认端口的绝对地址时，都算解析服务自己：令牌照发。"""
+    local_receipt = {"task_id": "t1", "files": [{"file_id": "f1", "upload": {"url": "/v1/tasks/t1/uploads/f1"}}]}
+    stub = MinerUStub({("POST", "/v1/tasks"): [(200, local_receipt)],
+                       ("PUT", "/v1/tasks/t1/uploads/f1"): [(200, b"")],
+                       ("GET", "/v1/tasks/t1"): [(200, {"status": "completed", "files": [
+                           {"file_id": "f1", "status": "completed",
+                            "result_url": "http://mineru:80/v1/files/f1/content"}]})],
+                       ("GET", "/v1/files/f1/content"): [(200, result_zip())]})
+    await client(stub, headers={"Authorization": "Bearer tok"}).parse("a.pdf", PDF, "application/pdf")
+    upload, download = stub.requests[1], stub.requests[-1]
+    assert upload.headers["authorization"] == "Bearer tok" and download.headers["authorization"] == "Bearer tok", \
+        "相对路径与显式默认端口都别把令牌剥掉"

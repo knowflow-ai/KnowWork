@@ -12,7 +12,8 @@
   「解析档位」（自动 / 快速 flash / 基础 basic / 标准 standard / 高级 advanced）；「VLM 服务地址」与「识别语言」
   两项移除——4.1 的请求里没有这些字段了，VLM 推理服务（sglang / vllm）改在 MinerU 侧部署配置，语言自动识别。
   数据库迁移自动执行：document_parser 表的 backend 列改成 tier（旧值就近映射：pipeline→basic，VLM、hybrid→standard），
-  server_url、lang 列删掉。
+  server_url、lang 列删掉。降级（回到旧版本）是有损的：这两列的数据回不来，映射回 VLM 模式的行因为没有了服务地址，
+  会被旧代码按「没配 VLM 服务」退回 pipeline 解析，重新保存一次配置才恢复。
 - 环境变量：`KNOWWORK_MINERU_BACKEND`、`KNOWWORK_MINERU_SERVER_URL`、`KNOWWORK_MINERU_LANG` 不再读取（留着不报错），
   新增 `KNOWWORK_MINERU_TIER`（默认 `auto`）。
 - 解析结果的取回方式变了：4.1 的结果是一个 ZIP（markdown.md、middle_json.json、images/），附件与知识库从里面取需要的部分；
