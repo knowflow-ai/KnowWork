@@ -106,8 +106,11 @@ def _status_error(status: int) -> MinerUError:
 
 def _submit_error(status: int) -> MinerUError:
     """提交清单阶段（POST /v1/tasks）还没有文件字节，4xx 基本都是清单或参数没被接受（协议、档位、文件名），
-    不是文件坏了——按「文件损坏」提示会误导用户，重试也帮不上忙，归为协议问题。"""
-    if status in (400, 413, 415, 422):
+    不是文件坏了——按「文件损坏」提示会误导用户，重试也帮不上忙，归为协议问题。例外：415 是服务按扩展名
+    拒了不支持的格式，归「格式不支持」（file 类，parse_job 靠它给用户准确的话）。"""
+    if status == 415:
+        return unsupported()
+    if status in (400, 413, 422):
         return bad_protocol()
     return _status_error(status)
 
@@ -197,7 +200,8 @@ class MinerUClient:
         url = _field(upload, "url")
         if not isinstance(url, str) or not url:
             raise bad_protocol()
-        headers = {str(key): str(value) for key, value in (_field(upload, "headers") or {}).items()}
+        raw_headers = _field(upload, "headers")  # 形态不对就当没有额外头，上传照做
+        headers = {str(key): str(value) for key, value in raw_headers.items()} if isinstance(raw_headers, dict) else {}
         request = self._http.build_request("PUT", url, content=data, headers=headers)
         if self._cross_origin(url):  # 跨源的签名上传地址（对象存储）不带令牌，地址原样用
             request.headers.pop("authorization", None)
@@ -404,7 +408,10 @@ class MinerUProvider:
                                      transport=self._transport)
             self._http = {**self._http, key: http}
         forced = getattr(config, "tier", None)  # 管理后台强制的解析档位；为空是「自动」，按调用方的默认
-        client = MinerUClient(http, replace(options, tier=forced or options.tier))
+        # 请求超时以 provider 实际给 http 客户端的为准：调用方自带的值可能与环境变量不一致，
+        # 而同步接口的 wait_timeout 是按它封顶的（超了连接会先被掐断）
+        chosen = replace(options, tier=forced or options.tier, request_timeout_seconds=self._timeout)
+        client = MinerUClient(http, chosen)
         return GatedMinerU(client, self._gate, config.max_concurrency) if self._gate is not None else client
 
     async def aclose(self) -> None:

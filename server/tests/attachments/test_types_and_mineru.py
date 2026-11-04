@@ -182,12 +182,13 @@ async def test_old_mineru_is_reported_not_guessed():
 
 
 @pytest.mark.parametrize(("status", "code", "retryable"), [
-    (415, "parser_protocol", False), (400, "parser_protocol", False), (422, "parser_protocol", False),
+    (415, "unsupported_format", False), (400, "parser_protocol", False), (422, "parser_protocol", False),
     (500, "service_unavailable", True), (503, "service_unavailable", True), (429, "service_unavailable", True),
     (401, "parser_protocol", False),
 ])
 async def test_submit_status_mapping(status, code, retryable):
-    """提交清单阶段还没有文件字节：4xx 是清单/参数没被接受（协议问题），不冒充「文件损坏」。"""
+    """提交清单阶段还没有文件字节：400/413/422 是清单/参数没被接受（协议问题），不冒充「文件损坏」；
+    415 是按扩展名拒了格式，归「格式不支持」。"""
     stub = MinerUStub({("POST", "/v1/tasks"): [(status, b"internal /var/x")]})
     with pytest.raises(MinerUError) as caught:
         await client(stub).parse("a.pdf", PDF, "application/pdf")
@@ -235,6 +236,14 @@ async def test_expired_upload_link_is_retryable():
     with pytest.raises(MinerUError) as caught:
         await client(stub).parse("a.pdf", PDF, "application/pdf")
     assert caught.value.retryable
+
+
+async def test_malformed_upload_headers_are_ignored():
+    """回执的 upload.headers 形态不对（字符串）就当没有额外头，上传照做，不炸成内部错误。"""
+    receipt = {"task_id": "t1", "files": [{"file_id": "f1", "upload": {
+        "url": "http://mineru/v1/tasks/t1/uploads/f1", "headers": "nope"}}]}
+    stub = MinerUStub(async_flow({}, receipt=receipt))
+    assert await client(stub).parse("a.pdf", PDF, "application/pdf") == "# 解析结果"
 
 
 @pytest.mark.parametrize(("method", "path"), [("PUT", "/v1/tasks/t1/uploads/f1"), ("GET", "/v1/files/f1/content")])

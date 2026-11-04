@@ -126,6 +126,8 @@ async def test_provider_follows_the_current_settings(sessionmaker, access):
         "改了地址，下一次就用新地址；没传令牌时沿用原来的"
     assert (await provider.get("ws1", MinerUOptions(tier="standard")))._options.tier == "standard", \
         "没强制档位时按调用方给的走"
+    assert (await provider.get("ws1", MinerUOptions(request_timeout_seconds=999)))._options.request_timeout_seconds \
+        == 60, "请求超时以 provider 实际给 http 客户端的为准（同步接口的 wait_timeout 按它封顶）"
     await parsers.save("root", ParserSave(base_url="http://second:8000", tier="basic"))
     assert (await provider.get("ws1", MinerUOptions(tier="standard")))._options.tier == "basic", \
         "后台强制了档位就按它走"
