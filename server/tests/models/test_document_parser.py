@@ -112,6 +112,8 @@ async def test_probe_tells_what_is_wrong(sessionmaker, access):
     without_suffix = await probe(httpx.AsyncClient(transport=httpx.MockTransport(missing)),
                                  ParserTest(base_url="http://mineru:8000"))
     assert "不用带" not in without_suffix.message
+    gated = await probe(openapi(token="t" * 12), ParserTest(base_url="http://mineru:8000/v1", api_key="wrong"))
+    assert "不用带" in gated.message, "网关先鉴权回 401 时，后缀提醒同样要出现"
     with pytest.raises(ValueError, match="http"):
         ParserTest(base_url="mineru:8000")
 
