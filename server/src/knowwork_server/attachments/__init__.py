@@ -34,6 +34,7 @@ class Attachments:
     service: AttachmentService
     parse_job: ParseJob
     mineru: MinerUProvider
+    settings: AttachmentSettings  # 装配处共用（例如 TurnAttachments 要等解析完成的时长）
 
     async def aclose(self) -> None:
         await self.mineru.aclose()
@@ -54,7 +55,7 @@ def build_attachments(sessionmaker: async_sessionmaker, stores: SessionStores, s
                             poll_interval_seconds=settings.mineru_poll_interval_seconds,
                             request_timeout_seconds=settings.mineru_request_timeout_seconds)
     parse_job = ParseJob(service, stores, sandbox, mineru, options, settings)
-    return Attachments(service=service, parse_job=parse_job, mineru=mineru)
+    return Attachments(service=service, parse_job=parse_job, mineru=mineru, settings=settings)
 
 
 __all__ = [
