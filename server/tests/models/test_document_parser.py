@@ -107,13 +107,15 @@ async def test_probe_tells_what_is_wrong(sessionmaker, access):
 
     with_suffix = await probe(httpx.AsyncClient(transport=httpx.MockTransport(missing)),
                               ParserTest(base_url="http://mineru:8000/v1"))
-    assert (with_suffix.ok, "/v1 后缀" in with_suffix.message or "不用带" in with_suffix.message) == (False, True), \
-        "地址多带了 /v1 后缀是最常见的填法错误，提示去掉"
+    assert with_suffix.message == ("服务返回了 HTTP 404，看起来不是 MinerU 的接口地址。"
+                                   "地址不用带 /v1 后缀：解析接口自己带 /v1 前缀，去掉再试"), \
+        "地址多带了 /v1 后缀是最常见的填法错误，句子边界完整地提示去掉"
     without_suffix = await probe(httpx.AsyncClient(transport=httpx.MockTransport(missing)),
                                  ParserTest(base_url="http://mineru:8000"))
-    assert "不用带" not in without_suffix.message
+    assert without_suffix.message == "服务返回了 HTTP 404，看起来不是 MinerU 的接口地址"
     gated = await probe(openapi(token="t" * 12), ParserTest(base_url="http://mineru:8000/v1", api_key="wrong"))
-    assert "不用带" in gated.message, "网关先鉴权回 401 时，后缀提醒同样要出现"
+    assert gated.message.startswith("服务要求令牌，或令牌不对。地址不用带"), \
+        "网关先鉴权回 401 时，后缀提醒同样要出现且不与正文粘连"
     with pytest.raises(ValueError, match="http"):
         ParserTest(base_url="mineru:8000")
 
