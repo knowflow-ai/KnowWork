@@ -254,18 +254,21 @@ def test_question_frames_without_id_are_dropped(kind):
 
 
 def test_attachment_handles_become_attachments_not_text():
-    """宿主在用户原话后附的文件说明块（逐字照官方 fileHandleText）不进显示文字，换成附件列表；路径不给浏览器。"""
+    """宿主在用户原话后附的文件说明块（逐字照官方 fileHandleText）不进显示文字，换成附件列表；路径不给浏览器。
+    解析还在跑时的告知块（parsing 文案）同样只给模型看不给人，漏进气泡就是用户可见的英文指令。"""
     state, _ = project(ProjectionState(), "session/event", session("turn/start", {"turn": 1}), seq=1)
     handle = ('[File "合同 \\"终版\\".docx" (2048 bytes, sha256:aaaaaaaa): verbatim read-only copy saved at '
               '"/workspace/input/合同 \\"终版\\".docx". Read that path with your file tools when its contents are needed.]')
     extracted = '[Markdown extracted from "合同 \\"终版\\".docx" by the document parser, saved at "/workspace/input/x.md".]'
+    parsing = ('[The document parser is still extracting Markdown from "合同 \\"终版\\".docx"; when it finishes the '
+               'Markdown will be saved at "/workspace/input/x.md". Check for that file again shortly.]')
     message = {"id": "u1", "source": {"kind": "user"},
                "content": [{"type": "text", "text": "帮我改付款条款"}, {"type": "text", "text": handle},
-                           {"type": "text", "text": extracted}]}
+                           {"type": "text", "text": extracted}, {"type": "text", "text": parsing}]}
     _, events = project(state, "session/event", session("user/message", message), seq=2)
     data = events[0]["data"]
     assert data == {"role": "user", "text": "帮我改付款条款", "attachments": [{"name": '合同 "终版".docx', "size": 2048}]}
-    assert "/workspace" not in str(events)
+    assert "/workspace" not in str(events) and "document parser" not in str(events)
 
 
 def test_mention_block_becomes_chips_not_text():

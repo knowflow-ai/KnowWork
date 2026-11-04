@@ -34,6 +34,8 @@ TEXT_LIMIT = 8000
 _FILE_HANDLE = re.compile(r'^\[File (?P<name>"(?:[^"\\]|\\.)*") \((?P<bytes>\d+) bytes, sha256:[0-9a-f]{8}\): '
                           r'verbatim read-only copy saved at ')
 _EXTRACTED_HANDLE = "[Markdown extracted from "
+# 解析还没完成时的告知块（同在宿主侧）：同样不进显示文字，附件卡片由上面的文件说明块负责
+_PARSING_HANDLE = "[The document parser is still extracting Markdown from "
 # 宿主写的 @ 说明块（runtime-host mentions.mjs）：第一行是这个前缀加 JSON，不进显示文字，换成气泡上的小标签
 _MENTION_PREFIX = "[用户这一轮 @ 点名的范围] "
 MENTION_TYPES = ("knowledge_base", "folder", "document", "tag", "mcp", "skill", "extension")
@@ -208,7 +210,7 @@ def user_parts(content: Any) -> tuple[str, list[dict], list[dict]]:
                 attachments.append({"name": str(json.loads(found["name"])), "size": int(found["bytes"])})
             except ValueError:
                 texts.append(block["text"])
-        elif not block["text"].startswith(_EXTRACTED_HANDLE):
+        elif not block["text"].startswith((_EXTRACTED_HANDLE, _PARSING_HANDLE)):
             texts.append(block["text"])
     return "".join(texts)[:TEXT_LIMIT], attachments, mentions
 

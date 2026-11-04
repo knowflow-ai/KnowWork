@@ -7,11 +7,9 @@
 import asyncio
 
 import pytest
-from sqlalchemy import update
 
 from knowwork_server.access.rls import set_workspace
 from knowwork_server.attachments import AttachmentSettings
-from knowwork_server.attachments.models import Attachment
 from knowwork_server.attachments.turns import TurnAttachments
 from knowwork_server.conversations.service import AttachmentUnavailable
 from knowwork_server.sandbox.contract import SandboxError
@@ -26,12 +24,12 @@ NOWAIT = AttachmentSettings(mineru_base_url="http://mineru", attachment_parse_wa
 
 
 async def settle(files_db, attachments, att_id, seconds, **mark):
-    """模拟 worker 收尾：写解析状态（要过行级安全，与生产同路径）。"""
+    """模拟 worker 收尾：走生产同一条路径（apply_parse），过了行级安全写解析状态。"""
     async def later():
         await asyncio.sleep(seconds)
         async with files_db.sessionmaker() as session:
             await set_workspace(session, "ws1")
-            await session.execute(update(Attachment).where(Attachment.id == att_id).values(**mark))
+            await attachments.service.apply_parse(session, att_id, **mark)
             await session.commit()
     return asyncio.create_task(later())
 
@@ -79,8 +77,8 @@ async def test_failed_parse_falls_back_to_the_original(files_db, tmp_path):
     async with http:
         [pdf] = (await post(http, conv.id, ("报告.pdf", PDF))).json()["items"]
     waiting = AttachmentSettings(mineru_base_url="http://mineru", attachment_parse_wait_seconds=5)
-    stop = await settle(files_db, attachments, pdf["id"], 0.05, parse_status="failed", error_code="file_corrupt",
-                        error_message="文档解析失败，文件可能已损坏或加密")
+    stop = await settle(files_db, attachments, pdf["id"], 0.05, parse_status="failed", code="file_corrupt",
+                        message="文档解析失败，文件可能已损坏或加密")
     [item] = await TurnAttachments(attachments.service, waiting).for_turn(conv, [pdf["id"]])
     await stop
     assert item.extracted_path is None and item.parsing is False, "解析失败：不提示解析中，模型按原件继续"

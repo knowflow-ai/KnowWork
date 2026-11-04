@@ -40,6 +40,9 @@ export function attachmentsOf(raw) {
     if (typeof sha256 !== 'string' || !/^[0-9a-f]{8,64}$/.test(sha256)) throw invalid('attachments.sha256 格式错误')
     const path = inputPath(item.path, 'path')
     const extractedPath = item.extractedPath === undefined ? undefined : inputPath(item.extractedPath, 'extractedPath')
+    if (item.parsing !== undefined && typeof item.parsing !== 'boolean') {
+      throw invalid('attachments.parsing 必须是布尔值')
+    }
     const parsing = item.parsing === true
     if (parsing && extractedPath === undefined) throw invalid('attachments.parsing 需要 extractedPath（预期路径）')
     return { name, bytes, sha256, path, extractedPath, parsing }

@@ -195,12 +195,12 @@ class DocumentParsers:
             return ProbeView(False, "连不上这个地址：检查地址、端口，以及业务服务和 worker 所在机器能否访问到它",
                              self._elapsed(started))
         elapsed = self._elapsed(started)
+        suffix = ("地址不用带 /v1 后缀：解析接口自己带 /v1 前缀，去掉再试。"
+                  if body.base_url.rstrip("/").endswith("/v1") else "")
         if response.status_code in (401, 403):
-            return ProbeView(False, "服务要求令牌，或令牌不对", elapsed)
+            return ProbeView(False, f"服务要求令牌，或令牌不对。{suffix}", elapsed)
         if response.status_code != 200:
             # 客户端自己会拼 /v1 前缀，地址要填服务根路径；带了 /v1 后缀是最常见的填法错误，直接点出来
-            suffix = "地址不用带 /v1 后缀：解析接口自己带 /v1 前缀，去掉再试。" \
-                if body.base_url.rstrip("/").endswith("/v1") else ""
             return ProbeView(False, f"服务返回了 HTTP {response.status_code}，看起来不是 MinerU 的接口地址。{suffix}",
                              elapsed)
         try:

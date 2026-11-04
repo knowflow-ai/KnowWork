@@ -28,7 +28,8 @@ class AttachmentSettings(BaseSettings):
     # 解析任务的租约：执行中每 30 秒续一次，worker 崩溃后最多这么久被别的 worker 接手
     attachment_parse_lease_seconds: float = Field(default=120.0, gt=0, le=24 * 3600)
     # 发消息时附件解析还在跑：等它出结果再进模型（等到了带上解析稿路径，模型不用自己从 PDF 抽文本）。
-    # 超过上限或解析失败就按原件继续；0 是不等（模型只见原件）
+    # 超过上限就放行，但文件说明仍会告知「解析中 + 预期路径」（0 也一样——0 只关等待，不关告知）；
+    # 注意解析卡住期间，这个会话的每条消息都会等到上限才放行
     attachment_parse_wait_seconds: float = Field(default=30.0, ge=0, le=300)
 
     @field_validator("mineru_base_url")

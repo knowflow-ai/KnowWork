@@ -9,7 +9,7 @@
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 
 from ..conversations.models import Conversation
 from ..conversations.service import AttachmentUnavailable
@@ -36,13 +36,9 @@ def turn_attachment(item: AttachmentView) -> TurnAttachment:
 
 
 class TurnAttachments:
-    def __init__(self, service: AttachmentService, settings: AttachmentSettings, *,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, service: AttachmentService, settings: AttachmentSettings) -> None:
         self._service = service
         self._wait_seconds = settings.attachment_parse_wait_seconds
-        self._sleep = sleep
-        self._clock = clock
 
     async def for_turn(self, conversation: Conversation, ids: Sequence[str]) -> tuple[TurnAttachment, ...]:
         try:
@@ -55,11 +51,12 @@ class TurnAttachments:
     async def _settled(self, conversation: Conversation, ids: Sequence[str],
                        items: tuple[AttachmentView, ...]) -> tuple[AttachmentView, ...]:
         """解析还在跑的附件等它出结果（上限 attachment_parse_wait_seconds）：ready 的才带得上解析稿路径，
-        failed 的直接按原件继续（原因用户在附件上能看到）。"""
+        failed 的直接按原件继续（原因用户在附件上能看到）。等待上限到了还没完的，照常放行——
+        turn_attachment 会把它们标成 parsing，宿主告知模型预期路径，由模型决定等或绕。"""
+        deadline = time.monotonic() + self._wait_seconds
         pending = {item.id for item in items if item.parse_status == "parsing"}
-        deadline = self._clock() + self._wait_seconds
-        while pending and self._clock() < deadline:
-            await self._sleep(min(POLL_SECONDS, deadline - self._clock()))
+        while pending and time.monotonic() < deadline:
+            await asyncio.sleep(min(POLL_SECONDS, max(0.0, deadline - time.monotonic())))
             items = await self._service.ready(conversation, ids)
             pending = {item.id for item in items if item.parse_status == "parsing"}
         return items

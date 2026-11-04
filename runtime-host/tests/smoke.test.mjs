@@ -130,6 +130,11 @@ test('附件：每个文件在提问之后一行说明（逐字照官方 fileHan
       attachments: [{ ...file, parsing: true }],
     })
     assert.equal(badParsing.status, 400, 'parsing 必须带预期路径')
+    const sloppy = await host.call('POST', '/v1/sessions/att-1/messages', {
+      text: '还在解析吗',
+      attachments: [{ ...file, extractedPath: '/workspace/input/合同 "终版".md', parsing: 'true' }],
+    })
+    assert.equal(sloppy.status, 400, 'parsing 非布尔值直接拒收，不静默当 false')
     await host.call('POST', '/v1/sessions/att-1/messages', {
       text: '等它解析完',
       attachments: [{ ...file, extractedPath: '/workspace/input/合同 "终版".md', parsing: true }],
