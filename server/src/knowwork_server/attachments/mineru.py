@@ -229,7 +229,8 @@ class MinerUClient:
         interval = self._options.poll_interval_seconds
         while self._clock() < deadline:
             response = await self._http.get(f"/v1/tasks/{task_id}")
-            if response.status_code == 404:  # 任务有保留时限，服务重启/缓存过期后就没了：整次重来
+            if response.status_code in (404, 410):
+                # 任务有保留时限，服务重启/缓存过期后就没了：整次重来
                 raise unavailable()
             if response.status_code >= 400:
                 raise _status_error(response.status_code)
@@ -298,7 +299,7 @@ class MinerUClient:
             await self._sleep(interval)
             interval = min(self._options.poll_max_interval_seconds, interval * 1.5)
             response = await self._http.get(f"/v1/file_parse/{request_id}")
-            if response.status_code == 404:  # 记录过了保留期：整次重来
+            if response.status_code in (404, 410):  # 记录过了保留期：整次重来
                 raise unavailable()
             if response.status_code >= 400:
                 raise _status_error(response.status_code)

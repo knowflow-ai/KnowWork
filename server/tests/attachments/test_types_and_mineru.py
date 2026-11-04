@@ -222,10 +222,22 @@ async def test_canceled_task_is_retryable():
     assert caught.value.retryable
 
 
-async def test_lost_task_is_retryable():
+@pytest.mark.parametrize("status", [404, 410])
+async def test_lost_task_is_retryable(status):
+    """任务/同步记录过了保留期（404/410）：整次重来，和上传、下载的处置对称。"""
     lost = MinerUStub({("POST", "/v1/tasks"): [(200, RECEIPT)],
                        ("PUT", "/v1/tasks/t1/uploads/f1"): [(200, b"")],
-                       ("GET", "/v1/tasks/t1"): [(404, b"")]})
+                       ("GET", "/v1/tasks/t1"): [(status, b"")]})
+    with pytest.raises(MinerUError) as caught:
+        await client(lost).parse("a.pdf", PDF, "application/pdf")
+    assert caught.value.retryable
+
+
+@pytest.mark.parametrize("status", [404, 410])
+async def test_lost_sync_record_is_retryable(status):
+    lost = MinerUStub({("POST", "/v1/tasks"): [(404, b"")],
+                       ("POST", "/v1/file_parse"): [(202, {"status": "running"})],
+                       ("GET", "/v1/file_parse/*"): [(status, b"")]})
     with pytest.raises(MinerUError) as caught:
         await client(lost).parse("a.pdf", PDF, "application/pdf")
     assert caught.value.retryable
