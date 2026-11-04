@@ -154,15 +154,16 @@ async def test_falls_back_to_file_parse():
 
 
 async def test_sync_202_keeps_waiting_by_request_id():
-    """wait_timeout 内没解析完：服务回 202 和 request_id，接着按它轮询到终态再取结果。"""
-    stub = MinerUStub({("POST", "/v1/tasks"): [(404, b"")],
-                       ("POST", "/v1/file_parse"): [(202, {"status": "running"})],
-                       ("GET", "/v1/file_parse/*"): [(200, {"status": "completed",
-                                                          "result_url": "http://mineru/v1/files/x/content"})],
-                       ("GET", "/v1/files/x/content"): [(200, result_zip())]})
-    assert await client(stub).parse("a.pdf", PDF, "application/pdf") == "# 解析结果"
-    polls = [request for request in stub.requests if request.url.path.startswith("/v1/file_parse/")]
-    assert len(polls) == 1 and polls[0].method == "GET", "轮询的路径带着提交时的 request_id"
+    """wait_timeout 内没解析完：服务回 202 和 request_id，接着按它轮询到终态再取结果；202 带空 body 也照常轮询。"""
+    for body in ({"status": "running"}, b""):
+        stub = MinerUStub({("POST", "/v1/tasks"): [(404, b"")],
+                           ("POST", "/v1/file_parse"): [(202, body)],
+                           ("GET", "/v1/file_parse/*"): [(200, {"status": "completed",
+                                                              "result_url": "http://mineru/v1/files/x/content"})],
+                           ("GET", "/v1/files/x/content"): [(200, result_zip())]})
+        assert await client(stub).parse("a.pdf", PDF, "application/pdf") == "# 解析结果"
+        polls = [request for request in stub.requests if request.url.path.startswith("/v1/file_parse/")]
+        assert len(polls) == 1 and polls[0].method == "GET", "轮询的路径带着提交时的 request_id"
 
 
 async def test_sync_wait_timeout_stays_inside_the_request_timeout():
@@ -246,11 +247,14 @@ async def test_malformed_upload_headers_are_ignored():
     assert await client(stub).parse("a.pdf", PDF, "application/pdf") == "# 解析结果"
 
 
-@pytest.mark.parametrize(("method", "path"), [("PUT", "/v1/tasks/t1/uploads/f1"), ("GET", "/v1/files/f1/content")])
-async def test_lost_upload_or_result_is_retryable(method, path):
-    """上传记录、结果文件被清了（404）都按「服务侧东西没了」整次重来，不是协议错误。"""
+@pytest.mark.parametrize(("method", "path", "status"), [
+    ("PUT", "/v1/tasks/t1/uploads/f1", 404), ("GET", "/v1/files/f1/content", 404),
+    ("GET", "/v1/files/f1/content", 410),
+])
+async def test_lost_upload_or_result_is_retryable(method, path, status):
+    """上传记录、结果文件被清了（404）、签名地址过期（410）都按「服务侧东西没了」整次重来，不是协议错误。"""
     stub = MinerUStub({("POST", "/v1/tasks"): [(200, RECEIPT)], ("PUT", "/v1/tasks/t1/uploads/f1"): [(200, b"")],
-                       ("GET", "/v1/tasks/t1"): [(200, DONE)], (method, path): [(404, b"")]})
+                       ("GET", "/v1/tasks/t1"): [(200, DONE)], (method, path): [(status, b"")]})
     with pytest.raises(MinerUError) as caught:
         await client(stub).parse("a.pdf", PDF, "application/pdf")
     assert caught.value.code == "service_unavailable" and caught.value.retryable
@@ -365,6 +369,16 @@ async def test_token_stays_on_mineru_and_skips_signed_urls():
     upload, download = stub.requests[1], stub.requests[-1]
     assert upload.headers["X-Up"] == "1" and "authorization" not in upload.headers
     assert "authorization" not in download.headers
+    schemeless = {"task_id": "t1", "files": [{"file_id": "f1", "upload": {"url": "//store:9000/put/f1"}}]}
+    stub = MinerUStub({("POST", "/v1/tasks"): [(200, schemeless)],
+                       ("PUT", "/put/f1"): [(200, b"")],
+                       ("GET", "/v1/tasks/t1"): [(200, cross_done)],
+                       ("GET", "/signed/x"): [(200, result_zip())]})
+    await client(stub, headers={"Authorization": "Bearer tok"}).parse("a.pdf", PDF, "application/pdf")
+    assert str(stub.requests[1].url) == "http://mineru/put/f1", \
+        "httpx 把 // 开头的引用当纯路径合并到解析服务自己（实测行为）"
+    assert stub.requests[1].headers["authorization"] == "Bearer tok", \
+        "同源判定按最终解析出的地址算：发到哪就按哪判"
     same = MinerUStub({("POST", "/v1/tasks"): [(200, RECEIPT)], ("PUT", "/v1/tasks/t1/uploads/f1"): [(200, b"")],
                        ("GET", "/v1/tasks/t1"): [(200, DONE)],
                        ("GET", "/v1/files/f1/content"): [(200, result_zip())]})

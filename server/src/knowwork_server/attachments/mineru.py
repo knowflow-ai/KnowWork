@@ -203,7 +203,7 @@ class MinerUClient:
         raw_headers = _field(upload, "headers")  # 形态不对就当没有额外头，上传照做
         headers = {str(key): str(value) for key, value in raw_headers.items()} if isinstance(raw_headers, dict) else {}
         request = self._http.build_request("PUT", url, content=data, headers=headers)
-        if self._cross_origin(url):  # 跨源的签名上传地址（对象存储）不带令牌，地址原样用
+        if self._cross_origin(str(request.url)):  # 跨源的签名上传地址（对象存储）不带令牌，地址原样用
             request.headers.pop("authorization", None)
         response = await self._http.send(request)
         if response.status_code in (404, 410):  # 上传记录没找到/链接过期：整次重来还来得及
@@ -212,7 +212,8 @@ class MinerUClient:
             raise _status_error(response.status_code)
 
     def _cross_origin(self, url: str) -> bool:
-        """相对地址（带不带前导斜杠都是解析服务自己）不算跨源。"""
+        """对合并 base_url 之后的最终地址判同源；相对地址（带不带前导斜杠）与无 scheme 的网络路径引用
+        都由 httpx 解析，这里只看解析结果——`//别的机器/x` 这种引用也会被算成跨源。"""
         target = urlsplit(url)
         if not (target.scheme and target.hostname):
             return False
@@ -251,10 +252,10 @@ class MinerUClient:
 
     async def _download(self, url: str) -> bytes:
         request = self._http.build_request("GET", url)
-        if self._cross_origin(url):  # 跨源的签名结果地址（对象存储）不带令牌
+        if self._cross_origin(str(request.url)):  # 跨源的签名结果地址（对象存储）不带令牌
             request.headers.pop("authorization", None)
         response = await self._http.send(request)
-        if response.status_code == 404:  # 结果被清了/签名地址失效：整次重来
+        if response.status_code in (404, 410):  # 结果被清了/签名地址失效：整次重来
             raise unavailable()
         if response.status_code >= 400:
             raise _status_error(response.status_code)
@@ -275,7 +276,11 @@ class MinerUClient:
             raise MinerUError("parser_version_unsupported", "文档解析服务版本不受支持（需要 MinerU 4.1+）",
                               retryable=False)
         if response.status_code == 202:  # 服务等不到解析完成：按 request_id 接着等（同一请求可以恢复）
-            return _unzip(await self._wait_sync(form["request_id"], response.json(), deadline), layout)
+            try:
+                status = response.json()
+            except ValueError:  # 空 body 也是「还没完」，request_id 在手，照常轮询
+                status = {}
+            return _unzip(await self._wait_sync(form["request_id"], status, deadline), layout)
         if response.status_code >= 400:
             raise _status_error(response.status_code)
         return _unzip(response.content, layout)
