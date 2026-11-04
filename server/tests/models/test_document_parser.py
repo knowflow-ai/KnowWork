@@ -114,8 +114,8 @@ async def test_probe_tells_what_is_wrong(sessionmaker, access):
                                  ParserTest(base_url="http://mineru:8000"))
     assert without_suffix.message == "服务返回了 HTTP 404，看起来不是 MinerU 的接口地址"
     gated = await probe(openapi(token="t" * 12), ParserTest(base_url="http://mineru:8000/v1", api_key="wrong"))
-    assert gated.message.startswith("服务要求令牌，或令牌不对。地址不用带"), \
-        "网关先鉴权回 401 时，后缀提醒同样要出现且不与正文粘连"
+    assert gated.message == "服务要求令牌，或令牌不对。地址不用带 /v1 后缀：解析接口自己带 /v1 前缀，去掉再试", \
+        "网关先鉴权回 401 时，后缀提醒同样要出现且句子边界完整"
     with pytest.raises(ValueError, match="http"):
         ParserTest(base_url="mineru:8000")
 
