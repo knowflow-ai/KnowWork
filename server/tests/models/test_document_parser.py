@@ -101,6 +101,17 @@ async def test_probe_tells_what_is_wrong(sessionmaker, access):
     unreachable = await probe(httpx.AsyncClient(transport=httpx.MockTransport(down)),
                               ParserTest(base_url="http://nowhere:1"))
     assert (unreachable.ok, "连不上" in unreachable.message) == (False, True)
+
+    def missing(request):
+        return httpx.Response(404)
+
+    with_suffix = await probe(httpx.AsyncClient(transport=httpx.MockTransport(missing)),
+                              ParserTest(base_url="http://mineru:8000/v1"))
+    assert (with_suffix.ok, "/v1 后缀" in with_suffix.message or "不用带" in with_suffix.message) == (False, True), \
+        "地址多带了 /v1 后缀是最常见的填法错误，提示去掉"
+    without_suffix = await probe(httpx.AsyncClient(transport=httpx.MockTransport(missing)),
+                                 ParserTest(base_url="http://mineru:8000"))
+    assert "不用带" not in without_suffix.message
     with pytest.raises(ValueError, match="http"):
         ParserTest(base_url="mineru:8000")
 
