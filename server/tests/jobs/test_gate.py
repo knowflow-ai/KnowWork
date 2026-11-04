@@ -119,7 +119,7 @@ class FakeClient:
     async def parse(self, filename, data, mime):
         return "# 正文"
 
-    async def parse_full(self, filename, data, mime):
+    async def parse_full(self, filename, data, mime, *, layout=True):
         return "完整结果"
 
 

@@ -16,6 +16,10 @@
   会被旧代码按「没配 VLM 服务」退回 pipeline 解析，重新保存一次配置才恢复。
 - 环境变量：`KNOWWORK_MINERU_BACKEND`、`KNOWWORK_MINERU_SERVER_URL`、`KNOWWORK_MINERU_LANG` 不再读取（留着不报错），
   新增 `KNOWWORK_MINERU_TIER`（默认 `auto`）。
+- 扩展包（经 `contract.mineru` 调文档解析的）注意 Python 侧变更：`MinerUOptions` 的字段换成
+  `tier`（None 是自动推荐）+ 超时与轮询参数，`backend`、`lang`、`server_url`、`effort`、`image_analysis`
+  字段删掉；`parse_full` 保留 `layout` 参数（假的时候不把 middle_json 与图片读进内存），`image_analysis`
+  参数删掉。构造旧字段或传 `image_analysis` 会直接 TypeError，按新字段改。
 - 解析结果的取回方式变了：4.1 的结果是一个 ZIP（markdown.md、middle_json.json、images/），附件与知识库从里面取需要的部分；
   上传走回执给的上传地址（PUT），下载结果的签名地址（对象存储）不携带解析服务的令牌。会话附件只解析出 Markdown，用法不变。
 

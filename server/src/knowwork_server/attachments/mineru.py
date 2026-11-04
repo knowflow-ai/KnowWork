@@ -8,8 +8,8 @@
 - /v1/tasks 返回 404/405/501（只部署了同步解析服务 file-parse-server）时回退到同步 POST /v1/file_parse：
   multipart 传单文件，成功直接回 ZIP 字节；202 表示服务等不到解析完成，按 request_id 轮询到终态再取结果
   （同一 request_id 断线后可以恢复）；两边都 404 才报版本不支持。
-附件只要 Markdown（parse），知识库要版面与图片（parse_full）：4.1 的结果一律是整包 ZIP，两个方法只是取
-的部分不同，传输上省不掉 middle_json 与图片。
+附件只要 Markdown（parse），知识库要版面与图片（parse_full）：4.1 的结果按 output_formats 打包，markdown 只在
+default 里有，ZIP 整包都得下载；parse 不把 middle_json 与图片解包进内存，parse_full 才全取。
 
 解析档位 tier（flash/basic/standard/advanced）提交时带上，None 是让 MinerU 自动推荐；语言、VLM 推理服务
 地址（sglang / vllm）这些都不再是请求字段，由 MinerU 侧部署配置。
@@ -104,6 +104,14 @@ def _status_error(status: int) -> MinerUError:
     return bad_protocol()
 
 
+def _submit_error(status: int) -> MinerUError:
+    """提交清单阶段（POST /v1/tasks）还没有文件字节，4xx 基本都是清单或参数没被接受（协议、档位、文件名），
+    不是文件坏了——按「文件损坏」提示会误导用户，重试也帮不上忙，归为协议问题。"""
+    if status in (400, 413, 415, 422):
+        return bad_protocol()
+    return _status_error(status)
+
+
 @dataclass(frozen=True)
 class MinerUOptions:
     # 解析档位：None 让 MinerU 自动推荐（standard → basic → flash → advanced），也可以强制 flash/basic/standard/advanced
@@ -142,14 +150,18 @@ class MinerUClient:
         self._clock = clock
 
     async def parse(self, filename: str, data: bytes, mime: str) -> str:
-        return (await self.parse_full(filename, data, mime)).markdown
+        return (await self.parse_full(filename, data, mime, layout=False)).markdown
 
-    async def parse_full(self, filename: str, data: bytes, mime: str) -> MinerUResult:
-        """结果 ZIP 里 markdown.md、middle_json.json（版面、块坐标、标题、表格 HTML）、images/ 都有，全取回来。
+    async def parse_full(self, filename: str, data: bytes, mime: str, *, layout: bool = True) -> MinerUResult:
+        """结果按 output_formats 打包，markdown 只在 default 里有，所以 ZIP 整包都要下载；
+        layout 为假（附件路径）时不把 middle_json 与图片读进内存，省的是解包与内存，不是传输。
         一次解析（提交、上传、轮询、下载）共用同一个总时限，超了按「服务超时」处理。"""
+        return await self._run(filename, data, mime, layout=layout)
+
+    async def _run(self, filename: str, data: bytes, mime: str, *, layout: bool) -> MinerUResult:
         deadline = self._clock() + self._options.parse_timeout_seconds
         try:
-            return await self._parse(filename, data, mime, deadline)
+            return await self._parse(filename, data, mime, deadline, layout)
         except MinerUError:
             raise
         except httpx.TimeoutException as error:
@@ -160,16 +172,16 @@ class MinerUClient:
             log.warning("mineru returned malformed payload: %s", type(error).__name__)
             raise bad_protocol() from error
 
-    async def _parse(self, filename: str, data: bytes, mime: str, deadline: float) -> MinerUResult:
+    async def _parse(self, filename: str, data: bytes, mime: str, deadline: float, layout: bool) -> MinerUResult:
         manifest: dict[str, Any] = {"files": [{"file_name": filename, "bytes": len(data)}],
                                     "output_formats": ["default"]}
         if self._options.tier:
             manifest["tier"] = self._options.tier
         response = await self._http.post("/v1/tasks", json=manifest)
         if response.status_code in _NO_ASYNC:
-            return await self._parse_sync(filename, data, mime, deadline)
+            return await self._parse_sync(filename, data, mime, deadline, layout)
         if response.status_code >= 400:
-            raise _status_error(response.status_code)
+            raise _submit_error(response.status_code)
         receipt = response.json()
         files = _field(receipt, "files")
         if not isinstance(_field(receipt, "task_id"), str) or not receipt["task_id"] \
@@ -179,7 +191,7 @@ class MinerUClient:
         if isinstance(upload, dict):
             await self._upload(upload, data)
         result_url = await self._wait(receipt["task_id"], _field(files[0], "file_id"), deadline)
-        return _unzip(await self._download(result_url))
+        return _unzip(await self._download(result_url), layout)
 
     async def _upload(self, upload: dict[str, Any], data: bytes) -> None:
         url = _field(upload, "url")
@@ -187,14 +199,20 @@ class MinerUClient:
             raise bad_protocol()
         headers = {str(key): str(value) for key, value in (_field(upload, "headers") or {}).items()}
         request = self._http.build_request("PUT", url, content=data, headers=headers)
-        if not url.startswith("/") and not self._same_origin(url):
-            # 相对路径就是解析服务自己；跨源的签名上传地址（对象存储）不带令牌，地址原样用
+        if self._cross_origin(url):  # 跨源的签名上传地址（对象存储）不带令牌，地址原样用
             request.headers.pop("authorization", None)
         response = await self._http.send(request)
-        if response.status_code == 410:  # upload_expired：链接过期了，整次重来还来得及
+        if response.status_code in (404, 410):  # 上传记录没找到/链接过期：整次重来还来得及
             raise unavailable()
         if response.status_code >= 400:
             raise _status_error(response.status_code)
+
+    def _cross_origin(self, url: str) -> bool:
+        """相对地址（带不带前导斜杠都是解析服务自己）不算跨源。"""
+        target = urlsplit(url)
+        if not (target.scheme and target.hostname):
+            return False
+        return not self._same_origin(url)
 
     def _same_origin(self, url: str) -> bool:
         base, target = urlsplit(str(self._http.base_url)), urlsplit(url)
@@ -222,22 +240,23 @@ class MinerUClient:
                     return result_url
                 if file_state in FAILURE_STATES:
                     raise task_failure(entry)
-                raise unavailable()  # canceled 或父子状态对不上：整次重来
+                raise unavailable()  # 父子状态对不上这类意外终态：整次重来
             await self._sleep(interval)
             interval = min(self._options.poll_max_interval_seconds, interval * 1.5)
         raise timed_out()
 
     async def _download(self, url: str) -> bytes:
         request = self._http.build_request("GET", url)
-        if not url.startswith("/") and not self._same_origin(url):
-            # 相对路径就是解析服务自己；跨源的签名结果地址（对象存储）不带令牌
+        if self._cross_origin(url):  # 跨源的签名结果地址（对象存储）不带令牌
             request.headers.pop("authorization", None)
         response = await self._http.send(request)
+        if response.status_code == 404:  # 结果被清了/签名地址失效：整次重来
+            raise unavailable()
         if response.status_code >= 400:
             raise _status_error(response.status_code)
         return response.content
 
-    async def _parse_sync(self, filename: str, data: bytes, mime: str, deadline: float) -> MinerUResult:
+    async def _parse_sync(self, filename: str, data: bytes, mime: str, deadline: float, layout: bool) -> MinerUResult:
         remaining = deadline - self._clock()
         # wait_timeout 封顶在 http 客户端自己的请求超时内（留几秒余量给提交与响应本身），也不超过这次解析的总预算：
         # 服务按它等结果后回 200（ZIP）或 202（还没完，按 request_id 接着轮询）
@@ -252,10 +271,10 @@ class MinerUClient:
             raise MinerUError("parser_version_unsupported", "文档解析服务版本不受支持（需要 MinerU 4.1+）",
                               retryable=False)
         if response.status_code == 202:  # 服务等不到解析完成：按 request_id 接着等（同一请求可以恢复）
-            return _unzip(await self._wait_sync(form["request_id"], response.json(), deadline))
+            return _unzip(await self._wait_sync(form["request_id"], response.json(), deadline), layout)
         if response.status_code >= 400:
             raise _status_error(response.status_code)
-        return _unzip(response.content)
+        return _unzip(response.content, layout)
 
     async def _wait_sync(self, request_id: str, status: Any, deadline: float) -> bytes:
         interval = self._options.poll_interval_seconds
@@ -291,18 +310,21 @@ def _entry(payload: dict[str, Any], file_id: Any) -> dict[str, Any]:
     return {}
 
 
-def _unzip(data: bytes) -> MinerUResult:
-    """结果 ZIP：markdown.md 必须有；middle_json.json 有时是合法 JSON 才算数；images/ 里的名字去掉路径。"""
+def _unzip(data: bytes, layout: bool = True) -> MinerUResult:
+    """结果 ZIP：markdown.md 必须有；middle_json.json 要是合法 JSON；images/ 里的名字去掉路径。
+    名字按 basename 与 images/ 段匹配，兼容包里套一层目录的打包方式。layout 为假（附件只要 Markdown）
+    时不把 middle_json 与图片读进内存。"""
     markdown, middle, images = None, None, {}
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             for name in archive.namelist():
-                if name == "markdown.md":
+                base = name.rsplit("/", 1)[-1]
+                if base == "markdown.md" and markdown is None:
                     markdown = archive.read(name).decode("utf-8")
-                elif name == "middle_json.json":
+                elif base == "middle_json.json" and middle is None and layout:
                     middle = _middle(archive.read(name).decode("utf-8"))
-                elif name.startswith("images/") and not name.endswith("/"):
-                    images[name.rsplit("/", 1)[-1]] = archive.read(name)
+                elif layout and not name.endswith("/") and ("/images/" in name or name.startswith("images/")):
+                    images[base] = archive.read(name)
     except (zipfile.BadZipFile, UnicodeDecodeError) as error:
         raise bad_protocol() from error
     if markdown is None:
@@ -336,9 +358,9 @@ class GatedMinerU:
         async with self._gate.hold(self.GATE, self._limit):
             return await self._client.parse(filename, data, mime)
 
-    async def parse_full(self, filename: str, data: bytes, mime: str) -> MinerUResult:
+    async def parse_full(self, filename: str, data: bytes, mime: str, *, layout: bool = True) -> MinerUResult:
         async with self._gate.hold(self.GATE, self._limit):
-            return await self._client.parse_full(filename, data, mime)
+            return await self._client.parse_full(filename, data, mime, layout=layout)
 
 
 class ParserSettingsSource(Protocol):

@@ -7,7 +7,7 @@ import zipfile
 import httpx
 import pytest
 
-from knowwork_server.attachments.mineru import MinerUClient, MinerUError, MinerUOptions
+from knowwork_server.attachments.mineru import MinerUClient, MinerUError, MinerUOptions, _unzip
 from knowwork_server.attachments.settings import AttachmentSettings
 from knowwork_server.attachments.types import AttachmentRejected, Kind, detect
 
@@ -182,11 +182,12 @@ async def test_old_mineru_is_reported_not_guessed():
 
 
 @pytest.mark.parametrize(("status", "code", "retryable"), [
-    (415, "unsupported_format", False), (400, "file_corrupt", False), (422, "file_corrupt", False),
+    (415, "parser_protocol", False), (400, "parser_protocol", False), (422, "parser_protocol", False),
     (500, "service_unavailable", True), (503, "service_unavailable", True), (429, "service_unavailable", True),
     (401, "parser_protocol", False),
 ])
 async def test_submit_status_mapping(status, code, retryable):
+    """提交清单阶段还没有文件字节：4xx 是清单/参数没被接受（协议问题），不冒充「文件损坏」。"""
     stub = MinerUStub({("POST", "/v1/tasks"): [(status, b"internal /var/x")]})
     with pytest.raises(MinerUError) as caught:
         await client(stub).parse("a.pdf", PDF, "application/pdf")
@@ -236,6 +237,16 @@ async def test_expired_upload_link_is_retryable():
     assert caught.value.retryable
 
 
+@pytest.mark.parametrize(("method", "path"), [("PUT", "/v1/tasks/t1/uploads/f1"), ("GET", "/v1/files/f1/content")])
+async def test_lost_upload_or_result_is_retryable(method, path):
+    """上传记录、结果文件被清了（404）都按「服务侧东西没了」整次重来，不是协议错误。"""
+    stub = MinerUStub({("POST", "/v1/tasks"): [(200, RECEIPT)], ("PUT", "/v1/tasks/t1/uploads/f1"): [(200, b"")],
+                       ("GET", "/v1/tasks/t1"): [(200, DONE)], (method, path): [(404, b"")]})
+    with pytest.raises(MinerUError) as caught:
+        await client(stub).parse("a.pdf", PDF, "application/pdf")
+    assert caught.value.code == "service_unavailable" and caught.value.retryable
+
+
 async def test_poll_deadline_is_a_timeout():
     stub = MinerUStub({("POST", "/v1/tasks"): [(200, RECEIPT)], ("PUT", "/v1/tasks/t1/uploads/f1"): [(200, b"")],
                        ("GET", "/v1/tasks/t1"): [(200, {"status": "running"})]})
@@ -268,13 +279,22 @@ async def test_malformed_submit(payload):
     assert caught.value.code == "parser_protocol"
 
 
-@pytest.mark.parametrize("result", [b"not a zip", result_zip(markdown=None, extra=False),
-                                    result_zip(middle="not json")])
+@pytest.mark.parametrize("result", [b"not a zip", result_zip(markdown=None, extra=False)])
 async def test_malformed_results_are_protocol_errors(result):
     stub = MinerUStub(async_flow({}, result=result))
     with pytest.raises(MinerUError) as caught:
         await client(stub).parse("a.pdf", PDF, "application/pdf")
     assert caught.value.code == "parser_protocol"
+
+
+async def test_bad_middle_json_is_a_protocol_error_for_layout_results():
+    """middle_json.json 不合法只有要版面的路径（parse_full）才在乎；附件路径根本不读它。"""
+    stub = MinerUStub(async_flow({}, result=result_zip(middle="not json")))
+    with pytest.raises(MinerUError) as caught:
+        await client(stub).parse_full("a.pdf", PDF, "application/pdf")
+    assert caught.value.code == "parser_protocol"
+    assert await client(MinerUStub(async_flow({}, result=result_zip(middle="not json")))).parse(
+        "a.pdf", PDF, "application/pdf") == "# 解析结果"
 
 
 async def test_completed_without_result_url_is_a_protocol_error():
@@ -288,12 +308,28 @@ async def test_completed_without_result_url_is_a_protocol_error():
 
 async def test_full_result_brings_layout_and_images():
     """知识库要 middle_json 与图片：ZIP 里 middle_json.json 是 JSON 文件，images/ 的名字去掉路径，
-    用不上的 structured_content.json 忽略。"""
+    用不上的 structured_content.json 忽略；包里套一层目录（如 output/名/）也能按名字找到。"""
     middle = {"pdf_info": [{"page_idx": 0, "para_blocks": []}]}
     png = b"\x89PNG\r\n"
-    stub = MinerUStub(async_flow({}, result=result_zip("# 标题", middle, {"x.png": png})))
-    full = await client(stub, tier="standard").parse_full("a.pdf", PDF, "application/pdf")
-    assert (full.markdown, full.middle, full.images) == ("# 标题", middle, {"x.png": png})
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as archive:
+        archive.writestr("output/a.pdf/markdown.md", "# 标题")
+        archive.writestr("output/a.pdf/middle_json.json", json.dumps(middle))
+        archive.writestr("output/a.pdf/images/x.png", png)
+    for zip_bytes in (result_zip("# 标题", middle, {"x.png": png}), nested.getvalue()):
+        stub = MinerUStub(async_flow({}, result=zip_bytes))
+        full = await client(stub, tier="standard").parse_full("a.pdf", PDF, "application/pdf")
+        assert (full.markdown, full.middle, full.images) == ("# 标题", middle, {"x.png": png})
+
+
+async def test_markdown_only_parse_leaves_layout_bytes_unread():
+    """附件只要 Markdown：middle_json 与图片不从 ZIP 里解出来（传输省不掉，省的是解包与内存）。"""
+    middle = {"pdf_info": []}
+    zip_bytes = result_zip("# 解析结果", middle, {"x.png": b"png"})
+    only_markdown = _unzip(zip_bytes, layout=False)
+    assert only_markdown.markdown == "# 解析结果" and only_markdown.middle is None and only_markdown.images == {}
+    full = _unzip(zip_bytes)
+    assert full.middle == middle and full.images == {"x.png": b"png"}
 
 
 @pytest.mark.parametrize(("status", "code", "retryable"), [
@@ -328,15 +364,16 @@ async def test_token_stays_on_mineru_and_skips_signed_urls():
 
 
 async def test_relative_urls_and_implicit_ports_count_as_same_origin():
-    """本地部署给相对路径（上传、结果）或带默认端口的绝对地址时，都算解析服务自己：令牌照发。"""
-    local_receipt = {"task_id": "t1", "files": [{"file_id": "f1", "upload": {"url": "/v1/tasks/t1/uploads/f1"}}]}
-    stub = MinerUStub({("POST", "/v1/tasks"): [(200, local_receipt)],
-                       ("PUT", "/v1/tasks/t1/uploads/f1"): [(200, b"")],
-                       ("GET", "/v1/tasks/t1"): [(200, {"status": "completed", "files": [
-                           {"file_id": "f1", "status": "completed",
-                            "result_url": "http://mineru:80/v1/files/f1/content"}]})],
-                       ("GET", "/v1/files/f1/content"): [(200, result_zip())]})
-    await client(stub, headers={"Authorization": "Bearer tok"}).parse("a.pdf", PDF, "application/pdf")
-    upload, download = stub.requests[1], stub.requests[-1]
-    assert upload.headers["authorization"] == "Bearer tok" and download.headers["authorization"] == "Bearer tok", \
-        "相对路径与显式默认端口都别把令牌剥掉"
+    """本地部署给相对路径（带不带前导斜杠都是解析服务自己）或带默认端口的绝对地址时，都算解析服务自己：令牌照发。"""
+    for upload_url in ("/v1/tasks/t1/uploads/f1", "v1/tasks/t1/uploads/f1"):
+        local_receipt = {"task_id": "t1", "files": [{"file_id": "f1", "upload": {"url": upload_url}}]}
+        stub = MinerUStub({("POST", "/v1/tasks"): [(200, local_receipt)],
+                           ("PUT", "/v1/tasks/t1/uploads/f1"): [(200, b"")],
+                           ("GET", "/v1/tasks/t1"): [(200, {"status": "completed", "files": [
+                               {"file_id": "f1", "status": "completed",
+                                "result_url": "http://mineru:80/v1/files/f1/content"}]})],
+                           ("GET", "/v1/files/f1/content"): [(200, result_zip())]})
+        await client(stub, headers={"Authorization": "Bearer tok"}).parse("a.pdf", PDF, "application/pdf")
+        upload, download = stub.requests[1], stub.requests[-1]
+        assert upload.headers["authorization"] == "Bearer tok" and download.headers["authorization"] == "Bearer tok", \
+            "相对路径与显式默认端口都别把令牌剥掉"
