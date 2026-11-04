@@ -43,13 +43,18 @@ class SessionSpec(_Frozen):
 
 
 class TurnAttachment(_Frozen):
-    """本轮消息附带的一个文件：已在本会话容器的 /workspace/input 里（照官方 dsh-attachment，模型按需读）。"""
+    """本轮消息附带的一个文件：已在本会话容器的 /workspace/input 里（照官方 dsh-attachment，模型按需读）。
+
+    extracted_path 是文档解析器产出的 Markdown：parsing 为假时已经就位（长文档优先读它）；parsing 为真时
+    解析还在后台跑，它是完成后的预期路径——宿主照此告诉模型「仍在解析，可稍后再查，先用原件或告知用户」。
+    """
 
     name: str = Field(min_length=1, max_length=200)
     path: str = Field(pattern=r"^/workspace/input/[^/]{1,200}$")
     bytes: int = Field(ge=0)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     extracted_path: str | None = Field(default=None, pattern=r"^/workspace/input/[^/]{1,200}$")
+    parsing: bool = False
 
 
 class KnowledgeEntry(_Frozen):

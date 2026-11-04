@@ -219,4 +219,6 @@ class HostKernel:
 
 def _attachment(item: TurnAttachment) -> dict:
     body = {"name": item.name, "path": item.path, "bytes": item.bytes, "sha256": item.sha256}
-    return body if item.extracted_path is None else {**body, "extractedPath": item.extracted_path}
+    if item.extracted_path is not None:
+        body = {**body, "extractedPath": item.extracted_path}
+    return {**body, "parsing": True} if item.parsing else body

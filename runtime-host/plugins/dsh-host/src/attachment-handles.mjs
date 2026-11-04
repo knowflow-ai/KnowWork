@@ -5,7 +5,8 @@
  * 摘要前缀、只读路径），模型需要时用文件工具读。说明文字逐字照搬 dsh-llm 的 fileHandleText（0.2.1-rc.2）。
  * 不同的只是存放位置：官方存在宿主目录里，靠执行环境的 processPathFromHostPath 映射；我们的执行环境是
  * 每个会话一个容器，不能把宿主目录挂进去（会破坏会话隔离），所以文件由业务服务放进本会话容器的
- * /workspace/input，这里只把路径写给模型。配了文档解析的，另外一行说明解析出的 Markdown。
+ * /workspace/input，这里只把路径写给模型。配了文档解析的，另外一行说明解析出的 Markdown；解析还在跑时
+ * 说明预期路径与应对（稍后再查、先用原件、告知用户），免得模型面对「来历不明」的 .md 自己再抽一遍文本。
  *
  * 每个文件单独一个文本块跟在用户原话后面：会话历史里持久保留（后面几轮模型仍知道有这些文件），
  * 业务服务投影时按固定格式把它们从显示文字里拿出来，换成附件卡片。
@@ -39,7 +40,9 @@ export function attachmentsOf(raw) {
     if (typeof sha256 !== 'string' || !/^[0-9a-f]{8,64}$/.test(sha256)) throw invalid('attachments.sha256 格式错误')
     const path = inputPath(item.path, 'path')
     const extractedPath = item.extractedPath === undefined ? undefined : inputPath(item.extractedPath, 'extractedPath')
-    return { name, bytes, sha256, path, extractedPath }
+    const parsing = item.parsing === true
+    if (parsing && extractedPath === undefined) throw invalid('attachments.parsing 需要 extractedPath（预期路径）')
+    return { name, bytes, sha256, path, extractedPath, parsing }
   })
 }
 
@@ -49,9 +52,13 @@ export function fileHandleText(file) {
   return `[${identity}: verbatim read-only copy saved at ${JSON.stringify(file.path)}. Read that path with your file tools when its contents are needed; copy it to a writable location before modifying it. When delegating file work, include this saved path in the delegation prompt; only subagents sharing this execution environment can read it.]`
 }
 
-/** 解析出的 Markdown：读长文档优先用它，原件仍是准绳。 */
+/** 解析出的 Markdown：读长文档优先用它，原件仍是准绳；还在解析时告知预期路径，模型自行决定等或绕。 */
 export function extractedText(file) {
-  return `[Markdown extracted from ${JSON.stringify(file.name)} by the document parser, saved at ${JSON.stringify(file.extractedPath)}. Prefer reading it for long documents; the original file stays the source of truth.]`
+  const path = JSON.stringify(file.extractedPath)
+  if (file.parsing === true) {
+    return `[The document parser is still extracting Markdown from ${JSON.stringify(file.name)}; when it finishes the Markdown will be saved at ${path}. Check for that file again shortly, work from the original file in the meantime, or tell the user it is still being processed.]`
+  }
+  return `[Markdown extracted from ${JSON.stringify(file.name)} by the document parser, saved at ${path}. Prefer reading it for long documents; the original file stays the source of truth.]`
 }
 
 /** 用户原话之后，每个文件一个说明块（有解析结果的再跟一块）。 */

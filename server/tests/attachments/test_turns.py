@@ -49,7 +49,8 @@ async def test_ready_attachments_become_turn_files(files_db, tmp_path):
     [item] = await turns.for_turn(conv, [pdf["id"]])
     assert (item.name, item.path, item.bytes, item.sha256) == ("报告.pdf", "/workspace/input/报告.pdf", len(PDF),
                                                                sha256_hex(PDF))
-    assert item.extracted_path is None, "等待上限内没解析出来就不给 Markdown 路径"
+    assert (item.extracted_path, item.parsing) == ("/workspace/input/报告.md", True), \
+        "等待关闭时解析还在跑：给预期路径并标记解析中，宿主据此告知模型"
     for ids in ([broken["id"]], [theirs[0]["id"]], ["att_missing"]):
         with pytest.raises(AttachmentUnavailable):
             await turns.for_turn(conv, ids)
@@ -66,7 +67,8 @@ async def test_waits_for_the_parse_and_hands_over_the_markdown(files_db, tmp_pat
     stop = await settle(files_db, attachments, pdf["id"], 0.2, parse_status="ready")
     [item] = await TurnAttachments(attachments.service, waiting).for_turn(conv, [pdf["id"]])
     await stop
-    assert item.extracted_path == "/workspace/input/报告.md"
+    assert item.extracted_path == "/workspace/input/报告.md" and item.parsing is False, \
+        "解析就位：说明路径带预期语义的文案，不带解析中标记"
     await attachments.aclose()
 
 
@@ -81,17 +83,17 @@ async def test_failed_parse_falls_back_to_the_original(files_db, tmp_path):
                         error_message="文档解析失败，文件可能已损坏或加密")
     [item] = await TurnAttachments(attachments.service, waiting).for_turn(conv, [pdf["id"]])
     await stop
-    assert item.extracted_path is None
+    assert item.extracted_path is None and item.parsing is False, "解析失败：不提示解析中，模型按原件继续"
     await attachments.aclose()
 
 
 async def test_wait_gives_up_on_the_deadline(files_db, tmp_path):
-    """一直解析不完：等到上限就按原件继续，不拖住发消息。"""
+    """一直解析不完：等到上限就放行，但告知模型解析仍在进行与预期路径，由它决定等或绕。"""
     conv = await files_db.conversation()
     http, attachments, _, _ = setup(files_db, tmp_path)
     async with http:
         [pdf] = (await post(http, conv.id, ("报告.pdf", PDF))).json()["items"]
     waiting = AttachmentSettings(mineru_base_url="http://mineru", attachment_parse_wait_seconds=0.1)
     [item] = await TurnAttachments(attachments.service, waiting).for_turn(conv, [pdf["id"]])
-    assert item.extracted_path is None
+    assert item.extracted_path == "/workspace/input/报告.md" and item.parsing is True
     await attachments.aclose()

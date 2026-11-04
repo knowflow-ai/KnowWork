@@ -125,9 +125,23 @@ test('附件：每个文件在提问之后一行说明（逐字照官方 fileHan
     assert.ok(first.indexOf(handle) > first.indexOf('帮我改一下付款条款'), '说明行跟在提问之后')
     assert.ok(first.includes(inJson('[Markdown extracted from "合同 \\"终版\\".docx" by the document parser')))
 
-    await host.call('POST', '/v1/sessions/att-1/messages', { text: '再看一遍第三条' })
+    const badParsing = await host.call('POST', '/v1/sessions/att-1/messages', {
+      text: '还在解析吗',
+      attachments: [{ ...file, parsing: true }],
+    })
+    assert.equal(badParsing.status, 400, 'parsing 必须带预期路径')
+    await host.call('POST', '/v1/sessions/att-1/messages', {
+      text: '等它解析完',
+      attachments: [{ ...file, extractedPath: '/workspace/input/合同 "终版".md', parsing: true }],
+    })
     await collectEvents(host, 'att-1', frame => isTurnEnd(frame) && host.llm.requests.length >= 2)
-    assert.ok(modelInput(host, 1).includes(handle), '下一轮模型仍看得到这个文件')
+    const second = modelInput(host, 1)
+    assert.ok(second.includes(inJson('[The document parser is still extracting Markdown from "合同 \\"终版\\".docx"')))
+    assert.ok(second.includes('still being processed'), '告诉模型可以自行决定等或绕')
+
+    await host.call('POST', '/v1/sessions/att-1/messages', { text: '再看一遍第三条' })
+    await collectEvents(host, 'att-1', frame => isTurnEnd(frame) && host.llm.requests.length >= 3)
+    assert.ok(modelInput(host, 2).includes(handle), '下一轮模型仍看得到这个文件')
   } finally {
     await host.stop()
   }

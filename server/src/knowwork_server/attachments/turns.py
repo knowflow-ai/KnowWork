@@ -23,11 +23,16 @@ POLL_SECONDS = 0.5
 
 
 def turn_attachment(item: AttachmentView) -> TurnAttachment:
-    extracted = (INPUT_DIR + item.parsed_name
-                 if item.parse_status == "ready" and item.parsed_name and item.parsed_name != item.input_name
-                 else None)
+    markdown = (INPUT_DIR + item.parsed_name
+                if item.parsed_name and item.parsed_name != item.input_name else None)
+    if item.parse_status == "ready" and markdown:  # 解析稿已就位：长文档优先读它
+        return TurnAttachment(name=item.filename, path=INPUT_DIR + item.input_name, bytes=item.size,
+                              sha256=item.digest, extracted_path=markdown)
+    if item.parse_status == "parsing" and markdown:  # 还在解析：告诉模型预期路径，让它自行决定等或绕
+        return TurnAttachment(name=item.filename, path=INPUT_DIR + item.input_name, bytes=item.size,
+                              sha256=item.digest, extracted_path=markdown, parsing=True)
     return TurnAttachment(name=item.filename, path=INPUT_DIR + item.input_name, bytes=item.size,
-                          sha256=item.digest, extracted_path=extracted)
+                          sha256=item.digest)
 
 
 class TurnAttachments:
