@@ -6,10 +6,13 @@
 """
 
 import logging
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
+
+from ..kernel.contract import ANSWER_MODE_PATTERN
 
 log = logging.getLogger(__name__)
 
@@ -17,8 +20,10 @@ Risk = Literal["read", "write", "dangerous"]
 Approval = Literal["ask", "never"]
 RISKS: frozenset[str] = frozenset({"read", "write", "dangerous"})
 APPROVALS: frozenset[str] = frozenset({"ask", "never"})
-# 回答方式（同 kernel/contract.TurnInput.answer_mode）：工具声明自己在哪几种里提供，默认只在智能体里
+# 回答方式（同 kernel/contract.TurnInput.answer_mode）：工具声明自己在哪几种里提供，默认只在智能体里。
+# 内置 agent、quick；扩展登记的回答方式（conversations/answer_modes.py）也能声明，这里只校验格式
 ANSWER_MODES: frozenset[str] = frozenset({"agent", "quick"})
+ANSWER_MODE = re.compile(ANSWER_MODE_PATTERN)
 AGENT_ONLY: frozenset[str] = frozenset({"agent"})
 AGENT_AND_QUICK: frozenset[str] = ANSWER_MODES
 MAX_GUIDANCE = 1000
@@ -82,7 +87,7 @@ class ToolSpec:
             raise ValueError(f"工具 {self.name} 的使用规则为空或过长")
         if self.concurrent and self.risk != "read":
             raise ValueError(f"工具 {self.name} 不是只读的，不能声明同时执行")
-        if not self.answer_modes or not self.answer_modes <= ANSWER_MODES:
+        if not self.answer_modes or not all(ANSWER_MODE.fullmatch(mode) for mode in self.answer_modes):
             raise ValueError(f"工具 {self.name} 的回答方式不合法")
 
     @property
@@ -106,13 +111,24 @@ class ToolFailure(Exception):
     """工具执行失败。message 会原样交给模型，只能写面向用户的说明，不能带内部细节。"""
 
 
+@dataclass(frozen=True)
+class ToolOutput:
+    """处理函数的返回：给模型的文本，另带一份只给界面看的卡片（协议见 tools/presentation.py）。只有文本时直接返回 str。"""
+
+    content: str
+    presentation: dict[str, Any] | None = None
+
+
+Output = str | ToolOutput
+
+
 class ToolRegistry(Protocol):
     async def available(self, ctx: ToolContext) -> list[ToolSpec]: ...
 
-    async def invoke(self, ctx: ToolContext, name: str, arguments: dict[str, Any]) -> str: ...
+    async def invoke(self, ctx: ToolContext, name: str, arguments: dict[str, Any]) -> Output: ...
 
 
-Handler = Callable[[ToolContext, dict[str, Any]], Awaitable[str]]
+Handler = Callable[[ToolContext, dict[str, Any]], Awaitable[Output]]
 
 
 @dataclass(frozen=True)
@@ -139,7 +155,7 @@ class StaticToolRegistry:
     async def available(self, ctx: ToolContext) -> list[ToolSpec]:
         return [tool.spec for tool in self.tools.values()]
 
-    async def invoke(self, ctx: ToolContext, name: str, arguments: dict[str, Any]) -> str:
+    async def invoke(self, ctx: ToolContext, name: str, arguments: dict[str, Any]) -> Output:
         tool = self.tools.get(name)
         if tool is None:
             raise ToolFailure(f"工具 {name} 不存在")
@@ -155,7 +171,7 @@ class CompositeToolRegistry:
     async def available(self, ctx: ToolContext) -> list[ToolSpec]:
         return [spec for _, spec in await self._owned(ctx)]
 
-    async def invoke(self, ctx: ToolContext, name: str, arguments: dict[str, Any]) -> str:
+    async def invoke(self, ctx: ToolContext, name: str, arguments: dict[str, Any]) -> Output:
         owner = next((registry for registry, spec in await self._owned(ctx) if spec.name == name), None)
         if owner is None:
             raise ToolFailure(f"工具 {name} 不存在")

@@ -58,7 +58,62 @@ export interface StepView {
   readonly errorReason?: string;
   /** 知识检索的摘要（业务服务按完整结果摘出）：回答上方据此列出检索条件。 */
   readonly search?: SearchSummary;
+  /** 工具交给界面的卡片（业务服务 tools/presentation.py 的协议，经 DSH 工具结果的 meta）：回答下方按步骤顺序画出来。 */
+  readonly cards?: readonly ResultCard[];
 }
+
+export type CardCell = string | number | boolean | null;
+
+export interface TableCardColumn {
+  readonly name: string;
+  readonly label?: string;
+  /** 只管对齐：数字右对齐。 */
+  readonly kind?: 'number' | 'text' | 'date';
+}
+
+/** 怎么把结果表画成图（工具定的，界面照着画）：横轴 x、数值列 y（一次画一列、可切换）、按 series 分成几条线。都是列名。 */
+export interface TableChart {
+  readonly type: 'line' | 'bar' | 'pie';
+  readonly x: string;
+  readonly y: readonly string[];
+  readonly series?: string;
+}
+
+/** 结果表：前几行与这次结果一共多少行。 */
+export interface TableCard {
+  readonly type: 'table';
+  /** 卡片头的标题（如「销售额 · 按区域」）与它下面一行灰字（如时间范围） */
+  readonly title?: string;
+  readonly subtitle?: string;
+  readonly columns: readonly TableCardColumn[];
+  readonly rows: readonly (readonly CardCell[])[];
+  readonly rowCount: number;
+  /** 结果本身还被截过（超过了查询的行数上限）。 */
+  readonly moreRows: boolean;
+  /** 能画成图时怎么画；没有就只给表 */
+  readonly chart?: TableChart;
+}
+
+/** 出处：一行说明（最前面一个词，如「口径」），点开看明细与代码。 */
+export interface ProvenanceCard {
+  readonly type: 'provenance';
+  readonly label: string;
+  readonly text: string;
+  readonly items: readonly { readonly name: string; readonly value: string }[];
+  readonly code?: string;
+  readonly codeLanguage?: string;
+  /** 默认展开（例如 AI 临时写的查询，代码是用户核对的依据）。 */
+  readonly open: boolean;
+  /** 卡片上的操作：name 是扩展在插槽 chat.card.actions 里登记的，ref 原样交给它（例如查询编号）。 */
+  readonly actions: readonly CardAction[];
+}
+
+export interface CardAction {
+  readonly name: string;
+  readonly ref: string;
+}
+
+export type ResultCard = TableCard | ProvenanceCard;
 
 /** 一次知识检索：命中的文档（来源:文档，去重）、用上的条件、用户这一轮撤掉的条件。条件的写法由业务服务给出。 */
 export interface SearchSummary {

@@ -25,10 +25,14 @@ def fresh_settings():
     get_settings.cache_clear()
 
 
-async def test_worker_runs_attachment_parse_jobs(app_db, monkeypatch, tmp_path):
+# 第二组：连接池只有 1 条。任务通知的 LISTEN 一直占着一条连接，要走单独的连接（db/base.py 的 make_held_engine）；
+# 以前它从请求池里拿，池子小时执行槽、心跳等不到连接，任务一直领不到
+@pytest.mark.parametrize("pool", [{}, {"KNOWWORK_DB_POOL_SIZE": "1", "KNOWWORK_DB_MAX_OVERFLOW": "0"}],
+                         ids=["default-pool", "one-connection-pool"])
+async def test_worker_runs_attachment_parse_jobs(app_db, monkeypatch, tmp_path, pool):
     await upgrade_to_head(app_db.owner_url, app_role=app_db.role)
     for name, value in {"KNOWWORK_MASTER_KEY": "k" * 40, "KNOWWORK_DATABASE_URL": app_db.app_url,
-                        "KNOWWORK_BLOB_DIR": str(tmp_path), "KNOWWORK_JOB_IDLE_SECONDS": "0.1"}.items():
+                        "KNOWWORK_BLOB_DIR": str(tmp_path), "KNOWWORK_JOB_IDLE_SECONDS": "0.1", **pool}.items():
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("KNOWWORK_SANDBOX_DOCKER_ENABLED", raising=False)
     engine = make_engine(app_db.app_url)
@@ -58,6 +62,44 @@ async def test_worker_runs_attachment_parse_jobs(app_db, monkeypatch, tmp_path):
         stop.set()
         await asyncio.wait_for(task, 10)
         await engine.dispose()
+
+
+async def test_worker_stops_and_reports_when_the_license_ends(monkeypatch):
+    """授权运行中到期、没续上：worker 自己停下（手上的任务照常退回排队），run 返回 True，main 据此换退出码。"""
+    served, closed = [], []
+
+    class FakeWorker:
+        extensions = None
+
+        async def serve(self, stop):
+            served.append(1)
+            await stop.wait()
+
+        async def aclose(self):
+            closed.append(1)
+
+    async def license_ends(extensions, stop):
+        await asyncio.sleep(0.05)
+        stop.set()
+        return True
+
+    monkeypatch.setattr(worker, "get_settings", lambda: None)
+    monkeypatch.setattr(worker, "build_worker", lambda settings: FakeWorker())
+    monkeypatch.setattr(worker, "stop_when_license_ends", license_ends)
+    assert await asyncio.wait_for(worker.run(asyncio.Event()), 5) is True
+    assert served == [1] and closed == [1]
+
+
+def test_worker_main_exits_with_the_license_code(monkeypatch):
+    from knowwork_server.extensions.expiry import EXIT_LICENSE_ENDED
+
+    async def ended():
+        return True
+
+    monkeypatch.setattr(worker, "run", ended)
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == EXIT_LICENSE_ENDED
 
 
 async def test_worker_fails_fast_without_master_key(monkeypatch):

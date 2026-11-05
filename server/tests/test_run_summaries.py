@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from knowwork_server.conversations.models import Conversation, RunSummary
-from knowwork_server.conversations.summaries import RunSummaries, TurnEnded
+from knowwork_server.conversations.summaries import RunSummaries, SummaryQuery, TurnEnded
 
 pytestmark = pytest.mark.anyio
 WS = "ws_sum"
@@ -81,6 +81,7 @@ async def test_a_turn_is_running_at_start_and_complete_at_the_end(env):
                                                 datetime.fromtimestamp(END / 1000, UTC))
     assert [(e.turn, e.question, e.answer, e.status, e.user_id) for e in seen] == [
         (2, "合同有哪些条款", "付款分两期 [1]", "completed", "alice")], "带上提问人：扩展（例如记忆）按人做自己的事"
+    assert seen[0].started_at == datetime.fromtimestamp(START / 1000, UTC), "带上开始时刻：模块按它取这一轮自己的记录"
 
 
 @pytest.mark.parametrize(("reason", "status"), [("aborted", "cancelled"), ("error", "failed"), ("blocked", "failed"),
@@ -149,3 +150,27 @@ async def test_the_question_sticks_even_when_it_is_written_before_the_row(sessio
     await summaries.drain()
     running = await summary(sessionmaker, conversation.id, 1)
     assert (running.status, running.question) == ("running", "合同有哪些条款")
+
+
+async def test_runs_can_be_narrowed_by_a_module_fact_and_modules_can_mark_unanswered(env):
+    """运行记录按模块记的事实筛（问数记的数据源）；模块在事实里写 unanswered: true 的也算「没答上来」。"""
+    sessionmaker, summaries, cid = env
+
+    async def analytics(ended):
+        return {"projects": ["anprj_1"], "queries": 2, "failed": 2, "unanswered": True} if ended.turn == 1 else \
+            {"projects": ["anprj_2"], "queries": 1, "failed": 0}
+
+    summaries.contribute("analytics", analytics)
+    for turn in (1, 2):
+        feed(summaries, cid, frame("turn/start", {"turn": turn}, time=START + turn),
+             frame("turn/end", {"turn": turn, "reason": {"kind": "completed"}}, time=END + turn))
+    await summaries.drain()
+    query = SummaryQuery(sessionmaker)
+    since, until = datetime.fromtimestamp(START / 1000 - 60, UTC), datetime.fromtimestamp(END / 1000 + 60, UTC)
+
+    async def turns(**kwargs):
+        return [row.summary.turn for row in await query.page(WS, since=since, until=until, **kwargs)]
+
+    assert await turns(fact=("analytics", "projects", "anprj_1")) == [1]
+    assert await turns(fact=("analytics", "projects", "anprj_9")) == []
+    assert await turns(signal="unanswered") == [1]

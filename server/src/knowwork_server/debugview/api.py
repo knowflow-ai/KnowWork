@@ -19,12 +19,15 @@ from ..sessionfiles.lookup import ConversationLookup, owned_conversation
 from .service import DebugService
 
 _SNAKE = re.compile(r"_([a-z])")
+# 原样交给前端、里面的键不改的：工具交给界面的卡片（tools/presentation.py 的协议，同会话事件里的那份，前端同一个解析）
+_RAW = frozenset({"presentation"})
 
 
 def camel(value: Any) -> Any:
     """dataclass 转出的字典键改成前端约定的驼峰式（同会话、引用接口）。"""
     if isinstance(value, dict):
-        return {_SNAKE.sub(lambda m: m.group(1).upper(), str(k)): camel(v) for k, v in value.items()}
+        return {_SNAKE.sub(lambda m: m.group(1).upper(), str(k)): v if k in _RAW else camel(v)
+                for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [camel(item) for item in value]
     return value

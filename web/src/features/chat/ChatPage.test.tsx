@@ -90,13 +90,26 @@ describe('ChatPage', () => {
     expect(
       calls
         .map((c) => c.url)
-        // 进会话后台自动拉的（产物、@ 候选、每轮的赞踩）不算
-        .filter((url) => !/\/(artifacts|mention-options|feedback)$/.test(url)),
+        // 进会话后台自动拉的（产物、@ 候选、每轮的赞踩、可选的回答方式）不算
+        .filter((url) => !/\/(artifacts|mention-options|feedback|answer-modes)$/.test(url)),
     ).toEqual([
       '/api/workspaces/default/conversations',
       '/api/workspaces/default/conversations/c-new/messages',
     ]);
     expect(screen.getByText('帮我写周报')).toBeInTheDocument();
+  });
+
+  it('从别的页面带着回答方式和 @ 进新对话（例如数据源页「去问」）：换成那种回答方式，@ 摆在输入框里', async () => {
+    const source = { type: 'extension', kind: 'data_source', label: '数据源', id: 'p1', name: '销售库' };
+    renderWithApp(<ChatPage />, {
+      route: '/chat',
+      path: '/chat',
+      state: { answerMode: 'analytics', mentions: [source] },
+    });
+    const chips = screen.getByRole('list', { name: '这一问 @ 点名的内容' });
+    expect(within(chips).getByText('销售库')).toBeInTheDocument();
+    expect(within(chips).getByText('数据源')).toBeInTheDocument();
+    expect(useAnswerMode.getState().mode).toBe('analytics');
   });
 
   it('回答语言：用户选了 English，之后的消息都带 en', async () => {
@@ -206,6 +219,7 @@ describe('ChatPage', () => {
           mentions: [
             { type: 'folder', id: '财务', name: '财务' },
             { type: 'document', id: 'kb1/d1', name: '差旅办法', base: 'builtin.kb1', base_name: '报销制度' },
+            { type: 'extension', id: 'p1', name: '销售库', kind: 'data_source', label: '数据源' },
           ],
         },
       }),
@@ -215,12 +229,14 @@ describe('ChatPage', () => {
     const shown = screen.getByRole('list', { name: '这条消息 @ 点名的内容' });
     expect(within(shown).getByText('差旅办法')).toBeInTheDocument();
     expect(within(shown).getByText('目录')).toBeInTheDocument();
+    expect(within(shown).getByText('数据源')).toBeInTheDocument();
     await userEvent.click(await screen.findByRole('button', { name: '重新生成' }));
     await waitFor(() => expect(calls.filter((c) => c.url.endsWith('/messages'))).toHaveLength(1));
     const body = JSON.parse(String(calls.find((c) => c.url.endsWith('/messages'))?.body));
     expect(body.mentions).toEqual([
       { type: 'folder', id: '财务', name: '财务', bases: ['builtin.kb1', 'builtin.kb2'] },
       { type: 'document', id: 'kb1/d1', name: '差旅办法', base: 'builtin.kb1', base_name: '报销制度' },
+      { type: 'extension', id: 'p1', name: '销售库', kind: 'data_source' },
     ]);
   });
 
@@ -390,5 +406,41 @@ describe('ChatPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(screen.getAllByText('审批不存在或已结束').length).toBeGreaterThan(0));
     expect(screen.queryByLabelText('正在发送')).not.toBeInTheDocument();
+  });
+});
+
+describe('新对话页输入框下面的扩展内容（chat.welcome）', () => {
+  it('拿得到当前回答方式；点了就照那句、带着它给的 @ 开新对话', async () => {
+    const { register } = await import('../../slots/registry');
+    const source = {
+      type: 'extension',
+      kind: 'data_source',
+      label: '数据源',
+      id: 'p1',
+      name: '销售库',
+    } as const;
+    register('chat.welcome', {
+      Component: ({ answerMode, ask }) => (
+        <button type="button" onClick={() => ask('上个月各区域的净收入', [source])}>
+          示例 {answerMode}
+        </button>
+      ),
+    });
+    useAnswerMode.setState({ mode: 'agent' });
+    renderWithApp(<ChatPage />, {
+      route: '/chat',
+      path: '/chat',
+      extraRoutes: { '/chat/:conversationId': <ChatPage /> },
+    });
+    await userEvent.click(screen.getByRole('button', { name: '示例 agent' }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === '/api/workspaces/default/conversations/c-new/messages')).toBe(true),
+    );
+    const sent = calls.find((c) => c.url === '/api/workspaces/default/conversations/c-new/messages');
+    const body = JSON.parse(String(sent?.body));
+    expect(body.text).toBe('上个月各区域的净收入');
+    expect(body.mentions).toEqual([
+      expect.objectContaining({ type: 'extension', kind: 'data_source', id: 'p1' }),
+    ]);
   });
 });

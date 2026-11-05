@@ -11,8 +11,9 @@
 const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
 const RISKS = new Set(['read', 'write', 'dangerous'])
 const APPROVALS = new Set(['ask', 'never'])
-/** 回答方式（同业务服务 ToolSpec.answer_modes），不写时只在智能体里提供 */
-const ANSWER_MODES = new Set(['agent', 'quick'])
+/** 回答方式的标识（同业务服务 ToolSpec.answer_modes 与 answer-mode.mjs 的 MODE_PATTERN）；不写时只在智能体里提供。
+ *  扩展可以登记新的回答方式，这里只校验格式，不认名单 */
+const ANSWER_MODE = /^[a-z][a-z0-9_]{0,31}$/
 const MAX_GUIDANCE = 1000
 const MAX_TOOLS = 128
 const MAX_DESCRIPTION = 4000
@@ -32,7 +33,7 @@ export class BridgeError extends Error {}
  * @property {'ask' | 'never'} approval 执行前是否走官方人工审批
  * @property {string} [guidance] 写进系统提示的使用规则
  * @property {true} [concurrent] 业务服务声明可与同一步里的其它调用同时执行（只读、无状态）
- * @property {Array<'agent' | 'quick'>} [answerModes] 在哪几种回答方式下提供；不写时只在智能体里
+ * @property {string[]} [answerModes] 在哪几种回答方式下提供（agent、quick 或扩展登记的）；不写时只在智能体里
  */
 
 /** @returns {BridgeTool} */
@@ -55,8 +56,8 @@ function toolOf(raw) {
   if (raw.concurrent !== undefined && typeof raw.concurrent !== 'boolean') throw new BridgeError(`工具 ${name} 的 concurrent 必须是布尔值`)
   const { answerModes } = raw
   if (answerModes !== undefined && (!Array.isArray(answerModes) || answerModes.length === 0
-    || !answerModes.every(mode => ANSWER_MODES.has(mode)))) {
-    throw new BridgeError(`工具 ${name} 的回答方式只能是 agent、quick`)
+    || !answerModes.every(mode => typeof mode === 'string' && ANSWER_MODE.test(mode)))) {
+    throw new BridgeError(`工具 ${name} 的回答方式格式不对`)
   }
   return {
     name, description, inputSchema, risk, approval,
@@ -132,7 +133,7 @@ export function createBridgeClient({ baseUrl, executeTimeoutMs }) {
 
     /**
      * 执行一次调用。幂等键 = 实际发起调用的会话 ID + 调用 ID，业务服务再加上令牌里的根会话做前缀。
-     * @returns {Promise<{ actionId: string, status: string, content: string, truncated: boolean, replayed: boolean }>}
+     * @returns {Promise<{ actionId: string, status: string, content: string, truncated: boolean, replayed: boolean, presentation?: object }>}
      */
     async execute(token, { toolName, args, agentSessionId, callId, signal }) {
       const combined = AbortSignal.any([signal, AbortSignal.timeout(executeTimeoutMs)])

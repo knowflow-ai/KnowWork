@@ -1,11 +1,20 @@
 /**
- * @ 的六种东西各叫什么、用什么图标、选了会怎样。菜单分组、输入框里的小标签、气泡上的小标签都从这里取，
+ * @ 的各种东西各叫什么、用什么图标、选了会怎样。菜单分组、输入框里的小标签、气泡上的小标签都从这里取，
  * 用户分得清的关键是：每一处都写出类型名，并且说清选了之后的效果（只在哪里找，或者按什么做法来做）。
  * 前四种都是「在哪里找」，MCP 是「优先用什么工具」，技能是「怎么做」，排序上也分开。
+ * 扩展登记的类型（例如数据源）名字和效果由扩展给（@ 菜单的接口里带着），图标统一用一个。
  */
 import type { ReactNode } from 'react';
-import { Bolt, BookClosed, FileDocument, Folder, Tag, Tools } from '@openai/apps-sdk-ui/components/Icon';
-import type { MentionType } from '../../../api/mentions';
+import {
+  Bolt,
+  BookClosed,
+  Cube,
+  FileDocument,
+  Folder,
+  Tag,
+  Tools,
+} from '@openai/apps-sdk-ui/components/Icon';
+import type { Mention, MentionExtension, MentionType } from '../../../api/mentions';
 
 export interface MentionKind {
   /** 类型名，小标签上写在名字前面 */
@@ -15,7 +24,9 @@ export interface MentionKind {
   readonly effect: string;
 }
 
-export const MENTION_KINDS: Record<MentionType, MentionKind> = {
+type BuiltInType = Exclude<MentionType, 'extension'>;
+
+export const MENTION_KINDS: Record<BuiltInType, MentionKind> = {
   knowledge_base: { label: '知识库', icon: <BookClosed />, effect: '只在这个知识库里找' },
   folder: { label: '目录', icon: <Folder />, effect: '只在这个目录下的知识库里找' },
   document: { label: '文件', icon: <FileDocument />, effect: '只在这份文件里找' },
@@ -24,8 +35,18 @@ export const MENTION_KINDS: Record<MentionType, MentionKind> = {
   skill: { label: '技能', icon: <Bolt />, effect: '按这个技能的做法来完成' },
 };
 
-/** 菜单里的分组：目录并在知识库里。 */
-export type MentionGroup = 'bases' | 'documents' | 'tags' | 'services' | 'skills';
+const EXTENSION_ICON = <Cube />;
+
+/** 一个 @ 的类型名、图标与效果；扩展的按 @ 菜单接口里登记的找，找不到（扩展没了）就只写它带的类型名。 */
+export function kindOf(mention: Mention, extensions: readonly MentionExtension[] = []): MentionKind {
+  if (mention.type !== 'extension') return MENTION_KINDS[mention.type];
+  const found = extensions.find((e) => e.kind === mention.kind);
+  const label = found?.label ?? mention.label ?? mention.kind ?? '扩展';
+  return { label, icon: EXTENSION_ICON, effect: found?.effect || `点名了这个${label}` };
+}
+
+/** 菜单里的分组：目录并在知识库里；扩展登记的每种一组，写成 ext:类型。 */
+export type MentionGroup = 'bases' | 'documents' | 'tags' | 'services' | 'skills' | `ext:${string}`;
 
 export const MENTION_GROUPS: readonly {
   readonly group: MentionGroup;
@@ -40,5 +61,22 @@ export const MENTION_GROUPS: readonly {
   { group: 'skills', label: '技能', icon: <Bolt />, effect: '按这个技能的做法来完成' },
 ];
 
-/** 小标签排序：先「在哪里找」再「怎么做」。 */
-export const KIND_ORDER: readonly MentionType[] = ['knowledge_base', 'folder', 'document', 'tag', 'skill'];
+export const extensionGroup = (kind: string): MentionGroup => `ext:${kind}`;
+
+/** 分组标题：类型名、图标、选了会怎样。 */
+export function groupMeta(group: MentionGroup, extensions: readonly MentionExtension[]) {
+  const builtIn = MENTION_GROUPS.find((g) => g.group === group);
+  if (builtIn) return builtIn;
+  const found = extensions.find((e) => extensionGroup(e.kind) === group);
+  return { group, label: found?.label ?? '扩展', icon: EXTENSION_ICON, effect: found?.effect ?? '' };
+}
+
+/** 小标签排序：先「在哪里找」（扩展登记的也算，例如数据源）再「怎么做」。 */
+export const KIND_ORDER: readonly MentionType[] = [
+  'knowledge_base',
+  'folder',
+  'document',
+  'tag',
+  'extension',
+  'skill',
+];

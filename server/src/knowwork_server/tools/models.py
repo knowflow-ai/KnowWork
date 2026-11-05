@@ -3,12 +3,14 @@
 - action_id 与 idempotency_key 各自唯一。幂等键 = 根会话 ID + 宿主给出的「实际会话 ID:调用 ID」。
 - 同一幂等键再来一次，返回第一次的结果，不重复执行；同一幂等键换了工具或参数，直接拒绝。
 - 结果超过 64KB 时全文存到 action_result_blob，回执只存引用并标记 truncated。
+- presentation 是工具交的界面卡片（tools/presentation.py，已截断到上限），重放时和结果一起交回，界面才不丢卡片。
   第一阶段没有对象存储，引用指向这张表；接入对象存储时只换 ResultStore 的实现。
 """
 
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db.base import Base
@@ -30,6 +32,7 @@ class ActionReceipt(Base):
     result_inline: Mapped[str | None] = mapped_column(Text)
     result_ref: Mapped[str | None] = mapped_column(String(64))
     truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    presentation: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
                                                  onupdate=func.now())

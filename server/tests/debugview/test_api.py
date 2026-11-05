@@ -112,3 +112,11 @@ async def test_tool_calls_carry_the_trace_recorded_by_call_id(sessionmaker, seed
     assert set(traces.asked) >= {"call1", "k1"}
     assert turn["steps"][0]["toolCalls"][0]["trace"] == trace
     assert turn["subagents"][0]["steps"][0]["toolCalls"][0]["trace"] == trace
+
+
+def test_tool_cards_keep_their_own_keys():
+    """接口的键改成驼峰式，工具卡片原样交给前端（同会话事件里的那份，前端同一个解析）。"""
+    from knowwork_server.debugview.api import camel
+
+    out = camel({"tool_calls": [{"call_id": "c1", "presentation": {"cards": [{"row_count": 1, "more_rows": True}]}}]})
+    assert out == {"toolCalls": [{"callId": "c1", "presentation": {"cards": [{"row_count": 1, "more_rows": True}]}}]}

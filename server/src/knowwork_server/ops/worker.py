@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import logging
 import signal
+import sys
 from dataclasses import dataclass
 
 import httpx
@@ -24,9 +25,11 @@ from ..access.models import Workspace
 from ..access.service import AccessService
 from ..attachments import Attachments, build_attachments
 from ..config import Settings, get_settings
-from ..db.base import make_engine, make_sessionmaker, make_workspace_sessionmaker
+from ..conversations.background import BackgroundTurns, background_signer
+from ..db.base import make_engine, make_held_engine, make_sessionmaker, make_workspace_sessionmaker
 from ..docparse import DocumentParsers
 from ..extensions import Extensions, WorkerContext, installed_extensions
+from ..extensions.expiry import EXIT_LICENSE_ENDED, stop_when_license_ends
 from ..identity.directory_accounts import DirectoryAccounts
 from ..jobs import JobRunner, listen
 from ..jobs.gate import build_gate
@@ -54,6 +57,7 @@ class Worker:
     http: httpx.AsyncClient  # 内部模型客户端用
     heartbeat: Heartbeat
     redis: Redis | None = None  # 闸门用的 Redis 客户端，关停时关掉
+    held_engine: AsyncEngine | None = None  # 任务通知的 LISTEN 一直占着一条连接，不占 engine 的连接池（见 db/base.py）
 
     async def workspaces(self) -> list[str]:
         """每轮都从工作空间表读：新建的空间不用重启 worker 就有人领它的任务；关闭了的空间不再执行。"""
@@ -62,7 +66,7 @@ class Worker:
                                                .order_by(Workspace.id))).all())
 
     async def serve(self, stop: asyncio.Event) -> None:
-        listener = asyncio.create_task(listen(self.engine, self.runner.on_notify, stop))
+        listener = asyncio.create_task(listen(self.held_engine or self.engine, self.runner.on_notify, stop))
         # 心跳在手上的任务退完（宽限期）之后才停：停机过程中面板上照样看得到这个 worker 在跑什么
         drained = asyncio.Event()
         beating = asyncio.create_task(self.heartbeat.run(drained))
@@ -87,13 +91,15 @@ class Worker:
             await self.redis.aclose()
         if self.sandbox is not None:
             await self.sandbox.aclose()
+        if self.held_engine is not None:
+            await self.held_engine.dispose()
         await self.engine.dispose()
 
 
 def build_worker(settings: Settings, jobs: JobSettings | None = None, *,
                  extensions: Extensions | None = None) -> Worker:
     jobs = jobs or JobSettings()
-    engine = make_engine(settings.database_url)
+    engine = make_engine(settings.database_url, pool_size=settings.db_pool_size, max_overflow=settings.db_max_overflow)
     scoped = make_workspace_sessionmaker(engine)  # 每条任务以它所在的空间读写（见 jobs.runner）
     plain = make_sessionmaker(engine)
     sandbox = build_sandbox(SandboxSettings())
@@ -114,11 +120,14 @@ def build_worker(settings: Settings, jobs: JobSettings | None = None, *,
     context = WorkerContext(settings=settings, engine=engine, sessionmaker=scoped, runner=runner, stores=stores,
                             sandbox=session_sandbox, models=models, gate=gate, mineru=attachments.mineru,
                             stores_for=lambda namespace: namespaced_stores(settings, namespace),
-                            access=AccessService(plain, mirror=False), accounts=DirectoryAccounts(plain))
+                            access=AccessService(plain, mirror=False), accounts=DirectoryAccounts(plain),
+                            turns=BackgroundTurns(settings.internal_url,
+                                                  background_signer(settings.master_key.get_secret_value()), http))
     extensions = _setup_extensions(extensions or installed_extensions(), context)
     heartbeat = Heartbeat(plain, runner, gate, version=settings.version)  # 心跳表不分空间
     return Worker(engine=engine, sessionmaker=plain, runner=runner, attachments=attachments, sandbox=sandbox, settings=jobs,
-                  extensions=extensions, http=http, heartbeat=heartbeat, redis=redis)
+                  extensions=extensions, http=http, heartbeat=heartbeat, redis=redis,
+                  held_engine=make_held_engine(settings.database_url))
 
 
 def _setup_extensions(extensions: Extensions, context: WorkerContext) -> Extensions:
@@ -132,7 +141,8 @@ def _setup_extensions(extensions: Extensions, context: WorkerContext) -> Extensi
     return extensions
 
 
-async def run(stop: asyncio.Event | None = None) -> None:
+async def run(stop: asyncio.Event | None = None) -> bool:
+    """跑到 stop 置位为止；返回 True 表示是授权运行中到期、没续上停的（见 extensions/expiry.py）。"""
     settings = get_settings()  # 配置不完整立即失败，不带病运行
     stop = stop or asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -141,17 +151,23 @@ async def run(stop: asyncio.Event | None = None) -> None:
             loop.add_signal_handler(sig, stop.set)
     worker = build_worker(settings)
     log.info("worker started")
+    # 到期续不上时置 stop：手上的任务照常在宽限期内退回排队，重启后不再执行扩展的任务
+    watcher = asyncio.create_task(stop_when_license_ends(worker.extensions, stop))
     try:
         await worker.serve(stop)
     finally:
+        if not watcher.done():
+            watcher.cancel()
         await worker.aclose()
     log.info("worker stopped")
+    return watcher.done() and not watcher.cancelled() and watcher.exception() is None and watcher.result()
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logredact.install()
-    asyncio.run(run())
+    if asyncio.run(run()):
+        sys.exit(EXIT_LICENSE_ENDED)
 
 
 if __name__ == "__main__":

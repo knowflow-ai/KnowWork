@@ -3,6 +3,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent, { pickOption } from '../../../test/user';
 import { jsonResponse, renderWithApp, routeFetch } from '../../../test/render';
 import { Composer } from '../components/Composer';
+import { BUILT_IN_ANSWER_MODES } from '../../../api/conversations';
 import { currentAnswerMode, useAnswerMode } from '../../../stores/answerMode';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -207,5 +208,52 @@ describe('回答方式', () => {
     expect(await screen.findByText('快速问答不能带附件，去掉附件或切换到智能体再发')).toBeInTheDocument();
     expect(onSend).not.toHaveBeenCalled();
     expect(input).toHaveValue('看看合同');
+  });
+
+  it('扩展登记的类型（数据源）是单独一组；选了在别的回答方式里会提示切过去，切了提示就没了；发出去带类型', async () => {
+    const onSend = vi.fn(async () => undefined);
+    routeFetch({
+      'GET /api/workspaces/default/conversations/mention-options': jsonResponse({
+        ...OPTIONS,
+        extensions: [
+          {
+            kind: 'data_source',
+            label: '数据源',
+            effect: '问数只查这个数据源',
+            answer_mode: 'analytics',
+            items: [{ id: 'p1', name: '销售库', description: '第 3 版' }],
+          },
+        ],
+      }),
+    });
+    act(() =>
+      useAnswerMode.setState({
+        mode: 'agent',
+        options: [
+          { id: 'agent', label: '智能体', description: '' },
+          { id: 'analytics', label: '问数', description: '' },
+        ],
+      }),
+    );
+    renderWithApp(<Composer running={false} onSend={onSend} />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await userEvent.type(input, '@销售');
+    await userEvent.click(await screen.findByRole('option', { name: '数据源 销售库' }));
+    expect(within(chips()).getByText('数据源')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('@ 了数据源，切换到「问数」回答会更准');
+    await userEvent.click(screen.getByRole('button', { name: '切换' }));
+    expect(currentAnswerMode()).toBe('analytics');
+    expect(screen.queryByText(/回答会更准/)).toBeNull();
+    await userEvent.type(input, '上月销售额');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith(
+        '上月销售额',
+        'followup',
+        [],
+        [{ type: 'extension', kind: 'data_source', label: '数据源', id: 'p1', name: '销售库' }],
+      ),
+    );
+    act(() => useAnswerMode.setState({ mode: 'agent', options: BUILT_IN_ANSWER_MODES }));
   });
 });

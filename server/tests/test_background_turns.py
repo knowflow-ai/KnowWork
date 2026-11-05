@@ -1,0 +1,123 @@
+"""后台会话（conversations/background.py）：worker 经内部端口替用户建会话、按回答方式发一轮、看状态、取消；
+会话不进本人的「最近」和搜索；令牌要对、人要是空间成员、会话要是这个人的。"""
+
+from datetime import UTC, datetime
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from fastapi import FastAPI
+
+from knowwork_server.conversations.background import (
+    AUDIENCE,
+    BackgroundTurnError,
+    BackgroundTurns,
+    background_signer,
+    build_background_router,
+)
+from knowwork_server.conversations.listeners import Broadcaster
+from knowwork_server.conversations.models import Conversation, RunEvent, RunSummary
+from knowwork_server.conversations.pump import EventPump, PumpTimings
+from knowwork_server.conversations.replay import EventFeed
+from knowwork_server.conversations.service import ConversationService
+from knowwork_server.conversations.writer import BatchWriter
+from knowwork_server.db.base import in_workspace, make_engine, make_sessionmaker, make_workspace_sessionmaker
+from knowwork_server.db.migrate import MAIN_LINE, upgrade_to_head
+from knowwork_server.kernel.tokens import TokenSigner, derive_key
+
+from .fakes import FakeKernel
+
+pytestmark = pytest.mark.anyio
+MASTER = "m" * 48
+MEMBERS = {("u1", "ws_a"), ("u2", "ws_a")}
+
+
+@pytest.fixture
+async def world(app_db):
+    """和生产一样：应用账号不是超级用户、表开了行级安全，接口得自己声明当前空间才写得进去。"""
+    await upgrade_to_head(app_db.owner_url, app_role=app_db.role, branches=MAIN_LINE)
+    engine = make_engine(app_db.app_url)
+    sessionmaker = make_workspace_sessionmaker(engine)
+    kernel = FakeKernel()
+    writer = BatchWriter(sessionmaker)
+    broadcaster = Broadcaster()
+    pump = EventPump(kernel, sessionmaker, writer, broadcaster, timings=PumpTimings(idle_timeout=0.2))
+    service = ConversationService(kernel, sessionmaker, pump, EventFeed(sessionmaker, writer, broadcaster,
+                                                                         pump.produced_upto))
+    app = FastAPI()
+    app.include_router(build_background_router(service, background_signer(MASTER), make_sessionmaker(engine),
+                                               member=lambda user, ws: (user, ws) in MEMBERS))
+    http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://internal")
+    yield SimpleNamespace(kernel=kernel, service=service, http=http, sessionmaker=sessionmaker,
+                          turns=BackgroundTurns("http://internal", background_signer(MASTER), http))
+    await http.aclose()
+    await pump.close()
+    await engine.dispose()
+
+
+async def test_create_send_state_and_cancel(world):
+    kernel, turns, sessionmaker = world.kernel, world.turns, world.sessionmaker
+    conversation_id = await turns.create("ws_a", "u1", title="评测：上个月净收入")
+    assert (await turns.state("ws_a", "u1", conversation_id)).status == "pending"
+    await turns.send("ws_a", "u1", conversation_id, "上个月净收入多少")
+    assert kernel.sent[-1].text == "上个月净收入多少" and kernel.sent[-1].answer_mode == "agent"
+    with in_workspace("ws_a"):
+        async with sessionmaker() as session:
+            session.add(RunSummary(conversation_id=conversation_id, turn=1, workspace_id="ws_a", user_id="u1",
+                                   question="上个月净收入多少", status="running", started_at=datetime.now(UTC)))
+            await session.commit()
+    running = await turns.state("ws_a", "u1", conversation_id)
+    assert running.status == "running" and running.asking and not running.ended, "宿主有待答的问题"
+    with in_workspace("ws_a"):
+        async with sessionmaker() as session:
+            summary = await session.get(RunSummary, (conversation_id, 1))
+            summary.status, summary.ended_at = "completed", datetime.now(UTC)
+            session.add(RunEvent(conversation_id=conversation_id, seq=1, workspace_id="ws_a", host_epoch="e1",
+                                 host_cursor=1, kind="session/event",
+                                 data={"type": "assistant/message", "data": {"message": {"content": "共 3050 元"}}}))
+            await session.commit()
+    done = await turns.state("ws_a", "u1", conversation_id)
+    assert (done.status, done.asking, done.answer, done.ended) == ("completed", False, "共 3050 元", True)
+    await turns.cancel("ws_a", "u1", conversation_id)
+    assert kernel.cancelled == [conversation_id]
+
+
+async def test_background_conversations_stay_out_of_recents_and_search(world):
+    service = world.service
+    hidden = await world.turns.create("ws_a", "u1", title="评测：退款率")
+    with in_workspace("ws_a"):
+        shown = await service.create(workspace_id="ws_a", user_id="u1", title="退款率怎么算")
+        async with world.sessionmaker() as session:
+            assert (await session.get(Conversation, hidden)).background is True
+        page = await service.list_page(workspace_id="ws_a", user_id="u1")
+        assert [c.id for c in page.items] == [shown.id]
+        hits = await service.search(workspace_id="ws_a", user_id="u1", query="退款率")
+        assert [h.conversation.id for h in hits] == [shown.id]
+        opened = await service.get(conversation_id=hidden, workspace_id="ws_a", user_id="u1")
+    assert opened.id == hidden, "链接照样能打开"
+
+
+async def test_tokens_members_and_owners_are_checked(world):
+    turns, http = world.turns, world.http
+    other = BackgroundTurns("http://internal", TokenSigner(derive_key(MASTER, "host-callback")), http)
+    with pytest.raises(BackgroundTurnError, match="401"):
+        await other.create("ws_a", "u1"), "宿主回调的子密钥签的令牌不通用"
+    forged = TokenSigner(derive_key("x" * 48, "background-turns")).issue(audience=AUDIENCE, workspace_id="ws_a",
+                                                                         ttl_seconds=60)
+    response = await http.post("/internal/background/conversations", json={"user_id": "u1"},
+                               headers={"Authorization": f"Bearer {forged}"})
+    assert response.status_code == 401
+    with pytest.raises(BackgroundTurnError, match="403"):
+        await turns.create("ws_a", "outsider")
+    conversation_id = await turns.create("ws_a", "u1")
+    with pytest.raises(BackgroundTurnError, match="404"):
+        await turns.send("ws_a", "u2", conversation_id, "看看别人的会话")
+    with pytest.raises(BackgroundTurnError, match="403"):
+        await turns.send("ws_b", "u1", conversation_id, "令牌是别的空间的"), "u1 不是 ws_b 的成员"
+
+
+async def test_unknown_answer_modes_are_refused(world):
+    turns = world.turns
+    conversation_id = await turns.create("ws_a", "u1")
+    with pytest.raises(BackgroundTurnError, match="422"):
+        await turns.send("ws_a", "u1", conversation_id, "随便问问", answer_mode="nope")

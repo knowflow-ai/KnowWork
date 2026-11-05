@@ -90,7 +90,8 @@ def build_internal_router(service: ToolService, grants: GrantCheck | None = None
         except ToolAccessError as error:
             return _error(error.status, error.code, str(error))
         return {"actionId": result.action_id, "status": result.status, "content": result.content,
-                "truncated": result.truncated, "resultRef": result.result_ref, "replayed": result.replayed}
+                "truncated": result.truncated, "resultRef": result.result_ref, "replayed": result.replayed,
+                **({"presentation": result.presentation} if result.presentation is not None else {})}
 
     return router
 

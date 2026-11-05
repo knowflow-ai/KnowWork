@@ -62,8 +62,11 @@ const BUFFER_BYTES = 8 * 1024 * 1024
  * @property {{ bases: readonly object[], omitted: number } | undefined} knowledgeCatalog 最近一次下发的知识库目录
  * @property {string | undefined} turnContext 扩展补的常驻上下文（turn-context），最近一次下发的；空串是「现在没有」
  * @property {Map<string, string>} turnTexts 已收下、还没进入步骤的消息各自带的这一轮上下文，键是消息 id
- * @property {'agent' | 'quick'} answerMode 当前步骤按哪种回答方式（answer-mode）：随消息进入步骤切换
- * @property {Map<string, 'agent' | 'quick'>} answerModes 已收下、还没进入步骤的消息各自的回答方式，键是消息 id
+ * @property {string} answerMode 当前步骤按哪种回答方式（answer-mode）：agent、quick 或扩展登记的；随消息进入步骤切换
+ * @property {{ tools: string[], prompt: string } | undefined} answerModeSpec 扩展登记的回答方式随消息带来的放行清单与指令
+ * @property {(() => void) | undefined} modeMask 当前回答方式对官方全局工具的收窄（restrict 的撤销函数）
+ * @property {Map<string, { mode: string, spec: { tools: string[], prompt: string } | undefined }>} answerModes
+ *   已收下、还没进入步骤的消息各自的回答方式，键是消息 id
  */
 
 /** @type {Map<string, SessionState>} */
@@ -93,6 +96,8 @@ export function createSession(sessionId, policy) {
     turnContext: undefined,
     turnTexts: new Map(),
     answerMode: 'agent',
+    answerModeSpec: undefined,
+    modeMask: undefined,
     answerModes: new Map(),
   }
   sessions.set(sessionId, state)

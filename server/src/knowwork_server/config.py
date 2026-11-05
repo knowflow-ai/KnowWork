@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     migration_database_url: str = ""
     # 运行账号的角色名：设了就在迁移结束后给它授增删改查与序列权限（含以后新建的表）。
     app_db_role: str = ""
+    # 每个进程处理请求的数据库连接池：常驻几条、忙时最多再多开几条（默认 5 + 10，与改成可配置之前一样）。
+    # 并发高时可以调大，注意 api、worker 每个进程各一份，加起来不能超过 PostgreSQL 的 max_connections
+    db_pool_size: int = Field(default=5, ge=1, le=200)
+    db_max_overflow: int = Field(default=10, ge=0, le=500)
     # 迁移取到全局锁之后，DDL 等待业务连接释放表锁的上限
     migration_lock_timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
     # 部署主密钥：各用途的子密钥由它经 HKDF 派生，不直接使用。
@@ -73,6 +77,8 @@ class Settings(BaseSettings):
     public_port: int = Field(default=8000, ge=1, le=65535)
     internal_host: str = "0.0.0.0"
     internal_port: int = Field(default=8001, ge=1, le=65535)
+    # worker 连业务服务内部端口的地址：扩展经它替用户发起后台对话（conversations/background.py）
+    internal_url: str = "http://127.0.0.1:8001"
 
     host_base_url: str = "http://runtime-host:7300"
     host_token: SecretStr = Field(min_length=32)

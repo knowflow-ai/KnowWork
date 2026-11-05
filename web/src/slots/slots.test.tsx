@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { screen } from '@testing-library/react';
 import { BookOpen } from '@openai/apps-sdk-ui/components/Icon';
 import { buildRoutes } from '../app/router';
+import { Composer } from '../features/chat/components/Composer';
 import ModelsPage from '../features/admin/models/ModelsPage';
 import SettingsPage from '../features/settings/SettingsPage';
 import { adminNav, ADMIN_NAV, SYSTEM_NAV, systemNav } from '../layout/nav';
@@ -89,5 +90,28 @@ describe('前端插槽', () => {
     const nav = await screen.findByRole('navigation', { name: '主导航' });
     const links = Array.from(nav.querySelectorAll('a')).map((link) => link.textContent);
     expect(links.slice(0, 3)).toEqual(['新对话', '技能', '知识库']);
+  });
+
+  it('输入框左上角回答方式后面放扩展的一小段，拿得到会话 id 与回答方式；固定了回答方式的输入框不放', () => {
+    routeFetch({
+      'GET /api/workspaces/default/conversations/mention-options': jsonResponse({
+        bases: [],
+        services: [],
+        skills: [],
+      }),
+    });
+    register('chat.composer.top', {
+      Component: ({ conversationId, answerMode }) => (
+        <span>
+          范围条 {conversationId ?? '新对话'} {answerMode}
+        </span>
+      ),
+    });
+    const send = async () => undefined;
+    const { unmount } = renderWithApp(<Composer running={false} onSend={send} conversationId="c1" />);
+    expect(screen.getByText('范围条 c1 agent')).toBeInTheDocument();
+    unmount();
+    renderWithApp(<Composer running={false} onSend={send} answerMode="analytics_model" />);
+    expect(screen.queryByText(/范围条/)).toBeNull();
   });
 });

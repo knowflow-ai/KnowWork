@@ -1,5 +1,5 @@
 /**
- * @ 菜单的状态。刚打 @ 时列四个分组（知识库、文件、标签、技能），各带一句选了会怎样；
+ * @ 菜单的状态。刚打 @ 时列分组（知识库、文件、标签、扩展登记的、MCP、技能），各带一句选了会怎样；
  * 接着打字就跨组查（每组露前几项，「查看全部」进组）；进了组只看这一组。↑↓ 选，回车、Tab 或 → 确定（→ 只进分组），
  * ← 退回分组列表，Esc 先退出分组再关。
  * 键盘事件由输入框转过来（焦点一直在输入框里，边打字边选）。
@@ -13,7 +13,7 @@ import {
   type MentionOptions,
 } from '../../../api/mentions';
 import { sections, type Candidate, type Trigger } from './candidates';
-import type { MentionGroup } from './kinds';
+import { extensionGroup, type MentionGroup } from './kinds';
 
 export type Row =
   | { readonly kind: 'group'; readonly group: MentionGroup; readonly count?: number }
@@ -31,7 +31,7 @@ export function optionId(index: number): string {
 export function activeOption(menu: MentionMenu): string | undefined {
   return menu.open && menu.rows[menu.active] ? optionId(menu.active) : undefined;
 }
-const EMPTY: MentionOptions = { bases: [], services: [], skills: [] };
+const EMPTY: MentionOptions = { bases: [], services: [], skills: [], extensions: [] };
 const SEARCH_DELAY = 200;
 
 function useDebounced(value: string, delay: number): string {
@@ -54,6 +54,9 @@ function rootRows(options: MentionOptions): Row[] {
   if (options.bases.length > 0) rows.push({ kind: 'group', group: 'bases', count: options.bases.length });
   if (options.bases.some((b) => b.pinnable)) rows.push({ kind: 'group', group: 'documents' });
   if (tags > 0) rows.push({ kind: 'group', group: 'tags', count: tags });
+  for (const extension of options.extensions)
+    if (extension.items.length > 0)
+      rows.push({ kind: 'group', group: extensionGroup(extension.kind), count: extension.items.length });
   if (options.services.length > 0)
     rows.push({ kind: 'group', group: 'services', count: options.services.length });
   if (options.skills.length > 0) rows.push({ kind: 'group', group: 'skills', count: options.skills.length });
@@ -62,6 +65,8 @@ function rootRows(options: MentionOptions): Row[] {
 
 export interface MentionMenu {
   readonly open: boolean;
+  /** 扩展登记的类型（分组标题与小标签要用它们的名字和效果） */
+  readonly options: MentionOptions;
   readonly group: MentionGroup | null;
   readonly rows: readonly Row[];
   readonly active: number;
@@ -172,5 +177,5 @@ export function useMentionMenu(
     }
   };
 
-  return { open, group, rows, active, loading: busy, empty, note, setActive, choose, leave, onKey };
+  return { open, options, group, rows, active, loading: busy, empty, note, setActive, choose, leave, onKey };
 }

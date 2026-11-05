@@ -9,7 +9,8 @@ export interface AnswerNotice extends ToolNotice {
   readonly key: string;
 }
 
-function argumentsOf(text: string): Readonly<Record<string, unknown>> {
+/** 工具调用参数（JSON 文本）解析成对象；解析不了或不是对象时是空对象 */
+export function argumentsOf(text: string): Readonly<Record<string, unknown>> {
   try {
     const value: unknown = JSON.parse(text);
     return value !== null && typeof value === 'object' && !Array.isArray(value)

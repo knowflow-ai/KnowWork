@@ -19,6 +19,7 @@ import { StatusDot } from './StatusDot';
 import { DescriptionList } from './DescriptionList';
 import { Combobox } from './Combobox';
 import { SettingList, SettingRow } from './SettingRow';
+import { Tree } from './Tree';
 
 describe('Dialog', () => {
   it('回车提交表单，关闭按钮与取消都触发 onClose', async () => {
@@ -347,5 +348,46 @@ describe('Combobox', () => {
     expect(await screen.findByText('没有找到可添加的用户')).toBeInTheDocument();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  });
+});
+
+describe('Tree', () => {
+  it('defaultCollapsed 给的节点开始收起，点三角展开', async () => {
+    const nodes = [
+      { key: 'orders', title: '订单', children: [{ key: 'orders.amount', title: '金额', children: [] }] },
+      { key: 'regions', title: '区域', children: [{ key: 'regions.name', title: '名称', children: [] }] },
+    ];
+    render(<Tree aria-label="模型" nodes={nodes} defaultCollapsed={['orders']} onSelect={() => undefined} />);
+    expect(screen.queryByText('金额')).not.toBeInTheDocument();
+    expect(screen.getByText('名称')).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole('button', { name: '展开' })[0]!);
+    expect(screen.getByText('金额')).toBeInTheDocument();
+  });
+
+  it('选中项从外面换成收起的节点下面的一项：把它的上级展开，选中的那行看得见', () => {
+    const nodes = [
+      { key: 'orders', title: '订单', children: [{ key: 'orders.amount', title: '金额', children: [] }] },
+    ];
+    const props = { 'aria-label': '模型', nodes, defaultCollapsed: ['orders'], onSelect: () => undefined };
+    const { rerender } = render(<Tree {...props} selected="orders" />);
+    expect(screen.queryByText('金额')).not.toBeInTheDocument();
+    rerender(<Tree {...props} selected="orders.amount" />);
+    expect(screen.getByRole('treeitem', { name: '金额' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('一开始就选中收起的节点下面的一项：它的上级不收起', () => {
+    const nodes = [
+      { key: 'orders', title: '订单', children: [{ key: 'orders.amount', title: '金额', children: [] }] },
+    ];
+    render(
+      <Tree
+        aria-label="模型"
+        nodes={nodes}
+        defaultCollapsed={['orders']}
+        selected="orders.amount"
+        onSelect={() => undefined}
+      />,
+    );
+    expect(screen.getByRole('treeitem', { name: '金额' })).toHaveAttribute('aria-selected', 'true');
   });
 });

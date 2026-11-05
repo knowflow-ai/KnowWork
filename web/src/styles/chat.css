@@ -25,6 +25,59 @@
   justify-content: center;
 }
 
+/* 嵌在别的页面里的会话还没开始时：上面一句说明，输入框贴底 */
+.kw-chat-embedded-empty {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  padding: 16px;
+  color: var(--color-text-secondary);
+  font-size: var(--kw-font-base);
+}
+
+/* 还没开始时的标题、说明、现成问题（点了就发）与外层给的一块，贴在输入框上面 */
+.kw-chat-embedded-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--kw-chat-max-width);
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+.kw-chat-embedded-intro p {
+  margin: 0;
+}
+
+.kw-chat-embedded-heading {
+  color: var(--color-text);
+  font-size: var(--kw-font-chat);
+  font-weight: 600;
+}
+
+.kw-chat-starters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kw-chat-starter {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--kw-radius-card);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--kw-font-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.kw-chat-starter:hover {
+  background: var(--kw-hover-bg);
+}
+
 .kw-chat-welcome h1 {
   text-align: center;
   font-size: var(--kw-font-title);
@@ -106,94 +159,27 @@
   color: var(--kw-text-secondary);
 }
 
+/* 一轮回答：步骤摘要、待办、审批、提问、检索条件、正文、结果卡片、文件、提示、操作栏从上往下排，
+   间距只在这里统一给（纵向排列加一个间隔），里面每一块都不带外边距；不出现的块（返回 null）不占间距 */
 .kw-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   margin: 16px 0 24px;
   font-size: var(--kw-font-chat);
   line-height: 1.75;
 }
 
-/* 正文排版：Tailwind 的重置清掉了段落、列表、标题的默认样式，这里按 ChatGPT 回答的排版补回来 */
-.kw-markdown p,
-.kw-markdown ul,
-.kw-markdown ol,
-.kw-markdown pre,
-.kw-markdown table,
-.kw-markdown blockquote {
-  margin: 0 0 1em;
+/* 不属于哪一轮的审批、提问直接挂在消息列表里，自己隔开上下 */
+.kw-chat-column > .kw-approval,
+.kw-chat-column > .kw-question {
+  margin: 12px 0;
 }
 
-.kw-markdown ul,
-.kw-markdown ol {
-  padding-left: 1.625em;
-}
-
-.kw-markdown ul {
-  list-style: disc;
-}
-
-.kw-markdown ol {
-  list-style: decimal;
-}
-
-.kw-markdown li {
-  margin: 0.25em 0;
-}
-
-.kw-markdown li > ul,
-.kw-markdown li > ol {
-  margin: 0.25em 0 0;
-}
-
-.kw-markdown h1,
-.kw-markdown h2,
-.kw-markdown h3,
-.kw-markdown h4 {
-  margin: 1.25em 0 0.5em;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.kw-markdown h1 {
-  font-size: 1.5em;
-}
-
-.kw-markdown h2 {
-  font-size: 1.25em;
-}
-
-.kw-markdown h3 {
-  font-size: 1.125em;
-}
-
-.kw-markdown h4 {
-  font-size: 1em;
-}
-
-.kw-markdown blockquote {
-  padding-left: 1em;
-  border-left: 2px solid var(--kw-border-secondary);
-  color: var(--kw-text-secondary);
-}
-
-.kw-markdown hr {
-  margin: 1.5em 0;
-  border: none;
-  border-top: 1px solid var(--kw-border-secondary);
-}
-
+/* 正文排版用组件库的 Markdown（ChatGPT 的段落、列表、标题、表格间距，代码块），这里只留产品自己的：
+   链接色、知识库图片、mermaid 图、表格的横向滚动 */
 .kw-markdown a {
   color: var(--kw-link);
-}
-
-.kw-markdown code {
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-}
-
-.kw-markdown :not(pre) > code {
-  padding: 0.1em 0.35em;
-  border-radius: 4px;
-  background: var(--kw-user-bubble-bg);
 }
 
 .kw-markdown img {
@@ -238,30 +224,26 @@
   font-size: var(--kw-font-xs);
 }
 
-.kw-markdown > :first-child {
+/* 正文里的表格：样式照组件库（不画竖线、表头下一条线、行间细线）；外面套一层（Markdown.tsx 的 Table），
+   宽了在这层里横向滚动，上下间距也挪到这层（组件库给表格的是上下各 2em）。组件库的样式在 CSS 层里，
+   这里的写法优先级更高，开头、结尾那块的间距要自己清掉 */
+.kw-markdown .kw-markdown-table {
+  margin: 2em 0;
+  overflow-x: auto;
+}
+
+.kw-markdown .kw-markdown-table:first-child {
   margin-top: 0;
 }
 
-.kw-markdown > :last-child {
+.kw-markdown .kw-markdown-table:last-child {
   margin-bottom: 0;
 }
 
-.kw-markdown pre {
-  background: var(--kw-user-bubble-bg);
-  border-radius: var(--kw-radius-control);
-  padding: 12px;
-  overflow-x: auto;
-  font-size: var(--kw-font-sm);
-}
-
-.kw-markdown table {
-  border-collapse: collapse;
-}
-
-.kw-markdown th,
-.kw-markdown td {
-  border: 1px solid var(--kw-border-secondary);
-  padding: 4px 8px;
+.kw-markdown .kw-markdown-table > table {
+  margin: 0;
+  overflow-wrap: normal;
+  font-variant-numeric: tabular-nums;
 }
 
 .kw-citation {
@@ -344,7 +326,6 @@
 
 .kw-citation-notice {
   display: block;
-  margin-top: 4px;
   font-size: var(--kw-font-xs);
 }
 
@@ -423,7 +404,6 @@ a.kw-source-item:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 8px;
-  margin-bottom: 8px;
   color: var(--kw-text-secondary);
   font-size: var(--kw-font-xs);
 }
@@ -466,7 +446,7 @@ a.kw-source-item:hover {
 
 /* 执行过程（照 ChatGPT 思考面板）：左侧细竖线，整段次要色小字，不用彩色状态 */
 .kw-process-body {
-  margin: 8px 0 12px;
+  margin: 8px 0 0;
   padding: 0 0 0 14px;
   border-left: 2px solid var(--kw-border-secondary);
   list-style: none;
@@ -585,7 +565,6 @@ a.kw-source-item:hover {
 }
 
 .kw-approval {
-  margin: 12px 0;
   border: 1px solid var(--kw-border-secondary);
   border-radius: var(--kw-radius-card);
   padding: 14px 16px;
@@ -620,12 +599,16 @@ a.kw-source-item:hover {
   word-break: break-all;
 }
 
+/* 扩展工具画的明细（例如要发布的改动清单） */
+.kw-approval-details {
+  margin-top: 12px;
+}
+
 /* 处理过的审批收成一行小字，不占卡片 */
 .kw-approval-resolved {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 4px 0;
   font-size: var(--kw-font-sm);
   color: var(--kw-text-secondary);
 }
@@ -640,7 +623,6 @@ a.kw-source-item:hover {
 }
 
 .kw-question {
-  margin: 12px 0;
   border: 1px solid var(--kw-border-secondary);
   border-radius: var(--kw-radius-card);
   padding: 14px 16px;
@@ -727,10 +709,6 @@ a.kw-source-item:hover {
   flex-wrap: wrap;
 }
 
-.kw-todo {
-  margin: 4px 0 8px;
-}
-
 .kw-todo-list {
   margin: 4px 0 0;
   padding: 0 0 0 12px;
@@ -771,7 +749,6 @@ a.kw-source-item:hover {
   flex-direction: column;
   gap: 16px;
   min-width: 0;
-  margin: 12px 0;
   container-type: inline-size;
 }
 
@@ -931,7 +908,6 @@ a.kw-source-item:hover {
 }
 
 .kw-answer-actions {
-  margin-top: 8px;
   display: flex;
   gap: 2px;
 }
@@ -1009,6 +985,17 @@ a.kw-source-item:hover {
   padding: 0 20px 6px;
 }
 
+/* @ 了在别的回答方式里效果更好的东西（例如数据源）时的提示：和回答方式那一行对齐，灰字一行，后面一个「切换」 */
+.kw-composer-suggest {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 20px 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+  line-height: var(--font-text-sm-line-height);
+}
+
 /* 回答方式下拉里每项的说明：比模式名小一号、灰一档，一眼分得开名字和说明；选中项的名字加粗，说明不跟着加粗 */
 .kw-answer-mode-description {
   margin-top: 2px;
@@ -1036,4 +1023,265 @@ a.kw-source-item:hover {
 .kw-feedback-categories {
   flex-wrap: wrap;
   gap: 8px 16px;
+}
+
+/* 回答下方的结果卡片（工具交给界面的那份，2026-11-04 照设计稿）：一个结果一张卡片，细边框、圆角、不加投影；
+   头是标题与灰字、右边「图 / 表」，中间是图或表，脚是出处一行与操作，点开看明细与代码 */
+.kw-result-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kw-result-card {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--kw-radius-card);
+  background: var(--color-surface);
+}
+
+.kw-result-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 12px 16px 8px;
+}
+
+.kw-result-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.kw-result-title {
+  font-size: var(--kw-font-base);
+  font-weight: 600;
+}
+
+.kw-result-subtitle {
+  color: var(--color-text-tertiary);
+  font-size: var(--kw-font-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.kw-result-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 图：几个指标或几条线时上面一排，左边看哪一列或图例、右边换哪种图 */
+.kw-result-chart {
+  padding: 0 16px 12px;
+}
+
+.kw-result-chart-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.kw-result-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-result-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kw-result-legend-mark {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.kw-result-chart-note {
+  margin: 4px 0 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-echart {
+  width: 100%;
+}
+
+/* 表：不画竖线，表头浅灰底，行间细线，数字右对齐、等宽数字；宽了横向滚动 */
+.kw-result-table {
+  margin: 0;
+}
+
+.kw-result-table-scroll {
+  overflow-x: auto;
+}
+
+.kw-result-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--kw-font-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.kw-result-table th,
+.kw-result-table td {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.kw-result-table th {
+  background: var(--color-surface-secondary);
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.kw-result-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.kw-result-table .kw-num {
+  text-align: right;
+}
+
+.kw-result-table-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px 10px;
+  color: var(--color-text-tertiary);
+  font-size: var(--kw-font-xs);
+}
+
+/* 卡片脚：出处一行（最前面一个词加粗）与右边的操作；点开在下面看明细与代码 */
+.kw-result-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-secondary);
+}
+
+.kw-result-card > .kw-result-foot:first-child {
+  border-top: 0;
+}
+
+.kw-result-foot-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.kw-provenance-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  text-align: left;
+  color: var(--color-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-provenance-line svg {
+  flex: none;
+  color: var(--color-text-tertiary);
+}
+
+.kw-provenance-label {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* 出处上的操作（扩展登记的，例如「存为可信查询」）：在出处行右边 */
+.kw-provenance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.kw-provenance-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 4px;
+}
+
+.kw-provenance-items {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+  font-size: var(--kw-font-sm);
+}
+
+.kw-provenance-items > div {
+  display: contents;
+}
+
+.kw-provenance-items dt {
+  color: var(--color-text-tertiary);
+}
+
+.kw-provenance-items dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 代码块：白底细框，头上写语言、右边「复制」 */
+.kw-provenance-code {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--kw-radius-control);
+  background: var(--color-surface);
+}
+
+.kw-provenance-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-tertiary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-provenance-code pre {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--color-text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--kw-font-xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 嵌入的会话里「正在看」的小标签：输入框正上方，可以点掉 */
+.kw-chat-context {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: var(--kw-chat-max-width);
+  margin: 0 auto 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }

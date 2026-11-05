@@ -11,17 +11,19 @@ import { useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent }
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { ArrowUp, AtSign, PlusComposer, StopSm } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
-import { validateMessage, type SendMode } from '../../../api/conversations';
+import { validateMessage, type AnswerMode, type SendMode } from '../../../api/conversations';
 import { chipsOf } from '../../../api/attachments';
 import { mentionKey, type Mention } from '../../../api/mentions';
-import { useAnswerMode } from '../../../stores/answerMode';
+import { effectiveAnswerMode, useAnswerMode } from '../../../stores/answerMode';
+import { slotItems } from '../../../slots/registry';
 import { cx } from '../../../ui/cx';
 import { toast } from '../../../ui/toastStore';
 import { useDraftFiles } from '../hooks/useDraftFiles';
 import { activeTrigger, withoutTrigger } from '../mentions/candidates';
 import { MentionChips } from '../mentions/MentionChips';
 import { MentionMenu } from '../mentions/MentionMenu';
-import { activeOption, MENTION_MENU_ID, useMentionMenu } from '../mentions/useMentionMenu';
+import { suggestMode } from '../mentions/suggest';
+import { activeOption, MENTION_MENU_ID, useMentionMenu, useMentionOptions } from '../mentions/useMentionMenu';
 import { AnswerModeSelect } from './AnswerModeSelect';
 import { AttachmentChips } from './AttachmentChips';
 import { modeForKey } from './keys';
@@ -39,6 +41,12 @@ interface Props {
   readonly initialMentions?: readonly Mention[];
   readonly disabled?: boolean;
   readonly placeholder?: string;
+  /** 输入框下面那行小字；不给就是「回答可能有误，重要结论请点开出处核对」 */
+  readonly footnote?: string;
+  /** 固定的回答方式（嵌在别的页面里的会话，例如扩展的建模面板）：给了就不显示回答方式下拉，按它判断能不能带附件 */
+  readonly answerMode?: AnswerMode;
+  /** 已有会话的 id（新对话没有）：给左上角那一行里扩展的组件用 */
+  readonly conversationId?: string;
 }
 
 const NO_FILES_IN_QUICK = '快速问答不能带附件，去掉附件或切换到智能体再发';
@@ -58,7 +66,17 @@ function useAutoHeight(value: string) {
   return ref;
 }
 
-export function Composer({ running, onSend, onStop, initialMentions = [], disabled, placeholder }: Props) {
+export function Composer({
+  running,
+  onSend,
+  onStop,
+  initialMentions = [],
+  disabled,
+  placeholder,
+  footnote = '回答可能有误，重要结论请点开出处核对',
+  answerMode,
+  conversationId,
+}: Props) {
   const [value, setValue] = useState('');
   const [caret, setCaret] = useState(0);
   const [mentions, setMentions] = useState<readonly Mention[]>(initialMentions);
@@ -68,9 +86,17 @@ export function Composer({ running, onSend, onStop, initialMentions = [], disabl
   const [stopping, setStopping] = useState(false);
   const [dragging, setDragging] = useState(false);
   const draft = useDraftFiles();
-  const quick = useAnswerMode((s) => s.mode) === 'quick';
+  const chosen = useAnswerMode((s) => s.mode);
+  const modes = useAnswerMode((s) => s.options);
+  const setMode = useAnswerMode((s) => s.setMode);
+  const { options: offered } = useMentionOptions();
+  const quick = (answerMode ?? chosen) === 'quick';
   // 这一问算数的 @：快速问答用不了技能
   const scoped = quick ? mentions.filter((m) => m.type !== 'skill') : mentions;
+  // @ 了在别的回答方式里效果更好的东西（例如数据源）：提示切过去；固定了回答方式的不提示
+  const suggestion = answerMode
+    ? null
+    : suggestMode(scoped, offered.extensions, effectiveAnswerMode(chosen, modes), modes);
   const picker = useRef<HTMLInputElement>(null);
   const input = useAutoHeight(value);
   const found = activeTrigger(value, caret);
@@ -164,9 +190,35 @@ export function Composer({ running, onSend, onStop, initialMentions = [], disabl
 
   return (
     <div className="kw-composer">
-      <div className="kw-composer-top">
-        <AnswerModeSelect disabled={disabled} />
-      </div>
+      {answerMode ? null : (
+        <div className="kw-composer-top">
+          <AnswerModeSelect disabled={disabled} />
+          {slotItems('chat.composer.top').map(({ Component }, index) => (
+            <Component
+              key={index}
+              conversationId={conversationId}
+              answerMode={effectiveAnswerMode(chosen, modes)}
+              running={running}
+            />
+          ))}
+        </div>
+      )}
+      {suggestion ? (
+        <div className="kw-composer-suggest" role="status">
+          <span>
+            @ 了{suggestion.kind}，切换到「{suggestion.mode.label}」回答会更准
+          </span>
+          <Button
+            color="secondary"
+            variant="ghost"
+            size="xs"
+            disabled={disabled}
+            onClick={() => setMode(suggestion.mode.id)}
+          >
+            切换
+          </Button>
+        </div>
+      ) : null}
       {/* @ 菜单贴着输入框弹出，不算上面那一行 */}
       <div className="kw-composer-main">
         <MentionMenu menu={menu} />
@@ -286,7 +338,7 @@ export function Composer({ running, onSend, onStop, initialMentions = [], disabl
       </div>
       <div className="kw-composer-hint">
         {running ? '回车：完成后发送 · Ctrl/⌘ + 回车：补充到当前任务 · ' : ''}
-        回答可能有误，重要结论请点开出处核对
+        {footnote}
       </div>
     </div>
   );

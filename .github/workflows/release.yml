@@ -14,10 +14,10 @@ name: release
 #   新仓库第一次推送时自动创建、默认私有，要在阿里云控制台改成公开，用户才能不登录直接拉取
 #   密钥 ACR_USERNAME、ACR_PASSWORD   阿里云容器镜像服务的登录账号与固定密码
 #
-# 发布 linux/amd64 与 linux/arm64（v0.0.5 起）：两个架构各在自己的原生构建机上构建（公开仓库的 ARM 构建机免费，
-# 不用 QEMU 模拟，沙箱镜像装 LibreOffice 模拟起来很慢），先推带架构后缀的标签 vX.Y.Z-amd64、vX.Y.Z-arm64，
-# 再合成一个多架构标签 vX.Y.Z 与 latest，客户的机器按自己的架构自动拉到对应的那个，部署文件不用分两套。
-# 上一版的镜像没有 arm64 的不复用、照常重建；依赖镜像同样两个架构都同步。
+# 出哪几个架构看 .github/release-arches（默认只有 amd64，要 ARM 服务器用时加 arm64）。每个架构在自己的原生构建机上构建
+# （公开仓库的 ARM 构建机免费，不用 QEMU 模拟，沙箱镜像装 LibreOffice 模拟起来很慢），先推带架构后缀的标签 vX.Y.Z-amd64
+# （、vX.Y.Z-arm64），再合成标签 vX.Y.Z 与 latest：有几个架构，客户的机器都按自己的架构自动拉到对应的那个，部署文件不分两套。
+# 上一版的镜像缺这一版要的架构就不复用、照常重建；依赖镜像同样按这几个架构同步。
 
 on:
   push:
@@ -55,6 +55,8 @@ jobs:
     if: github.repository == 'knowflow-ai/KnowWork' && vars.ACR_REGISTRY != ''
     runs-on: ubuntu-24.04
     outputs:
+      arches: ${{ steps.arches.outputs.json }}   # ["amd64"] 或 ["amd64","arm64"]，构建时按它展开
+      arch_list: ${{ steps.arches.outputs.list }}   # amd64 或 amd64,arm64（排好序），核对用
       build: ${{ steps.plan.outputs.build }}
       reuse: ${{ steps.plan.outputs.reuse }}
       previous: ${{ steps.plan.outputs.previous }}
@@ -68,6 +70,16 @@ jobs:
         run: |
           test "$(cat VERSION)" = "$TAG" || { echo "标签 $TAG 与 VERSION（$(cat VERSION)）不一致"; exit 1; }
           grep -q "KNOWWORK_VERSION=$TAG" deploy/.env.example || { echo "deploy/.env.example 的版本不是 $TAG，先跑 scripts/bump_version.py"; exit 1; }
+      - name: 这一版出哪几个架构（.github/release-arches）
+        id: arches
+        run: |
+          list="$(grep -v '^[[:space:]]*#' .github/release-arches | tr ', \t' '\n\n\n' | grep -v '^$' | sort -u | paste -sd, -)"
+          case ",$list," in *,amd64,*) ;; *) echo "release-arches 里要有 amd64（现在是 ${list:-空的}）"; exit 1 ;; esac
+          for arch in ${list//,/ }; do
+            case "$arch" in amd64|arm64) ;; *) echo "release-arches 里的 $arch 不认得：只能写 amd64、arm64"; exit 1 ;; esac
+          done
+          echo "这一版的架构：$list"
+          { echo "list=$list"; echo "json=$(printf '%s' "$list" | jq -Rc 'split(",")')"; } >> "$GITHUB_OUTPUT"
       - name: 同步列表与 compose 默认值一致
         run: |
           for pair in $MIRRORS; do
@@ -79,19 +91,20 @@ jobs:
         id: plan
         env:
           ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+          ARCHES: ${{ steps.arches.outputs.json }}
         run: |
           previous="$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)"
-          # 上一版的镜像两个架构都有才复用（公开镜像，不登录就能看清单）；看不到也按没有处理，照常重建
-          both_arches() {
+          # 上一版的镜像有这一版要的全部架构才复用（公开镜像，不登录就能看清单；多出来的架构不碍事）；看不到也按没有处理，照常重建
+          has_arches() {
             docker buildx imagetools inspect --raw "$1" 2>/dev/null \
-              | jq -e '[.manifests[]?.platform.architecture] | index("amd64") != null and index("arm64") != null' > /dev/null
+              | jq -e --argjson want "$ARCHES" '[.manifests[]?.platform.architecture] as $have | all($want[]; . as $a | $have | index($a) != null)' > /dev/null
           }
           build=(); reuse=()
           while IFS='=' read -r name paths; do
             [ -n "$name" ] || continue
             # shellcheck disable=SC2086  # paths 是空格分开的路径列表
             if [ -n "$previous" ] && git diff --quiet "$previous" "$TAG" -- $paths \
-              && both_arches "$ACR_REGISTRY/knowwork-$name:$previous"; then reuse+=("$name"); else build+=("$name"); fi
+              && has_arches "$ACR_REGISTRY/knowwork-$name:$previous"; then reuse+=("$name"); else build+=("$name"); fi
           done <<< "$IMAGE_INPUTS"
           as_json() { printf '%s\n' "$@" | jq -R . | jq -cs 'map(select(length > 0))'; }
           echo "上一个版本：${previous:-无}；重建：${build[*]:-无}；复用：${reuse[*]:-无}"
@@ -123,7 +136,7 @@ jobs:
       fail-fast: false
       matrix:
         name: ${{ fromJSON(needs.check.outputs.build) }}
-        arch: [amd64, arm64]
+        arch: ${{ fromJSON(needs.check.outputs.arches) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -144,7 +157,7 @@ jobs:
           registry: ${{ env.REGISTRY_HOST }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-      - name: 构建并推送（带架构后缀的标签，合成多架构标签在下一步）
+      - name: 构建并推送（带架构后缀的标签，合成 vX.Y.Z 在下一步）
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -166,7 +179,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}-${{ matrix.arch }}
 
   manifests:
-    name: 合成多架构标签 ${{ matrix.name }}
+    name: 合成标签 ${{ matrix.name }}
     needs: [check, images]
     if: needs.check.outputs.build != '[]'
     runs-on: ubuntu-24.04
@@ -187,12 +200,15 @@ jobs:
           registry: ${{ env.REGISTRY_HOST }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-      - name: 两个架构合成 vX.Y.Z 与 latest（在仓库里写清单，不传镜像层）
+      - name: 各架构合成 vX.Y.Z 与 latest（在仓库里写清单，不传镜像层）
+        env:
+          ARCH_LIST: ${{ needs.check.outputs.arch_list }}
         run: |
           image="${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}"
-          docker buildx imagetools create --tag "$image:$TAG" --tag "$image:latest" "$image:$TAG-amd64" "$image:$TAG-arm64"
+          sources=(); for arch in ${ARCH_LIST//,/ }; do sources+=("$image:$TAG-$arch"); done
+          docker buildx imagetools create --tag "$image:$TAG" --tag "$image:latest" "${sources[@]}"
           arches="$(docker buildx imagetools inspect --raw "$image:$TAG" | jq -r '[.manifests[].platform.architecture] | sort | join(",")')"
-          test "$arches" = "amd64,arm64" || { echo "$image:$TAG 的架构是 $arches，应该是 amd64,arm64"; exit 1; }
+          test "$arches" = "$ARCH_LIST" || { echo "$image:$TAG 的架构是 $arches，应该是 $ARCH_LIST"; exit 1; }
           echo "$image:$TAG：$arches"
       - name: 生成 SBOM（依赖与许可证清单，取 amd64 那份）
         uses: anchore/sbom-action@v0
@@ -255,6 +271,9 @@ jobs:
     name: 同步依赖镜像
     needs: check
     runs-on: ubuntu-24.04
+    env:
+      ARCHES: ${{ needs.check.outputs.arches }}
+      ARCH_LIST: ${{ needs.check.outputs.arch_list }}
     # 跨仓库复制镜像挂住过半个多小时；不设超时会一直等到默认的 6 小时
     timeout-minutes: 30
     steps:
@@ -269,23 +288,26 @@ jobs:
           registry: ${{ env.REGISTRY_HOST }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-      - name: 原样复制 linux/amd64 与 linux/arm64（两个架构都有了的跳过）
+      - name: 原样复制这一版要的架构（都有了的跳过）
         run: |
-          arches() { docker buildx imagetools inspect --raw "$1" 2>/dev/null | jq -r '[.manifests[]?.platform.architecture] | sort | join(",")'; }
+          has_arches() {
+            docker buildx imagetools inspect --raw "$1" 2>/dev/null \
+              | jq -e --argjson want "$ARCHES" '[.manifests[]?.platform.architecture] as $have | all($want[]; . as $a | $have | index($a) != null)' > /dev/null
+          }
           for pair in $MIRRORS; do
             source="${pair%%=*}"; target="${{ vars.ACR_REGISTRY }}/${pair#*=}"
-            if [ "$(arches "$target" | grep -o 'amd64\|arm64' | sort -u | paste -sd, -)" = "amd64,arm64" ]; then
-              echo "已有 $target（amd64、arm64），跳过"
+            if has_arches "$target"; then
+              echo "已有 $target（$ARCH_LIST），跳过"
               continue
             fi
-            # 只取这两个架构，各取一份；以前只同步过 amd64 的标签在这里重写成两个架构，amd64 那份的摘要不变，在用的部署不受影响
+            # 每个要的架构各取一份；以前少同步了架构的标签在这里重写，已有架构那份的摘要不变，在用的部署不受影响
             digests="$(docker buildx imagetools inspect --raw "$source" \
-              | jq -r '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))]
+              | jq -r --argjson want "$ARCHES" '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture as $a | $want | index($a) != null))]
                        | unique_by(.platform.architecture) | .[].digest')"
-            [ "$(printf '%s\n' "$digests" | grep -c .)" = 2 ] || { echo "$source 没有 amd64、arm64 两个架构"; exit 1; }
+            [ "$(printf '%s\n' "$digests" | grep -c .)" = "$(printf '%s' "$ARCHES" | jq length)" ] || { echo "$source 缺架构（要 $ARCH_LIST）"; exit 1; }
             # shellcheck disable=SC2046  # 每个摘要一个参数
             docker buildx imagetools create --tag "$target" $(printf '%s\n' "$digests" | sed "s|^|${source%%:*}@|")
-            echo "已同步 $source → $target（$(arches "$target")）"
+            echo "已同步 $source → $target"
           done
 
   release:

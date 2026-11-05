@@ -71,17 +71,23 @@ class KnowledgeCatalog(_Frozen):
     omitted: int = Field(default=0, ge=0)
 
 
+MENTION_KIND_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+
+
 class TurnMention(_Frozen):
     """用户这一轮 @ 的一项，宿主写进这条消息（模型读得到，业务服务投影时取出来显示在气泡上，重新生成时照原样再发）。
-    type 是 knowledge_base、folder、document、tag、mcp、skill；id 同 conversations/mentions.py 的 Mention.id
-    （技能就是技能名，宿主写成 /技能名，官方插件据此注入技能；mcp 是服务标识，宿主写成「这一轮优先用它的工具」）；
-    base、base_name 是文件、标签所在的知识库。"""
+    type 是 knowledge_base、folder、document、tag、mcp、skill，或 extension（扩展登记的类型，conversations/mention_kinds.py）；
+    id 同 conversations/mentions.py 的 Mention.id（技能就是技能名，宿主写成 /技能名，官方插件据此注入技能；mcp 是服务标识，
+    宿主写成「这一轮优先用它的工具」）；base、base_name 是文件、标签所在的知识库；extension 另带 kind（扩展的类型标识）
+    与 label（类型名，例如「数据源」，宿主写成「用户点名的数据源：…」）。"""
 
-    type: Literal["knowledge_base", "folder", "document", "tag", "mcp", "skill"]
+    type: Literal["knowledge_base", "folder", "document", "tag", "mcp", "skill", "extension"]
     id: str = Field(min_length=1, max_length=300)
     name: str = Field(min_length=1, max_length=200)
     base: str | None = Field(default=None, max_length=200)
     base_name: str | None = Field(default=None, max_length=200)
+    kind: str | None = Field(default=None, pattern=MENTION_KIND_PATTERN)
+    label: str | None = Field(default=None, min_length=1, max_length=20)
 
 
 class TurnContext(_Frozen):
@@ -95,12 +101,24 @@ class TurnContext(_Frozen):
     turn: str = Field(default="", max_length=4000)
 
 
+# 回答方式的标识：内置 agent、quick，扩展可以登记别的（conversations/answer_modes.py）
+ANSWER_MODE_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+
+
+class AnswerModeSpec(_Frozen):
+    """扩展登记的回答方式这一轮的内容：放行哪些官方全局工具、提问后面加什么指令。内置的两种宿主自己认得，不带它。"""
+
+    tools: tuple[str, ...] = Field(default=(), max_length=64)
+    prompt: str = Field(default="", max_length=20_000)
+
+
 class TurnInput(_Frozen):
     text: str = Field(min_length=1, max_length=200_000)
     mode: Literal["followup", "steer"] = "followup"
     language: Literal["zh", "en"] | None = None  # 用户在聊天页指定的语言；不给时按提问判断（kernel/locale.py）
-    # 回答方式：智能体，或只查知识库（检索与阅读）的快速问答。宿主在这条消息进入步骤时切换，会话中途可以换
-    answer_mode: Literal["agent", "quick"] = "agent"
+    # 回答方式：智能体、只查知识库的快速问答，或扩展登记的。宿主在这条消息进入步骤时切换，会话中途可以换
+    answer_mode: str = Field(default="agent", pattern=ANSWER_MODE_PATTERN)
+    answer_mode_spec: AnswerModeSpec | None = None  # 扩展登记的方式由业务服务发消息时现算
     attachments: tuple[TurnAttachment, ...] = Field(default=(), max_length=20)
     # 本轮的知识库目录；None = 这轮没算（宿主沿用上一轮的），空目录 = 没有可查的知识库
     knowledge: KnowledgeCatalog | None = None

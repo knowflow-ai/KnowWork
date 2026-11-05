@@ -8,6 +8,7 @@ import {
   decideApproval,
   eventsUrl,
   sendMessage,
+  type AnswerMode,
   type QuestionAnswer,
   type SendMode,
 } from '../../../api/conversations';
@@ -78,7 +79,12 @@ function initialState(first?: FirstMessage): ChatState {
   return chatReducer(sent, { type: 'local/delivered', localId, messageId: first.messageId });
 }
 
-export function useConversation(conversationId: string | undefined, first?: FirstMessage): ConversationApi {
+/** answerMode：固定的回答方式（嵌在别的页面里的会话）；不给时按输入框上方的回答方式下拉（全局选择）。 */
+export function useConversation(
+  conversationId: string | undefined,
+  first?: FirstMessage,
+  answerMode?: AnswerMode,
+): ConversationApi {
   const [state, dispatch] = useReducer(chatReducer, first, initialState);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [connectionMessage, setConnectionMessage] = useState<string>();
@@ -117,7 +123,7 @@ export function useConversation(conversationId: string | undefined, first?: Firs
         const attachments = await uploadForTurn(conversationId, files);
         const { messageId } = await sendMessage(conversationId, text, mode, {
           language: currentReplyLanguage(),
-          answerMode: currentAnswerMode(),
+          answerMode: answerMode ?? currentAnswerMode(),
           attachments,
           droppedConditions: dropped,
           mentions,
@@ -128,7 +134,7 @@ export function useConversation(conversationId: string | undefined, first?: Firs
         rethrow(error, '消息没有发出去，请稍后重试');
       }
     },
-    [conversationId],
+    [conversationId, answerMode],
   );
 
   const cancel = useCallback(async () => {

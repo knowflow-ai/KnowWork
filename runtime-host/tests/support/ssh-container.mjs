@@ -41,8 +41,11 @@ export async function startSshContainer(sessionId) {
   run('docker', ['run', '-d', '--init', '--network', 'none', '--user', '0', '--cap-drop', 'ALL',
     ...CAPS.flatMap(cap => ['--cap-add', cap]), '--security-opt', 'no-new-privileges',
     '-e', `KW_SESSION_ROOT=/sessions/${sessionId}`, '--name', name, SSH_IMAGE, '/bin/sh', '-c', ENTRY])
-  await until(() => run('docker', ['exec', name, 'sh', '-c', 'test -s /etc/ssh/ssh_host_ed25519_key.pub && echo y']) === 'y',
-    '容器生成主机密钥')
+  // 密钥还没生成时 test 退出非零、run 会抛：当作还没好接着等（机器忙时第一次查常落空，原来直接判失败）
+  const keyReady = () => {
+    try { return run('docker', ['exec', name, 'sh', '-c', 'test -s /etc/ssh/ssh_host_ed25519_key.pub && echo y']) === 'y' } catch { return false }
+  }
+  await until(keyReady, '容器生成主机密钥')
   return {
     name,
     helperRunning: () => /helper\.js/.test(run('docker', ['exec', name, 'ps', '-eo', 'args'])),

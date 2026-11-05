@@ -50,6 +50,7 @@ async def search_conversations(sessionmaker: async_sessionmaker, *, workspace_id
             .outerjoin(RunSummary, (RunSummary.conversation_id == Conversation.id)
                        & RunSummary.question.ilike(pattern, escape="\\"))
             .where(Conversation.workspace_id == workspace_id, Conversation.user_id == user_id,
+                   Conversation.background.is_(False),
                    or_(Conversation.title.ilike(pattern, escape="\\"), RunSummary.question.is_not(None)))
             .order_by(Conversation.updated_at.desc(), Conversation.id.desc(), RunSummary.turn.desc())
             .limit(MAX_RESULTS * 5))).all()

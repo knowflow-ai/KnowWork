@@ -69,6 +69,29 @@ test('执行回调业务服务：带令牌与幂等键，结果回到下一次�
   }
 })
 
+test('业务服务另交的界面卡片走官方 presentationMeta：落在 tool/result 的 meta 上，不进模型请求', async () => {
+  const card = { version: 1, cards: [{ type: 'table', columns: [{ name: 'region' }], rows: [['华东-卡片专用']], row_count: 1 }] }
+  const env = await startBridgeHost(
+    { sequence: ['tool_call_success', 'success'], toolName: 'kw_biz_a', toolArguments: JSON.stringify({ q: '区域' }) },
+    { [TOKEN_A]: [bizTool('kw_biz_a')] },
+    async call => ({ body: { actionId: 'a1', status: 'succeeded', content: '给模型的一句', truncated: false,
+      replayed: false, presentation: card } }),
+  )
+  try {
+    await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-card', tools: { token: TOKEN_A } })
+    await env.host.call('POST', '/v1/sessions/tb-card/messages', { text: '按区域看' })
+    const frames = await collectEvents(env.host, 'tb-card', isTurnEnd)
+    assert.equal(turnEndReason(frames), 'completed')
+    const result = sessionEvents(frames).find(e => e.type === 'tool/result')
+    assert.deepEqual(result?.data?.meta, card, '卡片没有落到 tool/result 的 meta 上')
+    const followUp = messagesText(env.host.llm.requests[1])
+    assert.ok(followUp.includes('给模型的一句'), '给模型的文本没有回到下一次模型请求')
+    assert.ok(!followUp.includes('华东-卡片专用'), '卡片进了模型上下文')
+  } finally {
+    await env.stop()
+  }
+})
+
 test('写入工具执行前经官方审批：批准才回调业务服务，拒绝则不回调', async () => {
   for (const outcome of ['allowed-once', 'rejected']) {
     const env = await startBridgeHost(
@@ -172,12 +195,12 @@ test('审批按工具声明的 approval 决定：never 不问直接执行（风�
   }
 })
 
-test('不合法的审批方式、过长的使用规则或认不得的回答方式：会话打不开（失败关闭）', async () => {
+test('不合法的审批方式、过长的使用规则或格式不对的回答方式：会话打不开（失败关闭）', async () => {
   const TOKEN_C = 'tools-token-c-'.padEnd(40, 'c')
   const env = await startBridgeHost({ sequence: ['success'] }, {
     [TOKEN_A]: [{ ...bizTool('kw_biz_a', 'write'), approval: 'sometimes' }],
     [TOKEN_B]: [{ ...bizTool('kw_biz_b'), guidance: 'x'.repeat(1001) }],
-    [TOKEN_C]: [{ ...bizTool('kw_biz_c'), answerModes: ['quick', 'fast'] }],
+    [TOKEN_C]: [{ ...bizTool('kw_biz_c'), answerModes: ['quick', 'Fast mode'] }],
   })
   try {
     assert.equal((await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-bad-a', tools: { token: TOKEN_A } })).status, 400)

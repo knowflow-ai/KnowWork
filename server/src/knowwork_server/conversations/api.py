@@ -20,6 +20,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..audit.context import annotate
 from ..kernel.contract import (
+    ANSWER_MODE_PATTERN,
     KernelError,
     QuestionAnswer,
     QuestionAnswerItem,
@@ -29,7 +30,9 @@ from ..kernel.contract import (
 )
 from ..profile.errors import ProfileUnavailable
 from ..profile.snapshot import MAX_DROPPED, MAX_SELECTED, NO_SELECTION, TurnSelection
+from .answer_modes import AnswerModes, AnswerModeUnavailable, ModeContext, UnknownAnswerMode
 from .feedback import MAX_NOTE, RUN_ID, Feedback, FeedbackStore
+from .mention_kinds import MentionRejected
 from .mentions import MAX_MENTIONS, Mention, mentioned, turn_mentions
 from .models import Conversation
 from .replay import parse_cursor
@@ -82,8 +85,9 @@ class TurnChoice(BaseModel):
     dropped_conditions: list[ConditionLabel] = Field(default_factory=list, max_length=MAX_DROPPED)
     # 输入框里 @ 的知识库、目录、文件、标签、技能（见 mentions.py）
     mentions: list[Mention] = Field(default_factory=list, max_length=MAX_MENTIONS)
-    # 回答方式：智能体，或只查知识库的快速问答（宿主只放行 knowledge_search、knowledge_read）；用户在输入框里随时切换
-    answer_mode: Literal["agent", "quick"] = "agent"
+    # 回答方式：智能体、只查知识库的快速问答（宿主只放行 knowledge_search、knowledge_read），或扩展登记的
+    # （answer_modes.py）；用户在输入框里随时切换。登记了没有、这个人能不能用，发消息时由会话服务核对
+    answer_mode: str = Field(default="agent", pattern=ANSWER_MODE_PATTERN)
 
     def _scoped(self) -> tuple[list[str] | None, list[Mention]]:
         """这一轮算数的技能与 @：快速问答用不了技能（宿主拦下 skill），选了也不算，免得技能目录把它标成选中。"""
@@ -263,6 +267,12 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         try:
             message_id = await service.send(conversation, body.turn(), body.selection(),
                                             tuple(body.attachments or ()))
+        except UnknownAnswerMode as error:
+            raise HTTPException(status_code=422, detail="不认识这个回答方式，或现在不能用") from error
+        except MentionRejected as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except AnswerModeUnavailable as error:
+            raise HTTPException(status_code=503, detail="这个回答方式暂时不可用，换一种试试") from error
         except AttachmentUnavailable as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except CREDENTIAL_ERRORS as error:
@@ -372,5 +382,19 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
                        else {"id": item.sse_id, "event": item.type, "data": data})
 
         return EventSourceResponse(stream(), ping=15)
+
+    return router
+
+
+def build_answer_modes_router(modes: AnswerModes, current_actor: ActorDependency) -> APIRouter:
+    router = APIRouter(prefix="/api/workspaces/{workspace_id}/answer-modes")
+    Who = Annotated[Actor, Depends(current_actor)]
+
+    @router.get("")
+    async def list_answer_modes(who: Who):
+        """可选的回答方式
+        输入框左上角的下拉：内置的智能体、快速问答，加上扩展登记、这个人此刻能用的。"""
+        found = await modes.for_user(ModeContext(workspace_id=who.workspace_id, user_id=who.user_id))
+        return {"items": [{"id": m.id, "label": m.label, "description": m.description} for m in found]}
 
     return router

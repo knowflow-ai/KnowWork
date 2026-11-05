@@ -194,6 +194,18 @@ class PolicyEngine:
                 return True
         return False
 
+    def subjects(self, user_id: str, workspace_id: str) -> frozenset[str]:
+        """这个人在空间里属于哪些主体：本人、角色、部门（含上级）、用户组、组织架构部门。判定出错时只有本人。"""
+        enforcer = self._enforcer
+        sub = user_key(user_id)
+        if enforcer is None:
+            return frozenset({sub})
+        try:
+            return frozenset({sub, *enforcer.get_implicit_roles_for_user(sub, workspace_id)})
+        except Exception:
+            log.exception("subject expansion failed; only the user")
+            return frozenset({sub})
+
     def visible(self, user_id: str, workspace_id: str, resource_type: str, action: str) -> VisibleSet:
         enforcer = self._enforcer
         if enforcer is None:

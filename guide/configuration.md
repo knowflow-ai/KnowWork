@@ -108,6 +108,13 @@
 | `KNOWWORK_JOB_GRACE_SECONDS` | `60` | worker 停机时等手上任务退回排队的时间，过了直接中止，下次启动重新处理 |
 | `KNOWWORK_REDIS_URL` | 部署里已配 | 下游并发闸门用：多个 worker 进程共用 MinerU 等下游的名额；为空或 Redis 不可用时闸门只在单个进程内生效 |
 
+## 数据库连接
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `KNOWWORK_DB_POOL_SIZE` | `5` | 每个进程（api、worker 各一份）处理请求的数据库连接池常驻几条 |
+| `KNOWWORK_DB_MAX_OVERFLOW` | `10` | 忙时在常驻之外最多再开几条。同时在对话的人多、请求排队时可以调大；api 与 worker 加起来不要超过 PostgreSQL 的 `max_connections`（默认 100）。权限通知、机器人长连接这类一直占着的连接不算在池子里 |
+
 ## 镜像
 
 | 配置项 | 默认 | 说明 |

@@ -15,8 +15,9 @@ from jsonschema import Draft202012Validator
 
 from ..db.base import enter_workspace
 from ..kernel.tokens import TokenError
+from .presentation import normalize
 from .receipts import ActionCall, ActionResult, ReceiptStore, digest
-from .registry import ToolContext, ToolFailure, ToolRegistry, ToolSpec
+from .registry import ToolContext, ToolFailure, ToolOutput, ToolRegistry, ToolSpec
 from .tokens import ToolTokenClaims, ToolTokenSigner
 
 log = logging.getLogger(__name__)
@@ -153,9 +154,9 @@ class ToolService:
         if claim.kind == "in_progress":
             raise ToolAccessError(409, "action_in_progress", "同一调用正在执行，请稍后再试")
         call_id = request.call_key.removeprefix(f"{request.agent_session_id}:")
-        status, content = await self._run(replace(ctx, agent_session_id=request.agent_session_id, call_id=call_id), spec,
-                                          request.arguments)
-        return await self._receipts.settle(call, claim.action_id, status, content)
+        status, content, presentation = await self._run(
+            replace(ctx, agent_session_id=request.agent_session_id, call_id=call_id), spec, request.arguments)
+        return await self._receipts.settle(call, claim.action_id, status, content, presentation)
 
     async def _report(self, ctx: ToolContext, request: ExecuteRequest, risk: str | None, outcome: str, *,
                       action_id: str | None = None, code: str | None = None) -> None:
@@ -178,18 +179,24 @@ class ToolService:
             raise ToolAccessError(403, "tool_not_available", f"工具 {name} 已不在本会话的可用范围内")
         return spec
 
-    async def _run(self, ctx: ToolContext, spec: ToolSpec, arguments: dict[str, Any]) -> tuple[str, str]:
+    async def _run(self, ctx: ToolContext, spec: ToolSpec,
+                   arguments: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
         try:
             output = await self._registry.invoke(ctx, spec.name, arguments)
         except ToolFailure as failure:
-            return "failed", str(failure)
+            return "failed", str(failure), None
         except Exception:  # 工具内部错误只记日志，不把细节交给模型
             log.exception("tool %s failed in session %s", spec.name, ctx.session_id)
-            return "failed", f"工具 {spec.name} 执行失败"
+            return "failed", f"工具 {spec.name} 执行失败", None
+        if isinstance(output, ToolOutput) and isinstance(output.content, str):
+            presentation = normalize(output.presentation) if output.presentation is not None else None
+            if output.presentation is not None and presentation is None:
+                log.warning("tool %s returned a presentation that is not a valid card payload; dropped", spec.name)
+            return "succeeded", output.content, presentation
         if not isinstance(output, str):
             log.error("tool %s returned non-string output", spec.name)
-            return "failed", f"工具 {spec.name} 执行失败"
-        return "succeeded", output
+            return "failed", f"工具 {spec.name} 执行失败", None
+        return "succeeded", output, None
 
 
 def _arguments_digest(arguments: dict[str, Any]) -> str:

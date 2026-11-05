@@ -227,7 +227,7 @@ export type Action = 'use' | 'edit' | 'owner';
 export const ACTIONS: readonly { readonly value: Action; readonly label: string }[] = [
   { value: 'use', label: '使用' },
   { value: 'edit', label: '编辑' },
-  { value: 'owner', label: '完全管理' },
+  { value: 'owner', label: '管理' },
 ];
 
 /** 能授权的资源类型。知识源（连接）不单独授权，谁能查授在它下面的知识库上。 */

@@ -151,6 +151,29 @@ describe('ApprovalCard', () => {
     expect(onDecide).toHaveBeenLastCalledWith(false, false);
   });
 
+  it('扩展工具登记了审批明细的，参数摘要换成它画的明细（拿到解析后的参数）', () => {
+    register('chat.tools', {
+      name: 'model_change',
+      label: '改模型',
+      approval: ({ arguments: args }) => <p>要改 {String(args.count)} 项</p>,
+    });
+    renderWithApp(
+      <ApprovalCard
+        approval={{ id: 'ap3', toolName: 'model_change', status: 'pending' }}
+        step={{
+          callId: 'c',
+          kind: 'tool',
+          name: 'model_change',
+          arguments: '{"count":2}',
+          status: 'awaiting-approval',
+        }}
+        onDecide={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('要改 2 项')).toBeInTheDocument();
+    expect(screen.getByText('工具：改模型')).toBeInTheDocument();
+  });
+
   it('MCP 工具在标题与说明里都显示成「服务名 · 工具名」', () => {
     const name = 'mcp__deepwiki__read_wiki_contents';
     renderWithApp(
@@ -294,6 +317,15 @@ describe('Markdown 与引用', () => {
     expect(screen.getByRole('button', { name: '查看出处 22' })).toBeInTheDocument();
     expect(container.textContent).not.toContain('kw-cite');
     expect(container.querySelectorAll('td')).toHaveLength(4);
+  });
+
+  it('冒号后面紧跟英文的写法照原文显示（组件库开着的指令语法不能把它吞掉）；表格套一层、宽了能横向滚动', () => {
+    const text =
+      '口径:company_count 按 key:value 分组\n\n::note[单独一行]\n\n| 列 | 值 |\n| --- | --: |\n| a | 1 |';
+    const { container } = renderWithApp(<Markdown text={text} />);
+    expect(container).toHaveTextContent('口径:company_count 按 key:value 分组');
+    expect(container).toHaveTextContent('::note[单独一行]');
+    expect(container.querySelector('.kw-markdown-table > table')).not.toBeNull();
   });
 
   it('回答里的图按出处换成图片，放在它说明的那句话后面；对不上或出处还没拉到时不显示', () => {

@@ -11,10 +11,11 @@ import { FileCards } from './FileCard';
 import { Markdown } from './Markdown';
 import { ProcessSummary } from './ProcessSummary';
 import { QuestionCard } from './QuestionCard';
+import { ResultCards } from './ResultCards';
 import { SearchConditions } from './SearchConditions';
 import { TodoList } from './TodoList';
 import { answerNotices } from '../events/notices';
-import { hasProcess, selectRunSearch } from '../events/selectors';
+import { hasProcess, selectRunCards, selectRunSearch } from '../events/selectors';
 import { FilePreview, type PreviewFile } from '../../preview/FilePreview';
 import type { FeedbackInput, Rating } from '../../../api/feedback';
 
@@ -113,6 +114,9 @@ export function AssistantTurn({
           已去掉 {invalid.length} 处没有出处的引用编号：{invalid.map((n) => `[${n}]`).join(' ')}
         </span>
       ) : null}
+      {/* 结果卡片等这一轮结束再出：模型先展示结果、后写结论，卡片早出的话，逐字输出的结论插在它上面、
+          把它一路往下推（保持结论在上、卡片在下，内容只往下长）。过程里看步骤摘要 */}
+      {ended ? <ResultCards cards={selectRunCards(run)} question={run.asked[0]?.text} /> : null}
       <FileCards
         files={artifacts}
         onPreview={(file) => (file.url ? setPreviewing({ name: file.name, url: file.url }) : undefined)}

@@ -189,6 +189,11 @@ export function ServerDetail({
             </p>
           ) : null}
           {server.auth === 'oauth' ? <LoginNote server={server} /> : null}
+          {server.auth === 'shared' && server.headers.length > 0 ? (
+            <p className="kw-detail-note">
+              共享凭据：能用这个服务的人，都会用这份凭据访问对方系统里它能看到的全部内容。「给谁用」要按这份凭据的权限来定。
+            </p>
+          ) : null}
           {server.syncError ? (
             <p className="kw-detail-note">
               最近一次刷新失败：{server.syncError}。对话里仍按上次拉到的工具清单使用。

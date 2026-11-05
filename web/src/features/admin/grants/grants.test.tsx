@@ -99,7 +99,7 @@ describe('GrantsPage', () => {
     // 授给角色「成员」的那条（「成员」两个字页面上别处也有，取任意一处）
     expect(screen.getAllByText('成员').length).toBeGreaterThan(0);
     expect(screen.getByText('全部工具')).toBeInTheDocument();
-    expect(screen.getByText('完全管理')).toBeInTheDocument();
+    expect(screen.getByText('管理')).toBeInTheDocument();
     const row = screen.getByText('制度库 · 全部知识库').closest('tr') as HTMLElement;
     await userEvent.click(within(row).getByRole('button', { name: '撤销' }));
     const pop = await screen.findByRole('alertdialog', { name: /撤销这条授权/ });
@@ -180,7 +180,7 @@ describe('GrantsPage', () => {
       expect(calls.find('POST', BATCH)[0]?.body).toEqual({
         subjects: ['user:u1', 'user:u2'],
         resources: ['skill:sk_7f3a', 'skill:sk_9c1e'],
-        action: 'use',
+        action: 'edit',
       }),
     );
   });
@@ -200,9 +200,30 @@ describe('GrantsPage', () => {
       expect(calls.find('POST', BATCH)[0]?.body).toEqual({
         subjects: ['user:u1'],
         resources: ['skill:sk_9c1e'],
-        action: 'use',
+        action: 'edit',
       }),
     );
+  });
+
+  it('技能、工具的「使用」不在这里授（在各自详情的「给谁用」里整体替换）：两类都只有编辑、管理', async () => {
+    api();
+    renderWithApp(<GrantsPage />);
+    expect(await screen.findByText('周报')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
+    const dialog = await screen.findByRole('dialog');
+    const opener = (group: string) =>
+      within(within(dialog).getByRole('group', { name: group })).getByRole('button');
+    for (const [type, hint] of [
+      ['技能', /技能的「使用」在技能详情的「给谁用」里改/],
+      ['工具', /工具的「使用」在 MCP 服务详情的「给谁用」里改/],
+    ] as const) {
+      await pickOption(dialog, '资源类型', type);
+      expect(within(dialog).getByText(hint)).toBeInTheDocument();
+      await userEvent.click(opener('权限'));
+      expect(await screen.findByRole('option', { name: '编辑' })).toBeInTheDocument();
+      expect(screen.queryByRole('option', { name: '使用' })).toBeNull();
+      await userEvent.keyboard('{Escape}');
+    }
   });
 
   it('工具和知识库一样按树选：MCP 服务下面是「全部工具」和各个工具', async () => {
@@ -218,6 +239,7 @@ describe('GrantsPage', () => {
     await waitFor(() =>
       expect(calls.find('POST', BATCH)[0]?.body).toMatchObject({
         resources: ['tool:mcp__deepwiki__ask_wiki_question'],
+        action: 'edit',
       }),
     );
   });
@@ -326,6 +348,39 @@ describe('扩展给的知识源层级树', () => {
   });
 });
 
+describe('扩展登记的资源类型', () => {
+  it('资源类型里多一项，按它给的列表选，权限下面写三档在这类资源上的意思', async () => {
+    register('grants.resources', {
+      type: 'data_source',
+      label: '数据源',
+      help: '使用：问数；编辑：建模；管理：回滚',
+      load: async () => [{ id: 'ansrc_1', name: '销售库' }],
+    });
+    const calls = api({
+      [`GET ${B}/grants`]: jsonResponse([
+        { subject: 'role:editor', resource: 'data_source:ansrc_1', action: 'use' },
+      ]),
+    });
+    renderWithApp(<GrantsPage />);
+    expect(await screen.findByText('销售库')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /新增授权/ }));
+    const dialog = await screen.findByRole('dialog');
+    await pickSubjects(dialog, '李雷');
+    await pickOption(dialog, '资源类型', '数据源');
+    expect(within(dialog).getByText(/使用：问数；编辑：建模/)).toBeInTheDocument();
+    await pickOption(dialog, '数据源', '销售库');
+    await pickOption(dialog, '权限', '编辑');
+    await userEvent.click(within(dialog).getByRole('button', { name: '授权' }));
+    await waitFor(() =>
+      expect(calls.find('POST', BATCH)[0]?.body).toEqual({
+        subjects: ['user:u1'],
+        resources: ['data_source:ansrc_1'],
+        action: 'edit',
+      }),
+    );
+  });
+});
+
 describe('授权的纯函数', () => {
   const dir: Directory = {
     members: [],
@@ -338,6 +393,7 @@ describe('授权的纯函数', () => {
     knowledgeLoaded: false,
     tools: [],
     typeLabels: Object.fromEntries(RESOURCE_TYPES.map((t) => [t.value, t.label])),
+    resourceTypes: RESOURCE_TYPES.map((t) => ({ value: t.value, label: t.label })),
     trees: {},
   };
 

@@ -151,6 +151,6 @@ def test_read_only_knowledge_tools_are_offered_in_quick_answers():
     assert {name: spec["answerModes"] for name, spec in specs.items()} == {
         name: ["agent", "quick"] for name in ("knowledge_search", "knowledge_read", "knowledge_bases", "knowledge_documents")}
     assert "answerModes" not in ToolSpec("kw_w", "写入", {"type": "object"}, "write").describe()
-    for bad in (frozenset(), frozenset({"fast"})):
+    for bad in (frozenset(), frozenset({"Fast mode"})):  # 扩展可以登记别的回答方式，这里只拦格式不对的
         with pytest.raises(ValueError, match="回答方式"):
             ToolSpec("kw_w", "写入", {"type": "object"}, "write", answer_modes=bad)

@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any
 
+from ..tools.presentation import normalize as normalize_presentation
+
 SCHEMA = "events.v1"
 
 RUN_TYPES = ("run.started", "run.completed", "run.failed", "run.cancelled", "run.waiting")
@@ -34,7 +36,7 @@ _FILE_HANDLE = re.compile(r'^\[File (?P<name>"(?:[^"\\]|\\.)*") \((?P<bytes>\d+)
 _EXTRACTED_HANDLE = "[Markdown extracted from "
 # 宿主写的 @ 说明块（runtime-host mentions.mjs）：第一行是这个前缀加 JSON，不进显示文字，换成气泡上的小标签
 _MENTION_PREFIX = "[用户这一轮 @ 点名的范围] "
-MENTION_TYPES = ("knowledge_base", "folder", "document", "tag", "mcp", "skill")
+MENTION_TYPES = ("knowledge_base", "folder", "document", "tag", "mcp", "skill", "extension")
 MAX_MENTIONS = 30
 FIELD_LIMIT = 2000
 LABEL_LIMIT = 1000
@@ -166,7 +168,8 @@ def _user_message(state: ProjectionState, payload: dict, seq: int, time: int) ->
 
 
 def _mentions(block: str) -> list[dict] | None:
-    """@ 说明块的第一行；不是说明块返回 None。留类型、id、名字与所在知识库（重新生成时前端照原样再发）。"""
+    """@ 说明块的第一行；不是说明块返回 None。留类型、id、名字、所在知识库，扩展的另留类型标识与类型名
+    （重新生成时前端照原样再发）。"""
     if not block.startswith(_MENTION_PREFIX):
         return None
     try:
@@ -180,7 +183,8 @@ def _mentions(block: str) -> list[dict] | None:
 
     return [{"type": item["type"], "id": str(item["id"])[:LABEL_LIMIT], "name": str(item["name"])[:LABEL_LIMIT],
              **field(item, "base"), **({"base_name": item["baseName"][:LABEL_LIMIT]}
-                                       if isinstance(item.get("baseName"), str) else {})}
+                                       if isinstance(item.get("baseName"), str) else {}),
+             **field(item, "kind"), **field(item, "label")}
             for item in items[:MAX_MENTIONS]
             if isinstance(item, dict) and item.get("type") in MENTION_TYPES and isinstance(item.get("name"), str)
             and isinstance(item.get("id"), str)]
@@ -252,6 +256,10 @@ def _tool_result(state: ProjectionState, payload: dict, seq: int, time: int) -> 
     search = None if failed else _search_summary(full)
     if search is not None:
         data["search"] = search
+    # 工具交的界面卡片（DSH tool/result 的 meta，业务工具经工具桥的 presentationMeta 交来）；交给浏览器前再校验截断一次
+    presentation = None if failed else normalize_presentation(payload.get("meta"))
+    if presentation is not None:
+        data["presentation"] = presentation
     error = payload.get("error")
     if failed and isinstance(error, dict):
         data["code"] = str(error.get("code", ""))[:64]

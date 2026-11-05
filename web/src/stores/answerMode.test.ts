@@ -24,3 +24,26 @@ describe('回答方式', () => {
     expect((await load()).currentAnswerMode()).toBe('agent');
   });
 });
+
+describe('回答方式的可选项', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+  });
+
+  it('记住的方式在可选项里才发它，不在时按智能体', async () => {
+    window.localStorage.setItem('kw.answerMode', 'custom');
+    const store = await load();
+    expect(store.currentAnswerMode()).toBe('agent');
+    store.useAnswerMode.getState().setOptions([
+      { id: 'agent', label: '智能体', description: '' },
+      { id: 'custom', label: '扩展方式', description: '' },
+    ]);
+    expect(store.currentAnswerMode()).toBe('custom');
+  });
+
+  it('格式不对的存值不读', async () => {
+    window.localStorage.setItem('kw.answerMode', 'Bad mode!');
+    expect((await load()).useAnswerMode.getState().mode).toBe('agent');
+  });
+});

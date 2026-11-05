@@ -4,6 +4,7 @@
  * 列表读服务端的每轮汇总：每行有提问、检索与引用、赞踩。
  * 筛选条件都在链接参数里：问答大盘点数字跳过来时带上它统计用的时间段（精确到时刻）、工具、知识库，
  * 这几项显示成可以去掉的标签；自己选的时间段、成员、状态、信号同样写回链接，复制链接就是同样的筛选。
+ * 扩展跳过来时带 fact（「模块.键=值」，按模块记的事实筛，例如问数的数据源）和 factLabel（标签上的说法）。
  */
 import { lazy, Suspense, useState } from 'react';
 import { useSearchParams } from 'react-router';
@@ -54,6 +55,11 @@ const CARRIED = [
     label: (p: URLSearchParams) => `知识库：${p.get('baseName') ?? p.get('base')}`,
     shown: (p: URLSearchParams) => p.has('base'),
   },
+  {
+    keys: ['fact', 'factLabel'],
+    label: (p: URLSearchParams) => p.get('factLabel') ?? p.get('fact') ?? '',
+    shown: (p: URLSearchParams) => p.has('fact'),
+  },
 ] as const;
 
 export default function RunsPage() {
@@ -90,6 +96,7 @@ export default function RunsPage() {
         signal,
         tool: value('tool'),
         base: value('base'),
+        fact: value('fact'),
       };
       return listRuns(filter, pageParam);
     },

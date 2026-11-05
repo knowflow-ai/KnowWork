@@ -4,10 +4,9 @@
  */
 import { ChevronLeft, ChevronRight } from '@openai/apps-sdk-ui/components/Icon';
 import { cx } from '../../../ui/cx';
-import { MENTION_GROUPS, MENTION_KINDS, type MentionGroup } from './kinds';
+import { groupMeta, kindOf, type MentionGroup } from './kinds';
 import { MENTION_MENU_ID, optionId, type MentionMenu as Menu, type Row } from './useMentionMenu';
 
-const groupOf = (group: MentionGroup) => MENTION_GROUPS.find((g) => g.group === group)!;
 const keep = (event: { preventDefault(): void }) => event.preventDefault();
 
 function RowView({ row, index, menu }: { readonly row: Row; readonly index: number; readonly menu: Menu }) {
@@ -21,6 +20,7 @@ function RowView({ row, index, menu }: { readonly row: Row; readonly index: numb
     onMouseEnter: () => menu.setActive(index),
     onClick: () => menu.choose(row),
   };
+  const groupOf = (group: MentionGroup) => groupMeta(group, menu.options.extensions);
   if (row.kind === 'group') {
     const meta = groupOf(row.group);
     return (
@@ -44,7 +44,7 @@ function RowView({ row, index, menu }: { readonly row: Row; readonly index: numb
     );
   }
   const { mention, detail } = row.candidate;
-  const kind = MENTION_KINDS[mention.type];
+  const kind = kindOf(mention, menu.options.extensions);
   return (
     <div {...common} aria-label={`${kind.label} ${mention.name}`}>
       <span className="kw-mention-icon">{kind.icon}</span>
@@ -60,7 +60,7 @@ function RowView({ row, index, menu }: { readonly row: Row; readonly index: numb
 /** 直接输入查找时，每组前面一行标题：类型 · 选了会怎样。 */
 function header(row: Row, previous: Row | undefined, menu: Menu) {
   if (menu.group !== null || row.kind === 'group' || previous?.group === row.group) return null;
-  const meta = groupOf(row.group);
+  const meta = groupMeta(row.group, menu.options.extensions);
   return (
     <div className="kw-mention-section" role="presentation" key={`h-${row.group}`}>
       {meta.label} · {meta.effect}
@@ -70,7 +70,7 @@ function header(row: Row, previous: Row | undefined, menu: Menu) {
 
 export function MentionMenu({ menu }: { readonly menu: Menu }) {
   if (!menu.open) return null;
-  const current = menu.group ? groupOf(menu.group) : null;
+  const current = menu.group ? groupMeta(menu.group, menu.options.extensions) : null;
   return (
     <div className="kw-mention-menu" onMouseDown={keep}>
       {current ? (

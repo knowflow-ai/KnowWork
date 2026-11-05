@@ -3,7 +3,7 @@
 import hashlib
 import uuid
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -37,6 +37,7 @@ class ActionResult:
     truncated: bool
     result_ref: str | None
     replayed: bool
+    presentation: dict[str, Any] | None = None  # 只给界面的卡片（tools/presentation.py），重放时一并交回
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,8 @@ class Claim:
 
 def _result_of(receipt: ActionReceipt, *, replayed: bool) -> ActionResult:
     return ActionResult(action_id=receipt.action_id, status=receipt.status, content=receipt.result_inline or "",
-                        truncated=receipt.truncated, result_ref=receipt.result_ref, replayed=replayed)
+                        truncated=receipt.truncated, result_ref=receipt.result_ref, replayed=replayed,
+                        presentation=receipt.presentation)
 
 
 def _preview(content: str) -> str:
@@ -89,7 +91,7 @@ class ReceiptStore:
         return Claim(kind="replay", action_id=existing.action_id, result=_result_of(existing, replayed=True))
 
     async def settle(self, call: ActionCall, action_id: str, status: Literal["succeeded", "failed"],
-                     content: str) -> ActionResult:
+                     content: str, presentation: dict[str, Any] | None = None) -> ActionResult:
         truncated = len(content.encode()) > MAX_INLINE_BYTES
         inline = _preview(content) if truncated else content
         result_ref = uuid.uuid4().hex if truncated else None
@@ -98,6 +100,6 @@ class ReceiptStore:
                 session.add(ActionResultBlob(id=result_ref, workspace_id=call.workspace_id, content=content))
             await session.execute(update(ActionReceipt).where(ActionReceipt.action_id == action_id).values(
                 status=status, result_digest=digest(content), result_inline=inline, result_ref=result_ref,
-                truncated=truncated))
+                truncated=truncated, presentation=presentation))
         return ActionResult(action_id=action_id, status=status, content=inline, truncated=truncated,
-                            result_ref=result_ref, replayed=False)
+                            result_ref=result_ref, replayed=False, presentation=presentation)

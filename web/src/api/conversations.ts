@@ -120,15 +120,35 @@ export const REPLY_LANGUAGES: readonly { readonly value: ReplyLanguage; readonly
 ];
 
 /**
- * 回答方式（服务端 conversations/api.py 的 answer_mode）：智能体，或只查知识库（检索与阅读）的快速问答。
- * 每条消息都带，会话中途可以换；快速问答不能带附件，@ 的技能不算。
+ * 回答方式（服务端 conversations/answer_modes.py）：内置智能体、只查知识库（检索与阅读）的快速问答，扩展可以再登记别的。
+ * 每条消息都带，会话中途可以换；快速问答不能带附件，@ 的技能不算。可选的项从服务端取（listAnswerModes）。
  */
-export type AnswerMode = 'agent' | 'quick';
+export type AnswerMode = string;
 
-export const ANSWER_MODES: readonly { readonly value: AnswerMode; readonly label: string }[] = [
-  { value: 'agent', label: '智能体' },
-  { value: 'quick', label: '快速问答' },
+export interface AnswerModeOption {
+  readonly id: AnswerMode;
+  readonly label: string;
+  readonly description: string;
+}
+
+/** 内置的两种：可选项取到之前、取不到时用 */
+export const BUILT_IN_ANSWER_MODES: readonly AnswerModeOption[] = [
+  { id: 'agent', label: '智能体', description: '能用技能、读文件、执行任务，适合复杂的事' },
+  { id: 'quick', label: '快速问答', description: '只查知识库，回答更快' },
 ];
+
+/** 这个空间里我能选的回答方式；服务端没给出可用的就用内置两种。 */
+export async function listAnswerModes(): Promise<readonly AnswerModeOption[]> {
+  const body = await request<unknown>(workspacePath('/answer-modes'));
+  const record = isRecord(body) ? body : {};
+  const found = listOf(record.items, (value) => {
+    if (!isRecord(value)) return undefined;
+    const id = text(value.id);
+    const label = text(value.label);
+    return id && label ? { id, label, description: str(value.description) ?? '' } : undefined;
+  });
+  return found.length > 0 ? found : BUILT_IN_ANSWER_MODES;
+}
 
 /** 一条消息除了文字以外带的东西；不带的不发对应字段。 */
 export interface SendExtras {

@@ -135,7 +135,7 @@ async def test_grant_several_subjects_and_resources_at_once(client):
 
 
 async def test_granting_a_lower_tier_to_admins_keeps_their_default(client):
-    """给「管理员」角色授全部技能的「使用」：系统给管理员的默认「完全管理」不能被当成旧档删掉。"""
+    """给「管理员」角色授全部技能的「使用」：系统给管理员的默认「管理」不能被当成旧档删掉。"""
     base = "/api/workspaces/ws1"
     body = {"subjects": ["role:admin"], "resources": ["skill:*"], "action": "use"}
     assert (await client.post(f"{base}/grants/batch", json=body, headers=as_("alice"))).status_code == 201
@@ -145,7 +145,7 @@ async def test_granting_a_lower_tier_to_admins_keeps_their_default(client):
     check = await client.get(f"{base}/me/check", params={"resource": "skill:s9", "action": "owner"},
                              headers=as_("bob"))
     assert check.json() == {"allowed": True}
-    # 撤掉另授的这一档：默认的「完全管理」还在
+    # 撤掉另授的这一档：默认的「管理」还在
     revoke = await client.delete(f"{base}/grants", params={"subject": "role:admin", "resource": "skill:*"},
                                  headers=as_("alice"))
     assert revoke.status_code == 204

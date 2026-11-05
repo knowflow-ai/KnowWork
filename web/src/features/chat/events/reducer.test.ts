@@ -473,6 +473,30 @@ describe('执行过程的先后顺序', () => {
     expect(second?.search).toBeUndefined();
   });
 
+  it('工具交给界面的卡片记在步骤上，认不出的不要；失败的步骤没有卡片', () => {
+    const presentation = {
+      version: 1,
+      cards: [{ type: 'table', columns: [{ name: 'n' }], rows: [[3]], row_count: 3 }],
+    };
+    const step = (id: string, item: string, type: string, data: Record<string, unknown>) =>
+      wire({ id, type, run: 1, item, kind: 'tool', data });
+    const state = fold([
+      ev.runStarted(1, 1),
+      step('2', 'c1', 'item.started', { name: 'show_result' }),
+      step('3', 'c1', 'item.completed', { text: '{}', presentation }),
+      step('4', 'c2', 'item.started', { name: 'show_result' }),
+      step('5', 'c2', 'item.completed', { text: '{}', presentation: { version: 1, cards: [{ type: 'x' }] } }),
+      step('6', 'c3', 'item.started', { name: 'show_result' }),
+      step('7', 'c3', 'item.failed', { text: '失败', presentation }),
+    ]);
+    const [first, second, third] = state.runs['run-1']?.steps ?? [];
+    expect(first?.cards).toEqual([
+      { type: 'table', columns: [{ name: 'n' }], rows: [[3]], rowCount: 3, moreRows: false },
+    ]);
+    expect(second?.cards).toBeUndefined();
+    expect(third?.cards).toBeUndefined();
+  });
+
   it('思考、说明与步骤按发生先后交错记下', () => {
     const state = fold([
       ev.runStarted(1, 1),

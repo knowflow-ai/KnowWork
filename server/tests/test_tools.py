@@ -15,7 +15,7 @@ from knowwork_server.kernel.tokens import TokenError, TokenSigner, derive_key
 from knowwork_server.tools import build_tool_service
 from knowwork_server.tools.api import build_internal_router
 from knowwork_server.tools.models import ActionReceipt, ActionResultBlob
-from knowwork_server.tools.registry import KW_NOW, BuiltinTool, StaticToolRegistry, ToolFailure, ToolSpec
+from knowwork_server.tools.registry import KW_NOW, BuiltinTool, StaticToolRegistry, ToolFailure, ToolOutput, ToolSpec
 from knowwork_server.tools.tokens import ToolTokenSigner
 
 pytestmark = pytest.mark.anyio
@@ -37,9 +37,15 @@ class Counting:
             raise ToolFailure("台账已锁定，不能写入")
         if arguments.get("q") == "big":
             return "x" * (70 * 1024)
+        if arguments.get("q") == "card":
+            return ToolOutput("给模型的一句", CARD)
+        if arguments.get("q") == "badcard":
+            return ToolOutput("给模型的一句", {"version": 1, "cards": [{"type": "chart"}]})
         return f"已记录：{arguments['q']}"
 
 
+CARD = {"version": 1, "cards": [{"type": "table", "columns": [{"name": "region", "label": "区域"}],
+                                 "rows": [["华东"], ["华南"]], "row_count": 2}]}
 NOTE_SCHEMA = {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"],
                "additionalProperties": False}
 
@@ -140,6 +146,20 @@ async def test_execute_writes_receipt_and_replays_without_rerunning(env):
     other = await call(env, "第二笔", call_id="call-2")
     assert other.json()["actionId"] != first.json()["actionId"]
     assert len(env["handler"].calls) == 2
+
+
+async def test_tool_output_carries_a_card_for_the_ui_and_replays_it(env):
+    """处理函数可以另交一份只给界面的卡片：执行接口单独返回（宿主交给 DSH 的 presentationMeta），重放时一并交回。"""
+    first = (await call(env, "card", call_id="card-1")).json()
+    assert first["content"] == "给模型的一句", "给模型的文本里不带卡片"
+    assert first["presentation"] == {"version": 1, "cards": [{"type": "table", "columns": [{"name": "region", "label": "区域"}],
+                                                              "rows": [["华东"], ["华南"]], "row_count": 2, "more_rows": False}]}
+    again = (await call(env, "card", call_id="card-1")).json()
+    assert again["replayed"] is True and again["presentation"] == first["presentation"]
+    dropped = (await call(env, "badcard", call_id="card-2")).json()
+    assert dropped["status"] == "succeeded" and dropped["content"] == "给模型的一句" and "presentation" not in dropped, \
+        "认不出的卡片丢掉，结果照常交给模型"
+    assert "presentation" not in (await call(env, "普通的一笔", call_id="card-3")).json()
 
 
 async def test_same_call_id_with_other_arguments_is_rejected(env):

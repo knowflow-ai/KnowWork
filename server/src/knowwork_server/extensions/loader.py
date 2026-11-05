@@ -94,6 +94,21 @@ def _reason(license_state: LicenseState, extension: Extension) -> str:
     return license_state.message
 
 
+def _with_requirements(licensed: tuple[Extension, ...], skipped: list[Skipped]) -> tuple[Extension, ...]:
+    """扩展可以声明 requires（依赖的别的扩展名，例如问数要知识库）：依赖的没启用，它也不启用，原因写明。
+    依赖可以连着几层，一直去到没有可去的为止。"""
+    active = list(licensed)
+    while True:
+        names = {e.name for e in active}
+        lacking = [(e, [r for r in getattr(e, "requires", ()) if r not in names]) for e in active]
+        dropped = [(e, missing) for e, missing in lacking if missing]
+        if not dropped:
+            return tuple(active)
+        for extension, missing in dropped:
+            skipped.append(Skipped(extension.name, f"它依赖的扩展没有启用：{'、'.join(missing)}"))
+        active = [e for e in active if e not in {d for d, _ in dropped}]
+
+
 def discover(found: EntryPoints = _installed) -> Extensions:
     license_state = verify_license(found)
     installed: list[Extension] = []
@@ -104,8 +119,9 @@ def discover(found: EntryPoints = _installed) -> Extensions:
         except Exception:
             log.exception("loading extension %s failed", entry.name)
             skipped.append(Skipped(entry.name, "扩展加载失败，详情见业务服务日志"))
-    active = tuple(e for e in installed if license_state.allows(e.license_module))
-    skipped += [Skipped(e.name, _reason(license_state, e)) for e in installed if e not in active]
+    licensed = tuple(e for e in installed if license_state.allows(e.license_module))
+    skipped += [Skipped(e.name, _reason(license_state, e)) for e in installed if e not in licensed]
+    active = _with_requirements(licensed, skipped)
     for item in skipped:
         log.warning("extension %s not enabled: %s", item.name, item.reason)
     return Extensions(license=license_state, installed=tuple(installed), active=active, skipped=tuple(skipped))

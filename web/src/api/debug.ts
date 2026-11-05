@@ -40,6 +40,8 @@ export interface DebugToolCall {
   readonly truncated: boolean;
   /** 业务另记的过程（知识检索的各路召回、重排……），模型没看到 */
   readonly trace: readonly DebugTrace[];
+  /** 工具交给界面的卡片（同会话里回答下方的那份，原样，按 features/chat/events/cards.ts 解析） */
+  readonly presentation: unknown;
 }
 
 /** 过程里的一项：哪一路或哪一步、一句结论、几行明细，哪个知识源。 */
@@ -150,6 +152,7 @@ function parseCall(value: unknown): DebugToolCall | undefined {
     durationMs: nullable(value.durationMs),
     truncated: bool(value.truncated),
     trace: listOf(value.trace, parseTrace),
+    presentation: value.presentation ?? null,
   };
 }
 
@@ -313,6 +316,8 @@ export interface RunFilter {
   readonly tool?: string;
   /** 检索到这个知识库（全局 id） */
   readonly base?: string;
+  /** 模块记的事实里有这个值：「模块.键=值」（扩展用，例如问数的 analytics.projects=项目编号） */
+  readonly fact?: string;
 }
 
 function parseRow(value: unknown): RunRow | undefined {

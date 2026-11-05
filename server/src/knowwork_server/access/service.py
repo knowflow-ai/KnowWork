@@ -48,7 +48,7 @@ class AccessService(EnterpriseMixin):
             raise InvalidInput("请选择授权对象")
         if len(wanted) > MAX_USERS:
             raise InvalidInput(f"一次最多选 {MAX_USERS} 个对象")
-        types = self._hierarchy.resource_types
+        types = self.added_types
         objects = tuple(dict.fromkeys(grantable(Resource.parse(resource, types=self.resource_types), types)
                                       for resource in resources))
         if not objects:
@@ -57,7 +57,7 @@ class AccessService(EnterpriseMixin):
             raise InvalidInput(f"一次最多授 {MAX_GRANTS} 条（对象数 × 资源数），请分几次授")
         act = parse_action(action)
         keys = {sub.key for sub in wanted}
-        # 空间角色的默认权限（管理员对全部技能「完全管理」等）不算旧档：给「管理员」授低一档时不能把它删掉降了权
+        # 空间角色的默认权限（管理员对全部技能「管理」等）不算旧档：给「管理员」授低一档时不能把它删掉降了权
         defaults = set(R.default_role_policies(workspace_id))
         async with self._tx(workspace_id) as tx:
             for sub in wanted:
@@ -76,7 +76,7 @@ class AccessService(EnterpriseMixin):
         self._require(actor_id, workspace_id, Action.EDIT)
         sub = Subject.parse(subject)
         obj = Resource.parse(resource, types=self.resource_types)
-        # 空间角色的默认权限不是授出去的，撤销时不动：撤掉给「管理员」另授的一档，不能连默认的「完全管理」一起删
+        # 空间角色的默认权限不是授出去的，撤销时不动：撤掉给「管理员」另授的一档，不能连默认的「管理」一起删
         defaults = set(R.default_role_policies(workspace_id))
         async with self._tx(workspace_id) as tx:
             existing = [rule for rule in await store.permissions_of(tx.session, workspace_id, sub.key, obj.key)
@@ -103,7 +103,7 @@ class AccessService(EnterpriseMixin):
         技能、MCP 服务在自己的设置里改「给谁用」都走这里，不用去资源授权页一条条加减。edit、owner 档的授权不动，
         已经有这两档的主体也不降成 use；资源授权页仍可以单独改档。返回现在 use 档的主体。"""
         self._require(actor_id, workspace_id, Action.EDIT)
-        obj = grantable(Resource.parse(resource, types=self.resource_types), self._hierarchy.resource_types)
+        obj = grantable(Resource.parse(resource, types=self.resource_types), self.added_types)
         wanted = tuple(dict.fromkeys(Subject.parse(subject) for subject in subjects))
         if len(wanted) > MAX_USERS:
             raise InvalidInput(f"一次最多选 {MAX_USERS} 个对象")
@@ -124,7 +124,7 @@ class AccessService(EnterpriseMixin):
                          subjects: Sequence[str]) -> RuleChange:
         """新建资源时在调用方的事务里给默认的「给谁用」（例如新空间技能默认全体成员，授 role:editor use）。
         同 purge_grants：调用方提交后把返回值交给 settle，回滚了就丢掉。"""
-        obj = grantable(Resource.parse(resource, types=self.resource_types), self._hierarchy.resource_types)
+        obj = grantable(Resource.parse(resource, types=self.resource_types), self.added_types)
         rules = tuple(R.permission(Subject.parse(subject).key, workspace_id, obj.key, Action.USE) for subject in subjects)
         await store.insert_rules(session, rules)
         if rules:

@@ -2,19 +2,17 @@
  * 新增授权：选授权对象、资源与权限档位。同一对象对同一资源只保留一档，再授即改档。
  * 对象、资源都是先选类型，再在这一类里多选（部门、组织架构、知识库、工具按层级成树）；不混着选几类，一次授权看得清
  * 授给了谁、授的是什么。几个对象 × 几个资源一次授上，一个事务。
+ *
+ * 资源分两类：能力类（技能、MCP 服务）默认全体成员可用，「使用」只在
+ * 各自详情的「给谁用」里改，那里是整体替换；在这里叠加一条「使用」，全体成员能用的时候不起任何作用，管理员却以为收窄了。
+ * 所以这里技能、工具都只授「编辑」「管理」（工具这两档目前不带额外能力，MCP 服务只有管理员能维护；两者保持同一套，
+ * 以后给 MCP 加「维护者」时直接用）。数据类（知识库、数据源）默认只有管理员，在这里显式授权。
  */
 import { useState } from 'react';
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
 import { Select } from '@openai/apps-sdk-ui/components/Select';
-import {
-  ACTIONS,
-  grantMany,
-  RESOURCE_TYPES,
-  SUBJECT_KINDS,
-  type Action,
-  type SubjectKind,
-} from '../../../api/workspace';
+import { ACTIONS, grantMany, SUBJECT_KINDS, type Action, type SubjectKind } from '../../../api/workspace';
 import { Dialog, DialogActions } from '../../../ui/Dialog';
 import { Field } from '../../../ui/Field';
 import { TreeSelect } from '../../../ui/TreeSelect';
@@ -32,16 +30,23 @@ import {
 import { KnowledgeBasePicker } from './KnowledgeBasePicker';
 import { ToolPicker } from './ToolPicker';
 
-const typeLabel = (type: string): string => RESOURCE_TYPES.find((t) => t.value === type)?.label ?? '资源';
-
 /** 「全部」勾选框的说法：全部什么、含不含以后新增的。知识库是所有知识源下的全部（树里每个知识源另有自己的「全部知识库」）。 */
-function allLabel(type: string): string {
+function allLabel(type: string, label: string): string {
   return type === 'knowledge_base'
     ? '全部知识库（所有知识源，含以后新增的）'
-    : `全部${typeLabel(type)}（含以后新增的）`;
+    : `全部${label}（含以后新增的）`;
 }
 
 /** 校验不通过时，错误挂在对应的表单项下面。 */
+/** 能力类：这里只授「编辑」「管理」，「使用」在各自详情的「给谁用」里改 */
+const CAPABILITY_HELP: Readonly<Record<string, string>> = {
+  skill: '技能的「使用」在技能详情的「给谁用」里改；这里授「编辑」（改草稿、启停）或「管理」（发布、删除）',
+  tool: '工具的「使用」在 MCP 服务详情的「给谁用」里改；这里授「编辑」或「管理」',
+};
+const isCapability = (type: string) => type in CAPABILITY_HELP;
+
+const actionsOf = (type: string) => (isCapability(type) ? ACTIONS.filter((a) => a.value !== 'use') : ACTIONS);
+
 function problemField(problem: string | null): 'subject' | 'resource' | null {
   if (!problem) return null;
   return problem.includes('对象') ? 'subject' : 'resource';
@@ -69,6 +74,10 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
     if (await action.run(value)) onClose();
   };
   const known = resourceOptions(value.resourceType, dir);
+  const typeLabel = dir.typeLabels[value.resourceType] ?? '资源';
+  const help =
+    CAPABILITY_HELP[value.resourceType] ??
+    dir.resourceTypes.find((t) => t.value === value.resourceType)?.help;
   const at = problemField(problem);
   return (
     <Dialog
@@ -109,8 +118,15 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
           <Select
             block
             value={value.resourceType}
-            options={RESOURCE_TYPES.map((t) => ({ ...t }))}
-            onChange={(option) => patch({ resourceType: option.value, resourceIds: [] })}
+            options={dir.resourceTypes.map((t) => ({ value: t.value, label: t.label }))}
+            onChange={(option) =>
+              patch({
+                resourceType: option.value,
+                resourceIds: [],
+                // 换到能力类时「使用」不在这里授，落到「编辑」
+                ...(isCapability(option.value) && value.action === 'use' ? { action: 'edit' as Action } : {}),
+              })
+            }
           />
         </Field>
         {value.all ? null : value.resourceType === 'knowledge_base' ? (
@@ -133,7 +149,7 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
             />
           </Field>
         ) : known.length > 0 ? (
-          <Field label={typeLabel(value.resourceType)} error={at === 'resource' ? problem : undefined}>
+          <Field label={typeLabel} error={at === 'resource' ? problem : undefined}>
             <Select
               block
               multiple
@@ -163,16 +179,25 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
         {/* 写明是全部什么：只写「全部」时，勾上它又在上面选了某个目录，看不出到底授的是哪个。
             勾上就不再显示具体选哪个，已选的也清掉 */}
         <Checkbox
-          label={allLabel(value.resourceType)}
+          label={allLabel(value.resourceType, typeLabel)}
           checked={value.all}
           onCheckedChange={(checked) => patch({ all: checked, resourceIds: [] })}
         />
       </div>
-      <Field label="权限" help="使用 < 编辑 < 完全管理，高档包含低档">
+      <Field
+        label="权限"
+        help={
+          isCapability(value.resourceType)
+            ? help
+            : help
+              ? `${help}；高档包含低档`
+              : '使用 < 编辑 < 管理，高档包含低档'
+        }
+      >
         <Select
           block
           value={value.action}
-          options={ACTIONS.map((a) => ({ ...a }))}
+          options={actionsOf(value.resourceType).map((a) => ({ ...a }))}
           onChange={(option) => patch({ action: option.value as Action })}
         />
       </Field>

@@ -136,6 +136,8 @@ class HostKernel:
     async def send(self, session_id: str, turn: TurnInput) -> str:
         body = {"text": turn.text, "mode": turn.mode, "language": resolve_turn_language(turn.text, turn.language),
                 "answerMode": turn.answer_mode}
+        if turn.answer_mode_spec is not None:
+            body["answerModeSpec"] = {"tools": list(turn.answer_mode_spec.tools), "prompt": turn.answer_mode_spec.prompt}
         if turn.attachments:
             body["attachments"] = [_attachment(a) for a in turn.attachments]
         if turn.knowledge is not None:
@@ -147,7 +149,8 @@ class HostKernel:
             body["context"] = {"standing": turn.context.standing, "turn": turn.context.turn}
         if turn.mentions:
             body["mentions"] = [{"type": m.type, "id": m.id, "name": m.name,
-                                 **({"base": m.base, "baseName": m.base_name or m.base} if m.base else {})}
+                                 **({"base": m.base, "baseName": m.base_name or m.base} if m.base else {}),
+                                 **({"kind": m.kind, "label": m.label or m.kind} if m.kind else {})}
                                 for m in turn.mentions]
         response = await self._client.post(f"/v1/sessions/{_segment(session_id)}/messages", json=body)
         _raise_for(response)

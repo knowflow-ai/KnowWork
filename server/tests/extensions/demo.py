@@ -98,7 +98,18 @@ class PublicOnly:
         return None
 
 
+class Addon(Demo):
+    """依赖 demo 的扩展（requires）：demo 没启用它也不启用。"""
+
+    name = "addon"
+    license_module = "addon"
+    rls_tables = ()
+    migrations = None
+    requires = ("demo",)
+
+
 EXTENSION = Demo()
+ADDON = Addon()
 BROKEN = Broken()
 BROKEN_INSIDE = BrokenInside()
 PUBLIC_ONLY = PublicOnly()
@@ -115,6 +126,14 @@ class Granting:
 
 def granting_demo() -> Granting:
     return Granting("demo")
+
+
+def granting_both() -> Granting:
+    return Granting("demo", "addon")
+
+
+def granting_addon() -> Granting:
+    return Granting("addon")
 
 
 def granting_other() -> Granting:

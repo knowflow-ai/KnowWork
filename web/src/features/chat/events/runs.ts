@@ -4,6 +4,7 @@
 import type { AttachmentChip } from '../../../api/attachments';
 import type { Mention, MentionType } from '../../../api/mentions';
 import type { ApprovalStatus, ChatState, EndReason, RunView, StepView, V1Event } from './types';
+import { resultCards } from './cards';
 import { argumentsText, preview, searchSummary, str } from './parse';
 
 /** 不作为步骤显示的工具：提问由卡片展示，待办由清单展示，放进执行过程只会凑步骤数。 */
@@ -202,6 +203,7 @@ export function onToolEnded(state: ChatState, event: V1Event, runId: string, cal
   const failed = event.type === 'item.failed';
   const resultPreview = preview(str(event.data.text) ?? '');
   const search = failed ? undefined : searchSummary(event.data.search);
+  const cards = failed ? undefined : resultCards(event.data.presentation);
   return updateRun(withRun(state, runId, event.time), runId, (r) =>
     upsertStep(r, callId, (s) => {
       const base: StepView = s ?? { callId, kind: 'tool', name: '工具', arguments: '', status: 'running' };
@@ -214,7 +216,14 @@ export function onToolEnded(state: ChatState, event: V1Event, runId: string, cal
             resultPreview,
             errorReason: failureReason(resultPreview),
           }
-        : { ...base, status: 'done', endedAt: event.time, resultPreview, ...(search ? { search } : {}) };
+        : {
+            ...base,
+            status: 'done',
+            endedAt: event.time,
+            resultPreview,
+            ...(search ? { search } : {}),
+            ...(cards ? { cards } : {}),
+          };
     }),
   );
 }
@@ -248,14 +257,22 @@ function attachmentsOf(value: unknown): readonly AttachmentChip[] {
   });
 }
 
-const MENTION_TYPES: readonly MentionType[] = ['knowledge_base', 'folder', 'document', 'tag', 'mcp', 'skill'];
+const MENTION_TYPES: readonly MentionType[] = [
+  'knowledge_base',
+  'folder',
+  'document',
+  'tag',
+  'mcp',
+  'skill',
+  'extension',
+];
 
-/** 用户消息 @ 的东西：服务端从宿主写的说明块里取出来的类型、id、名字与所在知识库。 */
+/** 用户消息 @ 的东西：服务端从宿主写的说明块里取出来的类型、id、名字与所在知识库，扩展的另有类型与类型名。 */
 function mentionsOf(value: unknown): readonly Mention[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item: unknown): Mention[] => {
     if (typeof item !== 'object' || item === null) return [];
-    const { type, id, name, base, base_name: baseName } = item as Record<string, unknown>;
+    const { type, id, name, base, base_name: baseName, kind, label } = item as Record<string, unknown>;
     if (!MENTION_TYPES.includes(type as MentionType) || typeof id !== 'string' || typeof name !== 'string')
       return [];
     return [
@@ -266,6 +283,7 @@ function mentionsOf(value: unknown): readonly Mention[] {
         ...(typeof base === 'string'
           ? { base, baseName: typeof baseName === 'string' ? baseName : base }
           : {}),
+        ...(typeof kind === 'string' ? { kind, label: typeof label === 'string' ? label : kind } : {}),
       },
     ];
   });

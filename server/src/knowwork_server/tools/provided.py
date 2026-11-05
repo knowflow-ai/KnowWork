@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .registry import BuiltinTool, ToolContext, ToolFailure, ToolSpec
+from .registry import BuiltinTool, Output, ToolContext, ToolFailure, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class ProvidedTools:
     async def available(self, ctx: ToolContext) -> list[ToolSpec]:
         return [item.tool.spec for item in self._items.values() if await _offered(item, ctx)]
 
-    async def invoke(self, ctx: ToolContext, name: str, arguments: dict[str, Any]) -> str:
+    async def invoke(self, ctx: ToolContext, name: str, arguments: dict[str, Any]) -> Output:
         item = self._items.get(name)
         if item is None or not await _offered(item, ctx):
             raise ToolFailure(f"工具 {name} 现在不可用")

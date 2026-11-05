@@ -38,6 +38,17 @@ export const inject = ['agents', 'tools', 'systemPrompt']
 const DEFAULT_EXECUTE_TIMEOUT_MS = 300_000
 const RISK_LABEL = { read: '只读', write: '写入', dangerous: '高风险' }
 const GUIDANCE_SECTION = 'knowwork:tool-guidance'
+/** 工具的规范输出：给模型的文本，加业务服务另交的界面卡片（可选；形状由业务服务校验，这里只认是对象）。 */
+const OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: { text: { type: 'string' }, presentation: { type: 'object' } },
+  required: ['text'],
+  additionalProperties: false,
+}
+
+function isCard(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
 
 /** @param {import('@deepseek-ai/cordis').Context} ctx @param {{ baseUrl?: string, executeTimeoutMs?: number }} [config] */
 export function apply(ctx, config) {
@@ -56,7 +67,13 @@ export function apply(ctx, config) {
       name: tool.name,
       description: tool.description,
       parameters: tool.inputSchema,
-      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] },
+      // 官方输出声明：render 是给模型的那份，presentationMeta 是只给界面的卡片（业务服务按 tools/presentation.py 的协议给），
+      // 落在 tool/result 的 meta 上、不进模型上下文。没有卡片时给 null：官方要求它必须返回 JSON
+      output: {
+        schema: OUTPUT_SCHEMA,
+        render: (_args, value) => [{ type: 'text', text: value.text }],
+        presentationMeta: (_args, value) => value.presentation ?? null,
+      },
       ...(tool.concurrent ? { isConcurrencySafe: () => true } : {}),
       async execute(args, exec) {
         const root = resolveRootSession(exec.agent.session)
@@ -69,7 +86,8 @@ export function apply(ctx, config) {
           signal: exec.signal,
         })
         if (result.status !== 'succeeded') throw new Error(result.content)
-        return result.truncated ? `${result.content}\n[结果过长已截断，完整结果已存档：${result.actionId}]` : result.content
+        const text = result.truncated ? `${result.content}\n[结果过长已截断，完整结果已存档：${result.actionId}]` : result.content
+        return isCard(result.presentation) ? { text, presentation: result.presentation } : { text }
       },
     }
     owned.set(definition, tool)

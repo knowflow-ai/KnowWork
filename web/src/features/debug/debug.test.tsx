@@ -57,6 +57,18 @@ function api() {
               result: '{"documents":[]}',
               isError: false,
               durationMs: 300,
+              presentation: {
+                version: 1,
+                cards: [
+                  {
+                    type: 'table',
+                    title: '流程图命中',
+                    columns: [{ name: 'page', label: '页码' }],
+                    rows: [[3]],
+                    row_count: 1,
+                  },
+                ],
+              },
               trace: [
                 {
                   label: '视觉检索',
@@ -116,6 +128,14 @@ describe('RunInspector', () => {
       within(second).getByText(/视觉检索 · 扩展知识库：查了 1 个知识库，命中 1 页\s+手册 第 3 页/),
     ).toBeInTheDocument();
     expect(within(first).queryByText('检索过程（没有交给模型）')).not.toBeInTheDocument();
+  });
+
+  it('工具交给界面的结果卡片画在汇总下面（同对话里回答下方的那份）', async () => {
+    api();
+    renderWithApp(<RunInspector source={ownRun('c1')} turn={3} onClose={() => undefined} />);
+    const cards = await screen.findByRole('region', { name: '给用户看的结果' });
+    expect(within(cards).getByRole('figure', { name: '流程图命中' })).toBeInTheDocument();
+    expect(within(cards).getByText('共 1 行')).toBeInTheDocument();
   });
 
   it('随提问带上的背景默认收起，点开是每轮都带的（写明沿用第几轮发的）与只给这一轮的', async () => {

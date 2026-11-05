@@ -5,6 +5,7 @@ from contextvars import ContextVar
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Session
+from sqlalchemy.pool import NullPool
 
 WORKSPACE_SETTING = "app.workspace_id"
 
@@ -37,8 +38,16 @@ class Base(DeclarativeBase):
     pass
 
 
-def make_engine(url: str) -> AsyncEngine:
-    return create_async_engine(url, pool_pre_ping=True)
+def make_engine(url: str, *, pool_size: int = 5, max_overflow: int = 10) -> AsyncEngine:
+    return create_async_engine(url, pool_pre_ping=True, pool_size=pool_size, max_overflow=max_overflow)
+
+
+def make_held_engine(url: str) -> AsyncEngine:
+    """一直占着一条连接的用途（LISTEN 通知、按机器人的 advisory 锁）：每次单独建连接、用完就关，不进连接池。
+
+    它们占着的连接数随机器人数量涨；以前从处理请求的池子里拿，默认 5 + 10 = 15 条，启用 14 个机器人再加权限规则的
+    LISTEN 就占满，启动时写机器人状态等不到连接，公开端口一直不开（2026-11-03 CI 撞上）。"""
+    return create_async_engine(url, poolclass=NullPool)
 
 
 def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker:

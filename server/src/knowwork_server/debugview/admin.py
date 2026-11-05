@@ -99,13 +99,14 @@ class RunRecords:
     async def runs(self, actor: str, workspace_id: str, *, since: datetime, until: datetime,
                    before: datetime | None = None, user_id: str | None = None, status: str | None = None,
                    signal: str | None = None, tool: str | None = None, base: str | None = None,
-                   limit: int = 50) -> RunPage:
+                   fact: tuple[str, str, str] | None = None, limit: int = 50) -> RunPage:
         self._require(actor, workspace_id)
         if until <= since or until - since > MAX_RANGE:
             raise Invalid(f"时间范围须在 {MAX_RANGE.days} 天以内")
         limit = max(1, min(limit, MAX_LIMIT))
         found = await self._summaries.page(workspace_id, since=since, until=until, before=before, user_id=user_id,
-                                           status=status, signal=signal, tool=tool, base=base, limit=limit)
+                                           status=status, signal=signal, tool=tool, base=base, fact=fact,
+                                           limit=limit)
         rows = await self._rows(workspace_id, found)
         return RunPage(items=rows, next=rows[-1].started_at if rows and len(found) == limit else None)
 

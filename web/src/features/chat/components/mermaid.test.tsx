@@ -42,8 +42,9 @@ describe('mermaid 图', () => {
   it('正在输出、代码块一直到正文末尾（可能还没写完）先显示代码；后面有了别的内容或输出结束再画', async () => {
     mermaid.parse.mockImplementation(async () => true);
     const open = '```mermaid\ngraph LR\n  A --> B';
-    const { rerender } = render(<Markdown text={open} streaming />);
-    expect(screen.getByText(/A --> B/)).toBeInTheDocument();
+    const { container, rerender } = render(<Markdown text={open} streaming />);
+    // 先当普通代码块显示（组件库的代码块带高亮，字分在几个元素里）
+    expect(container.querySelector('code')).toHaveTextContent('A --> B');
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mermaid.render).not.toHaveBeenCalled();
     rerender(<Markdown text={`${FLOW}\n\n接着说明`} streaming />);

@@ -6,7 +6,8 @@
 #   edge            gateway ↔ api 公开端口；api 经它访问模型上游
 #   egress          worker 访问外部 MinerU
 #   backend         api、worker ↔ postgres、redis、rustfs
-#   host-link       只有 api 与 runtime-host；api 的内部端口只绑定在这张网卡上，网关连不到
+#   host-link       api、runtime-host、worker；api 的内部端口只绑定在这张网卡上，网关连不到。worker 经它替用户
+#                   发起后台对话（扩展的评测等，对话只能在 api 里跑）
 #
 # 镜像都在阿里云容器镜像服务（KNOWWORK_REGISTRY）：我们的四个镜像，以及照原样同步过去的 postgres、redis、rustfs，
 # 国内拉取不依赖 Docker Hub。镜像同时有 linux/amd64 与 linux/arm64（同一个标签），按机器架构自动拉取。
@@ -27,7 +28,7 @@ x-logging: &logging
     max-file: "5"
 
 x-server-image: &server-image
-  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.0.5}
+  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.0.6}
   pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
 
 x-hardening: &hardening
@@ -65,7 +66,7 @@ x-server-env: &server-env
 # 并把含 ca.pem、cert.pem、key.pem 的证书目录挂进来、填到 TLS_CERT_PATH。
 x-sandbox-env: &sandbox-env
   KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-false}
-  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.5}}
+  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.6}}
   KNOWWORK_SANDBOX_DOCKER_HOST: ${KNOWWORK_SANDBOX_DOCKER_HOST:-}
   KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH: ${KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH:-}
   KNOWWORK_SANDBOX_ALLOW_INTERNET: ${KNOWWORK_SANDBOX_ALLOW_INTERNET:-true}
@@ -155,7 +156,7 @@ services:
     logging: *logging
 
   runtime-host:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.0.5}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.0.6}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped
@@ -273,6 +274,8 @@ services:
       KNOWWORK_AUTO_MIGRATE: "false"
       KNOWWORK_JOB_CORE_SLOTS: ${KNOWWORK_JOB_CORE_SLOTS:-2}
       KNOWWORK_JOB_GRACE_SECONDS: ${KNOWWORK_JOB_GRACE_SECONDS:-60}
+      # api 的内部端口：扩展替用户发起后台对话（conversations/background.py）
+      KNOWWORK_INTERNAL_URL: http://${KNOWWORK_API_HOST_LINK_IP:-172.30.240.10}:8001
     volumes:
       - secrets:/run/knowwork/secrets:ro
     tmpfs:
@@ -281,13 +284,13 @@ services:
       # 等 api 健康，即迁移已执行完、表都在
       api:
         condition: service_healthy
-    networks: [backend, egress]
+    networks: [backend, egress, host-link]
     logging: *logging
 
   sandbox-image:
     # 会话沙箱镜像：只用于拉取或本地构建，不常驻；api 按会话用它创建容器。
     # 拉取：docker compose --profile sandbox pull sandbox-image（install.sh 会做）；本地构建：把 pull 换成 build。
-    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.5}}
+    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.6}}
     build:
       context: ..
       dockerfile: deploy/docker/sandbox.Dockerfile
@@ -298,7 +301,7 @@ services:
     logging: *logging
 
   gateway:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.0.5}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.0.6}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped

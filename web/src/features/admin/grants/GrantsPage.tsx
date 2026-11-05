@@ -1,4 +1,9 @@
-/** 资源授权：谁能以哪一档权限使用哪些技能、工具与知识库。不含空间角色自带的默认权限；模型不授权，空间成员都能用。 */
+/**
+ * 资源授权：谁能以哪一档权限使用哪些资源。不含空间角色自带的默认权限；模型不授权，空间成员都能用。
+ * 资源分两类：数据类（知识库、数据源）默认只有管理员，在这里授「使用」
+ * 「编辑」「管理」；能力类（技能、MCP 服务）默认全体成员可用，「使用」在各自详情的「给谁用」里改，这里只授技能的编辑、管理。
+ * 列表照样列出全部授权（含「给谁用」存下的那些），撤销也在这里。
+ */
 import { useMemo, useState, type ReactNode } from 'react';
 import { Badge } from '@openai/apps-sdk-ui/components/Badge';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
@@ -29,6 +34,15 @@ function treesOf(
   results: readonly { readonly data?: readonly [string, readonly GrantTreeNode[]] }[],
 ): Readonly<Record<string, readonly GrantTreeNode[]>> {
   return Object.fromEntries(results.flatMap((result) => (result.data ? [result.data] : [])));
+}
+
+/** 扩展登记的资源按类型收好；同 treesOf，结果不变时引用稳定。 */
+function resourcesOf(
+  results: readonly {
+    readonly data?: readonly [string, readonly { readonly id: string; readonly name: string }[]];
+  }[],
+): readonly (readonly [string, readonly { readonly id: string; readonly name: string }[]])[] {
+  return results.flatMap((result) => (result.data ? [result.data] : []));
 }
 
 /** 树里每个节点的名字用「知识源 · 完整路径」，同名目录、同名知识库在列表里也分得清。 */
@@ -66,6 +80,15 @@ function useDirectory(): Directory {
     })),
     combine: treesOf,
   });
+  // 扩展登记的资源类型（插槽 grants.resources，例如数据源）：各取一次可授权的资源
+  const kinds = slotItems('grants.resources');
+  const extraResources = useQueries({
+    queries: kinds.map((kind) => ({
+      queryKey: [...KEYS.grants, 'resources', kind.type],
+      queryFn: async () => [kind.type, await kind.load()] as const,
+    })),
+    combine: resourcesOf,
+  });
   return useMemo(() => {
     const resources: Record<string, string> = {};
     // 知识库：整个来源（前缀通配，覆盖它以后新开放的知识库）与单个知识库
@@ -82,6 +105,8 @@ function useDirectory(): Directory {
       for (const tool of server.tools) resources[`tool:${tool.name}`] = `${server.title} · ${tool.rawName}`;
     }
     for (const s of knowledge.data ?? []) treeNames(s.sourceName, trees[s.sourceId] ?? [], '', resources);
+    for (const [type, items] of extraResources)
+      for (const item of items) resources[`${type}:${item.id}`] = item.name;
     return {
       members: members.data ?? [],
       groups: groups.data ?? [],
@@ -95,7 +120,12 @@ function useDirectory(): Directory {
       typeLabels: Object.fromEntries([
         ...RESOURCE_TYPES.map((t) => [t.value, t.label] as const),
         ...extras.flatMap((extra) => Object.entries(extra.types)),
+        ...kinds.map((kind) => [kind.type, kind.label] as const),
       ]),
+      resourceTypes: [
+        ...RESOURCE_TYPES.map((t) => ({ value: t.value, label: t.label })),
+        ...kinds.map((kind) => ({ value: kind.type, label: kind.label, help: kind.help })),
+      ],
       trees,
     };
   }, [
@@ -112,6 +142,8 @@ function useDirectory(): Directory {
     enterpriseMcp.data,
     extras,
     trees,
+    kinds,
+    extraResources,
   ]);
 }
 
@@ -219,7 +251,7 @@ export default function GrantsPage() {
   return (
     <AdminPage
       title="资源授权"
-      description="把技能、工具与知识库授权给成员、部门、用户组或角色。空间角色自带的默认权限不在这里列出。"
+      description="把知识库等数据的使用权、技能的编辑与管理权授给成员、部门、用户组或角色；技能、MCP 服务给谁用，在各自详情的「给谁用」里改。空间角色自带的默认权限不在这里列出。"
     >
       <Toolbar
         left={<SearchInput placeholder="搜索对象、资源或权限" value={keyword} onChange={setKeyword} />}

@@ -7,6 +7,7 @@ import pytest
 from knowwork_server.extensions import ENTRY_GROUP, VERIFIER_GROUP, discover
 
 DEMO = EntryPoint("demo", "tests.extensions.demo:EXTENSION", ENTRY_GROUP)
+ADDON = EntryPoint("addon", "tests.extensions.demo:ADDON", ENTRY_GROUP)
 
 
 def found(*entries: EntryPoint):
@@ -61,3 +62,14 @@ def test_broken_entries_are_skipped():
     assert [e.name for e in extensions.active] == ["demo"]
     assert [(s.name, s.reason) for s in extensions.skipped] == [
         ("gone", "扩展加载失败，详情见业务服务日志"), ("odd", "扩展加载失败，详情见业务服务日志")]
+
+
+def test_an_extension_needs_the_ones_it_requires():
+    both = discover(found(DEMO, ADDON, verifier("granting_both")))
+    assert [e.name for e in both.active] == ["demo", "addon"]
+    alone = discover(found(DEMO, ADDON, verifier("granting_addon")))
+    assert alone.active == ()
+    assert [(s.name, s.reason) for s in alone.skipped] == [
+        ("demo", "授权里没有「demo」模块"), ("addon", "它依赖的扩展没有启用：demo")], "授权里只有 addon 也不启用"
+    missing = discover(found(ADDON, verifier("granting_both")))
+    assert [(s.name, s.reason) for s in missing.skipped] == [("addon", "它依赖的扩展没有启用：demo")], "没装 demo"

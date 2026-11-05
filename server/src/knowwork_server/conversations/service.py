@@ -41,6 +41,8 @@ from ..kernel.contract import (
     TurnInput,
 )
 from ..profile.snapshot import NO_SELECTION, RuntimeProfile, TurnSelection
+from .answer_modes import AnswerModes, ModeContext
+from .mention_kinds import MentionKinds
 from .models import Conversation, RunEvent
 from .pump import EventPump
 from .replay import Cursor, EventFeed, Outgoing
@@ -112,6 +114,8 @@ class ConversationService:
                  attachments: AttachmentSource | None = None,
                  knowledge_catalog: KnowledgeCatalogOf | None = None,
                  turn_context: TurnContextHook | None = None,
+                 answer_modes: AnswerModes | None = None,
+                 mention_kinds: MentionKinds | None = None,
                  resume_retry_delays: tuple[float, ...] = RESUME_RETRY_DELAYS) -> None:
         self._kernel = kernel
         self._sessionmaker = sessionmaker
@@ -128,6 +132,10 @@ class ConversationService:
         self._attachments = attachments
         self._knowledge_catalog = knowledge_catalog
         self._turn_context = turn_context
+        # 扩展在服务建好之后才登记（app.py）：登记表这时是空的，不能用 or——MentionKinds 空时为假，会换成另一个空表，
+        # 后来登记的 @ 类型这里就看不到（@ 了数据源报「不认识这种 @」）
+        self._answer_modes = answer_modes if answer_modes is not None else AnswerModes()
+        self._mention_kinds = mention_kinds if mention_kinds is not None else MentionKinds()
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
     @staticmethod
@@ -161,8 +169,9 @@ class ConversationService:
                 credentials.track(conversation)
 
     async def create(self, *, workspace_id: str, user_id: str, title: str = "",
-                     selection: TurnSelection = NO_SELECTION) -> Conversation:
-        conversation = Conversation(id=f"c_{uuid.uuid4().hex}", workspace_id=workspace_id, user_id=user_id, title=title)
+                     selection: TurnSelection = NO_SELECTION, background: bool = False) -> Conversation:
+        conversation = Conversation(id=f"c_{uuid.uuid4().hex}", workspace_id=workspace_id, user_id=user_id, title=title,
+                                    background=background)
         async with self._sessionmaker() as session:
             session.add(conversation)
             await session.commit()
@@ -219,6 +228,8 @@ class ConversationService:
             if self._attachments is None:
                 raise AttachmentUnavailable("附件功能没有开启")
             turn = turn.model_copy(update={"attachments": await self._attachments.for_turn(conversation, attachment_ids)})
+        turn = await self._with_mentions(conversation, turn)
+        turn = await self._with_answer_mode(conversation, turn)
         lock = self._lock(conversation.id)
         async with lock:
             profile = await self._profile(conversation, selection)
@@ -235,6 +246,21 @@ class ConversationService:
         await self._touch(conversation.id)
         self._pump.ensure(conversation.id, conversation.workspace_id)
         return message_id
+
+    async def _with_mentions(self, conversation: Conversation, turn: TurnInput) -> TurnInput:
+        """扩展登记的 @（mention_kinds.py）：核对、交给扩展（例如问数把会话绑定到 @ 的数据源）。要在回答方式的指令算出来
+        之前，指令里的范围才是这一轮的。核对不过抛 MentionRejected，这一轮不发。"""
+        mentions = await self._mention_kinds.before_turn(
+            workspace_id=conversation.workspace_id, user_id=conversation.user_id, conversation_id=conversation.id,
+            answer_mode=turn.answer_mode, mentions=turn.mentions)
+        return turn if mentions == turn.mentions else turn.model_copy(update={"mentions": mentions})
+
+    async def _with_answer_mode(self, conversation: Conversation, turn: TurnInput) -> TurnInput:
+        """扩展登记的回答方式：核对这个人能不能用，现算这一轮放行的官方工具与指令随消息带上（answer_modes.py）。
+        内置的两种不带。不认识的抛 UnknownAnswerMode，指令算不出来抛 AnswerModeUnavailable，这一轮都不发。"""
+        spec = await self._answer_modes.spec(turn.answer_mode, ModeContext(
+            workspace_id=conversation.workspace_id, user_id=conversation.user_id, conversation_id=conversation.id))
+        return turn if spec is None else turn.model_copy(update={"answer_mode_spec": spec})
 
     async def _with_catalog(self, conversation: Conversation, turn: TurnInput,
                             profile: RuntimeProfile | None) -> TurnInput:
@@ -274,10 +300,11 @@ class ConversationService:
 
     async def list_page(self, *, workspace_id: str, user_id: str, limit: int = 30,
                    before: datetime | None = None) -> ConversationPage:
-        """本人的会话，最近有动静的在前；next 交回给 before 取下一页。"""
+        """本人的会话，最近有动静的在前；next 交回给 before 取下一页。后台会话（background.py）不列。"""
         limit = max(1, min(limit, MAX_PAGE))
         query = (select(Conversation)
-                 .where(Conversation.workspace_id == workspace_id, Conversation.user_id == user_id)
+                 .where(Conversation.workspace_id == workspace_id, Conversation.user_id == user_id,
+                        Conversation.background.is_(False))
                  .order_by(Conversation.updated_at.desc(), Conversation.id.desc()).limit(limit + 1))
         if before is not None:
             query = query.where(Conversation.updated_at < before)

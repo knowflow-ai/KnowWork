@@ -11,16 +11,18 @@ interface Options {
   readonly path?: string;
   readonly extraRoutes?: Readonly<Record<string, ReactElement>>;
   readonly client?: QueryClient;
+  /** 进来时带的路由状态（别的页面 navigate 时给的） */
+  readonly state?: unknown;
 }
 
 export function renderWithApp(
   ui: ReactElement,
-  { route = '/', path = '*', extraRoutes = {}, client }: Options = {},
+  { route = '/', path = '*', extraRoutes = {}, client, state }: Options = {},
 ) {
   const queryClient = client ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <Providers client={queryClient}>
-      <MemoryRouter initialEntries={[route]}>
+      <MemoryRouter initialEntries={[state === undefined ? route : { pathname: route, state }]}>
         <Routes>
           <Route path={path} element={ui} />
           {Object.entries(extraRoutes).map(([p, el]) => (

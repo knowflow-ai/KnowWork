@@ -134,12 +134,62 @@ test('排队等下一轮的快速问答消息不改正在跑的这一轮：这�
   }
 })
 
-test('回答方式只能是 agent 或 quick', async () => {
+test('回答方式：格式不对的、扩展登记的却没带放行清单与指令的，都不收', async () => {
   const host = await startHost({ sequence: ['success'], successText: '好' })
   try {
     await host.call('POST', '/v1/sessions', { sessionId: 'am-bad' })
-    const bad = await host.call('POST', '/v1/sessions/am-bad/messages', { text: '你好', answerMode: 'fast' })
-    assert.equal(bad.status, 400)
+    for (const body of [
+      { text: '你好', answerMode: 'Fast mode' },
+      { text: '你好', answerMode: 'custom' },
+      { text: '你好', answerMode: 'custom', answerModeSpec: { tools: ['bad name'], prompt: '' } },
+      { text: '你好', answerMode: 'custom', answerModeSpec: { tools: [], prompt: 'x'.repeat(20_001) } },
+    ]) {
+      const bad = await host.call('POST', '/v1/sessions/am-bad/messages', body)
+      assert.equal(bad.status, 400, JSON.stringify(body).slice(0, 80))
+    }
+  } finally {
+    await host.stop()
+  }
+})
+
+const SPEC = { tools: ['todo_write'], prompt: '本轮按扩展的规则作答：先看摘要再选工具。' }
+const customTool = name => ({ ...bizTool(name), answerModes: ['agent', 'custom'] })
+
+test('扩展登记的回答方式：官方工具只剩放行的、业务工具只剩声明了它的，提问后面是它带来的指令；切回智能体全部回来', async () => {
+  const tools = [customTool('ext_lookup'), quickTool('knowledge_search'), bizTool('crm_lookup')]
+  const stub = await startToolsStub({ toolsByToken: { [TOKEN]: tools } })
+  const host = await startHost({ sequence: ['success'], successText: '好' }, { KNOWWORK_TOOLS_BASE_URL: stub.baseUrl })
+  try {
+    await host.call('POST', '/v1/sessions', { sessionId: 'am-ext', tools: { token: TOKEN } })
+    const sent = await host.call('POST', '/v1/sessions/am-ext/messages',
+      { text: '查一下上个月的数', answerMode: 'custom', answerModeSpec: SPEC })
+    assert.equal(sent.status, 202, JSON.stringify(sent.body))
+    await collectEvents(host, 'am-ext', isTurnEnd)
+    assert.deepEqual(toolNamesOf(host.llm.requests[0]), ['ext_lookup', 'todo_write'])
+    const asked = modelInput(host, 0)
+    assert.ok(asked.lastIndexOf(SPEC.prompt) > asked.indexOf('查一下上个月的数'), '指令应当在提问之后')
+    assert.ok(!asked.includes(RULE), '不该出现快速问答的指令')
+    await host.call('POST', '/v1/sessions/am-ext/messages', { text: '帮我整理一下' })
+    await collectEvents(host, 'am-ext', turnEnds(2))
+    const back = toolNamesOf(host.llm.requests[1])
+    assert.ok(['crm_lookup', 'knowledge_search', 'kw_echo', 'ext_lookup'].every(n => back.includes(n)), back.join(','))
+    const later = modelInput(host, 1)
+    assert.ok(later.lastIndexOf(SPEC.prompt) < later.indexOf('帮我整理一下'), '切回智能体后不应再有扩展方式的指令')
+  } finally {
+    await host.stop()
+    await stub.close()
+  }
+})
+
+test('扩展登记的回答方式：没放行的官方工具凭空调用也不执行，模型拿到原因', async () => {
+  const host = await startHost({ sequence: ['tool_call_success', 'success'], toolName: 'kw_echo', toolArguments: JSON.stringify({ text: '越界' }) })
+  try {
+    await host.call('POST', '/v1/sessions', { sessionId: 'am-ext-guard' })
+    await host.call('POST', '/v1/sessions/am-ext-guard/messages', { text: '试试', answerMode: 'custom', answerModeSpec: SPEC })
+    await collectEvents(host, 'am-ext-guard', isTurnEnd)
+    const after = modelInput(host, 1)
+    assert.ok(after.includes('当前回答方式不能调用 kw_echo'), '被拦下的调用没有把原因交给模型')
+    assert.ok(!after.includes('echo: 越界'), '没放行的工具被执行了')
   } finally {
     await host.stop()
   }

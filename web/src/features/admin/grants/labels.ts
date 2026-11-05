@@ -34,8 +34,14 @@ export interface Directory {
   readonly knowledgeLoaded: boolean;
   /** MCP 服务与它们的工具，给授权时的选择树。 */
   readonly tools: readonly McpServer[];
-  /** 资源类型的中文名：内置的加上扩展树里出现的（插槽 grants.knowledge）。 */
+  /** 资源类型的中文名：内置的加上扩展树里出现的（插槽 grants.knowledge）、扩展登记的（插槽 grants.resources）。 */
   readonly typeLabels: Readonly<Record<string, string>>;
+  /** 能选的资源类型：内置的加上扩展登记的；help 是三档在这类资源上的意思 */
+  readonly resourceTypes: readonly {
+    readonly value: string;
+    readonly label: string;
+    readonly help?: string;
+  }[];
   /** 扩展给的知识源层级树（知识源 id → 树），授权时按树选。 */
   readonly trees: Readonly<Record<string, readonly GrantTreeNode[]>>;
 }

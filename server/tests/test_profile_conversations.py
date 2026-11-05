@@ -11,7 +11,7 @@ from knowwork_server.conversations.pump import EventPump, PumpTimings
 from knowwork_server.conversations.replay import EventFeed
 from knowwork_server.conversations.service import ConversationService
 from knowwork_server.conversations.tool_credentials import ToolCredentials
-from knowwork_server.conversations.turn_context import TurnContextHook
+from knowwork_server.conversations.turn_context import TurnContextHook, TurnContextRequest
 from knowwork_server.conversations.writer import BatchWriter
 from knowwork_server.kernel.contract import (
     KernelError,
@@ -331,7 +331,7 @@ async def test_turns_carry_the_extension_context_only_when_one_is_provided(db):
     await env.pump.close()
 
     hook = TurnContextHook()
-    hook.set(memory)
+    hook.add(memory)
     env = Env(db, turn_context=hook)
     conversation = await env.service.create(workspace_id=WS, user_id=USER)
     await env.service.send(conversation, TurnInput(text="招标还剩几天", answer_mode="quick"))
@@ -349,12 +349,29 @@ async def test_a_failing_or_slow_context_provider_does_not_block_the_turn(db):
         await asyncio.sleep(5)
         return TurnContext(standing="x")
 
+    async def fine(request):
+        return TurnContext(standing="你的记忆：回答用表格")
+
     for provider, hook in ((broken, TurnContextHook()), (slow, TurnContextHook(timeout=0.05))):
-        hook.set(provider)
+        hook.add(fine)
+        hook.add(provider)
         env = Env(db, turn_context=hook)
         conversation = await env.service.create(workspace_id=WS, user_id=USER)
         await env.service.send(conversation, TurnInput(text="查合同"))
-        assert env.kernel.sent[-1].context is None, "没算出来就不带，宿主沿用上一轮的常驻那段"
+        assert env.kernel.sent[-1].context is None, "有一个没算出来就整段不带，宿主沿用上一轮的常驻那段"
         await env.pump.close()
-    with pytest.raises(ValueError):
-        hook.set(broken)
+
+
+async def test_several_context_providers_join_in_order():
+    async def memory(request):
+        return TurnContext(standing="你的记忆：回答用表格", turn="相关：A 项目截标")
+
+    async def examples(request):
+        return TurnContext(turn="可信查询：上月华东的净收入")
+
+    hook = TurnContextHook()
+    hook.add(memory)
+    hook.add(examples)
+    joined = await hook.collect(TurnContextRequest(workspace_id=WS, user_id=USER, conversation_id="c1", text="查合同",
+                                                   answer_mode="agent"))
+    assert joined == TurnContext(standing="你的记忆：回答用表格", turn="相关：A 项目截标\n\n可信查询：上月华东的净收入")

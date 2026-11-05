@@ -44,6 +44,7 @@ const OPTIONS: MentionOptions = {
     { name: 'gitlab', title: 'GitLab', tools: 8, status: 'connected' },
   ],
   skills: [{ name: 'weekly-report', description: '写周报' }],
+  extensions: [],
 };
 
 describe('光标前的 @', () => {
@@ -101,6 +102,30 @@ describe('候选', () => {
     expect(sections(many, docs, 'report', 'skills')[0]?.items).toHaveLength(8);
     // 标签按所在知识库的名字也能查到
     expect(sections(OPTIONS, [], '报销', null).map((s) => s.group)).toEqual(['bases', 'tags']);
+  });
+
+  it('扩展登记的类型各一组，排在「在哪里找」那几组后面、MCP 与技能前面；选了是带类型的扩展 @', () => {
+    const withSources: MentionOptions = {
+      ...OPTIONS,
+      extensions: [
+        {
+          kind: 'data_source',
+          label: '数据源',
+          effect: '问数只查这个数据源',
+          answerMode: 'analytics',
+          items: [{ id: 'p1', name: '报销流水库', description: '第 3 版' }],
+        },
+      ],
+    };
+    expect(groupCandidates('ext:data_source', withSources, []).map((c) => [c.mention, c.detail])).toEqual([
+      [{ type: 'extension', kind: 'data_source', label: '数据源', id: 'p1', name: '报销流水库' }, '第 3 版'],
+    ]);
+    expect(sections(withSources, [], '报销', null).map((s) => s.group)).toEqual([
+      'bases',
+      'tags',
+      'ext:data_source',
+    ]);
+    expect(groupCandidates('ext:gone', withSources, [])).toEqual([]);
   });
 
   it('重新回答时按路径把目录重新展开成下面的知识库', () => {

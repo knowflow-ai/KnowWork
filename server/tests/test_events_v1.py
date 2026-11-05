@@ -84,6 +84,21 @@ def test_tool_call_and_result():
     assert failed[0]["type"] == "item.failed" and failed[0]["data"]["code"] == "TOOL_FAILED"
 
 
+def test_tool_results_carry_the_card_the_tool_left_for_the_ui():
+    """DSH tool/result 的 meta（业务工具经工具桥的 presentationMeta 交来）投影成 presentation，交给浏览器前再校验一次。"""
+    card = {"version": 1, "cards": [{"type": "table", "columns": [{"name": "n"}], "rows": [[1]], "row_count": 1}]}
+    ok = {"turn": 1, "message": {"toolCallId": "c1", "isError": False, "content": [{"type": "text", "text": "结果"}]},
+          "meta": card}
+    _, [event] = one(S0, "session/event", session("tool/result", ok))
+    assert event["data"]["presentation"]["cards"][0]["rows"] == [[1]]
+    for meta in ({"diff": "dsh-tool-fs 的上下文"}, {"version": 1, "cards": [{"type": "script", "src": "x"}]}):
+        _, [event] = one(S0, "session/event", session("tool/result", {**ok, "meta": meta}))
+        assert "presentation" not in event["data"], "别的工具的 meta、认不出的卡片不交给浏览器"
+    failed = {**ok, "message": {**ok["message"], "isError": True}}
+    _, [event] = one(S0, "session/event", session("tool/result", failed))
+    assert "presentation" not in event["data"]
+
+
 def test_knowledge_search_results_carry_a_summary_for_the_conditions_bar():
     """检索结果带摘要：命中哪些文档（去重）、用了与撤掉了哪些条件。按完整原文摘，结果再长、显示文字被截断也不影响。"""
     hits = [{"ref": i, "source_id": "builtin", "doc_ref": f"kb1/d{i % 3}", "text": "长" * 3000} for i in range(6)]
@@ -254,11 +269,13 @@ def test_attachment_handles_become_attachments_not_text():
 
 
 def test_mention_block_becomes_chips_not_text():
-    """宿主写的 @ 说明块不进气泡文字，换成小标签数据（类型、名字、所在知识库）；格式不对的项丢掉。"""
+    """宿主写的 @ 说明块不进气泡文字，换成小标签数据（类型、名字、所在知识库，扩展的另带类型标识与类型名）；
+    格式不对的项丢掉。"""
     items = [{"type": "document", "id": "kb1/d1", "name": "差旅办法.pdf", "base": "builtin.kb1", "baseName": "制度库"},
              {"type": "mcp", "id": "context7", "name": "Context7"},
              {"type": "skill", "id": "weekly-report", "name": "周报"}, {"type": "unknown", "id": "x", "name": "x"},
-             {"type": "tag", "name": "没有 id"}]
+             {"type": "tag", "name": "没有 id"},
+             {"type": "extension", "id": "p1", "name": "销售库", "kind": "data_source", "label": "数据源"}]
     block = "[用户这一轮 @ 点名的范围] " + json.dumps(items, ensure_ascii=False) + "\nknowledge_search 已由系统限定……\n用户点名的技能： /weekly-report "
     message = {"source": {"kind": "user"}, "id": "u1",
                "content": [{"type": "text", "text": "报销标准"}, {"type": "text", "text": block}]}
@@ -266,4 +283,5 @@ def test_mention_block_becomes_chips_not_text():
     assert event["data"]["text"] == "报销标准"
     assert event["data"]["mentions"] == [
         {"type": "document", "id": "kb1/d1", "name": "差旅办法.pdf", "base": "builtin.kb1", "base_name": "制度库"},
-        {"type": "mcp", "id": "context7", "name": "Context7"}, {"type": "skill", "id": "weekly-report", "name": "周报"}]
+        {"type": "mcp", "id": "context7", "name": "Context7"}, {"type": "skill", "id": "weekly-report", "name": "周报"},
+        {"type": "extension", "id": "p1", "name": "销售库", "kind": "data_source", "label": "数据源"}]

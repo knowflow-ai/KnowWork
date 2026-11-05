@@ -353,7 +353,6 @@
 }
 
 .kw-end-notice {
-  margin-top: 8px;
   font-size: var(--kw-font-sm);
   color: var(--kw-text-secondary);
 }

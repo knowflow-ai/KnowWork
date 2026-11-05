@@ -100,6 +100,7 @@ class AccessCore:
         self._mirror = mirror
         self._origin = uuid.uuid4().hex  # 本进程发的通知自己不用重载
         self._hierarchy: ResourceHierarchy = NO_HIERARCHY
+        self._extension_types: frozenset[str] = frozenset()  # 扩展登记的资源类型（平铺，没有上级）
         # 系统管理员（初始化向导建的那一个账号）：在任何空间里都按所有者处理，不必是成员。
         # 由应用在启动时、初始化完成时告诉这里（权限模块不去查初始化记录，免得和 setup 互相依赖）
         self._system_admin: str | None = None
@@ -113,13 +114,28 @@ class AccessCore:
 
     @property
     def resource_types(self) -> frozenset[str]:
-        """可授权、可判定的资源类型：内置的加上资源层级引入的。"""
-        return RESOURCE_TYPES | self._hierarchy.resource_types
+        """可授权、可判定的资源类型：内置的，加上资源层级引入的、扩展登记的。"""
+        return RESOURCE_TYPES | self._hierarchy.resource_types | self._extension_types
+
+    @property
+    def added_types(self) -> frozenset[str]:
+        """不是内置的那些（资源层级引入的、扩展登记的）：都可以经授权接口授出。"""
+        return self._hierarchy.resource_types | self._extension_types
+
+    def add_resource_types(self, types: frozenset[str]) -> None:
+        """启动时登记扩展自己的资源类型（例如数据源）：平铺、没有上级，登记后可以授权、判定、给默认的「给谁用」。
+        谁对它有什么权限全靠授权；空间管理员的放行由扩展判定时自己加（不改已建空间的默认规则）。"""
+        taken = RESOURCE_TYPES | self._hierarchy.resource_types | {WORKSPACE_RESOURCE}
+        bad = [t for t in types if t in taken or not TYPE_PATTERN.fullmatch(t)]
+        if bad:
+            raise ValueError(f"extension declares invalid resource types: {bad}")
+        self._extension_types = self._extension_types | frozenset(types)
 
     def use_hierarchy(self, hierarchy: ResourceHierarchy) -> None:
         """启动时装上资源层级（只有一个）。它引入的类型不能和内置类型重名。"""
         types = frozenset(hierarchy.resource_types)
-        bad = [t for t in types if t in RESOURCE_TYPES or t == WORKSPACE_RESOURCE or not TYPE_PATTERN.fullmatch(t)]
+        bad = [t for t in types if t in RESOURCE_TYPES or t in self._extension_types or t == WORKSPACE_RESOURCE
+               or not TYPE_PATTERN.fullmatch(t)]
         if bad:
             raise ValueError(f"resource hierarchy declares invalid types: {bad}")
         if self._hierarchy is not NO_HIERARCHY:
@@ -266,6 +282,18 @@ class AccessCore:
         except Exception:
             log.exception("resource hierarchy failed for %s; denying", obj)
             return ()
+
+    def subjects_of(self, user_id: str, workspace_id: str) -> frozenset[str]:
+        """这个人在空间里属于哪些主体（`user:`、`role:`、`dept:` 含上级、`group:`、`org:`），给扩展按主体写的规则判定用
+        （例如问数表上的行列规则：「华东销售部 → 区域 = 华东」）。输入不合法或空间关了是空集。"""
+        try:
+            validate_id(user_id, "user_id")
+            validate_id(workspace_id, "workspace_id")
+        except InvalidInput:
+            return frozenset()
+        if workspace_id in self._closed:
+            return frozenset()
+        return self._engine.subjects(user_id, workspace_id)
 
     def visible_resources(self, user_id: str, workspace_id: str, resource_type: str, action: str) -> VisibleSet:
         """用户在空间内能以某档权限看到的某类资源。all_ 为真表示全部可见。"""

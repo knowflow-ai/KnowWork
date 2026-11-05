@@ -7,6 +7,7 @@ import pytest
 
 from knowwork_server.kernel.contract import (
     INVALID_FRAME_KIND,
+    AnswerModeSpec,
     KernelError,
     KnowledgeCatalog,
     KnowledgeEntry,
@@ -19,6 +20,7 @@ from knowwork_server.kernel.contract import (
     TurnAttachment,
     TurnContext,
     TurnInput,
+    TurnMention,
 )
 from knowwork_server.kernel.host_client import CONTROL_TIMEOUT, STREAM_TIMEOUT, HostKernel, parse_frame
 from knowwork_server.kernel.locale import resolve_turn_language
@@ -160,7 +162,11 @@ async def test_send_carries_the_answer_mode():
     kernel = HostKernel("http://h", "t" * 32, client=client)
     await kernel.send("s1", TurnInput(text="整理一下"))
     await kernel.send("s1", TurnInput(text="报销标准", answer_mode="quick"))
-    assert [body["answerMode"] for body in seen] == ["agent", "quick"]
+    spec = AnswerModeSpec(tools=("todo_write",), prompt="本轮按扩展的规则作答")
+    await kernel.send("s1", TurnInput(text="查一下", answer_mode="custom", answer_mode_spec=spec))
+    assert [body["answerMode"] for body in seen] == ["agent", "quick", "custom"]
+    assert "answerModeSpec" not in seen[1], "内置的回答方式不带额外内容"
+    assert seen[2]["answerModeSpec"] == {"tools": ["todo_write"], "prompt": "本轮按扩展的规则作答"}
     await kernel.aclose()
 
 
@@ -280,4 +286,22 @@ async def test_bundled_skills_are_read_from_the_host():
     kernel = HostKernel("http://h", "t", client=client)
     found = await kernel.bundled_skills()
     assert [(s.name, s.user_invocable) for s in found] == [("office-docx", True), ("office-xlsx", False)]
+    await kernel.aclose()
+
+
+async def test_send_carries_extension_mentions_with_kind_and_label():
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(202, json={"messageId": "m1", "mode": "followup"})
+
+    client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t" * 32, client=client)
+    await kernel.send("s1", TurnInput(text="上月销售额", mentions=(
+        TurnMention(type="extension", id="p1", name="销售库", kind="data_source", label="数据源"),
+        TurnMention(type="skill", id="weekly-report", name="周报"))))
+    assert seen[0]["mentions"] == [
+        {"type": "extension", "id": "p1", "name": "销售库", "kind": "data_source", "label": "数据源"},
+        {"type": "skill", "id": "weekly-report", "name": "周报"}], "内置的不多带字段"
     await kernel.aclose()

@@ -121,4 +121,14 @@ describe('RunsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '去掉筛选：时间段：2026-10-20 至 2026-10-26' }));
     expect(await screen.findByRole('group', { name: '时间段' })).toBeInTheDocument();
   });
+
+  it('扩展跳过来时按模块记的事实筛（问数的数据源），标签写扩展给的说法', async () => {
+    const calls = api();
+    const route = '/admin/runs?fact=analytics.projects%3Danprj_1&factLabel=数据源：销售库';
+    renderWithApp(<RunsPage />, { route, path: '/admin/runs' });
+    await screen.findByText('请假要提前几天');
+    expect(calls.find('GET', `${B}/runs`)[0]?.query.get('fact')).toBe('analytics.projects=anprj_1');
+    await userEvent.click(screen.getByRole('button', { name: '去掉筛选：数据源：销售库' }));
+    await waitFor(() => expect(calls.find('GET', `${B}/runs`).some((c) => !c.query.has('fact'))).toBe(true));
+  });
 });

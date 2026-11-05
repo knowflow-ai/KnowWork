@@ -128,10 +128,18 @@ def test_sandbox_image_is_build_only_behind_a_profile():
         assert needle in dockerfile, needle
 
 
-def test_runtime_host_only_reachable_by_api():
+def test_host_link_has_only_api_host_and_worker():
+    """worker 也在这张网上：扩展的后台对话要调 api 的内部端口（conversations/background.py）。它本来就拿着主密钥
+    （宿主令牌由主密钥派生），接进来没有多出权限；网关、数据库这些仍然连不到。"""
     assert _networks("runtime-host") == {"host-link"}
     assert _config()["networks"]["host-link"]["internal"] is True
-    assert _members("host-link") == {"api", "runtime-host"}
+    assert _members("host-link") == {"api", "runtime-host", "worker"}
+
+
+def test_worker_reaches_the_api_internal_port():
+    api, worker = _services()["api"], _services()["worker"]
+    address = api["networks"]["host-link"]["ipv4_address"]
+    assert worker["environment"]["KNOWWORK_INTERNAL_URL"] == f"http://{address}:8001"
 
 
 def test_api_internal_port_bound_to_host_link_only():

@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from ..conversations.events_v1 import user_parts
+from ..tools.presentation import normalize as normalize_presentation
 from .background import Background
 from .blocks import blocks_of, clip, source_of, text_of
 from .events import Event, TurnSlice, turn_of
@@ -36,6 +37,8 @@ class ToolCallView:
     truncated: bool
     # 业务另记的过程（知识检索的各路召回、重排……），按 call_id 从业务记录里取，不在会话日志里，模型也没看到
     trace: tuple[dict, ...] = ()
+    # 工具交给界面的卡片（tool/result 的 meta，同会话里回答下方的那份）：运行详情也画出来，卡片上的操作照样能用
+    presentation: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -135,8 +138,9 @@ def build_steps(events: Sequence[Event], usage: Mapping[UsageKey, Any] | None = 
             message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
             call = calls.get(str(message.get("toolCallId")))
             if call is not None:
-                call.update(result="\n".join(b.text for b in blocks_of(message)), error=message.get("isError") is True,
-                            ended=event.time_ms)
+                failed = message.get("isError") is True
+                call.update(result="\n".join(b.text for b in blocks_of(message)), error=failed, ended=event.time_ms,
+                            presentation=None if failed else normalize_presentation(payload.get("meta")))
     return tuple(_step_view(step, steps[step], calls, usage) for step in sorted(steps))
 
 
@@ -154,7 +158,7 @@ def _call_view(call_id: str, call: dict[str, Any]) -> ToolCallView:
     result, cut_result = clip(call["result"]) if call["result"] is not None else (None, False)
     return ToolCallView(call_id=call_id, name=call["name"], arguments=arguments, result=result, is_error=call["error"],
                         started_ms=call["started"], duration_ms=_span(call["started"], call["ended"]),
-                        truncated=cut_args or cut_result)
+                        truncated=cut_args or cut_result, presentation=call.get("presentation"))
 
 
 def _usage_view(record: Any) -> StepUsageView | None:

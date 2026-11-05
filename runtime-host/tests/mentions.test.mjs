@@ -24,3 +24,19 @@ test('知识库与 MCP 一起点名：两句都在', () => {
   assert.match(block.text, /knowledge_search 已由系统限定/)
   assert.match(block.text, /mcp__gitlab__/)
 })
+
+test('扩展登记的 @ 类型：带类型标识与类型名，写成「用户点名的数据源：…」；不提检索范围；格式不对拒收', () => {
+  const mentions = mentionsOf([
+    { type: 'extension', id: 'anprj_1', name: '销售库', kind: 'data_source', label: '数据源' },
+    { type: 'extension', id: 'anprj_2', name: '财务库', kind: 'data_source', label: '数据源' },
+  ])
+  assert.deepEqual(mentions[0], { type: 'extension', id: 'anprj_1', name: '销售库', kind: 'data_source', label: '数据源' })
+  const [block] = mentionBlocks(mentions)
+  assert.ok(block.text.startsWith(MENTION_PREFIX + JSON.stringify(mentions)), '类型标识与类型名进投影用的 JSON')
+  assert.match(block.text, /用户点名的数据源：销售库、财务库。/)
+  assert.doesNotMatch(block.text, /knowledge_search/)
+  for (const bad of [{ kind: 'Data' }, { kind: undefined }, { label: '' }, { label: 'x'.repeat(21) }]) {
+    assert.throws(() => mentionsOf([{ type: 'extension', id: 'a', name: 'b', kind: 'data_source', label: '数据源', ...bad }]),
+      /mentions\.(kind|label)/, JSON.stringify(bad))
+  }
+})

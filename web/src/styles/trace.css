@@ -21,6 +21,19 @@
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
+/* 这一轮给用户看的结果卡片（同对话里回答下方的那份）：汇总下面一条，太高时自己滚 */
+.kw-trace-cards {
+  max-height: 40vh;
+  overflow: auto;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.kw-trace-cards > h3 {
+  margin: 0 0 8px;
+  font-weight: 400;
+}
+
 .kw-trace-request {
   display: -webkit-box;
   margin: 0;

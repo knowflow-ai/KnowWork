@@ -26,6 +26,7 @@ import { bundledCandidates } from './bundled-skills.mjs'
 import { catalogOf } from './knowledge-catalog.mjs'
 import { mentionBlocks, mentionsOf } from './mentions.mjs'
 import { receiveTurnContext, turnContextOf } from './turn-context.mjs'
+import { BUILT_IN_MODES, MODE_PATTERN, answerModeSpecOf } from './answer-mode.mjs'
 
 // DSH 版本号随 /health 一起报给业务服务，系统信息页显示（所有 @deepseek-ai 包锁在同一版本）
 const DSH_VERSION = createRequire(import.meta.url)('@deepseek-ai/dsh/package.json').version
@@ -244,8 +245,17 @@ export function apply(ctx, config) {
       throw new HttpError(400, 'invalid_request', 'language 只能是 zh 或 en')
     }
     const answerMode = body.answerMode ?? 'agent'
-    if (answerMode !== 'agent' && answerMode !== 'quick') {
-      throw new HttpError(400, 'invalid_request', 'answerMode 只能是 agent 或 quick')
+    if (typeof answerMode !== 'string' || !MODE_PATTERN.test(answerMode)) {
+      throw new HttpError(400, 'invalid_request', 'answerMode 格式不对')
+    }
+    // 扩展登记的回答方式随消息带上放行的官方工具与指令（answer-mode）；内置的两种宿主自己认得
+    let answerModeSpec
+    if (!BUILT_IN_MODES.has(answerMode)) {
+      try {
+        answerModeSpec = answerModeSpecOf(body.answerModeSpec)
+      } catch (error) {
+        throw new HttpError(400, 'invalid_request', error.message)
+      }
     }
     let files
     let knowledge
@@ -265,7 +275,7 @@ export function apply(ctx, config) {
     const content = [{ type: 'text', text }, ...attachmentBlocks(files), ...mentionBlocks(mentions)]
     const message = createUserMessage({ content, source: { kind: 'user' } })
     // 回答方式等这条消息进入步骤时才生效（answer-mode）：排队到下一轮的消息不改正在跑的这一轮
-    state?.answerModes.set(String(message.id), answerMode)
+    state?.answerModes.set(String(message.id), { mode: answerMode, spec: answerModeSpec })
     receiveTurnContext(state, message.id, context)
     if (mode === 'steer') agent.steer(message)
     else agent.followup(message)

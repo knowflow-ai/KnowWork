@@ -1,7 +1,8 @@
 /**
  * 一轮的运行详情（运行调试视图）。布局照 OpenAI 平台的 Traces：顶部是这一轮的提问与汇总，
  * 左栏每一步一行带用时条，右栏是选中那一步的输出与工具调用，每一步可以看按日志还原的输入；原始日志可下载。
- * 会话本人从对话里打开；管理员从「运行记录」打开（会记审计）。
+ * 会话本人从对话里打开；管理员从「运行记录」打开（会记审计）。工具交给界面的结果卡片（结果表、出处）画在汇总下面，
+ * 同对话里回答下方的那份；卡片上的操作（例如扩展登记的「存为可信查询」）照样能用，能不能用由操作自己判断。
  */
 import { useState, type ReactNode } from 'react';
 import { Button, ButtonLink } from '@openai/apps-sdk-ui/components/Button';
@@ -18,6 +19,8 @@ import { StepInputDialog } from './StepInputDialog';
 import { StepList, type StepGroup, type StepRef } from './StepList';
 import { TurnBackground } from './TurnBackground';
 import { useReplay } from './useReplay';
+import { ResultCards } from '../chat/components/ResultCards';
+import { resultCards } from '../chat/events/cards';
 
 /** 汇总：这一轮的提问，下面一行说明色小字；状态只写文字不上色（同对话里的执行过程摘要）。 */
 function Summary({ detail }: { readonly detail: TurnDetail }) {
@@ -38,6 +41,20 @@ function Summary({ detail }: { readonly detail: TurnDetail }) {
       {detail.events.length > 0 ? <div className="kw-trace-meta">{detail.events.join(' · ')}</div> : null}
       <TurnBackground items={detail.background} turn={s.turn} />
     </header>
+  );
+}
+
+/** 这一轮工具交给界面的卡片，按步骤顺序（同对话里 selectRunCards） */
+function RunCards({ detail }: { readonly detail: TurnDetail }) {
+  const cards = detail.steps.flatMap((s) =>
+    s.toolCalls.flatMap((call) => (call.isError ? [] : (resultCards(call.presentation) ?? []))),
+  );
+  if (cards.length === 0) return null;
+  return (
+    <section className="kw-trace-cards" aria-label="给用户看的结果">
+      <h3 className="kw-trace-meta">给用户看的结果</h3>
+      <ResultCards cards={cards} question={detail.summary.request} />
+    </section>
   );
 }
 
@@ -111,6 +128,7 @@ function Trace({
   return (
     <div className="kw-trace">
       <Summary detail={detail} />
+      <RunCards detail={detail} />
       <div className="kw-trace-split">
         <nav className="kw-trace-list" aria-label="运行步骤">
           <ReplayBar replay={replay} total={detail.steps.length} />

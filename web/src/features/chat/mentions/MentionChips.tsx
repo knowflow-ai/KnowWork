@@ -8,7 +8,8 @@ import { X } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
 import { mentionKey, type Mention } from '../../../api/mentions';
 import { cx } from '../../../ui/cx';
-import { KIND_ORDER, MENTION_KINDS } from './kinds';
+import { KIND_ORDER, kindOf, type MentionKind } from './kinds';
+import { useMentionOptions } from './useMentionMenu';
 
 interface Props {
   readonly items: readonly Mention[];
@@ -17,21 +18,21 @@ interface Props {
   readonly label: string;
 }
 
-function explain(mention: Mention): string {
-  const kind = MENTION_KINDS[mention.type];
+function explain(mention: Mention, kind: MentionKind): string {
   return mention.baseName ? `${kind.effect}（在知识库「${mention.baseName}」）` : kind.effect;
 }
 
 export function MentionChips({ items, onRemove, label }: Props) {
+  const { options } = useMentionOptions();
   if (items.length === 0) return null;
   const sorted = [...items].sort((a, b) => KIND_ORDER.indexOf(a.type) - KIND_ORDER.indexOf(b.type));
   return (
     <ul className="kw-mention-chips" aria-label={label}>
       {sorted.map((mention) => {
-        const kind = MENTION_KINDS[mention.type];
+        const kind = kindOf(mention, options.extensions);
         return (
           <li key={mentionKey(mention)} className={cx('kw-mention-chip', !onRemove && 'is-static')}>
-            <Tooltip content={explain(mention)} compact>
+            <Tooltip content={explain(mention, kind)} compact>
               <span className="kw-mention-chip-body">
                 <span className="kw-mention-chip-icon" aria-hidden>
                   {kind.icon}

@@ -15,8 +15,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, func, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import and_, cast, func, literal, or_, select
+from sqlalchemy.dialects.postgresql import JSONPATH, insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from ..access.rls import set_workspace
@@ -45,6 +45,7 @@ class TurnEnded:
     answer: str
     status: str
     user_id: str | None = None
+    started_at: datetime | None = None  # 这一轮开始的时刻（模块按它取这一轮自己的记录）；没看到开始帧时为 None
 
 
 Contributor = Callable[[TurnEnded], Awaitable[Mapping[str, Any] | None]]
@@ -129,7 +130,8 @@ class RunSummaries:
             reason = payload.get("reason") if isinstance(payload.get("reason"), dict) else {}
             kind = reason.get("kind") if isinstance(reason.get("kind"), str) else None
             ended = TurnEnded(workspace_id=workspace_id, conversation_id=conversation_id, turn=turn,
-                              question=current.question or "", answer=current.answer, status=status_of(kind))
+                              question=current.question or "", answer=current.answer, status=status_of(kind),
+                              started_at=current.started)
             self._spawn(self._ended(ended, kind, current.tools, _time(data.get("time"))))
 
     def _put(self, conversation_id: str, turn: _Turn) -> None:
@@ -221,6 +223,8 @@ class RunSummaries:
 UNCITED, DISLIKED, UNANSWERED = "uncited", "disliked", "unanswered"
 SIGNALS = (UNCITED, DISLIKED, UNANSWERED)
 NOT_ANSWERED = ("partial", "unanswered")  # knowledge.answer_check 的 verdict 里算「没答上来」的
+# 别的模块在自己的事实里写 unanswered: true 也算没答上来（例如问数这一轮的查询全报错）
+UNANSWERED_FACT = "$.* ? (@.unanswered == true)"
 
 
 @dataclass(frozen=True)
@@ -239,7 +243,9 @@ class SummaryQuery:
 
     async def page(self, workspace_id: str, *, since: datetime, until: datetime, before: datetime | None = None,
                    user_id: str | None = None, status: str | None = None, signal: str | None = None,
-                   tool: str | None = None, base: str | None = None, limit: int = 50) -> tuple[SummaryRow, ...]:
+                   tool: str | None = None, base: str | None = None, fact: tuple[str, str, str] | None = None,
+                   limit: int = 50) -> tuple[SummaryRow, ...]:
+        """fact：(模块, 键, 值)，只要模块记的事实 facts[模块][键] 里有这个值的轮（例如问数记的用了哪几个数据源）。"""
         feedback = and_(AnswerFeedback.conversation_id == RunSummary.conversation_id,
                         AnswerFeedback.run_id == func.concat("run-", RunSummary.turn))
         statement = (select(RunSummary, Conversation.title, AnswerFeedback.rating)
@@ -257,6 +263,9 @@ class SummaryQuery:
             statement = statement.where(RunSummary.tools.contains([tool]))
         if base is not None:
             statement = statement.where(RunSummary.facts["knowledge"]["bases"].contains([base]))
+        if fact is not None:
+            module, key, value = fact
+            statement = statement.where(RunSummary.facts[module][key].contains([value]))
         if signal == UNCITED:
             knowledge = RunSummary.facts["knowledge"]
             statement = statement.where(RunSummary.status == "completed",
@@ -264,7 +273,8 @@ class SummaryQuery:
         elif signal == DISLIKED:
             statement = statement.where(AnswerFeedback.rating == "dislike")
         elif signal == UNANSWERED:
-            statement = statement.where(RunSummary.facts["knowledge"]["verdict"].as_string().in_(NOT_ANSWERED))
+            statement = statement.where(or_(RunSummary.facts["knowledge"]["verdict"].as_string().in_(NOT_ANSWERED),
+                                            func.jsonb_path_exists(RunSummary.facts, cast(literal(UNANSWERED_FACT), JSONPATH))))
         statement = statement.order_by(RunSummary.started_at.desc(), RunSummary.conversation_id).limit(limit)
         async with self._sessionmaker() as session:
             rows = (await session.execute(statement)).all()

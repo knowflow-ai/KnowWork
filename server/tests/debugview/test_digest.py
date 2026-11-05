@@ -116,3 +116,17 @@ def test_step_input_follows_the_current_dsh_order():
         ("user", "knowwork-turn-context")]
     running = step_input(main_events(log[:12]), 1, 2)
     assert running.found and running.messages[-1].source == "knowwork-turn-context", "模型还没输出时给到目前为止的"
+
+
+def test_tool_cards_come_along_with_the_tool_result():
+    """工具交给界面的卡片（tool/result 的 meta）也进运行详情：管理员在运行记录里看到的和提问人在对话里看到的一样。"""
+    presentation = {"version": 1, "cards": [{"type": "table", "columns": [{"name": "n"}], "rows": [[3]],
+                                             "row_count": 1}]}
+    log = (*LOG[:10],
+           frame(10, "tool/result", {"turn": 1, "step": 1, "meta": presentation, "message": {
+               "role": "tool", "toolCallId": "call1", "isError": False, "content": [{"type": "text", "text": "3"}]}}),
+           *LOG[11:23])
+    call = detail(slice_turns(log)[0], USAGE_MAP).steps[0].tool_calls[0]
+    assert call.presentation is not None and call.presentation["cards"][0]["row_count"] == 1
+    plain = detail(slice_turns(LOG)[0], USAGE_MAP).steps[0].tool_calls[0]
+    assert plain.presentation is None

@@ -8,12 +8,13 @@
  * 注册在第一次查询插槽时才发生（不靠入口文件 import 一次），单独渲染组件的测试里也拿得到。
  * 前端插槽只决定显示什么；扩展有没有授权由后端判定，没授权时它的接口不存在。
  */
-import type { ReactNode } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 import type { RouteObject } from 'react-router';
 import { install } from '@knowwork/extensions';
 import type { PreviewFile } from '../features/preview/FilePreview';
 import type { NavItem } from '../layout/nav';
 import type { TabItem } from '../ui/Tabs';
+import type { Mention } from '../api/mentions';
 
 export interface AdminNavEntry {
   /** 插进哪个分组（管理后台侧栏的分组名，如「能力接入」）；没有这个分组就新起一组，排在系统设置之前 */
@@ -56,6 +57,46 @@ export interface KnowledgeTree {
   readonly load: () => Promise<readonly GrantTreeNode[]>;
 }
 
+/** 扩展登记的一类可授权资源（平铺、没有上级，例如数据源）：授权页的「资源类型」里多一项，选资源时按 load 列出。
+ * 后端要在同名类型上登记过（AccessCore.add_resource_types），不然授权接口不认。 */
+export interface GrantResourceType {
+  /** 资源类型，同后端登记的，如 data_source */
+  readonly type: string;
+  readonly label: string;
+  /** 三档在这类资源上各是什么意思（如「使用：问数；编辑：建模」），显示在授权对话框的「权限」下面 */
+  readonly help?: string;
+  /** 授权列表里这类资源的图标（组件库的图标，和这类资源在别处用的一样） */
+  readonly icon?: ReactNode;
+  /** 能授权的资源；授权页打开时取 */
+  readonly load: () => Promise<readonly { readonly id: string; readonly name: string }[]>;
+}
+
+/** 结果卡片（出处那一张）上的一个操作，例如「存为可信查询」：工具在卡片里写上操作名与 ref，前端按名字找这里登记的组件，
+ * 组件自己画按钮、弹窗，自己调扩展的接口（接口判权）。question 是这一轮用户的提问。 */
+export interface CardActionItem {
+  readonly name: string;
+  readonly Component: ComponentType<{ readonly reference: string; readonly question: string }>;
+}
+
+/** 输入框左上角回答方式后面的一小段（例如问数的范围条「问数范围：销售库 · 第 3 版」）。conversationId 没有时是新对话；
+ * running 是这一轮在不在跑（一轮开始、结束时组件可以重取自己的状态，例如 @ 改了范围）。组件自己按回答方式决定显示不显示，
+ * 自己调扩展的接口。嵌在别的页面里、固定了回答方式的输入框不显示这一行。 */
+/** 新对话页输入框下面的一块（例如按当前回答方式给几个能直接问的问题）；ask 等同在输入框里打了这句、带着这些 @ 发出去 */
+export interface ChatWelcomeItem {
+  readonly Component: ComponentType<{
+    readonly answerMode: string;
+    readonly ask: (text: string, mentions: readonly Mention[]) => void;
+  }>;
+}
+
+export interface ComposerTopItem {
+  readonly Component: ComponentType<{
+    readonly conversationId?: string;
+    readonly answerMode: string;
+    readonly running: boolean;
+  }>;
+}
+
 /** 扩展提供的工具在对话执行过程里怎么显示（同开源内置工具的 stepLabels）：「记住：回答用表格」而不是函数名。 */
 export interface ToolPresentation {
   /** 工具名（同后端 ToolSpec.name） */
@@ -69,6 +110,11 @@ export interface ToolPresentation {
    * result 是工具结果的文字（可能截断），返回 null 不显示。执行过程默认收起，用户要知道的副作用放这里。
    */
   readonly notice?: (call: ToolCallDone) => ToolNotice | null;
+  /**
+   * 批准前给人看的明细（例如要发布的改动清单）：画在审批卡片里，代替通用的参数摘要；arguments 是调用参数（解析后）。
+   * 审批照样由宿主发起、按钮照样是批准与拒绝，这里只管把要做的事写清楚
+   */
+  readonly approval?: ComponentType<{ readonly arguments: Readonly<Record<string, unknown>> }>;
 }
 
 export interface ToolCallDone {
@@ -102,10 +148,18 @@ export interface ExtensionSlots {
   'citation.preview': CitationPreviewer;
   /** 授权页里某个知识源下的层级树（例如目录 → 知识库，可以按目录授权）；没注册的知识源平铺知识库 */
   'grants.knowledge': KnowledgeTree;
+  /** 授权页里扩展自己的资源类型（例如数据源）；没注册时只有内置的几类 */
+  'grants.resources': GrantResourceType;
   /** 问答大盘知识库表那一行的动作；没注册的知识源不显示 */
   'insights.base.action': InsightsBaseAction;
+  /** 结果卡片上的操作（按操作名）；卡片里写了、这里没登记的不显示 */
+  'chat.card.actions': CardActionItem;
   /** 扩展提供的工具在执行过程里的显示名；没注册的照原名显示 */
   'chat.tools': ToolPresentation;
+  /** 输入框左上角回答方式后面的一小段；没注册时只有回答方式 */
+  'chat.composer.top': ComposerTopItem;
+  /** 新对话页输入框下面的一块（建议问题这类）；没注册时什么都没有 */
+  'chat.welcome': ChatWelcomeItem;
   /** 技能页「企业」页签里系统管理员看到的内容（管理企业技能本身，连同本空间的设置）；没注册时只有本空间的设置 */
   'admin.skills.enterprise': PanelItem;
   /** 「工具与 MCP」页的「企业」页签：注册了才有这个页签；系统管理员看到这里给的内容（管理企业 MCP 本身，连同本空间的设置），

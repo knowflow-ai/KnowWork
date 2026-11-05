@@ -6,11 +6,12 @@ import type {
   Mention,
   MentionBase,
   MentionDocument,
+  MentionExtension,
   MentionOptions,
   MentionService,
   MentionSkill,
 } from '../../../api/mentions';
-import type { MentionGroup } from './kinds';
+import { extensionGroup, type MentionGroup } from './kinds';
 
 /** 一个候选：选中后成为的 @，和名字下面那行小字（在哪里、是什么）。 */
 export interface Candidate {
@@ -93,11 +94,27 @@ function skillCandidates(skills: readonly MentionSkill[]): Candidate[] {
   }));
 }
 
+function extensionCandidates(extension: MentionExtension | undefined): Candidate[] {
+  if (!extension) return [];
+  return extension.items.map((item) => ({
+    mention: {
+      type: 'extension',
+      kind: extension.kind,
+      label: extension.label,
+      id: item.id,
+      name: item.name,
+    },
+    detail: item.description,
+  }));
+}
+
 export function groupCandidates(
   group: MentionGroup,
   options: MentionOptions,
   documents: readonly MentionDocument[],
 ): readonly Candidate[] {
+  if (group.startsWith('ext:'))
+    return extensionCandidates(options.extensions.find((e) => extensionGroup(e.kind) === group));
   switch (group) {
     case 'bases':
       return baseCandidates(options.bases);
@@ -109,7 +126,21 @@ export function groupCandidates(
       return serviceCandidates(options.services);
     case 'skills':
       return skillCandidates(options.skills);
+    default:
+      return [];
   }
+}
+
+/** 所有分组的先后：「在哪里找」（知识库、文件、标签、扩展登记的）在前，MCP、技能在后。 */
+export function groupOrder(options: MentionOptions): readonly MentionGroup[] {
+  return [
+    'bases',
+    'documents',
+    'tags',
+    ...options.extensions.map((e) => extensionGroup(e.kind)),
+    'services',
+    'skills',
+  ];
 }
 
 /** 名字或那行小字里有这几个字（不分大小写）。文件已经按名字在服务端搜过，不再筛。 */
@@ -128,9 +159,7 @@ export function sections(
   query: string,
   group: MentionGroup | null,
 ): readonly Section[] {
-  const groups: readonly MentionGroup[] = group
-    ? [group]
-    : ['bases', 'documents', 'tags', 'services', 'skills'];
+  const groups: readonly MentionGroup[] = group ? [group] : groupOrder(options);
   return groups.flatMap((name) => {
     const all = groupCandidates(name, options, documents);
     const found = name === 'documents' ? all : matching(all, query);

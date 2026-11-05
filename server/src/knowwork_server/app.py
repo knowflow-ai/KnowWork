@@ -31,11 +31,15 @@ from .audit import build_router as audit_router
 from .channels import Channels, build_channels
 from .channels import build_router as channels_router
 from .config import Settings
+from .conversations.answer_modes import AnswerModes
+from .conversations.api import build_answer_modes_router
 from .conversations.api import build_router as conversation_router
+from .conversations.background import background_signer, build_background_router
 from .conversations.feedback import FeedbackStore
 from .conversations.listeners import Broadcaster
 from .conversations.mention_api import MentionSources
 from .conversations.mention_api import build_router as mention_router
+from .conversations.mention_kinds import MentionKinds
 from .conversations.models import Conversation
 from .conversations.observers import fan_out
 from .conversations.pump import EventPump
@@ -45,7 +49,7 @@ from .conversations.summaries import RunSummaries
 from .conversations.tool_credentials import ToolCredentials, require_membership
 from .conversations.turn_context import TurnContextHook
 from .conversations.writer import BatchWriter
-from .db.base import Base, make_engine, make_sessionmaker, make_workspace_sessionmaker
+from .db.base import Base, make_engine, make_held_engine, make_sessionmaker, make_workspace_sessionmaker
 from .db.migrate import migrate_for_settings
 from .db.registry import load_all_models
 from .debugview import DebugService, RunRecords, build_admin_router, build_debugview, build_run_records
@@ -172,6 +176,7 @@ class Runtime:
     knowledge: KnowledgeModule
     knowledge_reader: KnowledgeReader  # 对外检索（REST 与 MCP 共用）
     mention_sources: MentionSources  # 输入框 @ 菜单的候选
+    answer_modes: AnswerModes  # 输入框左上角的回答方式（内置两种加扩展登记的）
     feedback: FeedbackStore  # 对每轮回答的赞、踩
     links: LinkSigner  # 站内链接签名：知识库图片在回答、引用里显示要带签名
     knowledge_mcp: KnowledgeMcp
@@ -197,6 +202,8 @@ class Runtime:
     # 跟着别的进程（worker 里的组织同步、删知识库的任务）改的权限规则重新加载；见 access/core.py 的 follow_changes
     policy_stop: asyncio.Event = field(default_factory=asyncio.Event)
     policy_follower: asyncio.Task | None = None
+    # 一直占着连接的用途（权限规则的 LISTEN、机器人的 advisory 锁）走这个，不占 engine 的连接池；见 db/base.py
+    held_engine: AsyncEngine | None = None
 
     async def start(self, *, create_schema: bool = False) -> None:
         if create_schema or self.settings.create_schema:
@@ -211,7 +218,8 @@ class Runtime:
         await self.workflows.engine.reconcile(STALE_AFTER)  # 上次没跑完的运行标为中断，可续跑
         if not await self.access.reload():
             raise RuntimeError("权限规则加载失败，拒绝启动")
-        self.policy_follower = asyncio.create_task(self.access.follow_changes(self.engine, self.policy_stop))
+        self.policy_follower = asyncio.create_task(
+            self.access.follow_changes(self.held_engine or self.engine, self.policy_stop))
         # 系统管理员能进任何空间：从初始化记录读回来交给权限模块（还没初始化时为空）
         self.access.set_system_admin(await current_system_admin(self.global_sessionmaker))
         for extension in self.extensions.active:
@@ -259,6 +267,8 @@ class Runtime:
                 await extension.aclose()
             except Exception:  # 一个扩展关不干净不影响别的资源释放
                 log.exception("closing extension %s failed", extension.name)
+        if self.held_engine is not None:
+            await self.held_engine.dispose()
         await self.engine.dispose()
 
 
@@ -332,7 +342,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     """extensions 不给时取本进程已安装、按授权启用的扩展（测试里传入假的）。"""
     config = identity_config(settings)  # 先校验配置，失败时还没建任何连接
     master_key = settings.master_key.get_secret_value()
-    engine = make_engine(settings.database_url)
+    engine = make_engine(settings.database_url, pool_size=settings.db_pool_size, max_overflow=settings.db_max_overflow)
+    held_engine = make_held_engine(settings.database_url)
     global_sessionmaker = make_sessionmaker(engine)
     # 对话、工具回执、产物、附件等的每个事务都声明当前空间（请求路径、回调令牌、会话所在的空间），行级安全据此放行
     scoped = make_workspace_sessionmaker(engine)
@@ -430,9 +441,12 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
         found = await skills.available.for_user(workspace_id, user_id)  # 含宿主内置的技能
         return [{"name": s.name, "description": s.description} for s in found if s.user_invocable]
 
+    # 扩展登记的 @ 类型（例如数据源）：扩展装配时登记，没登记时菜单里没有这几组
+    mention_kinds = MentionKinds()
     mention_sources = MentionSources(bases=partial(mentionable_bases, knowledge.service), skills=mention_skills,
                                      documents=partial(mentionable_documents, knowledge.service),
-                                     services=lambda workspace_id, user_id: mcp.me.mentionable(user_id, workspace_id))
+                                     services=lambda workspace_id, user_id: mcp.me.mentionable(user_id, workspace_id),
+                                     extensions=mention_kinds.listing)
 
     async def knowledge_catalog(conversation: Conversation, profile: RuntimeProfile) -> KnowledgeCatalog:
         if not profile.knowledge:
@@ -442,10 +456,13 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
 
     # 扩展给每轮补的上下文（例如记忆）：扩展装配时登记提供者，没登记时这一轮什么都不带
     turn_context = TurnContextHook()
+    # 回答方式：内置智能体与快速问答，扩展装配时可以再登记
+    answer_modes = AnswerModes()
     service = ConversationService(kernel, scoped, pump, feed, on_host_restart=rotator.rotate_now,
                                   refresh_model_credential=rotator.ensure_fresh, profiles=profiles,
                                   grants=grants, attachments=TurnAttachments(attachments.service),
                                   knowledge_catalog=knowledge_catalog, turn_context=turn_context,
+                                  answer_modes=answer_modes, mention_kinds=mention_kinds,
                                   tool_credentials=tool_credentials, skill_credentials=skill_credentials,
                                   erasers=(erase_knowledge, erase_receipts,
                                            attachments.service.erase, artifacts.service.erase,
@@ -472,6 +489,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          models=ModelClient(models.catalog, routed_http),
                          stores_for=lambda namespace: namespaced_stores(settings, namespace),
                          knowledge_sources=knowledge.provided, tools=provided_tools, turn_context=turn_context,
+                         answer_modes=answer_modes, mentions=mention_kinds,
                          links=links, profiles=identity.users.get_many, on_turn_ended=summaries.contribute,
                          platform_skills=skills.platform, enterprise_mcp=mcp.enterprise, accounts=identity.accounts,
                          login_methods=identity.methods, password_logins=identity.password_logins,
@@ -489,17 +507,18 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                    identity=identity,
                    access=access, models=models, usage=usage, knowledge=knowledge, mcp=mcp,
                    knowledge_reader=knowledge_reader_, links=links, knowledge_mcp=knowledge_mcp,
-                   mention_sources=mention_sources, feedback=FeedbackStore(scoped),
+                   mention_sources=mention_sources, answer_modes=answer_modes, feedback=FeedbackStore(scoped),
                    debug=debug,
                    runs=build_run_records(scoped, models.recorder, debug, service, access, audit.sink,
                                           identity.users.get_many),
                    insights=build_insights(scoped, access, timezone=settings.usage_timezone,
                                            base_names=partial(_base_names, knowledge.service)),
-                   channels=build_channels(master_key, scoped, global_sessionmaker, engine, access, service,
+                   channels=build_channels(master_key, scoped, global_sessionmaker, held_engine, access, service,
                                            accounts=identity.users, catalogs=knowledge.citations, sign=links.sign),
                    jobs=JobsAdmin(global_sessionmaker), parsers=parsers,
                    global_sessionmaker=global_sessionmaker,
-                   engine=engine, upstream=upstream, routed_http=routed_http, host_http=host_http,
+                   engine=engine, held_engine=held_engine, upstream=upstream, routed_http=routed_http,
+                   host_http=host_http,
                    sso_http=sso_http, extensions=extensions, extension_routers=extension_routers,
                    extension_internal_routers=extension_internal)
 
@@ -556,6 +575,7 @@ def create_public_app(runtime: Runtime) -> FastAPI:
     actor = conversation_actor(identity, access)
     app.include_router(mention_router(runtime.mention_sources, actor))  # 排在会话路由前，见 mention_api
     app.include_router(conversation_router(runtime.service, actor, runtime.feedback))
+    app.include_router(build_answer_modes_router(runtime.answer_modes, actor))
     app.include_router(citations_router(runtime.knowledge.citations, runtime.service, actor, runtime.links))
     app.include_router(debug_router(runtime.debug, runtime.service, actor))
     app.include_router(build_admin_router(runtime.runs, scoped_principal(identity, WORKSPACE_SCOPE)))
@@ -593,6 +613,11 @@ def create_internal_app(runtime: Runtime) -> FastAPI:
                                       http=runtime.routed_http, limits=limits))
     app.include_router(tools_router(runtime.tools, grants=runtime.grants.covers))
     app.include_router(skills_internal_router(runtime.skills.delivery))
+    # worker 里的扩展替用户发起后台对话（评测等）：对话只能在这个进程里跑
+    app.include_router(build_background_router(
+        runtime.service, background_signer(settings.master_key.get_secret_value()), runtime.global_sessionmaker,
+        member=lambda user_id, workspace_id: runtime.access.check(user_id, workspace_id, WORKSPACE_RESOURCE,
+                                                                  Action.USE)))
     if runtime.sandbox is not None:
         membership = ToolClearance(runtime.access, builtin=frozenset())
         app.include_router(sandbox_internal_router(runtime.sandbox.sandbox, runtime.tools, membership.member,

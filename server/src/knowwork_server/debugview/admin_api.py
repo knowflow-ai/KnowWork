@@ -22,6 +22,15 @@ from .api import camel
 
 IdPath = Annotated[str, Path(pattern=r"^[A-Za-z0-9_.\-]{1,128}$")]
 DEFAULT_RANGE = timedelta(days=7)
+FACT = r"^[a-z][a-z0-9_]{0,31}\.[a-z][a-z0-9_]{0,31}=\S{1,200}$"
+
+
+def _fact(value: str | None) -> tuple[str, str, str] | None:
+    if value is None:
+        return None
+    path, _, wanted = value.partition("=")
+    module, _, key = path.partition(".")
+    return module, key, wanted
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -56,13 +65,16 @@ def build_admin_router(records: RunRecords, current_principal: Callable[..., Awa
                    signal: Annotated[str | None, Query(pattern="^(uncited|disliked|unanswered)$")] = None,
                    tool: Annotated[str | None, Query(max_length=128)] = None,
                    base: Annotated[str | None, Query(max_length=200)] = None,
+                   fact: Annotated[str | None, Query(pattern=FACT, max_length=300)] = None,
                    limit: Annotated[int, Query(ge=1, le=100)] = 50):
-        """运行记录（管理员）"""
+        """运行记录（管理员）
+
+        fact 写成「模块.键=值」：只列这个模块记的事实里有这个值的轮（例如 analytics.projects=项目编号）。"""
         end = _aware(until) or datetime.now(UTC)
         start = _aware(since) or end - DEFAULT_RANGE
         page = await _call(records.runs(who.user_id, workspace_id, since=start, until=end, before=_aware(before),
                                         user_id=user, status=status, signal=signal, tool=tool, base=base,
-                                        limit=limit))
+                                        fact=_fact(fact), limit=limit))
         return camel(asdict(page))
 
     @router.get("/{conversation_id}/turns/{turn}")

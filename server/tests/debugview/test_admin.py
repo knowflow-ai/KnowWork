@@ -143,13 +143,17 @@ async def test_runs_can_be_narrowed_to_uncited_disliked_or_unanswered_turns(env)
         assert [(r["conversationId"], r["turn"]) for r in body["items"]] == [(mine.id, 1)], signal
     bad = await http.get(f"/api/workspaces/{ws}/runs", params={"signal": "slow"}, headers={"x-user": "boss"})
     assert bad.status_code == 422
+    bad = await http.get(f"/api/workspaces/{ws}/runs", params={"fact": "Knowledge bases"}, headers={"x-user": "boss"})
+    assert bad.status_code == 422, "fact 写成 模块.键=值"
 
 
 async def test_runs_can_be_narrowed_to_a_tool_or_a_knowledge_base(env):
-    """问答大盘点工具、知识库那一行，跳到运行记录里用过这个工具、检索到这个库的那些轮。"""
+    """问答大盘点工具、知识库那一行，跳到运行记录里用过这个工具、检索到这个库的那些轮；fact 按模块记的事实筛（扩展用）。"""
     http, ws, mine = env["http"], env["ws"], env["mine"]
     for params, expected in (({"tool": "bash"}, [(mine.id, 1)]), ({"tool": "never"}, []),
-                             ({"base": "builtin.kb1"}, [(mine.id, 1)]), ({"base": "builtin.kb9"}, [])):
+                             ({"base": "builtin.kb1"}, [(mine.id, 1)]), ({"base": "builtin.kb9"}, []),
+                             ({"fact": "knowledge.bases=builtin.kb1"}, [(mine.id, 1)]),
+                             ({"fact": "knowledge.bases=builtin.kb9"}, [])):
         body = (await http.get(f"/api/workspaces/{ws}/runs", params=params, headers={"x-user": "boss"})).json()
         assert [(r["conversationId"], r["turn"]) for r in body["items"]] == expected, params
 

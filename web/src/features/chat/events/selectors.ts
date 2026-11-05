@@ -7,6 +7,7 @@ import type {
   AskedMessage,
   ChatState,
   QuestionView,
+  ResultCard,
   RunState,
   RunView,
   SearchSummary,
@@ -115,6 +116,11 @@ export function selectRunSearch(run: RunView): RunSearch | undefined {
   const conditions = unique((s) => s.conditions).filter((c) => !removed.includes(c));
   if (conditions.length === 0 && removed.length === 0) return undefined;
   return { conditions, removed, documents: unique((s) => s.documents).length };
+}
+
+/** 这一轮工具交给界面的卡片，按步骤顺序排；回答正文之后画出来。 */
+export function selectRunCards(run: RunView): readonly ResultCard[] {
+  return run.steps.flatMap((s) => (s.status === 'done' && s.cards ? s.cards : []));
 }
 
 export function formatDuration(ms: number): string {

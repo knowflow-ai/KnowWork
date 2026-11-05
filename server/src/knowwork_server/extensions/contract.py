@@ -16,6 +16,9 @@ from ..access.api import ProfileLookup
 from ..access.service import AccessService
 from ..attachments.mineru import MinerUProvider
 from ..config import Settings
+from ..conversations.answer_modes import AnswerModes
+from ..conversations.background import BackgroundTurns
+from ..conversations.mention_kinds import MentionKinds
 from ..conversations.summaries import Contributor
 from ..conversations.turn_context import TurnContextHook
 from ..identity.directory_accounts import DirectoryAccounts
@@ -56,8 +59,14 @@ class ApiContext:
     knowledge_sources: ProvidedSources
     # 登记扩展提供的工具（tools/provided.py）：同内置工具只要求是空间成员，给不给哪个会话由扩展判断
     tools: ProvidedTools = field(default_factory=ProvidedTools)
-    # 登记每轮补上下文的提供者（conversations/turn_context.py，turn_context.set），例如记忆
+    # 登记每轮补上下文的提供者（conversations/turn_context.py，turn_context.add），例如记忆、问数的示例；按登记顺序拼
     turn_context: TurnContextHook = field(default_factory=TurnContextHook)
+    # 登记回答方式（conversations/answer_modes.py，answer_modes.add）：输入框下拉里多一项，选了它这一轮按它收窄官方工具、
+    # 注入指令；业务工具在不在这种方式里由工具自己的 answer_modes 声明
+    answer_modes: AnswerModes = field(default_factory=AnswerModes)
+    # 登记 @ 类型（conversations/mention_kinds.py，mentions.add）：输入框 @ 菜单里多一组（例如数据源），发消息时核对权限、
+    # 这一轮开始前交给扩展
+    mentions: MentionKinds = field(default_factory=MentionKinds)
     # 对外检索结果里的短期签名链接（图片等）：扩展的取文件接口用 links.verify 认签名，取时仍按签名里的用户判权
     links: LinkSigner | None = None
     # 按用户 id 批量取姓名、邮箱与账号类型（同成员列表），给扩展的页面显示人名、分真人与渠道账号；查不到的 id 不出现在结果里
@@ -101,6 +110,8 @@ class WorkerContext:
     access: AccessService | None = None
     # 目录同步的账号部分（同 ApiContext.accounts）
     accounts: DirectoryAccounts | None = None
+    # 替用户发起后台对话（conversations/background.py）：建会话、按回答方式发一轮、看状态、取消；会话不进本人的「最近」
+    turns: BackgroundTurns | None = None
 
 
 class Extension(Protocol):
@@ -109,6 +120,7 @@ class Extension(Protocol):
     model_modules: tuple[str, ...]    # 建表与迁移要导入的模型模块
     rls_tables: tuple[str, ...]       # 要开行级安全的表（迁移里开，测试核对）
     migrations: Path | None           # Alembic 迁移目录，单独一条分支；装了包就升级，不看授权
+    # 可选：requires: tuple[str, ...]  依赖的别的扩展名（例如问数要知识库）；依赖的没启用，它也不启用
 
     def setup_api(self, ctx: ApiContext) -> Sequence[APIRouter]:
         """业务服务启动时调用，返回要挂的路由。"""

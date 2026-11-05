@@ -4,8 +4,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from knowwork_server.conversations.api import build_router
+from knowwork_server.conversations.answer_modes import AnswerMode, AnswerModes, ModeContext
+from knowwork_server.conversations.api import build_answer_modes_router, build_router
 from knowwork_server.conversations.listeners import Broadcaster
+from knowwork_server.conversations.mention_kinds import MentionKind, MentionKinds, MentionOption
 from knowwork_server.conversations.pump import EventPump
 from knowwork_server.conversations.replay import EventFeed
 from knowwork_server.conversations.service import AttachmentUnavailable, ConversationService
@@ -41,15 +43,16 @@ class Profiles:
         self.bindings[conversation.id] = profile
 
 
-def client(sessionmaker, profiles, attachments=None):
+def client(sessionmaker, profiles, attachments=None, answer_modes=None, mention_kinds=None):
     kernel = FakeKernel()
     writer, broadcaster = BatchWriter(sessionmaker), Broadcaster()
     pump = EventPump(kernel, sessionmaker, writer, broadcaster)
     service = ConversationService(kernel, sessionmaker, pump, EventFeed(sessionmaker, writer, broadcaster,
                                                                         pump.produced_upto), profiles=profiles,
-                                  attachments=attachments)
+                                  attachments=attachments, answer_modes=answer_modes, mention_kinds=mention_kinds)
     app = FastAPI()
     app.include_router(build_router(service, token_actor(TOKEN)))
+    app.include_router(build_answer_modes_router(answer_modes or AnswerModes(), token_actor(TOKEN)))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://public"), pump, kernel
 
 
@@ -117,6 +120,47 @@ async def test_mentions_become_the_turns_selection_and_reach_the_host(sessionmak
         ("knowledge_base", "builtin.kb1", "制度库", None, None), ("folder", "财务/报销", "财务/报销", None, None),
         ("document", "kb2/d1", "差旅办法.pdf", "builtin.kb2", "合同库"), ("tag", "简报", "简报", "builtin.kb2", "合同库"),
         ("mcp", "context7", "Context7", None, None), ("skill", "weekly-report", "周报", None, None)]
+    await pump.close()
+
+
+async def test_extension_mentions_are_checked_and_handed_over_before_the_mode_prompt(sessionmaker):
+    """扩展登记的 @：不在扩展给的候选里的拒收（@ 越不过扩展的权限）；名字以扩展给的为准、补上类型名再交给宿主；
+    这一轮开始前回调扩展，而且在回答方式的指令算出来之前（指令里的范围才是这一轮的）。"""
+    order = []
+
+    async def options(workspace_id, user_id):
+        return [MentionOption("p1", "销售库", "第 3 版")] if user_id != "nobody" else []
+
+    async def before_turn(turn):
+        order.append(("bind", turn.conversation_id, [i.id for i in turn.items], turn.answer_mode))
+
+    async def prompt(ctx):
+        order.append(("prompt", ctx.conversation_id))
+        return "问数规则"
+
+    kinds, modes = MentionKinds(), AnswerModes()
+    # 同装配顺序（app.py）：会话服务先建好，扩展后登记——登记表这时还是空的，服务也得认后来登记的
+    http, pump, kernel = client(sessionmaker, Profiles(), answer_modes=modes, mention_kinds=kinds)
+    kinds.add(MentionKind("data_source", "数据源", "问数只查这个数据源", options, before_turn, answer_mode="custom"))
+    modes.add(AnswerMode("custom", "扩展方式", "扩展登记的一种", prompt=prompt))
+    async with http:
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
+        url = f"{CONV}/{created['id']}/messages"
+        picked = {"type": "extension", "kind": "data_source", "id": "p1", "name": "改过的名字"}
+        sent = await http.post(url, headers=AUTH, json={"text": "上月销售额", "answer_mode": "custom",
+                                                         "mentions": [picked]})
+        assert sent.status_code == 202
+        for bad, reason in (({**picked, "id": "p2"}, "没有这个数据源，或你没有权限用它"),
+                            ({**picked, "kind": "unknown"}, "不认识这种 @")):
+            refused = await http.post(url, headers=AUTH, json={"text": "x", "mentions": [bad]})
+            assert refused.status_code == 422 and refused.json()["detail"] == reason
+        for malformed in ({"type": "extension", "id": "p1", "name": "x"}, {**picked, "kind": "Data Source"},
+                          {"type": "skill", "id": "weekly-report", "name": "x", "kind": "data_source"}):
+            assert (await http.post(url, headers=AUTH, json={"text": "x", "mentions": [malformed]})).status_code == 422
+    assert order == [("bind", created["id"], ["p1"], "custom"), ("prompt", created["id"])]
+    [turn] = kernel.sent
+    assert [(m.type, m.kind, m.id, m.name, m.label) for m in turn.mentions] == [
+        ("extension", "data_source", "p1", "销售库", "数据源")]
     await pump.close()
 
 
@@ -204,4 +248,35 @@ async def test_profile_unavailable_is_503(sessionmaker):
         assert response.json()["detail"]["code"] == "runtime_profile_unavailable"
         refused = await http.post(CONV, json={}, headers=AUTH)
         assert refused.status_code == 503
+    await pump.close()
+
+
+async def test_registered_answer_modes_are_listed_and_carry_their_spec(sessionmaker):
+    """扩展登记的回答方式：下拉里列出来；选了它，消息带上现算的放行工具与指令；格式不对的不收。
+    能不能用、指令算不出来的情形在 test_answer_modes.py 里测。"""
+    seen_contexts = []
+
+    async def prompt(ctx: ModeContext) -> str:
+        seen_contexts.append(ctx)
+        return f"本轮按扩展的规则作答（会话 {ctx.conversation_id}）"
+
+    async def only_member(ctx: ModeContext) -> bool:
+        return ctx.user_id != "nobody"
+
+    modes = AnswerModes()
+    modes.add(AnswerMode("custom", "扩展方式", "扩展登记的一种回答方式", official_tools=("todo_write", "ask_user_question"),
+                         prompt=prompt, available=only_member))
+    http, pump, kernel = client(sessionmaker, Profiles(), answer_modes=modes)
+    async with http:
+        listed = (await http.get("/api/workspaces/default/answer-modes", headers=AUTH)).json()["items"]
+        assert [m["id"] for m in listed] == ["agent", "quick", "custom"] and listed[2]["label"] == "扩展方式"
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
+        url = f"{CONV}/{created['id']}/messages"
+        assert (await http.post(url, headers=AUTH, json={"text": "查一下", "answer_mode": "custom"})).status_code == 202
+        assert (await http.post(url, headers=AUTH, json={"text": "x", "answer_mode": "Bad mode"})).status_code == 422
+    turn = kernel.sent[-1]
+    assert turn.answer_mode == "custom"
+    assert turn.answer_mode_spec.tools == ("ask_user_question", "todo_write")
+    assert turn.answer_mode_spec.prompt == f"本轮按扩展的规则作答（会话 {created['id']}）"
+    assert seen_contexts[-1].workspace_id == "default"
     await pump.close()

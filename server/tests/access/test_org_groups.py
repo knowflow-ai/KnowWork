@@ -132,3 +132,15 @@ async def test_groups_lifecycle(service, ws):
         await service.delete_group("bob", ws, group)
     with pytest.raises(InvalidInput):
         await service.create_group("bob", ws, "   ")
+
+
+async def test_subjects_of_lists_roles_departments_with_parents_and_groups(service, ws):
+    """扩展按主体写的规则（问数表上的行列规则）靠它判定：部门含上级，角色、本人都在；别的空间、不合法的输入是空集。"""
+    root, _mid, leaf = await _chain(service, ws, 3)
+    await service.add_department_member("bob", ws, leaf, "dave")
+    subjects = service.subjects_of("dave", ws)
+    assert {"user:dave", f"dept:{leaf}", f"dept:{root}"} <= subjects
+    assert any(s.startswith("role:") for s in subjects), "空间角色也在"
+    assert f"dept:{leaf}" not in service.subjects_of("carol", ws)
+    assert service.subjects_of("dave", "ws_none") <= {"user:dave"}
+    assert service.subjects_of("bad id!", ws) == frozenset()
