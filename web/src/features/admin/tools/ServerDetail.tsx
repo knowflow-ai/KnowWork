@@ -75,7 +75,8 @@ function ToolGroupTable({
         pageSize={false}
         rows={rows}
         columns={[
-          { key: 'name', title: '工具', render: (tool) => <ToolName tool={tool} /> },
+          // 说明很长时（公开服务的工具说明常常一大段）只占剩下的宽度、超出省略，三档那一列不被挤出抽屉
+          { key: 'name', title: '工具', ellipsis: true, render: (tool) => <ToolName tool={tool} /> },
           {
             key: 'policy',
             title: '调用',

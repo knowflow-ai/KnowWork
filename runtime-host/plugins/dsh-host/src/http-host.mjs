@@ -27,6 +27,7 @@ import { catalogOf } from './knowledge-catalog.mjs'
 import { mentionBlocks, mentionsOf } from './mentions.mjs'
 import { receiveTurnContext, turnContextOf } from './turn-context.mjs'
 import { BUILT_IN_MODES, MODE_PATTERN, answerModeSpecOf } from './answer-mode.mjs'
+import { deploymentTimeZone, userSource } from './message-source.mjs'
 
 // DSH 版本号随 /health 一起报给业务服务，系统信息页显示（所有 @deepseek-ai 包锁在同一版本）
 const DSH_VERSION = createRequire(import.meta.url)('@deepseek-ai/dsh/package.json').version
@@ -139,6 +140,20 @@ function accessOf(raw, field) {
   return { token: toolTokenOf(raw.token, `${field}.token`) }
 }
 
+/** 这段对话的属主（空间、人），业务服务给的；宿主只拿它记录、比对属主级资源的归属，不据此判权限。 */
+function ownerOf(raw) {
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new HttpError(400, 'invalid_request', 'owner 必须是对象')
+  const pick = field => {
+    const value = raw[field]
+    if (typeof value !== 'string' || value.length === 0 || value.length > 128) {
+      throw new HttpError(400, 'invalid_request', `owner.${field} 必须是 1 到 128 个字符的字符串`)
+    }
+    return value
+  }
+  return { workspaceId: pick('workspaceId'), userId: pick('userId') }
+}
+
 function toolTokenOf(value, field) {
   requireString(value, field)
   if (value.length < 32 || value.length > 4096) throw new HttpError(400, 'invalid_request', `${field} 长度不合法`)
@@ -165,6 +180,8 @@ export function apply(ctx, config) {
     model: config.model ?? process.env.KNOWWORK_MODEL ?? 'default',
   }
   const modelTokenRef = config.modelTokenRef ?? process.env.KNOWWORK_MODEL_TOKEN_REF ?? 'KNOWWORK_MODEL_TOKEN'
+  // 消息没带用户时区时用它（见 message-source.mjs）
+  const fallbackTimeZone = deploymentTimeZone()
 
   /** @type {Map<string, import('@deepseek-ai/dsh-agent').AgentHandle>} */
   const handles = new Map()
@@ -213,9 +230,11 @@ export function apply(ctx, config) {
     const policy = policyOf(body.policy)
     const toolAccess = accessOf(body.tools, 'tools')
     const skillAccess = accessOf(body.skills, 'skills')
+    const owner = ownerOf(body.owner)
     const state = createSession(sessionId, policy)
     state.toolAccess = toolAccess
     state.skillAccess = skillAccess
+    state.owner = owner
     const id = brandString(sessionId)
     const task = resume
       ? ctx.agents.resume({ resumeSessionId: id, agentOptions })
@@ -224,6 +243,7 @@ export function apply(ctx, config) {
     try {
       const handle = await task
       handles.set(sessionId, handle)
+      state.agent = handle.agent
       idle.touch(sessionId)
       return { sessionId, status: handle.agent.status, epoch: EPOCH }
     } catch (error) {
@@ -273,7 +293,9 @@ export function apply(ctx, config) {
     if (state !== undefined && language !== undefined) state.language = language
     if (state !== undefined && knowledge !== undefined) state.knowledgeCatalog = knowledge
     const content = [{ type: 'text', text }, ...attachmentBlocks(files), ...mentionBlocks(mentions)]
-    const message = createUserMessage({ content, source: { kind: 'user' } })
+    const source = userSource(body.timeZone, fallbackTimeZone)
+    if (state !== undefined) state.timeZone = source.clientTimeZone
+    const message = createUserMessage({ content, source })
     // 回答方式等这条消息进入步骤时才生效（answer-mode）：排队到下一轮的消息不改正在跑的这一轮
     state?.answerModes.set(String(message.id), { mode: answerMode, spec: answerModeSpec })
     receiveTurnContext(state, message.id, context)

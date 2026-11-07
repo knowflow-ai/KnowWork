@@ -71,7 +71,7 @@ RUN npm install -g --no-audit --no-fund --registry="${NPM_REGISTRY}" \
 # 主机密钥在容器启动时现生成，镜像里不留私钥（openssh-server 安装时生成的那几把删掉，开源镜像是公开的）。
 # 官方辅助程序与 PTC 启动脚本装在工作区与临时目录之外（官方要求），版本必须与宿主锁定的 DSH 一致：宿主连接前
 # 比对摘要，对不上就拒绝；ci-runtime-host 的版本检查把这里的 DSH_VERSION 一起比对。没打开流式执行时都用不到。
-ARG DSH_VERSION=0.2.2-alpha.2
+ARG DSH_VERSION=0.2.2-rc.1
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends openssh-server \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /etc/ssh/ssh_host_* \

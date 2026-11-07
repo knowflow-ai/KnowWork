@@ -46,7 +46,11 @@ export function onLive(state: ChatState, piece: LivePiece): ChatState {
 export function settleLive(state: ChatState, event: V1Event): ChatState {
   const live = state.live;
   if (!live || event.runId !== live.runId) return state;
-  const message = event.type === 'item.completed' && event.kind === 'message' && event.data.role !== 'user';
+  const message =
+    event.type === 'item.completed' &&
+    event.kind === 'message' &&
+    event.data.role !== 'user' &&
+    event.data.role !== 'trigger';
   const ended =
     event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled';
   return message || ended ? { ...state, live: undefined } : state;

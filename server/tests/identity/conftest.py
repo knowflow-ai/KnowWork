@@ -66,10 +66,10 @@ def identity(sessionmaker, config, clock):
     return build_identity(sessionmaker, config, clock=clock)
 
 
-def make_app(identity, admins) -> FastAPI:
+def make_app(identity, admins, extensions: tuple[str, ...] = ()) -> FastAPI:
     app = FastAPI()
     app.include_router(build_router(identity, is_admin=lambda who, workspace_id: who.user_id in admins and workspace_id == "ws1",
-                                    can_bind_workspace=lambda who, workspace_id: True))
+                                    can_bind_workspace=lambda who, workspace_id: True, extensions=extensions))
 
     Writer = Annotated[Principal, Depends(identity.require_scopes("conversations:write"))]
 

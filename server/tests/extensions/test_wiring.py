@@ -88,7 +88,8 @@ async def test_failing_internal_setup_drops_the_whole_extension():
         await runtime.stop()
 
 
-BUILTIN_JOBS = {"attachment.parse", "knowledge.answer_check"}  # 开源自带的任务
+# 开源自带的任务：附件的解析、长附件导读、没发出去的附件到期清理，没答上的问题核对
+BUILTIN_JOBS = {"attachment.parse", "attachment.digest", "attachment.expire", "knowledge.answer_check"}
 
 
 async def test_worker_registers_jobs_of_enabled_extensions():

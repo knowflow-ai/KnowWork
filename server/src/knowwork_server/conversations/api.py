@@ -9,13 +9,14 @@
 import hmac
 import json
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
 
 from ..audit.context import annotate
@@ -72,6 +73,17 @@ SelectionName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:-]{1,128}$")]
 KnowledgeBaseName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}\.([A-Za-z0-9_-]{1,64}|\*)$")]
 # 检索条件的写法如「部门 = 财务部」「标签：简报」，原样比对，不解析
 ConditionLabel = Annotated[str, Field(min_length=1, max_length=500)]
+# IANA 时区名的写法，如 Asia/Shanghai、America/Argentina/Buenos_Aires、UTC、Etc/GMT+8
+TIME_ZONE_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_+-]{0,30}(/[A-Za-z0-9_+-]{1,30}){0,2}")
+TIME_ZONE_MAX = 64  # 同内核合同 TurnInput.time_zone 的上限：写法对、名字超长的也当没带，免得合同校验把消息拒成 500
+
+
+def turn_time_zone(value: object) -> str | None:
+    """浏览器报的时区。只是提示，写法不对的当没带（宿主改用部署时区），不因此拒收这条消息；
+    名字认不认得、别名换成规范名都由宿主照官方的办法做。"""
+    if not isinstance(value, str) or len(value) > TIME_ZONE_MAX:
+        return None
+    return value if TIME_ZONE_PATTERN.fullmatch(value) else None
 
 
 class TurnChoice(BaseModel):
@@ -114,8 +126,15 @@ class SendMessage(TurnChoice):
     mode: str = Field(default="followup", pattern="^(followup|steer)$")
     # 聊天页选的回答语言；不传时按提问里有没有汉字判断
     language: Literal["zh", "en"] | None = None
+    # 浏览器的时区，模型按它算「今天」
+    time_zone: str | None = None
     # 本轮带的附件 id（先经附件接口上传到这个会话）；文件已在沙箱 /workspace/input 里，模型按需读
     attachments: list[SelectionName] | None = Field(default=None, max_length=20)
+
+    @field_validator("time_zone", mode="before")
+    @classmethod
+    def _time_zone(cls, value: object) -> str | None:
+        return turn_time_zone(value)
 
     @model_validator(mode="after")
     def _quick_has_no_files(self) -> "SendMessage":
@@ -127,8 +146,8 @@ class SendMessage(TurnChoice):
     def turn(self) -> TurnInput:
         # 插话进行中的回合，新的选择留到下一轮才生效（service.send），@ 也就不写进这条消息，免得模型以为已经限定了
         mentions = turn_mentions(self._scoped()[1]) if self.mode == "followup" else ()
-        return TurnInput(text=self.text, mode=self.mode, language=self.language, mentions=mentions,
-                         answer_mode=self.answer_mode)
+        return TurnInput(text=self.text, mode=self.mode, language=self.language, time_zone=self.time_zone,
+                         mentions=mentions, answer_mode=self.answer_mode)
 
 
 class Decision(BaseModel):
@@ -301,6 +320,15 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
             """撤回评价"""
             await feedback.delete(await owned(conversation_id, who), run_id)
             return Response(status_code=204)
+
+    @router.post("/{conversation_id}/warm", status_code=204)
+    async def warm(conversation_id: str, who: Who) -> None:
+        """预热对话
+
+        输入框里加了附件、快要发消息时调：先把宿主上的对话和沙箱容器备好，发送时不用现开、现建。尽力而为，
+        失败不报错（发送时照常会再开）。
+        """
+        await service.warm(await owned(conversation_id, who))
 
     @router.post("/{conversation_id}/cancel")
     async def cancel(conversation_id: str, who: Who):

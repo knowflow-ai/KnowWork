@@ -101,6 +101,23 @@ async def test_stale_or_dead_container_is_replaced_and_hook_runs(make, labels_ex
     assert created == [(WS, SID)]  # 只在新建时调用
 
 
+async def test_prepare_only_brings_the_container_up(make):
+    """预热：不在就新建（照常跑新建钩子，附件重放），已经在跑就什么都不做，也不在容器里执行别的。"""
+    fake, module = make()
+    created = []
+
+    async def hook(workspace_id, session_id):
+        created.append((workspace_id, session_id))
+
+    module.on_created(hook)
+    await module.sandbox.prepare(WS, SID)
+    assert KEY.name in fake.containers and created == [(WS, SID)]
+    first = fake.containers[KEY.name]["Id"]
+    await module.sandbox.prepare(WS, SID)
+    assert fake.containers[KEY.name]["Id"] == first and created == [(WS, SID)], "已经在跑的不重建"
+    assert fake.archives == [], "预热不往容器里放东西"
+
+
 async def test_created_hook_failure_does_not_fail_the_operation(make):
     _fake, module = make()
 
@@ -187,6 +204,45 @@ async def test_create_conflict_is_reported_without_details(make):
     with pytest.raises(SandboxError, match="准备中") as caught:
         await _touch(module)
     assert KEY.name not in str(caught.value)
+
+
+@pytest.mark.parametrize("status", ["created", "running"])
+async def test_losing_the_create_race_to_another_process_uses_its_container(make, status):
+    """业务服务（上传附件时）和 worker（解析附件时）几乎同时给同一个会话建容器：容器名一样，后到的那个 Docker 回 409。
+    这时另一个进程已经建好（或正在启动）了，接着用它，不报「准备中」让任务退避重试；新建钩子只在真正建的那边跑。"""
+    fake, module = make()
+    created = []
+
+    async def hook(workspace_id, session_id):
+        created.append((workspace_id, session_id))
+
+    module.on_created(hook)
+    engine = module.containers._engine
+    first_look = engine.inspect_container
+
+    async def racing_inspect(ref):  # 返回 None：这边看的时候还没有
+        # 紧接着另一个进程建好了同名容器
+        engine.inspect_container = first_look
+        fake.add_container(KEY.name, {**KEY.labels(), LABEL_POSTURE: _digest()}, status=status)
+
+    engine.inspect_container = racing_inspect
+    await _touch(module)
+    assert fake.containers[KEY.name]["Status"] == "running"
+    assert created == [], "容器是另一个进程建的，附件重放由它那边做"
+
+
+async def test_create_conflict_with_someone_elses_container_is_still_refused(make):
+    fake, module = make()
+    engine = module.containers._engine
+    first_look = engine.inspect_container
+
+    async def racing_inspect(ref):
+        engine.inspect_container = first_look
+        fake.add_container(KEY.name, {"app": "别人的"}, status="running")
+
+    engine.inspect_container = racing_inspect
+    with pytest.raises(SandboxError, match="冲突"):
+        await _touch(module)
 
 
 @pytest.mark.parametrize("workspace_id,session_id", [("", SID), (WS, "../x"), (WS, "a" * 200), (WS, "a b")])

@@ -58,10 +58,11 @@ def test_total_size_is_capped_by_cutting_rows_first():
 def test_provenance_actions_keep_only_well_formed_ones():
     card = {"type": "provenance", "label": "口径", "text": "按口径查", "actions": [
         {"name": "save_trusted_query", "ref": "anql_1"}, {"name": "Bad Name", "ref": "x"}, {"name": "ok", "ref": ""},
-        "not a dict", {"name": "a2", "ref": "r"}, {"name": "a3", "ref": "r"}, {"name": "a4", "ref": "r"}]}
+        "not a dict", *({"name": f"a{i}", "ref": "r"} for i in range(2, 9))]}
     [kept] = normalize({"version": 1, "cards": [card]})["cards"]
-    assert kept["actions"] == [{"name": "save_trusted_query", "ref": "anql_1"}, {"name": "a2", "ref": "r"},
-                               {"name": "a3", "ref": "r"}], "名字不合规、没有 ref 的丢掉，剩下的最多 3 个"
+    assert kept["actions"] == [{"name": "save_trusted_query", "ref": "anql_1"},
+                               *({"name": f"a{i}", "ref": "r"} for i in range(2, 7))], \
+        "名字不合规、没有 ref 的丢掉，剩下的最多 6 个（问数的出处卡片上有改条件、下载、加到看板、存为可信查询四个）"
 
 
 def test_table_charts_must_name_columns_of_the_table():
@@ -81,3 +82,33 @@ def test_table_charts_must_name_columns_of_the_table():
                 {"type": "bar", "x": "month", "y": ["revenue", "revenue"]},
                 {"type": "line", "x": "month", "y": ["revenue"], "series": "revenue"}, "line"):
         assert chart_of(bad) is None, bad
+
+
+def test_table_drill_keeps_columns_of_the_table():
+    """表格卡片的下钻：组件名合规、有编号、列在表里才带上；对不上的列去掉，一列不剩、编号超长就不带（截断的编号对不上）。"""
+    table = {"type": "table", "columns": [{"name": "region"}, {"name": "n", "kind": "number"}], "rows": [["华东", 1]]}
+
+    def drill_of(drill):
+        return normalize({"version": 1, "cards": [{**table, "drill": drill}]})["cards"][0].get("drill")
+
+    assert drill_of({"name": "drill_query", "ref": "anql_1", "columns": ["region", "gone", "region"]}) == {
+        "name": "drill_query", "ref": "anql_1", "columns": ["region"]}
+    assert drill_of({"name": "drill_card", "ref": "b/c/" + "x" * 3000, "columns": ["region"]})["ref"].startswith("b/c/")
+    for bad in ({"name": "Bad Name", "ref": "r", "columns": ["region"]}, {"name": "d", "ref": "", "columns": ["region"]},
+                {"name": "d", "ref": "r", "columns": ["gone"]}, {"name": "d", "ref": "x" * 5000, "columns": ["region"]},
+                {"name": "d", "ref": "r"}, "drill"):
+        assert drill_of(bad) is None, bad
+
+
+def test_suggestions_card_lists_questions_to_ask_next():
+    """suggestions：一段说明加几个可以接着问的问题（例如查不了时给的换个问法），界面上点了就在这个对话里问。
+    问题去空、去重、截断，最多 6 个；标题、说明都可以不给，一个问题都没有的不要。"""
+    shown = normalize({"version": 1, "cards": [{
+        "type": "suggestions", "title": "这个问题查不了", "text": "模型里没有「提成」这个指标",
+        "questions": ["  各区域的成交金额  ", "各区域的成交金额", "", 3, *[f"问题{i}" for i in range(10)]]}]})
+    [card] = shown["cards"]
+    assert card == {"type": "suggestions", "title": "这个问题查不了", "text": "模型里没有「提成」这个指标",
+                    "questions": ["各区域的成交金额", "问题0", "问题1", "问题2", "问题3", "问题4"]}
+    assert normalize({"version": 1, "cards": [{"type": "suggestions", "questions": ["x" * 500]}]})["cards"][0][
+        "questions"] == ["x" * 200]
+    assert normalize({"version": 1, "cards": [{"type": "suggestions", "title": "只有标题", "questions": []}]}) is None

@@ -10,7 +10,8 @@ import SetupPage from './SetupPage';
 import { RequireAuth } from './RequireAuth';
 import { RequireAdmin } from './RequireAdmin';
 import { useSessionStore } from '../../stores/session';
-import { ME_KEY } from './queries';
+import { ME_KEY, rememberUser } from './queries';
+import { isExtensionEnabled, setEnabledExtensions } from '../../slots/registry';
 import type { LoginMethod } from '../../api/auth';
 import type { WorkspaceSummary } from '../../api/workspace';
 import { pickWorkspace, useWorkspaceStore } from '../../stores/workspace';
@@ -337,6 +338,40 @@ describe('SetupPage', () => {
 });
 
 describe('RequireAuth 与 RequireAdmin', () => {
+  it('当前用户信息带着启用了的扩展：只显示这些扩展的入口', async () => {
+    routeFetch({
+      'GET /api/auth/me': jsonResponse({ ...ME, extensions: ['demo-on'] }),
+      'GET /api/workspaces': jsonResponse([DEFAULT_WS]),
+    });
+    renderWithApp(<RequireAuth>受保护</RequireAuth>, { route: '/x', path: '/x' });
+    expect(await screen.findByText('受保护')).toBeInTheDocument();
+    expect(isExtensionEnabled('demo-on')).toBe(true);
+    expect(isExtensionEnabled('demo-off')).toBe(false);
+    setEnabledExtensions(undefined);
+  });
+
+  it('登录后写进缓存的用户信息还没有扩展列表：重新取到之前不进主界面，免得菜单先多后少', async () => {
+    const client = testClient();
+    let release: () => void = () => undefined;
+    const fetched = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    routeFetch({
+      'GET /api/auth/me': async () => {
+        await fetched;
+        return jsonResponse({ ...ME, extensions: [] });
+      },
+      'GET /api/workspaces': jsonResponse([DEFAULT_WS]),
+    });
+    rememberUser(client, { id: ME.id, email: ME.email, name: ME.name });
+    renderWithApp(<RequireAuth>受保护</RequireAuth>, { route: '/x', path: '/x', client });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText('受保护')).not.toBeInTheDocument();
+    release();
+    expect(await screen.findByText('受保护')).toBeInTheDocument();
+    setEnabledExtensions(undefined);
+  });
+
   it('未登录跳到登录页', async () => {
     routeFetch({ 'GET /api/auth/me': jsonResponse({ detail: '未登录' }, 401) });
     renderWithApp(<RequireAuth>受保护</RequireAuth>, {

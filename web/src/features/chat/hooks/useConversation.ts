@@ -12,7 +12,7 @@ import {
   type QuestionAnswer,
   type SendMode,
 } from '../../../api/conversations';
-import { chipsOf, uploadForTurn, type AttachmentChip } from '../../../api/attachments';
+import { chipsOf, type AttachmentChip, type SentAttachment } from '../../../api/attachments';
 import type { Mention } from '../../../api/mentions';
 import { currentAnswerMode } from '../../../stores/answerMode';
 import { currentReplyLanguage } from '../../../stores/replyLanguage';
@@ -57,7 +57,8 @@ export interface FirstMessage {
 
 /** 一轮消息除了文字以外带的东西。 */
 export interface TurnExtras {
-  readonly files?: readonly File[];
+  /** 输入框里已经传好的附件，发消息时服务端认领进这个会话 */
+  readonly attachments?: readonly SentAttachment[];
   /** 回答上方撤掉的检索条件 */
   readonly dropped?: readonly string[];
   /** 输入框里 @ 的东西 */
@@ -115,16 +116,14 @@ export function useConversation(
   const send = useCallback(
     async (text: string, mode: SendMode, extras: TurnExtras = {}) => {
       if (!conversationId) return;
-      const { files = [], dropped = [], mentions = [] } = extras;
+      const { attachments = [], dropped = [], mentions = [] } = extras;
       const localId = nextLocalId();
-      dispatch({ type: 'local/sent', localId, text, mode, attachments: chipsOf(files), mentions });
+      dispatch({ type: 'local/sent', localId, text, mode, attachments: chipsOf(attachments), mentions });
       try {
-        // 先把文件放进会话工作区，再带着附件 id 发消息；有文件没收下就整条不发
-        const attachments = await uploadForTurn(conversationId, files);
         const { messageId } = await sendMessage(conversationId, text, mode, {
           language: currentReplyLanguage(),
           answerMode: answerMode ?? currentAnswerMode(),
-          attachments,
+          attachments: attachments.map((item) => item.id),
           droppedConditions: dropped,
           mentions,
         });

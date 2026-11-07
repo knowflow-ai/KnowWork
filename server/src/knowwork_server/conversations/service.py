@@ -35,6 +35,7 @@ from ..kernel.contract import (
     QuestionAnswer,
     SessionBusy,
     SessionNotFound,
+    SessionOwner,
     SessionPolicy,
     SessionSpec,
     TurnAttachment,
@@ -52,6 +53,8 @@ from .turn_context import TurnContextHook, TurnContextRequest
 
 # 删除会话时一并清掉的关联数据（引用目录、动作回执等），由装配方按模块给出
 Eraser = Callable[[Conversation], Awaitable[None]]
+# 用户要发消息前预热的东西（会话沙箱容器等），由装配方按模块给出；没配沙箱的部署没有
+Warmer = Callable[[Conversation], Awaitable[None]]
 MAX_PAGE = 100
 
 
@@ -70,6 +73,10 @@ CATALOG_TIMEOUT = 3.0  # 知识库目录最多等这么久（KnowFlow 要远程�
 KnowledgeCatalogOf = Callable[[Conversation, RuntimeProfile], Awaitable[KnowledgeCatalog]]
 
 T = TypeVar("T")
+
+
+async def _nothing() -> None:
+    """恢复打开之后不用再做什么（激活、预热只要宿主上开着这段对话）。"""
 
 
 class ConversationNotFound(Exception):
@@ -109,6 +116,7 @@ class ConversationService:
                  tool_credentials: ToolCredentials | None = None,
                  skill_credentials: ToolCredentials | None = None,
                  erasers: tuple[Eraser, ...] = (),
+                 warmers: tuple[Warmer, ...] = (),
                  profiles: ProfileProvider | None = None,
                  grants: GrantRecorder | None = None,
                  attachments: AttachmentSource | None = None,
@@ -127,6 +135,7 @@ class ConversationService:
         self._tool_credentials = tool_credentials
         self._skill_credentials = skill_credentials
         self._erasers = erasers
+        self._warmers = warmers
         self._profiles = profiles
         self._grants = grants
         self._attachments = attachments
@@ -161,7 +170,8 @@ class ConversationService:
         if self._skill_credentials is not None:
             skills_token = await self._skill_credentials.token_for(conversation)
         return SessionSpec(session_id=conversation.id, policy=self.policy_for(profile), resume=resume,
-                           tools_token=token, skills_token=skills_token)
+                           tools_token=token, skills_token=skills_token,
+                           owner=SessionOwner(workspace_id=conversation.workspace_id, user_id=conversation.user_id))
 
     def _opened(self, conversation: Conversation) -> None:
         for credentials in (self._tool_credentials, self._skill_credentials):
@@ -246,6 +256,33 @@ class ConversationService:
         await self._touch(conversation.id)
         self._pump.ensure(conversation.id, conversation.workspace_id)
         return message_id
+
+    async def activate(self, conversation: Conversation) -> None:
+        """宿主上的插件要在这段对话里自己发起一轮（定时任务到点）：确保宿主上开着它、事件泵开着——宿主随后投进来的
+        消息和回答照常记进对话。"""
+        await self._ensure_open(conversation)
+        await self._touch(conversation.id)
+        self._pump.ensure(conversation.id, conversation.workspace_id)
+
+    async def warm(self, conversation: Conversation) -> None:
+        """用户要发消息了（输入框里加了附件）：先把宿主上的对话和沙箱容器备好。两样空闲 30 分钟都会被回收，冷着发一条
+        要先重开对话、现建容器、把以前的附件重放进去，多等两三秒。两样同时做；尽力而为，失败只记日志，发送时照常会再开。"""
+        results = await asyncio.gather(self._ensure_open(conversation),
+                                       *(warm(conversation) for warm in self._warmers), return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                log.warning("warming conversation %s failed: %s", conversation.id, type(result).__name__,
+                            exc_info=result)
+
+    async def _ensure_open(self, conversation: Conversation) -> None:
+        """宿主上开着这段对话：不在就按这个人此刻的配置恢复打开（新的策略与令牌），令牌续好。
+
+        开着时不跟着配置重开：可能正跑着一轮，重开会打断它；新配置等用户下次发问时生效，工具执行时的重判照样拦得住。
+        和发送共用会话锁：预热和发送撞上时，发送等预热把对话打开再发，不会两边各开一次。"""
+        async with self._lock(conversation.id):
+            profile = await self._profile(conversation, NO_SELECTION)
+            await self._resume_then(conversation, profile, _nothing)
+            await self._refresh_credentials(conversation)
 
     async def _with_mentions(self, conversation: Conversation, turn: TurnInput) -> TurnInput:
         """扩展登记的 @（mention_kinds.py）：核对、交给扩展（例如问数把会话绑定到 @ 的数据源）。要在回答方式的指令算出来

@@ -84,6 +84,26 @@ async def test_a_turn_is_running_at_start_and_complete_at_the_end(env):
     assert seen[0].started_at == datetime.fromtimestamp(START / 1000, UTC), "带上开始时刻：模块按它取这一轮自己的记录"
 
 
+async def test_turns_opened_by_the_host_record_what_opened_them(env):
+    """定时任务到点、后台任务做完开的一轮：运行记录里记成「定时任务：提示词」「后台任务完成：摘要」，不留空；
+    用户这一轮里塞进来的通知不算。"""
+    sessionmaker, summaries, cid = env
+    reminder = '[SCHEDULE REMINDER]\n说明\nreminder_prompt_json: "写日报"'
+    feed(summaries, cid, frame("turn/start", {"turn": 1}), frame("user/message", user(reminder, "schedule")))
+    await summaries.drain()
+    assert (await summary(sessionmaker, cid, 1)).question == "定时任务：写日报"
+
+    job = {"role": "user", "source": {"kind": "tool-jobs", "summary": "bash npm test [status: exited]"},
+           "content": [{"type": "text", "text": "长通知"}]}
+    feed(summaries, cid, frame("turn/end", {"turn": 1, "reason": {"kind": "completed"}}),
+         frame("turn/start", {"turn": 2}), frame("user/message", job),
+         frame("turn/end", {"turn": 2, "reason": {"kind": "completed"}}),
+         frame("turn/start", {"turn": 3}), frame("user/message", user("顺便看看测试")), frame("user/message", job))
+    await summaries.drain()
+    assert (await summary(sessionmaker, cid, 2)).question == "后台任务完成：bash npm test [status: exited]"
+    assert (await summary(sessionmaker, cid, 3)).question == "顺便看看测试", "Agent 忙时塞进这一轮的通知不算提问"
+
+
 @pytest.mark.parametrize(("reason", "status"), [("aborted", "cancelled"), ("error", "failed"), ("blocked", "failed"),
                                                 ("max-tokens", "completed"), (None, "failed")])
 async def test_end_reasons_become_four_statuses(env, reason, status):

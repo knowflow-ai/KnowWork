@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { screen } from '@testing-library/react';
 import { BookOpen } from '@openai/apps-sdk-ui/components/Icon';
 import { buildRoutes } from '../app/router';
@@ -8,9 +8,43 @@ import SettingsPage from '../features/settings/SettingsPage';
 import { adminNav, ADMIN_NAV, SYSTEM_NAV, systemNav } from '../layout/nav';
 import { Sidebar } from '../layout/Sidebar';
 import { jsonResponse, ME, renderWithApp, routeFetch } from '../test/render';
-import { register, slotItems } from './registry';
+import { isExtensionEnabled, register, setEnabledExtensions, slotItems } from './registry';
 
 describe('前端插槽', () => {
+  afterEach(() => setEnabledExtensions(undefined));
+
+  it('条目标了所属扩展：扩展没启用时不显示（装了、没授权的不留一个点开就加载失败的菜单）', () => {
+    // 用这个文件里别的测试不看的插槽，免得留下的条目串到别的测试里
+    register('insights.base.action', { sourceId: 'x', label: '开着的扩展', to: () => '/x-on' }, 'demo-on');
+    register(
+      'insights.base.action',
+      { sourceId: 'x', label: '没授权的扩展', to: () => '/x-off' },
+      'demo-off',
+    );
+    const labels = () => slotItems('insights.base.action').map((item) => item.label);
+    expect(labels()).toEqual(expect.arrayContaining(['开着的扩展', '没授权的扩展']));
+    setEnabledExtensions(['demo-on']);
+    expect(labels()).toContain('开着的扩展');
+    expect(labels()).not.toContain('没授权的扩展');
+    expect(slotItems('insights.base.action')).toBe(slotItems('insights.base.action'));
+    expect(isExtensionEnabled('demo-off')).toBe(false);
+    setEnabledExtensions(undefined);
+    expect(labels()).toContain('没授权的扩展');
+  });
+
+  it('没启用的扩展的页面：路由照样挂着，打开时跳回首页', async () => {
+    register('app.routes', { path: 'x-off-page', element: <p>没授权的页面</p> }, 'demo-off');
+    const route = slotItems('app.routes').find((r) => r.path === 'x-off-page')!;
+    setEnabledExtensions([]);
+    renderWithApp(<>{route.element}</>, {
+      route: '/x-off-page',
+      path: '/x-off-page',
+      extraRoutes: { '/': <p>首页</p> },
+    });
+    expect(await screen.findByText('首页')).toBeInTheDocument();
+    expect(screen.queryByText('没授权的页面')).not.toBeInTheDocument();
+  });
+
   it('开源构建时插槽都是空的，菜单与路由和内置的一样', () => {
     expect(slotItems('admin.nav')).toEqual([]);
     expect(adminNav().map((group) => group.items.length)).toEqual(

@@ -22,6 +22,9 @@
   disabled: true
 - id: tool-working-directory
   disabled: true
+# 终端会话服务：终端后端与终端工具都停了，没有插件再用它
+- id: pty
+  disabled: true
 
 # 执行世界换成会话容器：官方本机的文件系统与子进程服务停用，由 knowwork-remote-fs、knowwork-remote-subprocess 接替
 - id: filesystem
@@ -29,14 +32,33 @@
 - id: subprocess
   disabled: true
 
-# 官方文件工具（读、写、编辑、读图），读写的是会话容器里的文件。read_image 把读到的图存进宿主私有的附件存储再交给
-# 模型，Office 技能用它看渲染出的页面；模型不支持图片输入时它会如实拒绝，技能里有用 pdftotext 核对的退路。
+# 官方文件工具（读、写、编辑、读图），读写的是会话容器里的文件。read_image 把读到的图存进宿主私有的附件
+# 存储再交给模型，Office 技能用它看渲染出的页面；模型不支持图片输入时它会如实拒绝，技能里有用 pdftotext 核对的退路。
+# apply_patch 不开，同官方 0.2.2-rc.1 自己的组合（dsh-base 与网页版 standard、ptc、cordis 都写 applyPatch: false）：
+# 官方说明里写明它的补丁格式是给专门练过这种格式的模型用的。实测我们的模型反复把 `*** End Patch` 写成
+# `*** End of Patch`，一次改文件走了 20 步。改文件用 edit、write。knowwork-remote-fs 照样实现补丁、删除、移动
+# （官方文件系统接口要求），测试里叠加 tests/overlays/apply-patch.yml 打开它验证
 - id: tool-fs
   config:
     readImage: true
 
 # 模型一律经业务服务的模型网关（OpenAI 兼容），宿主不直连任何模型厂商
 - id: llm-deepseek
+  disabled: true
+# 只往发给 DeepSeek 官方 API 的请求里加字段的三个插件：字段注册表、会话日志上传（dsh_session_log）、插件包清单。
+# 直连已停，它们不起作用；一并停掉，也免得以后有人打开直连时把会话日志传给 DeepSeek
+- id: deepseek-llm-api-extensions
+  disabled: true
+- id: session-log-deepseek
+  disabled: true
+- id: plugin-package-inventory-deepseek
+  disabled: true
+
+# 官方 MCP 资源工具：挂了官方 MCP 客户端才有内容。我们的 MCP 走业务服务的工具桥，它一直是空的
+- id: mcp-resources
+  disabled: true
+# 官方会话标题服务：没有插件用它，对话标题由业务服务管
+- id: session-title
   disabled: true
 
 # 人设（官方写法：替换 system-prompt 的整段配置，保留的字段照抄官方最小配置）。
@@ -120,6 +142,16 @@
     - id: knowwork-prompt-context
       name: '@knowwork/dsh-host/prompt-context'
 
+    # 官方时钟：模型每走一步前（同一会话一分钟内只记一次）在消息末尾追加当前时间和距上一条消息过了多久，
+    # 模型不用调工具也知道今天几号、隔了多久。时区取用户消息来源上的 clientTimeZone（官方网页客户端也这么带），
+    # 由 knowwork-http-host 写入：业务服务带来的用户时区，没带时用部署时区（TZ）。消息上没有时区时它会让模型去问用户。
+    # 间隔从官方默认的十分钟改成一分钟（官方留的配置项）：定时任务按「几分钟后」算时间，读数旧了几分钟，
+    # 提醒就跟着偏几分钟（实测旧了六分钟）。代价是每分钟最多多一条几十个字的读数
+    - id: time-context
+      name: '@deepseek-ai/dsh-time-context'
+      config:
+        refreshIntervalMs: 60000
+
     # 回答方式：每条消息带「智能体 / 快速问答」，会话中途可切换；快速问答在提问后加一段指令，那一步只给模型看
     # 声明了快速问答的业务工具（官方条件工具 + restrict，见 answer-mode.mjs）
     - id: knowwork-answer-mode
@@ -187,6 +219,33 @@
       name: '@deepseek-ai/dsh-tool-todo'
       config:
         allowParallelInProgress: true
+
+    # 多用户适配层（dsh-host/src/multi-user/）：DSH 一个宿主只有一个属主，KnowWork 一个宿主服务所有空间、所有人。
+    # 属主服务：工具执行时带上调用者（哪个空间的哪个人），属主账本记下属主级资源和发起它的对话归谁；
+    # 适配过的属主级插件（下面的定时任务）都依赖它。账本和会话记录一样放在 DSH 数据目录下
+    - id: knowwork-owners
+      name: '@knowwork/dsh-host/owners'
+      config:
+        ledgerPath: !!js dshHomePath('knowwork-owners.json')
+
+    # 官方键值存储（照 dsh-base 的三行）：定时任务的任务表存在这里，放在 DSH 数据目录下，和会话记录一样持久
+    - id: storage
+      name: '@deepseek-ai/dsh-storage'
+    - id: storage-json
+      name: '@deepseek-ai/dsh-storage-json'
+      config:
+        root: !!js dshHomePath('storages')
+    - id: storage-domain
+      name: '@deepseek-ai/dsh-storage-domain'
+      config:
+        backend: json
+
+    # 官方定时任务：服务换成多用户适配过的（multi-user/schedule.mjs：建任务记属主、只看得到自己的、到点经业务服务激活），
+    # 工具原样用官方的 schedule_create / list / view / edit
+    - id: schedule
+      name: '@knowwork/dsh-host/schedule'
+    - id: tool-schedule
+      name: '@deepseek-ai/dsh-tool-schedule'
 
     # 官方子 Agent：委派服务、进程内 spawn 后端、委派工具（照官方 dsh-base 的行）。
     # 子会话的工具收窄、审批、事件按父会话继承，见 knowwork-subagent-policy。

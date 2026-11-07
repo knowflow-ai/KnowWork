@@ -55,7 +55,7 @@ test('发给模型的消息里没有工作目录上下文（无用、泄露服�
     await host.call('POST', '/v1/sessions', { sessionId: 'ctx-1' })
     await host.call('POST', '/v1/sessions/ctx-1/messages', { text: '短剧有哪些代表作品？' })
     await collectEvents(host, 'ctx-1', isTurnEnd)
-    // 只看模型读得到的部分；官方模拟服务的请求另带 dsh_session_log（测试专用，真实网关请求没有）
+    // 只看模型读得到的部分
     const body = host.llm.requests[0]?.body ?? {}
     const request = JSON.stringify({ system: body.system, messages: body.messages })
     assert.ok(request.includes('短剧有哪些代表作品？'), '提问应当在请求里')
@@ -66,7 +66,7 @@ test('发给模型的消息里没有工作目录上下文（无用、泄露服�
   }
 })
 
-/** 模型读得到的部分：系统提示与消息（官方模拟服务另带的 dsh_session_log 不算）。 */
+/** 模型读得到的部分：系统提示与消息。 */
 function modelInput(host, index = 0) {
   const body = host.llm.requests[index]?.body ?? {}
   return JSON.stringify({ system: body.system, messages: body.messages })
@@ -107,7 +107,7 @@ test('没有下发语言时不附语言规则；语言值不合法时拒收', as
 })
 
 test('附件：每个文件在提问之后一行说明（逐字照官方 fileHandleText），会话历史里留着；路径不在 /workspace/input 拒收', async () => {
-  const host = await startHost({ sequence: ['success', 'success'], successText: '好' })
+  const host = await startHost({ sequence: ['success', 'success', 'success', 'success'], successText: '好' })
   try {
     await host.call('POST', '/v1/sessions', { sessionId: 'att-1' })
     const file = { name: '合同 "终版".docx', path: '/workspace/input/合同 "终版".docx', bytes: 2048, sha256: 'a'.repeat(64) }
@@ -128,6 +128,42 @@ test('附件：每个文件在提问之后一行说明（逐字照官方 fileHan
     await host.call('POST', '/v1/sessions/att-1/messages', { text: '再看一遍第三条' })
     await collectEvents(host, 'att-1', frame => isTurnEnd(frame) && host.llm.requests.length >= 2)
     assert.ok(modelInput(host, 1).includes(handle), '下一轮模型仍看得到这个文件')
+
+    // 解析还没完成（用户点了「直接发送」、接口调用）：告诉模型解析结果会放在哪、现在还没有
+    const notAPath = await host.call('POST', '/v1/sessions/att-1/messages', {
+      text: '看看', attachments: [{ ...file, extractionPending: true }],
+    })
+    assert.equal(notAPath.status, 400, '没有 Markdown 路径时不能只说「还在解析」')
+    await host.call('POST', '/v1/sessions/att-1/messages', {
+      text: '总结一下',
+      attachments: [{ ...file, extractedPath: '/workspace/input/合同 "终版".md', extractionPending: true }],
+    })
+    await collectEvents(host, 'att-1', frame => isTurnEnd(frame) && host.llm.requests.length >= 3)
+    const third = modelInput(host, 2)
+    assert.ok(third.includes(inJson('[Markdown extracted from "合同 \\"终版\\".docx" by the document parser is not ready yet: parsing is still running and the result will be saved at "/workspace/input/合同 \\"终版\\".md"')))
+
+    // 给模型读的文字：放得下的整篇跟在后面，放不下的给字数、页数和目录；格式不对的目录整条拒收
+    const small = { name: '说明.txt', path: '/workspace/input/说明.txt', bytes: 6, sha256: 'b'.repeat(64), text: '付款 30 天', textChars: 6 }
+    const scan = { name: '扫描.pdf', path: '/workspace/input/扫描.pdf', bytes: 9, sha256: 'c'.repeat(64), extractedPath: '/workspace/input/扫描.md', text: '# 承诺书', textChars: 6, textPages: 2 }
+    const big = {
+      ...file, extractedPath: '/workspace/input/合同 "终版".md', textChars: 90000, textPages: 30,
+      outline: [{ line: 1, text: '第 1 页：封面' }, { line: 88, text: '## 第二章 付款' }],
+      digestPath: '/workspace/input/合同 "终版".导读.md',
+    }
+    const badOutline = await host.call('POST', '/v1/sessions/att-1/messages', {
+      text: '看看', attachments: [{ ...big, outline: [{ line: 0, text: 'x' }] }],
+    })
+    assert.equal(badOutline.status, 400)
+    await host.call('POST', '/v1/sessions/att-1/messages', { text: '对比一下', attachments: [small, scan, big] })
+    await collectEvents(host, 'att-1', frame => isTurnEnd(frame) && host.llm.requests.length >= 4)
+    const fourth = modelInput(host, 3)
+    assert.ok(fourth.includes(inJson('[Contents of "说明.txt" (6 characters, the text of "/workspace/input/说明.txt"), included in full so this turn needs no file read.')))
+    assert.ok(fourth.includes(inJson('付款 30 天')))
+    // 整篇给的写明共几页、这就是全部文字，模型不用怀疑没读全、再去转原件
+    assert.ok(fourth.includes(inJson('[Contents of "扫描.pdf" (6 characters across 2 pages, the text of "/workspace/input/扫描.md"), included in full so this turn needs no file read. This is all the text in the file, all 2 pages; there is no need to extract the original again.')))
+    assert.ok(fourth.includes(inJson('[Contents of "合同 \\"终版\\".docx": too long to include (90000 characters across 30 pages).')))
+    assert.ok(fourth.includes(inJson('L1: 第 1 页：封面\nL88: ## 第二章 付款')))
+    assert.ok(fourth.includes(inJson('A digest of it is at "/workspace/input/合同 \\"终版\\".导读.md": an overall summary, then each section\'s key points with line ranges.')))
   } finally {
     await host.stop()
   }

@@ -14,7 +14,7 @@ from knowwork_server.skills.errors import BlobIntegrityError
 from ..fake_parsers import EnvParsers
 from ..fake_sandbox import FakeSandbox
 from ..fakes import token_actor
-from ..office_samples import DOCX, PDF, xlsx
+from ..office_samples import DOCX, PDF, PNG, xlsx
 
 CONV = "/api/workspaces/default/conversations"
 
@@ -64,17 +64,18 @@ async def test_text_and_excel_go_straight_into_the_sandbox(files_db, tmp_path):
     await attachments.aclose()
 
 
-async def test_pdf_without_mineru_is_placed_as_is(files_db, tmp_path):
-    """没配文档解析也照收：原件原样放进沙箱（照官方 dsh-attachment），模型用沙箱里的工具自己读。"""
+async def test_without_mineru_documents_are_still_extracted_but_images_are_not(files_db, tmp_path):
+    """没配文档解析也照收，原件原样放进沙箱（照官方 dsh-attachment）；PDF、Word 照样排提取文字（在沙箱里提取，用不着
+    MinerU），图片要识别文字才用得上 MinerU，没配就只放原件，能看图的模型自己看。"""
     conv = await files_db.conversation()
     http, attachments, sandbox, _ = setup(files_db, tmp_path, AttachmentSettings())
     async with http:
-        body = (await post(http, conv.id, ("合同.pdf", PDF), ("a.txt", b"ok"))).json()
+        body = (await post(http, conv.id, ("合同.pdf", PDF), ("a.txt", b"ok"), ("图.png", PNG))).json()
     assert body["failures"] == []
-    assert [(i["inputName"], i["status"], i["parseStatus"]) for i in body["items"]] == [
-        ("合同.pdf", "ready", None), ("a.txt", "ready", None)]
+    assert [(i["inputName"], i["status"], i["parsedName"], i["parseStatus"]) for i in body["items"]] == [
+        ("合同.pdf", "ready", "合同.md", "parsing"), ("a.txt", "ready", None, None), ("图.png", "ready", None, None)]
     assert sandbox.inputs[("ws1", conv.id)]["合同.pdf"] == PDF
-    assert not await attachments.mineru.configured("ws1"), "没配 MinerU：只放原件，不排解析"
+    assert not await attachments.mineru.configured("ws1")
 
 
 async def test_pdf_with_mineru_is_placed_and_queued_for_parsing(files_db, tmp_path):
@@ -157,7 +158,7 @@ async def test_restage_and_erase(files_db, tmp_path):
     conv = await files_db.conversation()
     http, attachments, sandbox, stores = setup(files_db, tmp_path)
     async with http:
-        await post(http, conv.id, ("a.txt", b"hello"), ("b.pdf", PDF))
+        text_item, _ = (await post(http, conv.id, ("a.txt", b"hello"), ("b.pdf", PDF))).json()["items"]
     sandbox.inputs.clear()  # 容器被回收，工作区丢了
     sandbox.fail_put = {"a.txt": SandboxError("沙箱暂时不可用")}
     failures = await attachments.service.restage("ws1", conv.id)
@@ -171,7 +172,7 @@ async def test_restage_and_erase(files_db, tmp_path):
     await attachments.service.erase(conv)
     assert await attachments.service.list(conv) == ()
     with pytest.raises(BlobIntegrityError):
-        await stores("ws1", conv.id).get(sha256_hex(b"hello"), max_bytes=100)
+        await stores("ws1", text_item["id"]).get(sha256_hex(b"hello"), max_bytes=100)
     assert await parse_runner(files_db, attachments).claim("ws1") is None, "解析任务随会话删除一起取消"
     await attachments.aclose()
 
@@ -180,8 +181,8 @@ async def test_restage_reports_missing_content(files_db, tmp_path):
     conv = await files_db.conversation()
     http, attachments, _sandbox, stores = setup(files_db, tmp_path)
     async with http:
-        await post(http, conv.id, ("a.txt", b"hello"))
-    await stores("ws1", conv.id).delete(sha256_hex(b"hello"))
+        [item] = (await post(http, conv.id, ("a.txt", b"hello"))).json()["items"]
+    await stores("ws1", item["id"]).delete(sha256_hex(b"hello"))
     failures = await attachments.service.restage("ws1", conv.id)
     assert [f.code for f in failures] == ["content_missing"]
     await attachments.aclose()

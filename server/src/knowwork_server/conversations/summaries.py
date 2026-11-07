@@ -20,7 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONPATH, insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from ..access.rls import set_workspace
-from .events_v1 import assistant_text, user_parts
+from .events_v1 import TRIGGER_TITLES, assistant_text, trigger_text, user_parts
 from .models import AnswerFeedback, Conversation, RunSummary
 
 log = logging.getLogger(__name__)
@@ -70,6 +70,17 @@ def _time(value: Any) -> datetime:
     return datetime.fromtimestamp(value / 1000, UTC) if type(value) is int else datetime.now(UTC)
 
 
+def _question(source: dict, content: Any) -> str | None:
+    """这一轮问的是什么：用户亲自发的原话；定时任务、后台任务完成这类自动发起的记成「定时任务：提示词」，运行记录里
+    不留空。宿主也用 user/message 注入运行时上下文等，这些不算提问（None）。"""
+    kind = source.get("kind")
+    if kind == "user":
+        return user_parts(content)[0]
+    if kind in TRIGGER_TITLES:
+        return f"{TRIGGER_TITLES[kind]}：{trigger_text(source, content)}"
+    return None
+
+
 def status_of(reason: str | None) -> str:
     return STATUSES.get(reason or "", FAILED)
 
@@ -106,10 +117,9 @@ class RunSummaries:
             if turn is not None:
                 self._spawn(self._started(workspace_id, conversation_id, turn, question or "", started))
         elif event == "user/message" and current.question is None:
-            # 宿主也用 user/message 注入运行时上下文、子 Agent 回报，source.kind 不是 user 的不算提问
             source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
-            if source.get("kind") == "user":
-                question = user_parts(payload.get("content"))[0]
+            question = _question(source, payload.get("content"))
+            if question is not None:
                 self._put(conversation_id, replace(current, question=question))
                 if current.turn is not None:  # 进行中的那一行也看得到在问什么
                     self._spawn(self._asked(workspace_id, conversation_id, current.turn, question,

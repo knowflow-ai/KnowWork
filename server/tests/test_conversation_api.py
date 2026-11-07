@@ -86,6 +86,18 @@ async def test_cancel_and_approvals_map_errors(sessionmaker, conversation_id, er
     await pump.close()
 
 
+async def test_warm_is_best_effort_and_only_for_the_owner(sessionmaker, conversation_id):
+    """预热对话：宿主打不开也回 204（发送时照常会再开）；别人的对话、没有的对话照常 404。"""
+    kernel = FakeKernel()
+    kernel.open_effects = [KernelError("internal", "x", 500)]
+    client, pump = api(kernel, sessionmaker)
+    async with client:
+        response = await client.post(f"{CONV}/{conversation_id}/warm", headers=AUTH)
+        missing = await client.post(f"{CONV}/c_missing/warm", headers=AUTH)
+    assert (response.status_code, missing.status_code) == (204, 404)
+    await pump.close()
+
+
 @pytest.mark.parametrize(("error", "status"), [
     (SessionBusy("session_busy", "x", 409), 409),
     (KernelError("internal", "x", 500), 502),

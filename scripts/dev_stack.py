@@ -142,7 +142,8 @@ def main() -> int:
                      "KNOWWORK_HOST_PORT": str(HOST_PORT), "KNOWWORK_MODEL": "default",
                      "KNOWWORK_MODEL_BASE_URL": f"{internal}/internal/model/v1",
                      "KNOWWORK_TOOLS_BASE_URL": f"{internal}/internal/extensions/tools",
-                     "KNOWWORK_SKILLS_BASE_URL": f"{internal}/internal/extensions/skills"})
+                     "KNOWWORK_SKILLS_BASE_URL": f"{internal}/internal/extensions/skills",
+                     "KNOWWORK_ACTIVATION_BASE_URL": f"{internal}/internal/host/v1"})
     # 业务服务与 worker 共用：同一个库、同一份对象存储、同一个沙箱（worker 把解析出的 Markdown 放进会话容器）。
     # MinerU 地址等其余 KNOWWORK_* 照外面的环境变量传进来。
     app_env = {

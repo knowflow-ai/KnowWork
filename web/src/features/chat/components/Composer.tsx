@@ -6,19 +6,21 @@
  * 直到手动去掉。
  * 框外左上角是回答方式（智能体 / 快速问答，见 AnswerModeSelect）；左下角的「+」添加文件。快速问答只查知识库（检索与阅读），
  * 不能加文件、@ 菜单不列技能，@ 过的技能先不显示也不发，切回智能体还在。
+ * 附件一加进来就传上去、开始解析（useDraftAttachments），打字的工夫多半就好了；点发送时还没好的先等着（卡片上显示
+ * 上传中、解析中），好了自动发出去，这一轮模型就拿得到解析出的全文。等不及解析可以点「直接发送」。
  */
 import { useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { ArrowUp, AtSign, PlusComposer, StopSm } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
 import { validateMessage, type AnswerMode, type SendMode } from '../../../api/conversations';
-import { chipsOf } from '../../../api/attachments';
+import type { AttachmentChip, SentAttachment } from '../../../api/attachments';
 import { mentionKey, type Mention } from '../../../api/mentions';
 import { effectiveAnswerMode, useAnswerMode } from '../../../stores/answerMode';
 import { slotItems } from '../../../slots/registry';
 import { cx } from '../../../ui/cx';
 import { toast } from '../../../ui/toastStore';
-import { useDraftFiles } from '../hooks/useDraftFiles';
+import { sendable, useDraftAttachments, type DraftAttachment } from '../hooks/useDraftAttachments';
 import { activeTrigger, withoutTrigger } from '../mentions/candidates';
 import { MentionChips } from '../mentions/MentionChips';
 import { MentionMenu } from '../mentions/MentionMenu';
@@ -33,7 +35,7 @@ interface Props {
   readonly onSend: (
     text: string,
     mode: SendMode,
-    files: readonly File[],
+    attachments: readonly SentAttachment[],
     mentions: readonly Mention[],
   ) => Promise<void>;
   readonly onStop?: () => Promise<void>;
@@ -47,9 +49,61 @@ interface Props {
   readonly answerMode?: AnswerMode;
   /** 已有会话的 id（新对话没有）：给左上角那一行里扩展的组件用 */
   readonly conversationId?: string;
+  /** 加了附件（快要发消息了）：已有会话借此预热，发送时不用现开宿主上的对话、现建沙箱容器 */
+  readonly onAttach?: () => void;
 }
 
 const NO_FILES_IN_QUICK = '快速问答不能带附件，去掉附件或切换到智能体再发';
+const UNPARSED = '有文件没能解析，已按原文件交给模型';
+const SETTLE_POLL_MS = 200;
+
+const NOTES: Partial<Record<DraftAttachment['state'], Pick<AttachmentChip, 'note' | 'busy'>>> = {
+  uploading: { note: '上传中', busy: true },
+  parsing: { note: '解析中', busy: true },
+  failed: { note: '没能解析' },
+};
+
+/** 长文档解析完还在生成导读：写到第几段 */
+const digestNote = (progress?: readonly [number, number]) =>
+  progress ? `生成导读 ${progress[0]}/${progress[1]}` : '生成导读中';
+
+const chipOf = (item: DraftAttachment): AttachmentChip => ({
+  name: item.name,
+  size: item.size,
+  ...(item.state === 'digesting' ? { note: digestNote(item.progress), busy: true } : NOTES[item.state]),
+});
+
+const waitsOn = (item: DraftAttachment) => item.state === 'parsing' || item.state === 'digesting';
+
+const WAITING_TEXT = {
+  parsing: '解析完自动发送',
+  digesting: '导读生成完自动发送',
+  uploading: '上传完自动发送',
+} as const;
+
+/** 点了发送以后在等什么：解析、导读（点了「直接发送」就不等这两样）、上传。 */
+function waitingOn(items: readonly DraftAttachment[], skipped: boolean): keyof typeof WAITING_TEXT | null {
+  if (!skipped && items.some((item) => item.state === 'parsing')) return 'parsing';
+  if (!skipped && items.some((item) => item.state === 'digesting')) return 'digesting';
+  if (items.some((item) => item.state === 'uploading')) return 'uploading';
+  return null;
+}
+
+/**
+ * 等附件传完、解析完、长文档的导读做完（点了「直接发送」就不等解析和导读，传还是要等完，不然没有 id）；
+ * 返回那一刻的列表。
+ */
+async function settle(
+  latest: () => readonly DraftAttachment[],
+  skip: AbortSignal,
+): Promise<readonly DraftAttachment[]> {
+  for (;;) {
+    const items = latest();
+    const busy = items.some((item) => item.state === 'uploading' || (waitsOn(item) && !skip.aborted));
+    if (!busy) return items;
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS));
+  }
+}
 
 /** 输入区最多长到 8 行（行高 24），再多就在框内滚动。 */
 const MAX_HEIGHT = 24 * 8;
@@ -76,6 +130,7 @@ export function Composer({
   footnote = '回答可能有误，重要结论请点开出处核对',
   answerMode,
   conversationId,
+  onAttach,
 }: Props) {
   const [value, setValue] = useState('');
   const [caret, setCaret] = useState(0);
@@ -83,9 +138,12 @@ export function Composer({
   // Esc 关掉菜单后，同一个 @ 不再弹出，直到打下一个
   const [dismissed, setDismissed] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
+  // 点了发送、正等附件传完解析完时，点「直接发送」就不等解析了
+  const skipWaiting = useRef<AbortController | null>(null);
+  const [skipped, setSkipped] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const draft = useDraftFiles();
+  const draft = useDraftAttachments();
   const chosen = useAnswerMode((s) => s.mode);
   const modes = useAnswerMode((s) => s.options);
   const setMode = useAnswerMode((s) => s.setMode);
@@ -133,6 +191,7 @@ export function Composer({
   const addFiles = (incoming: readonly File[]) => {
     const problem = draft.add(incoming);
     if (problem) toast.warning(problem);
+    if (incoming.length > 0) onAttach?.();
   };
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -148,22 +207,44 @@ export function Composer({
       toast.warning(problem);
       return;
     }
-    if (quick && draft.files.length > 0) {
+    if (quick && draft.items.length > 0) {
       toast.warning(NO_FILES_IN_QUICK);
       return;
     }
     setSending(true);
+    const skip = new AbortController();
+    skipWaiting.current = skip;
     try {
-      await onSend(value, mode, draft.files, scoped);
+      const ready = await settle(draft.latest, skip.signal);
+      // 发出去这一刻就清空（消息已经摆进对话、显示「思考中」），不等发送接口返回：接口要认领附件、可能还要重开宿主上的
+      // 对话、现建沙箱容器，冷的时候两三秒，输入框一直留着像没发出去。发送失败再把文字和附件放回来
+      const text = value;
+      const items = draft.latest();
       setValue('');
       setCaret(0);
       draft.clear();
+      try {
+        await onSend(text, mode, sendable(ready), scoped);
+      } catch (error) {
+        setValue((current) => current || text);
+        draft.restore(items);
+        throw error;
+      }
+      if (ready.some((item) => item.state === 'failed')) toast.warning(UNPARSED);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '消息没有发出去，请稍后重试');
     } finally {
       setSending(false);
+      setSkipped(false);
+      skipWaiting.current = null;
     }
   };
+  const skipParsing = () => {
+    skipWaiting.current?.abort();
+    setSkipped(true);
+  };
+  // 点了发送、还在等附件：说一句在等什么；等的是解析、导读就给「直接发送」
+  const waitingFor = !sending ? null : waitingOn(draft.items, skipped);
 
   const stop = async () => {
     if (!onStop) return;
@@ -235,8 +316,23 @@ export function Composer({
             if (event.target === event.currentTarget) input.current?.focus();
           }}
         >
-          {draft.files.length > 0 ? (
-            <AttachmentChips items={chipsOf(draft.files)} onRemove={draft.remove} label="待发送的附件" />
+          {draft.items.length > 0 ? (
+            // 点了发送以后不能移除：要发出去的就是这几个
+            <AttachmentChips
+              items={draft.items.map(chipOf)}
+              onRemove={sending ? undefined : (index) => draft.remove(draft.items[index]?.key ?? '')}
+              label="待发送的附件"
+            />
+          ) : null}
+          {waitingFor ? (
+            <div className="kw-composer-waiting">
+              <span>{WAITING_TEXT[waitingFor]}</span>
+              {waitingFor !== 'uploading' ? (
+                <Button color="secondary" variant="ghost" size="2xs" onClick={skipParsing}>
+                  不等了，直接发送
+                </Button>
+              ) : null}
+            </div>
           ) : null}
           <MentionChips
             items={scoped}

@@ -1,0 +1,6 @@
+# 只在 apply_patch 的测试里叠加：生产配置不开 apply_patch（理由见 host-bundle/cordis.patch.yml），
+# 这里打开它，验证 knowwork-remote-fs 的补丁、删除、移动照样落到会话容器
+- id: tool-fs
+  config:
+    readImage: true
+    applyPatch: true

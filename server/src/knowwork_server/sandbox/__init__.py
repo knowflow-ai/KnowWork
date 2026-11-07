@@ -55,6 +55,14 @@ class SandboxModule:
     def eraser(self) -> Callable[[ConversationRef], Awaitable[None]]:
         return sandbox_eraser(self.sandbox)
 
+    def warmer(self) -> Callable[[ConversationRef], Awaitable[None]]:
+        """用户要发带附件的消息前，先把这段对话的容器备好（会话服务的 warm 调）。"""
+
+        async def warm(conversation: ConversationRef) -> None:
+            await self.sandbox.prepare(conversation.workspace_id, conversation.id)
+
+        return warm
+
     def on_created(self, hook: CreatedHook) -> None:
         """新建了容器时回调（工作空间, 会话），主线接附件 restage：容器被回收后工作区是空的。"""
         self.containers.add_created_hook(hook)

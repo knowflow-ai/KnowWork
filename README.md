@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.6-2b7de9" alt="Version: v0.0.6"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.0.7-2b7de9" alt="Version: v0.0.7"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -86,6 +86,8 @@ built-in knowledge base, multiple workspaces, an enterprise layer for skills and
 analytics, each enabled by the license file. Commercial images are built on the open source images, so everything in the
 open source edition is in the commercial edition too.
 
+> **Illustrated guides to the two main commercial modules (in Chinese):** [Built-in knowledge base](https://www.knowflowchat.cn/work/docs/category/%E7%9F%A5%E8%AF%86%E5%BA%93) · [Analytics](https://www.knowflowchat.cn/work/docs/category/%E6%99%BA%E8%83%BD%E9%97%AE%E6%95%B0)
+
 | Area | Capability | Open source | Commercial |
 |---|---|:-:|:-:|
 | Chat and delivery | Agent chat, quick answers, live view of every step, interject and cancel | ✓ | ✓ |
@@ -119,7 +121,7 @@ open source edition is in the commercial edition too.
 | | Directory sync: LDAP / AD, WeCom, adapter API for in-house systems | — | ✓ |
 | | Domain account sign-in, WeCom QR sign-in and in-app single sign-on | — | ✓ |
 | | Membership rules (department members join a workspace automatically), auto-deactivation of leavers, deletion safeguards | — | ✓ |
-| Analytics | Query PostgreSQL and MySQL by the metric definitions in a semantic model (see the table below) | — | ✓ optional module |
+| Analytics | Query PostgreSQL and MySQL by the metric definitions in a semantic model, explain changes by attribution, and edit, drill into and pin result cards to dashboards (see the table below) | — | ✓ optional module |
 | Operations and audit | Q&A dashboard, run records, usage and cost, audit trail | ✓ | ✓ |
 | Deployment | One-command Docker Compose install, images on Alibaba Cloud, automatic database upgrades on start | ✓ | ✓ |
 | License | | Apache 2.0 | Commercial license |
@@ -128,7 +130,9 @@ Enterprise skills and enterprise MCP only make sense with several workspaces, so
 source edition has a single default workspace, and its enterprise layer holds only the built-in Word, Excel and PPT skills.
 Analytics is enabled together with the built-in knowledge base.
 
-### Built-in knowledge base
+### Built-in knowledge base (commercial edition)
+
+**The built-in knowledge base is a commercial edition feature, not included in the open source edition**, which connects to KnowFlow knowledge bases instead. Step-by-step guides to creating knowledge bases, managing documents, retrieval and retrieval testing, metadata and tags, multi-hop and visual retrieval, knowledge gaps, and sharing, export and import: see the **[knowledge base guide](https://www.knowflowchat.cn/work/docs/category/%E7%9F%A5%E8%AF%86%E5%BA%93)** (in Chinese).
 
 | Aspect | Capabilities |
 |---|---|
@@ -149,22 +153,27 @@ Analytics is enabled together with the built-in knowledge base.
 
 The built-in knowledge base stores vectors in Milvus, which the commercial deployment sets up.
 
-### Analytics
+### Analytics (commercial edition)
+
+**Analytics is a commercial edition feature, not included in the open source edition**, and is enabled together with the built-in knowledge base. Step-by-step guides to connecting data sources, curating the semantic model, asking questions and reading results, trusted queries and evaluation, and configuration: see the **[analytics guide](https://www.knowflowchat.cn/work/docs/category/%E6%99%BA%E8%83%BD%E9%97%AE%E6%95%B0)** (in Chinese).
 
 | Aspect | Capabilities |
 |---|---|
-| Data sources | PostgreSQL and MySQL; the connection test checks whether the account is read-only (PostgreSQL); an allowlist of the tables and views analytics may use; scans of row counts, null rates and common values per column |
-| Automatic modelling | A first semantic model drafted right after the scan: datasets, fields, primary keys and sample values, with joins inferred from foreign keys and column names and kept only once checked against the data; AI drafting adds Chinese names and descriptions, suggests common metrics and finds missed joins |
-| Metrics and definitions | Name, aliases, description and topics; sum, count, distinct count, average, max, min or a hand-written expression; built-in filters, time field and default time window; relationships, named filters and analytics instructions |
-| Releases and versions | Diff before publishing; every publish is a new version that can be rolled back; browse, export and import the model files (zip); ask the assistant in chat to read the model and edit names and descriptions |
-| Asking | Pick the "Analytics" answer mode, @-mention a data source or start from the data source page; ask in business terms, with phrases such as "East China" mapped to the stored values; follow-up questions keep the context |
-| Querying | Metric queries and detail rows compiled to SQL by the server from the semantic model; when metrics do not cover a question, governed SQL limited to a single SELECT over dataset names |
-| Results and definitions | A written conclusion plus a result card with line, bar or pie charts that switch to a table; the definition lists the metric, time range, rules applied, model version and the SQL actually run |
+| Data sources | PostgreSQL and MySQL; the connection test checks whether the account is read-only (PostgreSQL); an allowlist of the tables and views analytics may use; scans of row counts, null rates and common values per column, plus the database's query history (pg_stat_statements on PostgreSQL, statement digests on MySQL) |
+| Automatic modelling | A first semantic model drafted right after the scan: datasets, fields, primary keys and sample values, with joins inferred from foreign keys, column names and the join conditions in the query history, kept only once checked against the data; AI drafting adds Chinese names and descriptions, suggests common metrics from the most frequent aggregations in the history and finds missed joins; an existing set of "question, SQL" pairs can be imported as a CSV of trusted queries before AI drafting |
+| Metrics and definitions | Name, aliases, description and topics; sum, count, distinct count, average, max, min or a hand-written expression; built-in filters, time field and default time window; derived metrics computed from other metrics (refunds divided by orders, for example), even across tables; window metrics: same period last year, same period last month, running totals and the last N periods; named filters and analytics instructions |
+| Relationships | Equality joins on foreign keys; interval joins and ASOF joins (the latest row not after the time) for slowly changing tables and validity periods; when the metrics in one query live in several tables, each table is aggregated first and the results merged by group, so numbers are never inflated by fan-out |
+| Releases and versions | Diff before publishing; every publish is a new version that can be rolled back; the metrics page shows the semantic model as a tree with details and files; zip export and import, plus single-file Ossie export and import to exchange models with other tools that read Ossie; ask the assistant in chat to read the model and edit names and descriptions |
+| Asking | Pick the "Analytics" answer mode, @-mention a data source or start from the data source page; ask in business terms, with phrases such as "East China" mapped to the stored values, and with value search switched on for a text field, similar stored values are looked up before each question; follow-up questions keep the context; when a question cannot be answered, the reason is given with questions that can be; with several data sources and none named, the assistant asks which one to use |
+| Querying | Metric queries and detail rows compiled to SQL by the server from the semantic model; when metrics do not cover a question, governed SQL limited to a single SELECT over dataset names; identical queries reuse the previous result for a while (10 minutes by default, adjustable per data source), and the definition states when the data was fetched |
+| Attribution | "Why did it go up or down": for one metric and two periods, the change is broken down by one to three grouping fields (and their pairs), with the base, current, change, share and growth rate of each group, computed on the server without an LLM |
+| Result cards | A written conclusion plus a result card with line, bar or pie charts that switch to a table; the definition lists the metric, time range, rules applied, model version and the SQL actually run; edit the conditions on the card (time, filters, named filters, or the SQL itself for SQL queries) and re-run in place; click a value on a chart or table to drill down, filtering by that value and swapping that column for a chosen field, with a step back; download the full result as CSV; suggested follow-up questions to ask with one click |
+| Dashboards | Pin result cards to dashboards; the query is saved, not the result, so opening a dashboard re-runs each card on the current model version under the viewer's row and column rules, and relative times such as "last month" can follow the calendar; a two-column grid with half and full widths and drag to reorder; conditions can be edited and values drilled into on the dashboard too; the creator and workspace admins can share it for viewing or editing |
 | Trusted queries and evaluation | Good answers saved as trusted queries, recalled by phrasing for the assistant and usable as example questions; after model changes, evaluations re-ask each trusted query and compare results row by row without an LLM judge, reporting passes and regressions |
-| Data permissions | Resource grants decide who may use a data source; per-table row rules (by the values of one column) and column rules for people, departments, groups and roles, enforced on the server so assistant-written SQL cannot bypass them |
+| Data permissions | Resource grants decide who may use a data source; per-table row rules (by the values of one column) and column rules for people, departments, groups and roles, enforced on the server so neither assistant-written SQL nor dashboard cards can bypass them |
 | Execution safety | Queries run in read-only transactions; row estimates from the query plan are checked against a cap before running; statement timeouts; a cap on returned rows |
 
-For trials and pricing of the commercial edition, see the [website](https://www.knowflowchat.cn/contact).
+For trials and pricing of the commercial edition, see the [website](https://www.knowflowchat.cn/contact) or add WeChat `skycode007`.
 
 ## Quick start
 
@@ -243,7 +252,7 @@ nothing has to be installed on each computer.
 
 **Continuous compatibility with DSH.** KnowWork does not fork DSH. In practice:
 
-- all `@deepseek-ai/*` packages are pinned to the same version (currently `0.2.2-alpha.2`);
+- all `@deepseek-ai/*` packages are pinned to the same version (currently `0.2.2-rc.1`);
 - before an upgrade, a preflight check and admission tests run (create a session, run, cancel, resume, load skills,
   subagents, the tool bridge and more), and the version is switched only when they pass;
 - new DSH releases are followed, and capabilities that ship with DSH are picked up directly.
@@ -357,7 +366,7 @@ communication with the host are not available for now.
 
 ## Status and roadmap
 
-The current version is v0.0.6. APIs and data structures may still change before 1.0. Known
+The current version is v0.0.7. APIs and data structures may still change before 1.0. Known
 limitations are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Next up: a skill test bench (cases, structural assertions, draft versus published comparison), scenario packs, a UI for

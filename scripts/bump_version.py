@@ -51,11 +51,12 @@ def bump(tag: str) -> None:
     replace_once(ROOT / "deploy/docker-compose.yml", r"\$\{KNOWWORK_VERSION:-[^}]+\}", f"${{KNOWWORK_VERSION:-{tag}}}",
                  count=5)
     replace_once(ROOT / "deploy/.env.example", r"^KNOWWORK_VERSION=.*$", f"KNOWWORK_VERSION={tag}")
-    for readme in ("README.md", "README_en.md"):
+    # README.md 是英文（公开仓库默认显示），中文在 README_zh.md
+    for readme in ("README.md", "README_zh.md"):
         replace_once(ROOT / readme, r"badge/version-v[0-9.]+-(\w+)\" alt=\"Version: v[0-9.]+\"",
                      rf'badge/version-{tag}-\g<1>" alt="Version: {tag}"')
-    replace_once(ROOT / "README.md", r"^当前版本 v[0-9.]+，", f"当前版本 {tag}，")
-    replace_once(ROOT / "README_en.md", r"^The current version is v[0-9.]+\.", f"The current version is {tag}.")
+    replace_once(ROOT / "README_zh.md", r"^当前版本 v[0-9.]+，", f"当前版本 {tag}，")
+    replace_once(ROOT / "README.md", r"^The current version is v[0-9.]+\.", f"The current version is {tag}.")
     print(f"版本已改为 {tag}")
 
 

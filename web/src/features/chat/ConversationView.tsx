@@ -4,7 +4,13 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { AnswerMode, QuestionAnswer, SendMode } from '../../api/conversations';
+import {
+  warmConversation,
+  type AnswerMode,
+  type QuestionAnswer,
+  type SendMode,
+} from '../../api/conversations';
+import type { SentAttachment } from '../../api/attachments';
 import type { Mention } from '../../api/mentions';
 import { ownRun, turnOfRun } from '../../api/debug';
 import { toast } from '../../ui/toastStore';
@@ -18,6 +24,7 @@ import { resolveMentions } from './mentions/resolve';
 
 // 运行详情（运行调试视图）不常用，点开时才加载
 const RunInspector = lazy(() => import('../debug/RunInspector'));
+const WARM_INTERVAL_MS = 60_000;
 
 const CONNECTION_TEXT = {
   connecting: '正在连接…',
@@ -76,6 +83,14 @@ export function ConversationView({
     wasRunning.current = running;
   }, [running, onTurnEnd]);
   const [inspecting, setInspecting] = useState<number>();
+  // 加了附件就预热（宿主上的对话、沙箱容器空闲半小时会被回收），一分钟内只预热一次；结果不用管
+  const warmedAt = useRef(0);
+  const warm = useCallback(() => {
+    const now = Date.now();
+    if (now - warmedAt.current < WARM_INTERVAL_MS) return;
+    warmedAt.current = now;
+    void warmConversation(conversationId).catch(() => undefined);
+  }, [conversationId]);
   const onInspect = useCallback((runId: string) => setInspecting(turnOfRun(runId)), []);
 
   const deliver = useCallback(
@@ -86,10 +101,10 @@ export function ConversationView({
     [send, client],
   );
   const onSend = useCallback(
-    (text: string, mode: SendMode, files: readonly File[], mentions: readonly Mention[]) =>
+    (text: string, mode: SendMode, attachments: readonly SentAttachment[], mentions: readonly Mention[]) =>
       running
-        ? deliver(text, mode, { files, mentions })
-        : deliver(decorate ? decorate(text) : text, 'followup', { files, mentions }),
+        ? deliver(text, mode, { attachments, mentions })
+        : deliver(decorate ? decorate(text) : text, 'followup', { attachments, mentions }),
     [deliver, running, decorate],
   );
   // 用同一个问题重新回答（重新生成、撤掉检索条件）：那一问 @ 的东西照原样带上，不然就悄悄放宽成全部知识库
@@ -151,6 +166,7 @@ export function ConversationView({
           onDropConditions={onDropConditions}
           onInspect={onInspect}
           feedback={feedback}
+          onAsk={(text) => void onSend(text, 'followup', [], [])}
         />
       </div>
       {inspecting !== undefined ? (
@@ -174,6 +190,7 @@ export function ConversationView({
           placeholder={placeholder}
           footnote={footnote}
           conversationId={conversationId}
+          onAttach={warm}
         />
       </div>
     </div>

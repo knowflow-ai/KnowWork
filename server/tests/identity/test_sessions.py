@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 
+import httpx
 import pytest
 from sqlalchemy import select, update
 
@@ -9,7 +10,7 @@ from knowwork_server.identity import IdentityConfig, build_identity
 from knowwork_server.identity.errors import EmailTaken, InvalidInput
 from knowwork_server.identity.models import AuthSession, User
 
-from .conftest import BASE_URL, PASSWORD, login
+from .conftest import BASE_URL, PASSWORD, login, make_app
 
 pytestmark = pytest.mark.anyio
 
@@ -21,11 +22,19 @@ async def test_login_sets_hardened_cookie_and_me_works(client, alice, sessionmak
     assert "HttpOnly" in cookie and "Secure" in cookie and "samesite=lax" in cookie.lower()
     me = await client.get("/api/auth/me")
     assert me.json() == {"id": alice.id, "email": "alice@example.com", "name": "Alice",
-                         "authMethod": "session", "scopes": None}
+                         "authMethod": "session", "scopes": None, "extensions": []}
     token = client.cookies["kw_session"]
     async with sessionmaker() as session:
         stored = (await session.execute(select(AuthSession.token_hash))).scalars().all()
     assert token not in stored and len(stored) == 1
+
+
+async def test_me_lists_the_enabled_extensions(identity, admins, alice):
+    """当前用户信息带上本部署启用了哪些扩展：前端只显示启用了的扩展的入口（没授权的扩展，侧栏不出现它的菜单）。"""
+    app = make_app(identity, admins, extensions=("library", "analytics"))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL) as http:
+        assert (await login(http)).status_code == 200
+        assert (await http.get("/api/auth/me")).json()["extensions"] == ["library", "analytics"]
 
 
 @pytest.mark.parametrize("email,password", [

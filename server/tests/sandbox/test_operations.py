@@ -228,6 +228,24 @@ async def test_write_file_failures(make):
             await module.sandbox.write_file(WS, SID, bad, b"x")
 
 
+async def test_delete_file_removes_one_file_and_reports_why_not(make):
+    deleted = []
+    table = {scripts.DELETE_FILE: lambda args: deleted.append(args) or Behavior()}
+    _fake, module = make(FakeDocker(responder=script_responder(table)))
+    await _touch(module)
+    await module.sandbox.delete_file(WS, SID, "out/r.md")
+    assert deleted == [["/workspace/out/r.md"]]
+    for code, error in ((3, "不存在"), (4, "目录"), (5, "普通文件"), (6, "权限")):
+        failing = {scripts.DELETE_FILE: lambda args, code=code: Behavior(exit_code=code)}
+        _fake, broken = make(FakeDocker(responder=script_responder(failing)))
+        await _touch(broken)
+        with pytest.raises(SandboxError, match=error):
+            await broken.sandbox.delete_file(WS, SID, "a")
+    for bad in ("/workspace/input/a", "/etc/passwd", "/workspace"):
+        with pytest.raises(SandboxError):
+            await module.sandbox.delete_file(WS, SID, bad)
+
+
 async def test_list_dir(make):
     table = {scripts.LIST_DIR: lambda args: Behavior(stdout=listing(("d", 0, "output"), ("d", 0, "input")))}
     _fake, module = make(FakeDocker(responder=script_responder(table)))

@@ -21,6 +21,8 @@
     "./skill-provider": "./src/skill-provider.mjs",
     "./subagent-policy": "./src/subagent-policy.mjs",
     "./tool-bridge": "./src/tool-bridge.mjs",
-    "./test-tools": "./src/test-tools.mjs"
+    "./test-tools": "./src/test-tools.mjs",
+    "./owners": "./src/multi-user/owners.mjs",
+    "./schedule": "./src/multi-user/schedule.mjs"
   }
 }

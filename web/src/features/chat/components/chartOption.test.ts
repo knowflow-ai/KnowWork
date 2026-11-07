@@ -142,6 +142,18 @@ describe('结果表画成图的配置', () => {
     const formatter = bar.series[0]?.label?.formatter as (p: { value: unknown }) => string;
     expect(formatter({ value: 1_286_000 })).toBe('128.6万');
     expect(chartHeight(ranking, regions.chart!, 'bar')).toBe(384);
+    // 一根柱子一行、不封顶：几十个分类也一行一个，挤成细线时数和名字会叠在一起（界面上超过一屏在卡片里滚动）
+    const many: TableCard = { ...ranking, rows: Array.from({ length: 30 }, (_, i) => [`门店${i}`, 30 - i]) };
+    expect(chartHeight(many, regions.chart!, 'bar')).toBe(30 * 36 + 24);
+    // 有负数（变化、利润）：负的那根数写在它左边那头，不压在零线上
+    const change: TableCard = { ...ranking, rows: [...ranking.rows, ['华北', -3]] };
+    const diverging = shape(
+      chartOption(change, regions.chart!, { kind: 'bar', measure: 'revenue', tokens: TOKENS }),
+    );
+    expect(diverging.series[0]?.data).toEqual([
+      ...ranking.rows.map((row) => row[1]),
+      { value: -3, label: { position: 'left' } },
+    ]);
     const long: TableCard = {
       ...regions,
       rows: [
@@ -214,11 +226,11 @@ describe('结果表画成图的配置', () => {
     ]);
   });
 
-  it('能切的图：时间序列折线、面积、柱状；分类单列不为负、块数不多还能画饼，饼图带百分比', () => {
+  it('能切的图：时间序列折线、面积、柱状；分类只画柱状，单列不为负、块数不多还能画饼（分类没有先后，不连成线），饼图带百分比', () => {
     expect(compatibleKinds(trend, trend.chart!, 'revenue')).toEqual(['line', 'area', 'bar']);
-    expect(compatibleKinds(regions, regions.chart!, 'revenue')).toEqual(['bar', 'pie', 'line']);
+    expect(compatibleKinds(regions, regions.chart!, 'revenue')).toEqual(['bar', 'pie']);
     const negative = { ...regions, rows: [...regions.rows, ['西北', -5]] } as TableCard;
-    expect(compatibleKinds(negative, regions.chart!, 'revenue')).toEqual(['bar', 'line']);
+    expect(compatibleKinds(negative, regions.chart!, 'revenue')).toEqual(['bar']);
     const pie = shape(
       chartOption(regions, regions.chart!, {
         kind: 'pie',

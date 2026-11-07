@@ -5,6 +5,8 @@
   主线把它接到附件的 restage 上，把已就绪的附件重新放进去。产物在每轮结束时已收走，不受影响。
 - 容器名由（工作空间, 会话）的摘要确定，同一会话不管哪个进程来找都落到同一个名字上；找到同名容器时再核对
   label，不是我们为这个会话建的就拒绝，不收养。
+- 业务服务与 worker 是两个进程，各有各的锁：同一会话几乎同时来建（上传附件时放原件、解析任务转 .doc）时，后到的
+  那边 Docker 回 409，这时按名字找回另一边刚建的接着用，不报错让调用方退避重试（2026-11-06 一份 .doc 因此多等了 30 秒）。
 """
 
 import asyncio
@@ -161,17 +163,32 @@ class ContainerManager:
     async def _ensure(self, key: SandboxKey, *, create: bool) -> tuple[str | None, bool]:
         info = await self._engine.inspect_container(key.name)
         if info is not None:
-            labels = (info.get("Config") or {}).get("Labels")
-            if not key.owns(labels):
-                log.warning("沙箱容器名被占用且 label 不符，拒绝收养")
-                raise SandboxError(CONFLICT)
-            if (labels or {}).get(LABEL_POSTURE) == self._posture.digest and _status(info) != "dead":
-                return await self._connect(info), False
-            log.info("沙箱配置已变更或容器已失效，删除重建（工作区不保留）")
-            await self._engine.remove_container(str(info["Id"]))
+            existing = await self._reuse(key, info)
+            if existing is not None:
+                return existing, False
         if not create:
             return None, False
-        return await self._create(key), True
+        container_id = await self._create(key)
+        if container_id is not None:
+            return container_id, True
+        # 另一个进程抢先建了同名容器（见模块说明）：找回它接着用，新建钩子由真正建的那边跑
+        info = await self._engine.inspect_container(key.name)
+        existing = await self._reuse(key, info) if info is not None else None
+        if existing is None:
+            raise SandboxError("沙箱正在准备中，请稍后重试")
+        return existing, False
+
+    async def _reuse(self, key: SandboxKey, info: dict[str, Any]) -> str | None:
+        """按名字找到的容器：不是我们为这个会话建的就拒绝；配置没变、没坏的拉起来接着用，否则删掉、返回 None 让调用方新建。"""
+        labels = (info.get("Config") or {}).get("Labels")
+        if not key.owns(labels):
+            log.warning("沙箱容器名被占用且 label 不符，拒绝收养")
+            raise SandboxError(CONFLICT)
+        if (labels or {}).get(LABEL_POSTURE) == self._posture.digest and _status(info) != "dead":
+            return await self._connect(info)
+        log.info("沙箱配置已变更或容器已失效，删除重建（工作区不保留）")
+        await self._engine.remove_container(str(info["Id"]))
+        return None
 
     async def _connect(self, info: dict[str, Any]) -> str:
         """停了的容器文件系统还在，拉起来接着用（Docker 里最接近「暂停后自动恢复」的做法）。"""
@@ -200,13 +217,14 @@ class ContainerManager:
                 raise SandboxError("沙箱启动失败，请稍后重试")
             await asyncio.sleep(START_READY_POLL)
 
-    async def _create(self, key: SandboxKey) -> str:
+    async def _create(self, key: SandboxKey) -> str | None:
+        """新建并拉起；同名容器已经存在（另一个进程刚建了）时返回 None。"""
         await self._engine.ensure_image(self._posture.image)
         options = container_options(key, self._posture, idle_ttl_seconds=self._idle_ttl)
         try:
             container_id = await self._engine.create_container(key.name, options)
-        except DockerConflict as error:
-            raise SandboxError("沙箱正在准备中，请稍后重试") from error
+        except DockerConflict:
+            return None
         try:
             await self._engine.start_container(container_id)
             await self._wait_running(container_id)

@@ -135,6 +135,58 @@ s=$(stat -c %s -- "$d/in.$5") || exit 10
 cat -- "$d/in.$5"
 '''
 
+# 直接提取文字（会话附件用，不经版面模型）：有文字层的 PDF 用 pdftotext（-layout 保留表格的列对齐、页与页之间是换页符），
+# docx 用 pandoc 转 Markdown（标题、列表、表格都在，正文不要内嵌 HTML），pptx 用 markitdown。$1 私有临时目录（里面已放好
+# in.<扩展名>），$2 扩展名，$3 结果字节上限。成功时 stdout 只有提取出的文字（UTF-8）；失败时日志写 stderr。无论成败都删掉临时目录。
+# 退出码：9 结果超限，10 提取失败（打不开、损坏、加密），11 进程被强制终止（多半是内存不够），12 不支持这种扩展名。
+#
+# docx 的表格：Markdown 表格只表达得了「每格一段、没有合并」的表。别的（合并单元格、一格多段或列表、格内换行、表中表）
+# 关了内嵌 HTML 时 pandoc 只留一行 [TABLE]，内容整张丢掉，合并单元格的表则只在第一格写一次、合并关系丢了（合同、方案里
+# 很常见）。由 tables.lua 把这些表渲染成 HTML 表格原样放进去（保留 rowspan、colspan），规整的表仍是 Markdown 表格、正文
+# 照旧不出 HTML；再去掉 HTML 里的 colgroup 与 class、style，少占模型的字数。
+EXTRACT_TEXT = r'''
+d="$1"
+trap 'rm -rf "$d"' EXIT
+case "$2" in
+  pdf) pdftotext -layout -enc UTF-8 "$d/in.pdf" "$d/out" ;;
+  docx) cat >"$d/tables.lua" <<'LUA'
+local function plain(cell)
+  local blocks = cell.contents
+  if #blocks == 0 then return true end
+  if #blocks > 1 or (blocks[1].t ~= 'Plain' and blocks[1].t ~= 'Para') then return false end
+  local broken = false
+  blocks[1]:walk({ LineBreak = function() broken = true end })
+  return not broken
+end
+local function simple(rows)
+  for _, row in ipairs(rows) do
+    for _, cell in ipairs(row.cells) do
+      if cell.row_span > 1 or cell.col_span > 1 or not plain(cell) then return false end
+    end
+  end
+  return true
+end
+function Table(t)
+  local ok = simple(t.head.rows) and simple(t.foot.rows)
+  for _, body in ipairs(t.bodies) do ok = ok and simple(body.head) and simple(body.body) end
+  if not ok then
+    return pandoc.RawBlock('gfm', pandoc.write(pandoc.Pandoc({t}), 'html', {wrap_text = 'wrap-none'}))
+  end
+end
+LUA
+    pandoc -f docx -t gfm-raw_html --wrap=none --lua-filter "$d/tables.lua" -o "$d/md" "$d/in.docx" \
+      && sed -E -e '/^<colgroup>$/,/^<\/colgroup>$/d' -e ':a' -e 's/(<[a-z][^>]*) (class|style)="[^"]*"/\1/' \
+           -e 'ta' "$d/md" >"$d/out" ;;
+  pptx) markitdown "$d/in.pptx" >"$d/out" ;;
+  *) exit 12 ;;
+esac 2>"$d/log"; c=$?
+[ "$c" -eq 137 ] && { tail -c 2000 "$d/log" >&2; exit 11; }
+[ "$c" -eq 0 ] || { tail -c 2000 "$d/log" >&2; exit 10; }
+s=$(stat -c %s -- "$d/out") || exit 10
+[ "$s" -le "$3" ] || exit 9
+cat -- "$d/out"
+'''
+
 # 重算 Excel 公式（知识库解析表格前用）：$1 私有临时目录（里面已放好 in.xlsx），$2 重算脚本
 # （/opt/knowwork/office/recalc.py：经 LibreOffice 重算后原地写回，stdout 是 JSON 报告），$3 超时秒数，$4 字节上限。
 # 成功时 stdout 只有重算后的 xlsx；报告里没有 status（打不开、有外部链接）算失败，报告与日志写 stderr。
@@ -156,6 +208,18 @@ t="$1"; d=$(dirname -- "$t")
 [ -d "$t" ] && exit 4
 mkdir -p -- "$d" 2>/dev/null || exit 6
 [ -w "$d" ] || exit 6
+exit 0
+'''
+
+# 删一个文件（官方 apply_patch 的删除与移动）：不存在退出 3，是目录退出 4，不是普通文件退出 5，删不掉退出 6。
+# 指向文件的符号链接删的是链接本身（容器里不跟随到工作区外）
+DELETE_FILE = r'''
+t="$1"
+{ [ -e "$t" ] || [ -L "$t" ]; } || exit 3
+[ -d "$t" ] && [ ! -L "$t" ] && exit 4
+{ [ -f "$t" ] || [ -L "$t" ]; } || exit 5
+rm -f -- "$t" 2>/dev/null || exit 6
+{ [ -e "$t" ] || [ -L "$t" ]; } && exit 6
 exit 0
 '''
 

@@ -251,6 +251,64 @@ async def test_convert_legacy_word_to_docx(factory):
     assert leftovers.stdout.strip() == "0", "转换的临时目录没删"
 
 
+@pytest.mark.skipif("knowwork-sandbox" not in IMAGE, reason="文字提取需要带 pandoc、poppler 的沙箱镜像")
+async def test_extract_text_from_word_and_pdf(factory):
+    """会话附件不经版面模型直接提取文字：docx 出 Markdown（标题、表格在），PDF 出带换页符的文字；临时目录删掉。"""
+    module, (ws, sid) = await factory(exec_max_timeout_seconds=300, max_input_bytes=1 << 20, memory_bytes=512 << 20)
+    sandbox = module.sandbox
+    made = await _sh(sandbox, ws, sid, "cd /workspace && python3 -c \"from docx import Document; d=Document(); "
+                                       "d.add_heading('付款条款', 1); d.add_paragraph('合同签订后 30 天内付清'); "
+                                       "t=d.add_table(rows=1, cols=2); t.cell(0,0).text='金额'; t.cell(0,1).text='100 万'; "
+                                       "d.save('a.docx')\" && python3 /opt/knowwork/office/soffice.py --headless "
+                                       "--convert-to pdf a.docx")
+    assert made.exit_code == 0, made.stderr
+    docx = await sandbox.read_delivered(ws, sid, "/workspace/a.docx", max_bytes=1 << 20)
+    pdf = await sandbox.read_delivered(ws, sid, "/workspace/a.pdf", max_bytes=1 << 20)
+    markdown = (await sandbox.extract_text(ws, sid, "docx", docx, max_bytes=1 << 20, timeout_seconds=120)).decode()
+    assert "# 付款条款" in markdown and "30 天内付清" in markdown and "100 万" in markdown
+    text = (await sandbox.extract_text(ws, sid, "pdf", pdf, max_bytes=1 << 20, timeout_seconds=120)).decode()
+    assert "30 天内付清" in text and "\f" in text
+    with pytest.raises(SandboxError):
+        await sandbox.extract_text(ws, sid, "pdf", b"not a pdf", max_bytes=1 << 20, timeout_seconds=120)
+    leftovers = await _sh(sandbox, ws, sid, "ls /tmp | grep -c kw-extract || true")
+    assert leftovers.stdout.strip() == "0", "提取的临时目录没删"
+
+
+# 一份带几种表格的 Word：规整的、合并单元格的、一格多段加列表的、表中表；正文里有一处下划线
+_TABLES_DOCX = (
+    "from docx import Document", "d=Document()",
+    "p=d.add_paragraph('甲方 '); p.add_run('必须').underline=True; p.add_run(' 付款')",
+    "t=d.add_table(rows=2, cols=2); t.cell(0,0).text='产品'; t.cell(0,1).text='单价'",
+    "t.cell(1,0).text='铁棍山药'; t.cell(1,1).text='38 元'",
+    "t=d.add_table(rows=3, cols=2); t.cell(0,0).merge(t.cell(0,1)).text='采购计划'",
+    "t.cell(1,0).merge(t.cell(2,0)).text='第一季度'; t.cell(1,1).text='药材'; t.cell(2,1).text='包装'",
+    "t=d.add_table(rows=1, cols=2); t.cell(0,0).text='付款'; c=t.cell(0,1); c.text='预付 30%'",
+    "c.add_paragraph('验收后付 70%'); c.add_paragraph('逾期每日万分之五', style='List Bullet')",
+    "t=d.add_table(rows=1, cols=2); t.cell(0,0).text='外层'; i=t.cell(0,1).add_table(rows=1, cols=1)",
+    "i.cell(0,0).text='内层'", "d.save('/workspace/t.docx')",
+)
+
+
+@pytest.mark.skipif("knowwork-sandbox" not in IMAGE, reason="文字提取需要带 pandoc 的沙箱镜像")
+async def test_word_tables_markdown_cannot_hold_come_out_as_html(factory):
+    """docx 里 Markdown 表格表达不了的表（合并单元格、一格多段或列表、表中表）渲染成 HTML 表格，内容不丢、合并关系还在；
+    规整的表仍是 Markdown 表格，正文不出 HTML。原来这几种整张表只剩一行 [TABLE]。"""
+    module, (ws, sid) = await factory(exec_max_timeout_seconds=300, max_input_bytes=1 << 20, memory_bytes=512 << 20)
+    sandbox = module.sandbox
+    script = "; ".join(_TABLES_DOCX)
+    made = await _sh(sandbox, ws, sid, f'python3 -c "{script}"')
+    assert made.exit_code == 0, made.stderr
+    docx = await sandbox.read_delivered(ws, sid, "/workspace/t.docx", max_bytes=1 << 20)
+    markdown = (await sandbox.extract_text(ws, sid, "docx", docx, max_bytes=1 << 20, timeout_seconds=120)).decode()
+    assert "[TABLE]" not in markdown
+    assert "| 铁棍山药 | 38 元 |" in markdown, "规整的表仍是 Markdown 表格"
+    assert 'colspan="2">采购计划' in markdown and 'rowspan="2">第一季度' in markdown, "合并关系还在"
+    assert "验收后付 70%" in markdown and "<li>" in markdown and "逾期每日万分之五" in markdown
+    assert "内层" in markdown and markdown.count("<table>") == 4, "表中表的里外两层都在"
+    assert "<colgroup>" not in markdown and "class=" not in markdown and "style=" not in markdown
+    assert "<u>" not in markdown, "正文照旧不出 HTML"
+
+
 @pytest.mark.skipif("knowwork-sandbox" not in IMAGE, reason="公式重算需要带 LibreOffice 的沙箱镜像")
 async def test_recalc_fills_formulas_without_cached_values(factory):
     """openpyxl 写的公式没有缓存值；重算后读得到结果，临时目录删掉。引用别的文件的工作簿不算。"""

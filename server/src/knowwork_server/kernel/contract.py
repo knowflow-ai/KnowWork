@@ -32,6 +32,13 @@ class SessionPolicy(_Frozen):
     gate: SkillGate | None = None
 
 
+class SessionOwner(_Frozen):
+    """对话的属主。宿主的多用户适配层据此记录、比对属主级资源（定时任务这类）的归属，不据此判权限。"""
+
+    workspace_id: str = Field(min_length=1, max_length=128)
+    user_id: str = Field(min_length=1, max_length=128)
+
+
 class SessionSpec(_Frozen):
     session_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,128}$")
     policy: SessionPolicy = SessionPolicy()
@@ -40,6 +47,15 @@ class SessionSpec(_Frozen):
     tools_token: str | None = Field(default=None, min_length=16, repr=False)
     # 技能令牌（受众 skills）：宿主据此拉取本会话可用技能清单与技能正文；为空则本会话没有技能。
     skills_token: str | None = Field(default=None, min_length=16, repr=False)
+    # 属主：不给时宿主上属主级插件（定时任务等）对这个会话不可用
+    owner: SessionOwner | None = None
+
+
+class OutlineEntry(_Frozen):
+    """附件目录里的一条：在那份文字（解析出的 Markdown，或纯文本原件）里的行号与标题。"""
+
+    line: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=200)
 
 
 class TurnAttachment(_Frozen):
@@ -50,6 +66,18 @@ class TurnAttachment(_Frozen):
     bytes: int = Field(ge=0)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     extracted_path: str | None = Field(default=None, pattern=r"^/workspace/input/[^/]{1,200}$")
+    # 文档解析还没完成：extracted_path 是解析好以后放的位置，现在那里还没有文件。网页发送前会等解析完，
+    # 用户点了「直接发送」、或经接口发来的消息才会这样
+    extraction_pending: bool = False
+    # 给模型读的文字（附件 reading.py）：放得下的全文直接放进这一轮（text）；放不下的只给字数、页数与目录，
+    # 模型按行号分段读。文字是解析出的 Markdown，纯文本附件就是原件本身
+    text: str | None = Field(default=None, max_length=1_000_000)
+    text_chars: int | None = Field(default=None, ge=0)
+    text_pages: int | None = Field(default=None, ge=1)
+    outline: tuple[OutlineEntry, ...] = Field(default=(), max_length=200)
+    # 导读（附件 digest_job.py）：全文摘要与各段要点（带原文行号），放不进对话的长文档才有；还在生成时 digest_pending
+    digest_path: str | None = Field(default=None, pattern=r"^/workspace/input/[^/]{1,200}$")
+    digest_pending: bool = False
 
 
 class KnowledgeEntry(_Frozen):
@@ -116,6 +144,8 @@ class TurnInput(_Frozen):
     text: str = Field(min_length=1, max_length=200_000)
     mode: Literal["followup", "steer"] = "followup"
     language: Literal["zh", "en"] | None = None  # 用户在聊天页指定的语言；不给时按提问判断（kernel/locale.py）
+    # 提问人的时区（IANA 名字，网页取浏览器的）：模型按它算「今天」。不给时宿主用部署时区，名字不合规时宿主也改用部署时区
+    time_zone: str | None = Field(default=None, min_length=1, max_length=64)
     # 回答方式：智能体、只查知识库的快速问答，或扩展登记的。宿主在这条消息进入步骤时切换，会话中途可以换
     answer_mode: str = Field(default="agent", pattern=ANSWER_MODE_PATTERN)
     answer_mode_spec: AnswerModeSpec | None = None  # 扩展登记的方式由业务服务发消息时现算

@@ -67,6 +67,9 @@ const BUFFER_BYTES = 8 * 1024 * 1024
  * @property {(() => void) | undefined} modeMask 当前回答方式对官方全局工具的收窄（restrict 的撤销函数）
  * @property {Map<string, { mode: string, spec: { tools: string[], prompt: string } | undefined }>} answerModes
  *   已收下、还没进入步骤的消息各自的回答方式，键是消息 id
+ * @property {{ workspaceId: string, userId: string } | undefined} owner 这段对话的属主（业务服务打开会话时给）：多用户适配层
+ *   （multi-user/）据此记录、过滤属主级资源；旧版业务服务不给时是 undefined，属主级插件对这个会话不可用
+ * @property {object | undefined} agent 宿主打开的活 Agent（http-host 打开后填）：属主级插件到点激活会话时从这里取
  */
 
 /** @type {Map<string, SessionState>} */
@@ -92,6 +95,7 @@ export function createSession(sessionId, policy) {
     skillCatalogPromise: undefined,
     loadedSkills: new Set(),
     language: undefined,
+    timeZone: undefined, // 最近一条用户消息上的时区，子 Agent 沿用（subagent-policy）
     knowledgeCatalog: undefined,
     turnContext: undefined,
     turnTexts: new Map(),
@@ -99,6 +103,8 @@ export function createSession(sessionId, policy) {
     answerModeSpec: undefined,
     modeMask: undefined,
     answerModes: new Map(),
+    owner: undefined,
+    agent: undefined,
   }
   sessions.set(sessionId, state)
   return state

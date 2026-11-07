@@ -156,12 +156,21 @@ export interface SendExtras {
   readonly language?: ReplyLanguage;
   /** 输入框里选的回答方式 */
   readonly answerMode?: AnswerMode;
-  /** 本轮带的附件 id（先经 uploadForTurn 上传） */
+  /** 本轮带的附件 id（输入框里已经传好暂存，发消息时服务端认领进会话） */
   readonly attachments?: readonly string[];
   /** 用户在上一轮回答上方撤掉的检索条件（照检索结果给的写法），这一轮检索时去掉 */
   readonly droppedConditions?: readonly string[];
   /** 输入框里 @ 的知识库、目录、文件、标签、技能 */
   readonly mentions?: readonly Mention[];
+}
+
+/** 浏览器的时区（IANA 名字）：随每条消息带上，模型按它算「今天」；取不到就不带，服务端用部署时区。 */
+export function browserTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function sendMessage(
@@ -171,18 +180,28 @@ export function sendMessage(
   extras: SendExtras = {},
 ): Promise<{ messageId: string }> {
   const { language, answerMode, attachments = [], droppedConditions = [], mentions = [] } = extras;
+  const timeZone = browserTimeZone();
   return request(workspacePath(`/conversations/${seg(conversationId)}/messages`), {
     method: 'POST',
     body: {
       text: value,
       mode,
       ...(language ? { language } : {}),
+      ...(timeZone ? { time_zone: timeZone } : {}),
       ...(answerMode ? { answer_mode: answerMode } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(droppedConditions.length > 0 ? { dropped_conditions: droppedConditions } : {}),
       ...(mentions.length > 0 ? { mentions: mentions.map(mentionBody) } : {}),
     },
   });
+}
+
+/**
+ * 预热对话：输入框里加了附件、快要发消息时调，服务端先把宿主上的对话和沙箱容器备好（空闲半小时会被回收，冷着发要多等
+ * 两三秒）。尽力而为，结果不用管。
+ */
+export function warmConversation(conversationId: string): Promise<unknown> {
+  return request(workspacePath(`/conversations/${seg(conversationId)}/warm`), { method: 'POST' });
 }
 
 export function cancelRun(conversationId: string): Promise<unknown> {

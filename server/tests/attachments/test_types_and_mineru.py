@@ -6,11 +6,11 @@ import json
 import httpx
 import pytest
 
-from knowwork_server.attachments.mineru import MinerUClient, MinerUError, MinerUOptions, usable
+from knowwork_server.attachments.mineru import MinerUClient, MinerUError, MinerUOptions, attachment_options, usable
 from knowwork_server.attachments.settings import AttachmentSettings
 from knowwork_server.attachments.types import AttachmentRejected, Kind, detect
 
-from ..office_samples import DOCX, PDF, PPTX, ooxml, xlsx
+from ..office_samples import DOCX, JPEG, PDF, PNG, PPTX, legacy_doc, ooxml, xlsx
 
 pytestmark = pytest.mark.anyio
 
@@ -20,6 +20,8 @@ pytestmark = pytest.mark.anyio
     ("a.pptx", PPTX, Kind.PPTX), ("a.xlsx", xlsx([[1]]), Kind.XLSX), ("a.md", "# 标题".encode(), Kind.TEXT),
     ("a.txt", "中文".encode("gb18030"), Kind.TEXT), ("a.csv", b"a,b\n1,2", Kind.TEXT),
     ("a.json", b'{"k": 1}', Kind.TEXT), ("a.markdown", b"x", Kind.TEXT),
+    ("旧合同.doc", legacy_doc(), Kind.DOC), ("旧合同.DOC", legacy_doc(), Kind.DOC),
+    ("截图.png", PNG, Kind.PNG), ("照片.jpg", JPEG, Kind.JPEG), ("照片.JPEG", JPEG, Kind.JPEG),
 ])
 def test_detect_accepts(name, data, kind):
     assert detect(name, data).kind is kind
@@ -27,7 +29,12 @@ def test_detect_accepts(name, data, kind):
 
 @pytest.mark.parametrize(("name", "data", "code"), [
     ("a.exe", b"MZ", "unsupported_format"), ("noext", b"x", "unsupported_format"),
-    ("a.doc", b"\xd0\xcf\x11\xe0", "unsupported_format"), ("a.pdf", b"", "empty_file"),
+    ("a.xls", b"\xd0\xcf\x11\xe0", "unsupported_format"), ("a.pdf", b"", "empty_file"),
+    # .doc 按内容认：OLE 复合文档、里面有 WordDocument 流；改了后缀的 .xls（Workbook 流）、PDF 对不上
+    ("a.doc", b"\xd0\xcf\x11\xe0", "type_mismatch"), ("a.doc", legacy_doc("Workbook"), "type_mismatch"),
+    ("a.doc", PDF, "type_mismatch"), ("a.doc", b"", "empty_file"),
+    ("a.png", JPEG, "type_mismatch"), ("a.jpg", PNG, "type_mismatch"), ("a.png", b"<svg/>", "type_mismatch"),
+    ("a.gif", b"GIF89a", "unsupported_format"),
     ("a.pdf", DOCX, "type_mismatch"), ("a.docx", PDF, "type_mismatch"), ("a.docx", PPTX, "type_mismatch"),
     ("a.xlsx", DOCX, "type_mismatch"), ("a.docx", b"PK\x03\x04broken", "file_corrupt"),
     ("a.docx", ooxml("word").replace(b"[Content_Types].xml", b"[Content_Typez].xml"), "file_corrupt"),
@@ -87,6 +94,24 @@ async def test_async_task_flow():
     submit = stub.requests[0]
     assert b'name="files"; filename="' in submit.content and b"return_md" in submit.content
     assert b'name="backend"\r\n\r\npipeline' in submit.content
+
+
+async def test_poll_interval_grows_only_up_to_the_cap():
+    """等结果的间隔按 1.5 倍放长、到上限为止：附件把上限设成和起点一样，做完一秒内就知道（原来涨到 10 秒，白等 7.7 秒）。"""
+    running = [(200, {"status": "running"})] * 6
+    stub = MinerUStub({("POST", "/tasks"): [(200, {"task_id": "t1"})],
+                       ("GET", "/tasks/t1"): [*running, (200, {"status": "done"})],
+                       ("GET", "/tasks/t1/result"): [(200, RESULT)]})
+    slept: list[float] = []
+
+    async def record(seconds):
+        slept.append(seconds)
+
+    http = httpx.AsyncClient(base_url="http://mineru", transport=httpx.MockTransport(stub.handler))
+    options = attachment_options(AttachmentSettings(mineru_base_url="http://mineru"))
+    await MinerUClient(http, options, sleep=record).parse("a.pdf", PDF, "application/pdf")
+    assert slept == [1.0] * 6
+    assert options.backend == "pipeline"
 
 
 async def test_falls_back_to_file_parse():

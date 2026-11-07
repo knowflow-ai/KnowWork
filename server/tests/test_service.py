@@ -70,6 +70,31 @@ async def test_send_resumes_lost_session_and_rotates_first(sessionmaker, convers
     await pump.close()
 
 
+async def test_warm_opens_a_released_conversation_and_runs_the_warmers(sessionmaker, conversation_id):
+    """预热：宿主上没有这段对话就恢复打开，同时跑装配方给的预热（沙箱容器）；还开着的不重开。预热失败不报错。"""
+    kernel = FakeKernel()
+    writer, broadcaster = BatchWriter(sessionmaker), Broadcaster()
+    pump = EventPump(kernel, sessionmaker, writer, broadcaster, timings=PumpTimings(idle_timeout=0.2))
+    warmed = []
+
+    async def container(conversation):
+        warmed.append(conversation.id)
+
+    async def broken(conversation):
+        raise RuntimeError("docker 不在")
+
+    service = ConversationService(kernel, sessionmaker, pump, EventFeed(sessionmaker, writer, broadcaster,
+                                                                        pump.produced_upto),
+                                  warmers=(container, broken), resume_retry_delays=(0.01,))
+    conversation = await service.get(conversation_id=conversation_id, workspace_id="default", user_id="dev-user")
+    await service.warm(conversation)
+    assert [s.resume for s in kernel.opened] == [True] and warmed == [conversation_id]
+    kernel.open_effects = [SessionBusy("session_busy", "已经开着", 409)]
+    await service.warm(conversation)
+    assert len(kernel.opened) == 1 and kernel.disposed == [], "开着的不重开"
+    await pump.close()
+
+
 class RestartedHost(FakeKernel):
     """宿主刚重启：会话不在，打开一次之后才在；重复打开返回 busy。"""
 

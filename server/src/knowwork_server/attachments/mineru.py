@@ -28,6 +28,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from .settings import AttachmentSettings
+
 log = logging.getLogger(__name__)
 
 SUCCESS_STATES = frozenset({"success", "completed", "done", "finished", "succeeded"})
@@ -127,6 +129,15 @@ class MinerUResult:
     images: dict[str, bytes]         # 图片文件名 → 内容，middle_json 里的 image_path 指向这里的名字
 
 DEFAULT_OPTIONS = MinerUOptions()
+
+
+def attachment_options(settings: AttachmentSettings) -> MinerUOptions:
+    """会话附件的解析参数：用户在对话里等着，所以等结果不放长间隔（做完一秒内就知道；原来涨到 10 秒，实测白等 7.7 秒）。
+    知识库是后台批量，参数在它自己那边定。"""
+    return MinerUOptions(backend=settings.mineru_backend, lang=settings.mineru_lang,
+                         parse_timeout_seconds=settings.mineru_parse_timeout_seconds,
+                         poll_interval_seconds=settings.mineru_poll_interval_seconds,
+                         poll_max_interval_seconds=settings.mineru_poll_interval_seconds)
 
 
 class MinerUClient:

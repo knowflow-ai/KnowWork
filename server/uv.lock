@@ -666,7 +666,7 @@ wheels = [
 
 [[package]]
 name = "knowwork-server"
-version = "0.0.6"
+version = "0.0.7"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

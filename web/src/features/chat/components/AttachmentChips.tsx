@@ -1,9 +1,10 @@
 /**
  * 附件小卡片（照官方 dsh-client-ui-attachment：输入框下有一排草稿附件，消息里显示带过的文件）：
- * 类型色块、文件名、大小；草稿里的可以移除。用户气泡与输入框共用。
+ * 类型色块、文件名、大小；草稿里的可以移除，发送前等解析时带一句状态。用户气泡与输入框共用。
  */
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { X } from '@openai/apps-sdk-ui/components/Icon';
+import { LoadingIndicator } from '@openai/apps-sdk-ui/components/Indicator';
 import type { AttachmentChip } from '../../../api/attachments';
 import { formatBytes } from '../../../utils/format';
 import { FILE_KINDS } from '../../../ui/fileKindStyles';
@@ -31,6 +32,12 @@ export function AttachmentChips({ items, onRemove, label = '附件' }: Props) {
               {item.name}
             </span>
             <span className="kw-attachment-size">{formatBytes(item.size)}</span>
+            {item.note ? (
+              <span className="kw-attachment-note">
+                {item.busy ? <LoadingIndicator size={12} /> : null}
+                {item.note}
+              </span>
+            ) : null}
             {onRemove ? (
               <Button
                 color="secondary"

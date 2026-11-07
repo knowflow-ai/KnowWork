@@ -51,6 +51,11 @@ class FakeSandbox:
         self.files[path] = data
         return len(data)
 
+    async def delete_file(self, ws, sid, path):
+        if path not in self.files:
+            raise SandboxFileError("文件不存在", "not_found")
+        del self.files[path]
+
 
 def _client(sandbox: FakeSandbox, *, member: bool = True) -> httpx.AsyncClient:
     app = FastAPI()
@@ -114,6 +119,11 @@ async def test_stat_read_write_round_trip_and_error_codes():
         assert written.status_code == 200 and sandbox.files["/workspace/b.txt"] == b"x"
         bad = await client.post(f"{PREFIX}/write", headers=_auth(), json={"path": "/sessions/s1/b.txt", "data": "%%%"})
         assert bad.status_code == 400
+
+        deleted = await client.post(f"{PREFIX}/delete", headers=_auth(), json={"path": "/sessions/s1/b.txt"})
+        assert deleted.status_code == 200 and "/workspace/b.txt" not in sandbox.files, "官方 apply_patch 的删除与移动"
+        gone = await client.post(f"{PREFIX}/delete", headers=_auth(), json={"path": "/sessions/s1/b.txt"})
+        assert gone.status_code == 404 and gone.json()["error"]["code"] == "not_found"
 
         listing = await client.post(f"{PREFIX}/list", headers=_auth(), json={"path": "/sessions/s1/none"})
         assert listing.status_code == 400 and listing.json()["error"]["code"] == "sandbox_error"

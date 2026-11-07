@@ -7,9 +7,13 @@
  * 扩展包反过来经别名 @knowwork/web 用核心的组件、接口与工具（同一份 React 与组件库）。
  * 注册在第一次查询插槽时才发生（不靠入口文件 import 一次），单独渲染组件的测试里也拿得到。
  * 前端插槽只决定显示什么；扩展有没有授权由后端判定，没授权时它的接口不存在。
+ * 带扩展的镜像里扩展的前端包总是在的，授权里没有的扩展也注册了入口：注册时标上条目属于哪个扩展，查插槽时按
+ * 「本部署启用了哪些扩展」（当前用户信息里带着，登录守卫拿到后设进来）过滤，没启用的扩展不在界面上留一个点开就
+ * 加载失败的菜单。扩展的页面（路由）在建路由表时还不知道启用了哪些，照样挂着，打开时没启用就跳回首页。
+ * 还不知道启用了哪些（单独渲染组件的测试、服务端没给）时全部显示。
  */
-import type { ComponentType, ReactNode } from 'react';
-import type { RouteObject } from 'react-router';
+import { createElement, type ComponentType, type ReactNode } from 'react';
+import { Navigate, type RouteObject } from 'react-router';
 import { install } from '@knowwork/extensions';
 import type { PreviewFile } from '../features/preview/FilePreview';
 import type { NavItem } from '../layout/nav';
@@ -75,7 +79,26 @@ export interface GrantResourceType {
  * 组件自己画按钮、弹窗，自己调扩展的接口（接口判权）。question 是这一轮用户的提问。 */
 export interface CardActionItem {
   readonly name: string;
-  readonly Component: ComponentType<{ readonly reference: string; readonly question: string }>;
+  /** replace：把这张结果卡片换成新的结果（卡片协议同回答里的 presentation），例如扩展的「改条件」重查以后 */
+  readonly Component: ComponentType<{
+    readonly reference: string;
+    readonly question: string;
+    readonly replace?: (presentation: unknown) => void;
+  }>;
+}
+
+/** 结果表上点了能下钻的一个值（表格卡片的 drill）：组件自己画对话框、调扩展的接口，查好了用 replace 把这张结果卡片
+ * 换成新的结果；onClose 是取消或做完。column 是点的那一列（列名）、label 是它的表头，value 是点的值（原样，空值是 null）。 */
+export interface CardDrillItem {
+  readonly name: string;
+  readonly Component: ComponentType<{
+    readonly reference: string;
+    readonly column: string;
+    readonly label: string;
+    readonly value: string | number | boolean | null;
+    readonly replace: (presentation: unknown) => void;
+    readonly onClose: () => void;
+  }>;
 }
 
 /** 输入框左上角回答方式后面的一小段（例如问数的范围条「问数范围：销售库 · 第 3 版」）。conversationId 没有时是新对话；
@@ -154,6 +177,8 @@ export interface ExtensionSlots {
   'insights.base.action': InsightsBaseAction;
   /** 结果卡片上的操作（按操作名）；卡片里写了、这里没登记的不显示 */
   'chat.card.actions': CardActionItem;
+  /** 结果表上点值往下钻（按表格卡片 drill 里的组件名）；没登记的表上的值不能点 */
+  'chat.card.drill': CardDrillItem;
   /** 扩展提供的工具在执行过程里的显示名；没注册的照原名显示 */
   'chat.tools': ToolPresentation;
   /** 输入框左上角回答方式后面的一小段；没注册时只有回答方式 */
@@ -173,16 +198,65 @@ export interface PanelItem {
 }
 
 export type SlotName = keyof ExtensionSlots;
-export type Register = <K extends SlotName>(slot: K, item: ExtensionSlots[K]) => void;
+/** extension：这一项属于哪个扩展（和后端扩展名一致）；那个扩展没启用时不显示。不给就一直显示。 */
+export type Register = <K extends SlotName>(slot: K, item: ExtensionSlots[K], extension?: string) => void;
 
-const slots = new Map<SlotName, readonly unknown[]>();
+interface Entry {
+  /** 注册的原物（去重用），和给页面的那份分开：页面路由给的是套了守卫的那份 */
+  readonly original: unknown;
+  readonly item: unknown;
+  readonly extension?: string;
+}
+
+const ROUTE_SLOTS: ReadonlySet<SlotName> = new Set<SlotName>(['admin.routes', 'app.routes']);
+const slots = new Map<SlotName, readonly Entry[]>();
+const shown = new Map<SlotName, readonly unknown[]>(); // 过滤后的结果缓存：同一份启用名单下每次给同一个数组
 const NONE: readonly never[] = []; // 空插槽每次都给同一个数组，页面拿它当依赖时不会每次重算
 let installed = false;
+let enabled: ReadonlySet<string> | null = null; // null：还不知道启用了哪些，全部显示
 
-export const register: Register = (slot, item) => {
-  const items = slots.get(slot) ?? [];
-  if (!items.includes(item)) slots.set(slot, [...items, item]);
+/** 扩展的页面：建路由表时还不知道启用了哪些，照样挂着；渲染时（已在登录守卫里，知道了）没启用就跳回首页。 */
+function ExtensionRoute({
+  extension,
+  children,
+}: {
+  readonly extension: string;
+  readonly children: ReactNode;
+}) {
+  return isExtensionEnabled(extension) ? children : createElement(Navigate, { to: '/', replace: true });
+}
+
+function gated(route: RouteObject, extension: string): RouteObject {
+  return {
+    ...route,
+    element: createElement(ExtensionRoute, { extension, children: route.element }),
+  } as RouteObject;
+}
+
+export const register: Register = (slot, item, extension) => {
+  const entries = slots.get(slot) ?? [];
+  if (entries.some((entry) => entry.original === item)) return;
+  const shownItem = extension && ROUTE_SLOTS.has(slot) ? gated(item as RouteObject, extension) : item;
+  slots.set(slot, [...entries, { original: item, item: shownItem, extension }]);
+  shown.delete(slot);
 };
+
+/** 本部署启用了哪些扩展（当前用户信息里带着）；undefined 表示不知道（服务端没给），全部显示。 */
+export function setEnabledExtensions(names: readonly string[] | undefined): void {
+  const next = names === undefined ? null : new Set(names);
+  const same =
+    next === null
+      ? enabled === null
+      : enabled !== null && enabled.size === next.size && [...next].every((n) => enabled!.has(n));
+  if (same) return;
+  enabled = next;
+  shown.clear();
+}
+
+/** 这个扩展是不是启用了；还不知道时按启用算。 */
+export function isExtensionEnabled(name: string): boolean {
+  return enabled === null || enabled.has(name);
+}
 
 function ensureInstalled(): void {
   if (installed) return;
@@ -190,8 +264,19 @@ function ensureInstalled(): void {
   install(register);
 }
 
-/** 插槽里注册的全部条目，按注册顺序。 */
+/** 插槽里注册的条目，按注册顺序；标了扩展、而那个扩展没启用的不给（页面路由除外，见 ExtensionRoute）。 */
 export function slotItems<K extends SlotName>(slot: K): readonly ExtensionSlots[K][] {
   ensureInstalled();
-  return (slots.get(slot) ?? NONE) as readonly ExtensionSlots[K][];
+  const cached = shown.get(slot);
+  if (cached) return cached as readonly ExtensionSlots[K][];
+  const entries = slots.get(slot);
+  if (!entries) return NONE;
+  const items = entries
+    .filter(
+      (entry) =>
+        ROUTE_SLOTS.has(slot) || entry.extension === undefined || isExtensionEnabled(entry.extension),
+    )
+    .map((entry) => entry.item);
+  shown.set(slot, items);
+  return items as readonly ExtensionSlots[K][];
 }

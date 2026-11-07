@@ -4,7 +4,7 @@
 （空间 owner 与 admin），涉及所有者角色需要 workspace:owner。
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -15,7 +15,7 @@ from . import store
 from .core import Tx, notify_policy_change
 from .enterprise import ACTIVE as ORG_ACTIVE
 from .enterprise import EnterpriseMixin
-from .errors import NotFound
+from .errors import AccessDenied, NotFound
 from .models import Department, OrgDepartment, UserGroup
 from .rules import RuleChange
 from .vocab import Action, InvalidInput, Resource, Subject, grantable, parse_action
@@ -31,6 +31,7 @@ class GrantView:
 MAX_USERS = 200  # 「给谁用」一次最多选这么多对象
 MAX_RESOURCES = 200  # 授权页一次最多选这么多资源
 MAX_GRANTS = 2000  # 一次最多授这么多条（对象数 × 资源数）
+SHARE_ACTIONS = (Action.USE, Action.EDIT)  # 所有者分享只能给这两档：「管理」（再分享、删除）留给所有者与空间管理员
 
 
 class AccessService(EnterpriseMixin):
@@ -119,6 +120,50 @@ class AccessService(EnterpriseMixin):
             await tx.add_rules(*(R.permission(key, workspace_id, obj.key, Action.USE) for key in sorted(keys)
                                  if key not in current and key not in higher))
         return tuple(sorted(key for key in keys if key not in higher))
+
+    async def set_shares(self, workspace_id: str, resource: str, shares: Mapping[str, str]) -> tuple[GrantView, ...]:
+        """所有者分享扩展登记的资源（例如问数的看板）：把这个资源上的授权整体换成 shares（主体 → 使用或编辑）。
+
+        「只有空间管理员能授权」的一个例外：谁算这个资源的所有者由扩展核对，调用前扩展自己判，这里不要求空间管理员。
+        为此只收扩展登记的资源类型——内置的技能、工具、知识库（含资源层级引入的）仍然只有空间管理员能授；档只能是
+        使用、编辑，换的也只是这两档：管理员在资源授权页给的「管理」不在所有者手里，留着不动。授权记录就是资源授权
+        那张表，管理员在资源授权页里照样看得到、撤得掉。"""
+        obj = self._shareable(workspace_id, resource)
+        wanted = {Subject.parse(subject): parse_action(action) for subject, action in shares.items()}
+        if any(act not in SHARE_ACTIONS for act in wanted.values()):
+            raise InvalidInput("分享只能给「查看」或「编辑」")
+        if len(wanted) > MAX_USERS:
+            raise InvalidInput(f"一次最多选 {MAX_USERS} 个对象")
+        defaults = set(R.default_role_policies(workspace_id))
+        async with self._tx(workspace_id) as tx:
+            for sub in wanted:
+                await self._require_subject(tx, sub)
+            rules = [r for r in await store.permissions_of(tx.session, workspace_id, None, obj.key) if r not in defaults]
+            existing = [r for r in rules if r.values[3] in SHARE_ACTIONS]
+            # 已经有「管理」的不再加一档：同一主体对同一资源只留一档（同 grant），管理本来就含使用、编辑
+            managed = {r.values[0] for r in rules if r.values[3] not in SHARE_ACTIONS}
+            kept = {sub: act for sub, act in wanted.items() if sub.key not in managed}
+            targets = [R.permission(sub.key, workspace_id, obj.key, act) for sub, act in kept.items()]
+            await tx.remove_rules(*(rule for rule in existing if rule not in targets))
+            await tx.add_rules(*(target for target in targets if target not in existing))
+        return tuple(GrantView(sub.key, obj.key, act) for sub, act in kept.items())
+
+    async def shares(self, workspace_id: str, resource: str) -> tuple[GrantView, ...]:
+        """扩展登记的资源现在分享给了谁，只列使用、编辑两档（同 set_shares：能不能看这份名单由扩展判）。"""
+        obj = self._shareable(workspace_id, resource)
+        defaults = set(R.default_role_policies(workspace_id))
+        async with self._read(workspace_id) as session:
+            rules = await store.permissions_of(session, workspace_id, None, obj.key)
+        return tuple(GrantView(r.values[0], r.values[2], r.values[3]) for r in rules
+                     if r not in defaults and r.values[3] in SHARE_ACTIONS)
+
+    def _shareable(self, workspace_id: str, resource: str) -> Resource:
+        if not self.is_open(workspace_id):
+            raise AccessDenied()
+        obj = Resource.parse(resource, types=self.resource_types)
+        if obj.type not in self._extension_types:
+            raise InvalidInput("这类资源只有空间管理员能授权")
+        return obj
 
     async def seed_users(self, session: AsyncSession, workspace_id: str, resource: str,
                          subjects: Sequence[str]) -> RuleChange:

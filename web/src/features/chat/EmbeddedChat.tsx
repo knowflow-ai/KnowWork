@@ -9,6 +9,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { X } from '@openai/apps-sdk-ui/components/Icon';
 import type { AnswerMode } from '../../api/conversations';
+import type { SentAttachment } from '../../api/attachments';
 import type { Mention } from '../../api/mentions';
 import { readableError } from '../../api/http';
 import { toast } from '../../ui/toastStore';
@@ -107,9 +108,19 @@ export function EmbeddedChat({
       />
     );
   }
-  const start = async (text: string, files: readonly File[], mentions: readonly Mention[]) => {
+  const start = async (
+    text: string,
+    attachments: readonly SentAttachment[],
+    mentions: readonly Mention[],
+  ) => {
     try {
-      const next = await startConversation({ text: decorate(text), files, mentions, answerMode, onCreated });
+      const next = await startConversation({
+        text: decorate(text),
+        attachments,
+        mentions,
+        answerMode,
+        onCreated,
+      });
       void client.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
       setStarted(next);
     } catch (error) {
@@ -150,7 +161,7 @@ export function EmbeddedChat({
           answerMode={answerMode}
           placeholder={placeholder}
           footnote={footnote}
-          onSend={(text, _mode, files, mentions) => start(text, files, mentions)}
+          onSend={(text, _mode, attachments, mentions) => start(text, attachments, mentions)}
         />
       </div>
     </div>

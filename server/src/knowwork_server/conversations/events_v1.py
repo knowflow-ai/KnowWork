@@ -28,12 +28,18 @@ ITEM_KINDS = ("message", "thinking", "tool", "approval", "input_request", "todo"
               "subagent", "background_job", "error")
 
 GAP_KIND = "kernel.gap"
+# 不是人发起一轮时那条消息的来源（官方 source.kind）：展示成「谁发起了这一轮」，不当用户的话。
+# 定时任务到点；后台任务（官方 dsh-tool-jobs）或在后台跑的子 Agent（dsh-subagent）做完时 Agent 正空闲，官方自己开一轮
+# 让它接着处理结果。Agent 正忙时官方把同样的消息塞进当前这一轮，那就不算发起（前端与运行记录只认一轮的第一条）
+TRIGGER_TITLES = {"schedule": "定时任务", "tool-jobs": "后台任务完成", "subagent-settled": "子 Agent 完成"}
+TRIGGER_SOURCES = tuple(TRIGGER_TITLES)
 TEXT_LIMIT = 8000
 # 宿主给附件写的说明块（runtime-host attachment-handles.mjs，逐字照官方 dsh-llm 的 fileHandleText）：
 # 不进显示文字，换成附件列表。文件名是 JSON 字符串（官方 quoted 即 JSON.stringify）。
 _FILE_HANDLE = re.compile(r'^\[File (?P<name>"(?:[^"\\]|\\.)*") \((?P<bytes>\d+) bytes, sha256:[0-9a-f]{8}\): '
                           r'verbatim read-only copy saved at ')
-_EXTRACTED_HANDLE = "[Markdown extracted from "
+# 解析结果的位置、给模型读的全文或目录（attachment-handles.mjs 的 extractedText、pendingText、contentsText）：同样不进显示文字
+_READING_HANDLES = ("[Markdown extracted from ", "[Contents of ")
 # 宿主写的 @ 说明块（runtime-host mentions.mjs）：第一行是这个前缀加 JSON，不进显示文字，换成气泡上的小标签
 _MENTION_PREFIX = "[用户这一轮 @ 点名的范围] "
 MENTION_TYPES = ("knowledge_base", "folder", "document", "tag", "mcp", "skill", "extension")
@@ -153,8 +159,10 @@ def _assistant_message(state: ProjectionState, payload: dict, seq: int, time: in
 
 def _user_message(state: ProjectionState, payload: dict, seq: int, time: int) -> list[dict]:
     """用户亲自发的消息（提问与插话）归到当前这一轮。宿主也用 user/message 注入运行时上下文、
-    子 Agent 回报等，它们的 source.kind 不是 user，不展示给用户。"""
+    子 Agent 回报等，它们的 source.kind 不是 user，不展示给用户；定时任务到点投进来的展示成「谁发起了这一轮」。"""
     source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+    if source.get("kind") in TRIGGER_SOURCES:
+        return _trigger(state, payload, source, seq, time)
     if source.get("kind") != "user":
         return []
     text, attachments, mentions = user_parts(payload.get("content"))
@@ -165,6 +173,43 @@ def _user_message(state: ProjectionState, payload: dict, seq: int, time: int) ->
             **({"mentions": mentions} if mentions else {})}
     return [_event("item.completed", seq=seq, turn=state.turn, time=time, item_id=message_id, kind="message",
                    data=data)]
+
+
+def _trigger(state: ProjectionState, payload: dict, source: dict, seq: int, time: int) -> list[dict]:
+    """不是人发起的一轮（照官方对话界面：一条可展开的通知，写明是什么触发的）。"""
+    text = trigger_text(source, payload.get("content"))[:TEXT_LIMIT]
+    message_id = str(payload.get("id") or f"trigger-{seq}")
+    return [_event("item.completed", seq=seq, turn=state.turn, time=time, item_id=message_id, kind="message",
+                   data={"role": "trigger", "source": str(source["kind"]), "text": text})]
+
+
+def trigger_text(source: dict, content: Any) -> str:
+    """自动发起的那条消息里给人看的部分：定时任务是各任务的提示词（空行隔开）；后台任务、子 Agent 是官方写在来源上的
+    一句摘要（命令与退出状态、哪个子 Agent 怎么结束的），没有摘要时给全文。"""
+    text = _joined(content, ("text",))
+    if source.get("kind") == "schedule":
+        return "\n\n".join(reminder_prompts(text))
+    summary = source.get("summary")
+    return summary if isinstance(summary, str) and summary else text
+
+
+def reminder_prompts(text: str) -> list[str]:
+    """官方定时任务的提醒正文（dsh-schedule 的 renderReminderFraming / renderRecurringReminderBatchFraming）里
+    各任务的提示词：单条是 reminder_prompt_json 一行，合并投递是 reminders_json 一行。认不出来就原样给全文。"""
+    for line in text.splitlines():
+        key, _, value = line.partition(": ")
+        try:
+            if key == "reminder_prompt_json":
+                prompt = json.loads(value)
+                return [prompt] if isinstance(prompt, str) else [text]
+            if key == "reminders_json":
+                items = json.loads(value)
+                prompts = [i["reminder_prompt"] for i in items if isinstance(i, dict)
+                           and isinstance(i.get("reminder_prompt"), str)] if isinstance(items, list) else []
+                return prompts or [text]
+        except ValueError:
+            return [text]
+    return [text]
 
 
 def _mentions(block: str) -> list[dict] | None:
@@ -208,7 +253,7 @@ def user_parts(content: Any) -> tuple[str, list[dict], list[dict]]:
                 attachments.append({"name": str(json.loads(found["name"])), "size": int(found["bytes"])})
             except ValueError:
                 texts.append(block["text"])
-        elif not block["text"].startswith(_EXTRACTED_HANDLE):
+        elif not block["text"].startswith(_READING_HANDLES):
             texts.append(block["text"])
     return "".join(texts)[:TEXT_LIMIT], attachments, mentions
 

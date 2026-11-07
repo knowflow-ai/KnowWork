@@ -11,28 +11,45 @@ from ..sessionfiles.names import extension
 
 class Kind(StrEnum):
     PDF = "pdf"
+    DOC = "doc"
     DOCX = "docx"
     PPTX = "pptx"
     XLSX = "xlsx"
     TEXT = "text"
+    PNG = "png"
+    JPEG = "jpeg"
 
 
-# 交给 MinerU 解析成 Markdown 的类型；其余原样放进沙箱
-PARSED_KINDS = frozenset({Kind.PDF, Kind.DOCX, Kind.PPTX})
+# 附件在沙箱里直接提取文字（pdftotext、pandoc、markitdown，一两秒就好），不经版面模型：Agent 产品读附件的通行做法。
+# 旧格式 Word 先在转换沙箱里转成 docx（CONVERTED_KINDS）再提取。
+EXTRACTED_KINDS = frozenset({Kind.PDF, Kind.DOC, Kind.DOCX, Kind.PPTX})
+CONVERTED_KINDS = frozenset({Kind.DOC})
+# 要识别文字（OCR）的：图片，以及提取不出几个字的 PDF（扫描件）。私有化部署的模型多半看不了图，这一步交给 MinerU，
+# 没配 MinerU 时图片原样放进沙箱、不解析
+OCR_KINDS = frozenset({Kind.PNG, Kind.JPEG})
+# 纯文本里是成段文字的（做导读）；CSV、JSON 是数据
+PROSE_EXTENSIONS = frozenset({"md", "markdown", "txt"})
 
 EXTENSIONS = {
-    "pdf": Kind.PDF, "docx": Kind.DOCX, "pptx": Kind.PPTX, "xlsx": Kind.XLSX,
+    "pdf": Kind.PDF, "doc": Kind.DOC, "docx": Kind.DOCX, "pptx": Kind.PPTX, "xlsx": Kind.XLSX,
     "md": Kind.TEXT, "markdown": Kind.TEXT, "txt": Kind.TEXT, "csv": Kind.TEXT, "json": Kind.TEXT,
+    "png": Kind.PNG, "jpg": Kind.JPEG, "jpeg": Kind.JPEG,
 }
 MIME = {
     Kind.PDF: "application/pdf",
+    Kind.DOC: "application/msword",
     Kind.DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     Kind.PPTX: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     Kind.XLSX: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     Kind.TEXT: "text/plain",
+    Kind.PNG: "image/png",
+    Kind.JPEG: "image/jpeg",
 }
 _OOXML_PART = {Kind.DOCX: "word/", Kind.PPTX: "ppt/", Kind.XLSX: "xl/"}
 _ZIP = b"PK\x03\x04"
+_OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # OLE 复合文档（Office 97-2003 的 .doc、.xls、.ppt）
+_WORD_STREAM = "WordDocument".encode("utf-16-le")  # .doc 必有的流；目录项里的流名是 UTF-16
+_IMAGE_MAGIC = {Kind.PNG: b"\x89PNG\r\n\x1a\n", Kind.JPEG: b"\xff\xd8\xff"}
 # 文本附件里出现这些开头，说明其实是二进制文件改了后缀
 _BINARY_MAGIC = (_ZIP, b"%PDF-", b"\xd0\xcf\x11\xe0", b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"\x7fELF", b"MZ")
 
@@ -46,7 +63,8 @@ class AttachmentRejected(Exception):
         self.message = message
 
 
-UNSUPPORTED = ("unsupported_format", "格式不支持：仅支持 PDF、Word(docx)、PPT(pptx)、Excel(xlsx)、Markdown、TXT、CSV、JSON")
+UNSUPPORTED = ("unsupported_format",
+               "格式不支持：仅支持 PDF、Word(doc、docx)、PPT(pptx)、Excel(xlsx)、Markdown、TXT、CSV、JSON、图片(png、jpg)")
 
 
 @dataclass(frozen=True)
@@ -63,6 +81,11 @@ def detect(filename: str, data: bytes) -> Detected:
         raise AttachmentRejected("empty_file", "文件是空的")
     if kind is Kind.PDF:
         _check_pdf(data)
+    elif kind is Kind.DOC:
+        _check_legacy_word(data)
+    elif kind in _IMAGE_MAGIC:
+        if not data.startswith(_IMAGE_MAGIC[kind]):
+            raise _mismatch()
     elif kind in _OOXML_PART:
         _check_ooxml(kind, data)
     else:
@@ -76,6 +99,12 @@ def _mismatch() -> AttachmentRejected:
 
 def _check_pdf(data: bytes) -> None:
     if b"%PDF-" not in data[:1024]:
+        raise _mismatch()
+
+
+def _check_legacy_word(data: bytes) -> None:
+    """旧格式 Word：OLE 复合文档，里面有 WordDocument 流；.xls、.ppt 改了后缀的对不上。"""
+    if not data.startswith(_OLE) or _WORD_STREAM not in data:
         raise _mismatch()
 
 

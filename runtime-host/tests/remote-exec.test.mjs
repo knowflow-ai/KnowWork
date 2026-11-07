@@ -15,7 +15,10 @@ import { publishedSkill, startSkillsStub } from './support/skills-stub.mjs'
 
 const TOKEN = 'remote-exec-token-'.padEnd(40, 'r')
 
-async function startRemoteHost(script) {
+// 生产配置不开 apply_patch，它的测试叠加这份配置打开
+const APPLY_PATCH = join(import.meta.dirname, 'overlays', 'apply-patch.yml')
+
+async function startRemoteHost(script, options = {}) {
   const gateway = await startOpenAiStub({ script })
   const tools = await startToolsStub({ toolsByToken: { [TOKEN]: [] } })
   const sandbox = await startSandboxStub({ sessionsByToken: { [TOKEN]: 're-1' } })
@@ -26,7 +29,7 @@ async function startRemoteHost(script) {
     KNOWWORK_MODEL_TOKEN: 'gw-token-remote-0001-aaaaaaa',
     KNOWWORK_TOOLS_BASE_URL: tools.baseUrl,
     KNOWWORK_SANDBOX_BASE_URL: sandbox.baseUrl,
-  })
+  }, options)
   const chat = () => gateway.requests.filter(r => r.path.endsWith('/chat/completions'))
   return { host, sandbox, chat, stop: async () => { await host.stop(); await gateway.close(); await tools.close(); await sandbox.close() } }
 }
@@ -130,6 +133,42 @@ test('加载过技能以后，执行命令时报上这个会话加载过的技�
   }
 })
 
+test('官方 apply_patch（生产不开，这里叠加配置打开）一次改几个文件：改、加、删、移都落到会话容器；没读过的文件照样被「先读再改」挡住', async () => {
+  const patch = [
+    '*** Begin Patch',
+    '*** Update File: a.txt', '@@', '-旧的一行', '+新的一行',
+    '*** Add File: out/new.txt', '+新文件',
+    '*** Delete File: old.txt',
+    '*** Update File: keep.txt', '*** Move to: moved/keep.txt', '@@', ' 保留', '+补一行',
+    '*** End Patch',
+  ].join('\n')
+  const env = await startRemoteHost([
+    { tool: 'bash', args: { command: 'printf "旧的一行\n" > a.txt && printf "删\n" > old.txt && printf "保留\n" > keep.txt', description: '准备' } },
+    { tool: 'apply_patch', args: { input: patch } },
+    { tool: 'read', args: { file_path: 'a.txt' } },
+    { tool: 'read', args: { file_path: 'old.txt' } },
+    { tool: 'read', args: { file_path: 'keep.txt' } },
+    { tool: 'apply_patch', args: { input: patch } },
+    { text: '改好了' },
+  ], { patches: [APPLY_PATCH] })
+  try {
+    await env.host.call('POST', '/v1/sessions', { sessionId: 're-1', tools: { token: TOKEN } })
+    await env.host.call('POST', '/v1/sessions/re-1/messages', { text: '一起改' })
+    await collectEvents(env.host, 're-1', isTurnEnd)
+    const root = env.sandbox.workspaceOf('re-1')
+    const results = env.chat().at(-1).body.messages.filter(m => m.role === 'tool').map(m => String(m.content))
+    assert.match(results[1], /read|first|FS_NOT_OBSERVED/i, `没读过就改应被挡住：${results[1]}`)
+    assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), '新的一行\n')
+    assert.equal(readFileSync(join(root, 'out/new.txt'), 'utf8'), '新文件\n')
+    assert.ok(!existsSync(join(root, 'old.txt')), '删除没落到容器')
+    assert.ok(!existsSync(join(root, 'keep.txt')), '移动后源文件还在')
+    assert.equal(readFileSync(join(root, 'moved/keep.txt'), 'utf8'), '保留\n补一行\n')
+    assert.ok(env.sandbox.requests.some(r => r.operation === 'delete'), '删除没走沙箱接口')
+  } finally {
+    await env.stop()
+  }
+})
+
 test('读文件、编辑文件的来回次数：读是官方 stat 加一次 read，编辑是一次 read 加一次 write（版本取自读回来的 stat）', async () => {
   const env = await startRemoteHost([
     { tool: 'bash', args: { command: 'echo 一行 > note.txt', description: '写' } },
@@ -144,6 +183,8 @@ test('读文件、编辑文件的来回次数：读是官方 stat 加一次 read
     const ops = env.sandbox.requests.filter(r => r.body.path?.endsWith('note.txt')).map(r => r.operation)
     assert.deepEqual(ops, ['stat', 'read', 'read', 'write'], '每次都是宿主 → 业务服务 → docker exec 一个来回，不要多出重复的 stat')
     assert.equal(readFileSync(join(env.sandbox.workspaceOf('re-1'), 'note.txt'), 'utf8'), '两行\n')
+    const offered = (env.chat()[0].body.tools ?? []).map(t => t.function?.name ?? t.name)
+    assert.ok(offered.includes('edit') && !offered.includes('apply_patch'), '生产配置改文件用 edit、write，不给 apply_patch')
   } finally {
     await env.stop()
   }

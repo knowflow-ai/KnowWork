@@ -176,11 +176,36 @@ async def test_demand_during_idle_grace_keeps_pump(sessionmaker, conversation_id
         assert h.pump.is_active(conversation_id)
 
 
-async def test_missing_session_eventually_releases_pump(sessionmaker, conversation_id):
+async def test_missing_session_releases_the_pump_right_away(sessionmaker, conversation_id):
+    """宿主上没有这段对话（空闲释放了）：泵当场退出，不每 0.5 秒去问一次；打开它的一方会再拉起泵。"""
     kernel = FakeKernel([[SessionNotFound("session_not_found", "x", 404)] for _ in range(200)])
+    async with Harness(kernel, sessionmaker, PumpTimings(idle_timeout=60, idle_grace=0.1, retry_delays=(0.5,))) as h:
+        h.pump.ensure(conversation_id, "default")
+        await wait_until(lambda: not h.pump.is_active(conversation_id), timeout=1)
+        assert len(kernel.subscribe_calls) == 1, "不该在这里空转"
+        h.pump.ensure(conversation_id, "default")
+        await wait_until(lambda: not h.pump.is_active(conversation_id), timeout=1)
+        assert len(kernel.subscribe_calls) == 2, "再有人要时照常去读"
+
+
+async def test_someone_asking_during_a_missing_read_reads_again(sessionmaker, conversation_id):
+    """读的过程中有人要过泵（发送方刚把会话打开、ensure 时泵还活着没另起）：再读一次，接上打开后的帧。"""
+    calls = []
+
+    class Opening(FakeKernel):
+        async def subscribe(self, session_id, *, after=0, epoch=None):
+            calls.append(after)
+            if len(calls) == 1:
+                h.pump.ensure(conversation_id, "default")  # 发送方这时打开了会话、要泵接着读
+                raise SessionNotFound("session_not_found", "x", 404)
+            async for item in super().subscribe(session_id, after=after, epoch=epoch):
+                yield item
+
+    kernel = Opening([[session_event(1, "turn/start", {"turn": 1}), HOLD]])
     async with Harness(kernel, sessionmaker) as h:
         h.pump.ensure(conversation_id, "default")
-        await wait_until(lambda: not h.pump.is_active(conversation_id), timeout=3)
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 1)
+        assert len(calls) == 2 and h.pump.is_active(conversation_id)
 
 
 async def test_ordinary_exceptions_never_end_the_pump(sessionmaker, conversation_id):

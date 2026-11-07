@@ -79,6 +79,13 @@ export interface TableChart {
   readonly series?: string;
 }
 
+/** 表上哪几列的取值能点着往下钻：点了交给插槽 chat.card.drill 里登记了 name 的组件（扩展的），ref 是它认的编号 */
+export interface TableDrill {
+  readonly name: string;
+  readonly ref: string;
+  readonly columns: readonly string[];
+}
+
 /** 结果表：前几行与这次结果一共多少行。 */
 export interface TableCard {
   readonly type: 'table';
@@ -92,6 +99,8 @@ export interface TableCard {
   readonly moreRows: boolean;
   /** 能画成图时怎么画；没有就只给表 */
   readonly chart?: TableChart;
+  /** 能下钻时哪几列能点 */
+  readonly drill?: TableDrill;
 }
 
 /** 出处：一行说明（最前面一个词，如「口径」），点开看明细与代码。 */
@@ -113,7 +122,15 @@ export interface CardAction {
   readonly ref: string;
 }
 
-export type ResultCard = TableCard | ProvenanceCard;
+/** 几个可以接着问的问题（例如查不了时的换个问法）：点了就在这个对话里问。 */
+export interface SuggestionsCard {
+  readonly type: 'suggestions';
+  readonly title?: string;
+  readonly text?: string;
+  readonly questions: readonly string[];
+}
+
+export type ResultCard = TableCard | ProvenanceCard | SuggestionsCard;
 
 /** 一次知识检索：命中的文档（来源:文档，去重）、用上的条件、用户这一轮撤掉的条件。条件的写法由业务服务给出。 */
 export interface SearchSummary {
@@ -145,6 +162,18 @@ export interface RunView {
   readonly trail: readonly TrailEntry[];
   /** 这一轮 Agent 维护的待办（官方 todo_write 的最新整表）；没写过时为 undefined。 */
   readonly todos?: readonly TodoView[];
+  /** 不是人发起的一轮由什么发起；人发起的没有。 */
+  readonly trigger?: RunTrigger;
+}
+
+/** 发起这一轮的不是人：定时任务到点，或后台任务、子 Agent 做完时 Agent 正空闲，官方自己开了一轮。 */
+export interface RunTrigger {
+  readonly id: string;
+  /** 官方消息来源：schedule（定时任务）、tool-jobs（后台任务完成）、subagent-settled（子 Agent 完成） */
+  readonly source: string;
+  /** 定时任务是任务的提示词，后台任务、子 Agent 是官方的一句摘要（服务端取好的） */
+  readonly text: string;
+  readonly time: number;
 }
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed';
@@ -273,7 +302,9 @@ export interface SentMessage {
 }
 
 export type TimelineEntry =
-  { readonly type: 'user'; readonly message: SentMessage } | { readonly type: 'run'; readonly runId: string };
+  | { readonly type: 'user'; readonly message: SentMessage }
+  | { readonly type: 'trigger'; readonly trigger: RunTrigger }
+  | { readonly type: 'run'; readonly runId: string };
 
 export type RunState = 'idle' | 'running' | 'waiting-approval';
 

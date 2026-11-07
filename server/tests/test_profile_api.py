@@ -194,6 +194,23 @@ async def test_chosen_language_reaches_the_host(sessionmaker):
     await pump.close()
 
 
+async def test_browser_time_zone_reaches_the_host_and_a_bad_one_never_blocks_the_message(sessionmaker):
+    """浏览器的时区随消息带给宿主（模型按它算「今天」）。时区只是提示：写法不对的当没带，消息照收。"""
+    http, pump, kernel = client(sessionmaker, Profiles())
+    async with http:
+        created = (await http.post(CONV, json={}, headers=AUTH)).json()
+        url = f"{CONV}/{created['id']}/messages"
+        # 最后一个写法像时区名、却超过内核合同的 64 字：也当没带，不能让合同校验把这条消息拒成 500
+        long_name = "A" * 31 + "/" + "B" * 30 + "/" + "C" * 30
+        for zone in ("Asia/Shanghai", "America/Argentina/Buenos_Aires", "Etc/GMT+8", None, "../etc/passwd", 8, "x" * 80,
+                     long_name):
+            body = {"text": "这份合同到期了吗"} | ({} if zone is None else {"time_zone": zone})
+            assert (await http.post(url, headers=AUTH, json=body)).status_code == 202, zone
+    assert [turn.time_zone for turn in kernel.sent] == [
+        "Asia/Shanghai", "America/Argentina/Buenos_Aires", "Etc/GMT+8", None, None, None, None, None]
+    await pump.close()
+
+
 async def test_answer_mode_reaches_the_host(sessionmaker):
     """回答方式随消息带给宿主，不传是智能体。快速问答只查知识库：带附件拒收，选的技能与 @ 的技能这一轮不算。"""
     profiles = Profiles()

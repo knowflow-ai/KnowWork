@@ -74,12 +74,12 @@ deploy/install.sh --timeout 600
 
 ## 附件解析
 
-PDF、Office 等附件的解析用 MinerU。部署后在「管理后台 → 模型 → 文档解析」里填 MinerU 地址，保存后几秒内生效，不用重启；也可以在 `.env` 里用 `KNOWWORK_MINERU_BASE_URL` 给个默认值，后台配了以后台为准。两边都没配时，上传这类附件会明确提示未配置。
+对话附件里的 PDF、Word、PPT 在沙箱里直接提取文字，用不着 MinerU；扫描件和图片要识别文字，才用得上 MinerU（知识库的文档解析也用它）。部署后在「管理后台 → 模型 → 文档解析」里填 MinerU 地址，保存后几秒内生效，不用重启；也可以在 `.env` 里用 `KNOWWORK_MINERU_BASE_URL` 给个默认值，后台配了以后台为准。两边都没配时，扫描件附件会提示要配文档解析服务，原件照样交给模型。
 
 ## 升级
 
 1. 先备份数据（见下一节）；
-2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.6`（换成要升级到的版本）。编排文件
+2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.7`（换成要升级到的版本）。编排文件
    可能随版本变，只改版本号会用旧的编排文件跑新镜像。`deploy/.env` 不在仓库里，切换版本不会动它；
 3. 把 `deploy/.env` 的 `KNOWWORK_VERSION` 改成新版本；
 4. 重新执行 `deploy/install.sh`：它会拉新镜像（包括会话沙箱镜像）并重启服务。

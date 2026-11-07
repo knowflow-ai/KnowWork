@@ -31,6 +31,7 @@ from .audit import build_router as audit_router
 from .channels import Channels, build_channels
 from .channels import build_router as channels_router
 from .config import Settings
+from .conversations.activation import build_activation_router
 from .conversations.answer_modes import AnswerModes
 from .conversations.api import build_answer_modes_router
 from .conversations.api import build_router as conversation_router
@@ -466,7 +467,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                   tool_credentials=tool_credentials, skill_credentials=skill_credentials,
                                   erasers=(erase_knowledge, erase_receipts,
                                            attachments.service.erase, artifacts.service.erase,
-                                           *((sandbox.eraser(),) if sandbox else ())))
+                                           *((sandbox.eraser(),) if sandbox else ())),
+                                  warmers=(sandbox.warmer(),) if sandbox else ())
     # 后台随时可能加上 OIDC、OAuth2 登录方式，客户端常备；不跟随重定向（httpx 默认），凭证不会被带到别的主机
     sso_http = httpx.AsyncClient(timeout=10.0)
     upstream = httpx.AsyncClient(
@@ -551,7 +553,8 @@ def create_public_app(runtime: Runtime) -> FastAPI:
                   docs_url=None, redoc_url=None, openapi_url=None)
     identity, access = runtime.identity, runtime.access
     app.include_router(identity_router(identity, is_admin=workspace_admin(access),
-                                       can_bind_workspace=workspace_member(access)))
+                                       can_bind_workspace=workspace_member(access),
+                                       extensions=tuple(e.name for e in runtime.extensions.active)))
     app.include_router(login_providers_router(identity.providers, require_system_admin(access, identity.get_principal)))
     app.include_router(access_router(access, scoped_principal(identity, WORKSPACE_SCOPE),
                                      profiles=identity.users.get_many))
@@ -613,11 +616,15 @@ def create_internal_app(runtime: Runtime) -> FastAPI:
                                       http=runtime.routed_http, limits=limits))
     app.include_router(tools_router(runtime.tools, grants=runtime.grants.covers))
     app.include_router(skills_internal_router(runtime.skills.delivery))
+    def member(user_id: str, workspace_id: str) -> bool:
+        return runtime.access.check(user_id, workspace_id, WORKSPACE_RESOURCE, Action.USE)
+
     # worker 里的扩展替用户发起后台对话（评测等）：对话只能在这个进程里跑
     app.include_router(build_background_router(
         runtime.service, background_signer(settings.master_key.get_secret_value()), runtime.global_sessionmaker,
-        member=lambda user_id, workspace_id: runtime.access.check(user_id, workspace_id, WORKSPACE_RESOURCE,
-                                                                  Action.USE)))
+        member=member))
+    # 宿主上的插件自己发起一轮前（定时任务到点）来这里激活对话
+    app.include_router(build_activation_router(runtime.service, settings.host_token.get_secret_value(), member=member))
     if runtime.sandbox is not None:
         membership = ToolClearance(runtime.access, builtin=frozenset())
         app.include_router(sandbox_internal_router(runtime.sandbox.sandbox, runtime.tools, membership.member,

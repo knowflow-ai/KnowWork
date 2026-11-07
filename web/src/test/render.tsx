@@ -69,7 +69,9 @@ export function routeFetch(routes: Readonly<Record<string, Handler>>) {
       method,
       path: url.pathname,
       query: url.searchParams,
-      body: typeof raw === 'string' ? (JSON.parse(raw) as unknown) : undefined,
+      // JSON 解析出来；上传文件的表单原样留着（测试里 get('字段') 看带了什么）
+      body:
+        typeof raw === 'string' ? (JSON.parse(raw) as unknown) : raw instanceof FormData ? raw : undefined,
     };
     calls.push(call);
     const match = patterns.find((p) => p.method === method && p.regex.test(url.pathname));

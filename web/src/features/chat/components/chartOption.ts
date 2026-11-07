@@ -66,7 +66,8 @@ export function compatibleKinds(table: TableCard, chart: TableChart, measure: st
     table.rows.length <= PIE_MAX &&
     values.every((v) => v !== null && v >= 0) &&
     values.some((v) => (v ?? 0) > 0);
-  return pieable ? ['bar', 'pie', 'line'] : ['bar', 'line'];
+  // 分类没有先后（区域、门店），连成折线看着像有趋势，不给
+  return pieable ? ['bar', 'pie'] : ['bar'];
 }
 
 /** 现在画哪种：用户选的这一列能画就画它，不能（换了一列、饼图画不了了）就画能画的第一种 */
@@ -101,9 +102,25 @@ export function isHorizontal(table: TableCard, chart: TableChart, kind: ChartKin
 }
 
 /** 图多高：横着的柱子按分类数算（每根 36px，三五根不必撑满一大块），其余固定 260 */
+/** 横向柱状一根一行（BAR_ROW 高），不封顶：封顶的话几十个分类挤成细线，数和名字叠在一起；超过 CHART_VIEW_MAX
+ * 的在卡片里滚动（ResultChart） */
+const BAR_ROW = 36;
+export const CHART_VIEW_MAX = 420;
+
 export function chartHeight(table: TableCard, chart: TableChart, kind: ChartKind): number {
   if (!isHorizontal(table, chart, kind)) return 260;
-  return Math.min(400, Math.max(120, table.rows.length * 36 + 24));
+  return Math.max(120, table.rows.length * BAR_ROW + 24);
+}
+
+/** 图上点的那一格（分类名）对应横轴那一列的原始取值；合并出来的、对不上的是 undefined */
+export function pickedValue(
+  table: TableCard,
+  chart: TableChart,
+  name: string,
+): { readonly value: CardCell } | undefined {
+  const x = columnIndex(table, chart.x);
+  const row = table.rows.find((r) => label(r[x] ?? null) === name);
+  return row && x >= 0 ? { value: row[x] ?? null } : undefined;
 }
 
 /** 工具给的类型落成默认的那一种 */
@@ -251,6 +268,7 @@ export function chartOption(
   const { categories, series } = built;
   const base = baseStyle(tokens);
   const horizontal = isHorizontal(table, chart, kind);
+  const negative = series.some((s) => s.values.some((v) => v !== null && v < 0));
   const category = {
     type: 'category',
     data: categories,
@@ -270,13 +288,23 @@ export function chartOption(
   return {
     ...base,
     tooltip: { ...base.tooltip, trigger: 'axis', axisPointer: { type: kind === 'bar' ? 'shadow' : 'line' } },
-    grid: { left: 4, right: horizontal ? 56 : 16, top: 12, bottom: 4, containLabel: true },
+    grid: {
+      left: horizontal && negative ? 60 : 4,
+      right: horizontal ? 56 : 16,
+      top: 12,
+      bottom: 4,
+      containLabel: true,
+    },
     xAxis: horizontal ? value : category,
     yAxis: horizontal ? category : value,
     series: series.map((s) => ({
       name: s.name,
       type: kind === 'area' ? 'line' : kind,
-      data: s.values,
+      // 横着画时负的那根往左长，数写在它左边那头（写右边就压在零线上、挨着别的柱子）
+      data:
+        kind === 'bar' && horizontal
+          ? s.values.map((v) => (v !== null && v < 0 ? { value: v, label: { position: 'left' } } : v))
+          : s.values,
       ...(kind === 'bar'
         ? barStyle(horizontal, tokens)
         : {

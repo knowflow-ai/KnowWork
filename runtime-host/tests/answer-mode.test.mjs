@@ -15,7 +15,7 @@ const REJECTED = '快速问答模式不能调用'
 /** 业务服务声明在快速问答里也提供的工具（如只读知识库工具） */
 const quickTool = name => ({ ...bizTool(name), answerModes: ['agent', 'quick'] })
 
-/** 模型读得到的部分：系统提示与消息（官方模拟服务另带的 dsh_session_log 不算）。 */
+/** 模型读得到的部分：系统提示与消息。 */
 const modelInput = (host, index) => {
   const body = host.llm.requests[index]?.body ?? {}
   return JSON.stringify({ system: body.system, messages: body.messages })

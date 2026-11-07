@@ -129,6 +129,8 @@ class HostKernel:
             body["tools"] = {"token": spec.tools_token}
         if spec.skills_token is not None:
             body["skills"] = {"token": spec.skills_token}
+        if spec.owner is not None:
+            body["owner"] = {"workspaceId": spec.owner.workspace_id, "userId": spec.owner.user_id}
         response = await self._client.post("/v1/sessions", json=body)
         _raise_for(response)
         return str(response.json()["epoch"])
@@ -138,6 +140,8 @@ class HostKernel:
                 "answerMode": turn.answer_mode}
         if turn.answer_mode_spec is not None:
             body["answerModeSpec"] = {"tools": list(turn.answer_mode_spec.tools), "prompt": turn.answer_mode_spec.prompt}
+        if turn.time_zone is not None:
+            body["timeZone"] = turn.time_zone
         if turn.attachments:
             body["attachments"] = [_attachment(a) for a in turn.attachments]
         if turn.knowledge is not None:
@@ -219,4 +223,14 @@ class HostKernel:
 
 def _attachment(item: TurnAttachment) -> dict:
     body = {"name": item.name, "path": item.path, "bytes": item.bytes, "sha256": item.sha256}
-    return body if item.extracted_path is None else {**body, "extractedPath": item.extracted_path}
+    if item.extracted_path is not None:
+        body = {**body, "extractedPath": item.extracted_path,
+                **({"extractionPending": True} if item.extraction_pending else {})}
+    if item.digest_path is not None:
+        body = {**body, "digestPath": item.digest_path, **({"digestPending": True} if item.digest_pending else {})}
+    if item.text_chars is None:
+        return body
+    reading = {"textChars": item.text_chars, **({"text": item.text} if item.text is not None else {}),
+               **({"textPages": item.text_pages} if item.text_pages else {}),
+               **({"outline": [{"line": e.line, "text": e.text} for e in item.outline]} if item.outline else {})}
+    return {**body, **reading}

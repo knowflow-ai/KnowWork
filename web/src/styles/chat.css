@@ -25,6 +25,14 @@
   justify-content: center;
 }
 
+/* 新对话按了发送、对话还在建：和会话页一样，消息区占满、输入框贴底 */
+.kw-chat-starting {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 /* 嵌在别的页面里的会话还没开始时：上面一句说明，输入框贴底 */
 .kw-chat-embedded-empty {
   flex: 1;
@@ -142,6 +150,73 @@
   flex: none;
   color: var(--kw-text-secondary);
   font-size: var(--kw-font-xs);
+}
+
+.kw-attachment-note {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+/* 发送前等附件解析：输入框里卡片下面一行说明加「直接发送」 */
+.kw-composer-waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 0;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+/* 定时任务这类自动发起的一轮：照官方对话界面，一条细边框的可展开通知，次要色，不画成用户气泡 */
+.kw-trigger {
+  margin: 16px 0;
+  border: 1px solid var(--kw-border-secondary);
+  border-radius: var(--kw-radius-card);
+}
+
+.kw-trigger-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.kw-trigger-head:hover {
+  color: var(--kw-text);
+}
+
+.kw-trigger-head time {
+  margin-left: auto;
+  font-size: var(--kw-font-xs);
+}
+
+.kw-trigger-body {
+  padding: 0 14px 12px 36px;
+}
+
+.kw-trigger-explain {
+  margin: 0 0 6px;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-xs);
+}
+
+.kw-trigger-text {
+  max-height: 240px;
+  overflow: auto;
+  font-size: var(--kw-font-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .kw-user-bubble {
@@ -430,6 +505,16 @@ a.kw-source-item:hover {
 
 .kw-search-condition-note {
   margin-left: 4px;
+}
+
+/* 刚发出、这一轮还没开始时的「思考中」：样子同下面的执行过程摘要，只是不能点 */
+.kw-process-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  color: var(--kw-text-secondary);
+  font-size: var(--kw-font-sm);
 }
 
 .kw-process-toggle {
@@ -1040,6 +1125,29 @@ a.kw-source-item:hover {
   background: var(--color-surface);
 }
 
+/* 接着问的建议（例如查不了时的换个问法）：标题、一段说明，下面一排胶囊按钮，窄了换行 */
+.kw-suggestions-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 16px;
+}
+
+.kw-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.kw-suggestion-text {
+  padding: 2px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  font-size: var(--kw-font-sm);
+}
+
 .kw-result-head {
   display: flex;
   flex-wrap: wrap;
@@ -1119,6 +1227,45 @@ a.kw-source-item:hover {
 
 .kw-echart {
   width: 100%;
+}
+
+/* 能下钻时：图上的项可点，表里那几列的取值是按钮（看着还是文字，悬停加下划线）；下面一行灰字提示能点 */
+.kw-echart.is-pickable {
+  cursor: pointer;
+}
+
+.kw-result-pick {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted var(--color-text-tertiary);
+  text-underline-offset: 3px;
+}
+
+.kw-result-pick:hover {
+  text-decoration: underline;
+}
+
+.kw-result-drill-hint {
+  margin: 0;
+  padding: 0 16px 8px;
+  color: var(--color-text-tertiary);
+  font-size: var(--kw-font-xs);
+}
+
+/* 换过的结果卡片（改条件、下钻）左上角「返回上一步」 */
+.kw-result-back {
+  padding: 6px 10px 0;
+}
+
+/* 横向柱状分类多、比一屏高时：图在卡片里滚动，一根柱子一行不挤 */
+.kw-echart-scroll {
+  max-height: 420px;
+  overflow-y: auto;
 }
 
 /* 表：不画竖线，表头浅灰底，行间细线，数字右对齐、等宽数字；宽了横向滚动 */

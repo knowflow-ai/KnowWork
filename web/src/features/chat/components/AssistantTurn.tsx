@@ -39,6 +39,8 @@ interface Props {
   readonly onFeedback?: (input: FeedbackInput) => Promise<boolean>;
   readonly onRetract?: () => Promise<boolean>;
   readonly busy: boolean;
+  /** 在这个对话里问一句（结果卡片上接着问的建议点了用）；还在跑、或不能发问时不给 */
+  readonly onAsk?: (text: string) => void;
   /** 正在逐字输出、还没成为正式消息的文字（events/live.ts），接在已有回答后面临时显示。 */
   readonly liveText?: string;
   /** 模型正在写的工具调用（还没开始跑）：执行过程那一行据此说正在做什么 */
@@ -66,6 +68,7 @@ export function AssistantTurn({
   onDropConditions,
   onInspect,
   busy,
+  onAsk,
   liveText,
   liveTools,
   feedback,
@@ -116,7 +119,13 @@ export function AssistantTurn({
       ) : null}
       {/* 结果卡片等这一轮结束再出：模型先展示结果、后写结论，卡片早出的话，逐字输出的结论插在它上面、
           把它一路往下推（保持结论在上、卡片在下，内容只往下长）。过程里看步骤摘要 */}
-      {ended ? <ResultCards cards={selectRunCards(run)} question={run.asked[0]?.text} /> : null}
+      {ended ? (
+        <ResultCards
+          cards={selectRunCards(run)}
+          question={run.asked[0]?.text}
+          onAsk={busy ? undefined : onAsk}
+        />
+      ) : null}
       <FileCards
         files={artifacts}
         onPreview={(file) => (file.url ? setPreviewing({ name: file.name, url: file.url }) : undefined)}

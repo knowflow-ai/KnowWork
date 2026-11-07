@@ -1,5 +1,5 @@
 /**
- * 业务服务沙箱内部接口的测试桩（/internal/extensions/sandbox/{exec,stat,read,list,write}）。
+ * 业务服务沙箱内部接口的测试桩（/internal/extensions/sandbox/{exec,stat,read,list,write,delete}）。
  * 每个令牌对应一个会话；`/sessions/<会话>` 对到一个本地临时目录（扮演容器的 /workspace），exec 真的在那里跑。
  * 只为验证宿主侧的远程执行器接线，容器本身的行为由业务服务的测试负责。
  *
@@ -10,7 +10,7 @@
 import { createServer } from 'node:http'
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { WebSocketServer } from 'ws'
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 
@@ -97,6 +97,15 @@ export async function startSandboxStub({ sessionsByToken, ssh }) {
       mkdirSync(dirname(file), { recursive: true })
       writeFileSync(file, Buffer.from(body.data, 'base64'))
       return { stat: statOf(file, true) }
+    },
+    // 同业务服务的 delete：只删文件，不在、是目录照错误码报
+    delete: (session, body) => {
+      const file = local(session, body.path)
+      const stat = statOf(file, false)
+      if (stat === null) throw Object.assign(new Error('文件不存在'), { code: 'not_found' })
+      if (stat.kind === 'd') throw Object.assign(new Error('该路径是目录'), { code: 'is_directory', status: 400 })
+      rmSync(file)
+      return {}
     },
   }
 

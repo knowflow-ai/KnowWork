@@ -45,6 +45,8 @@ const SOURCE: Readonly<Record<string, string>> = {
   'skill-invocation': '技能内容',
   'subagent-settled': '子 Agent 结果',
   'agent-message': '其他 Agent 的消息',
+  schedule: '定时任务',
+  'tool-jobs': '后台任务完成',
   'knowwork-knowledge-catalog': '知识库目录',
   'knowwork-turn-context': '随提问带上的背景',
 };

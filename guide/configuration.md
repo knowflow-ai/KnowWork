@@ -80,6 +80,7 @@
 | `KNOWWORK_HOST_SESSION_IDLE_MINUTES` | `30` | 对话空闲多久（分钟）从宿主内存里释放，下次发消息自动恢复、历史不丢；还在跑、有待确认的操作或待回答的问题、有后台命令没跑完的不释放。`0` 表示不释放（宿主内存会随用过的对话一直涨） |
 | `KNOWWORK_HOST_SSH_IDLE_MINUTES` | `10` | 打开流式执行时，一个对话的执行环境没有进程在跑多久（分钟）就关掉，释放容器里约 85 MB 内存；下次用到自动重开 |
 | `KNOWWORK_MODEL_CONTEXT_WINDOW` | `131072` | 宿主按它判断什么时候压缩对话历史；用的模型上下文更小时调小 |
+| `TZ` | `Asia/Shanghai` | 部署时区。模型每一轮都会看到当前时间，按提问人浏览器的时区算；IM 机器人、后台会话、工作流没有浏览器，按这个时区算「今天」 |
 
 ## 会话沙箱
 
@@ -96,9 +97,13 @@
 
 | 配置项 | 说明 |
 |---|---|
-| `KNOWWORK_MINERU_BASE_URL` | MinerU 文档解析服务地址的默认值。更常用的做法是在「管理后台 → 模型 → 文档解析」里配，那里配了以那里为准、保存后几秒内生效，不用重启；两边都没配时 PDF、Word、PPT 不解析 |
+| `KNOWWORK_MINERU_BASE_URL` | MinerU 文档解析服务地址的默认值。更常用的做法是在「管理后台 → 模型 → 文档解析」里配，那里配了以那里为准、保存后几秒内生效，不用重启。对话附件里的 PDF、Word、PPT 在沙箱里直接提取文字，不用它；扫描件和图片要它识别文字，两边都没配时这两类附件只放原件 |
 | `KNOWWORK_MINERU_SERVER_URL` | MinerU 的 VLM 推理服务地址（sglang 或 vllm，常见 30000 端口）的默认值，界面里也能配。这是 MinerU 去访问的地址，和 MinerU 装在同一台机器时写 `http://127.0.0.1:30000`；解析模式为「自动」时，配了知识库用 hybrid 模式，不配用 pipeline 模式。界面里还能把解析模式强制成 VLM（`vlm-http-client`）、hybrid 或 pipeline，前两种必须配这个地址 |
 | `KNOWWORK_MINERU_MAX_CONCURRENCY` | MinerU 同时最多接几个解析（默认 `3`），按 MinerU 的 `max_concurrent_requests` 设；所有 worker 进程共用这个名额。界面里配了时用界面里的「同时解析上限」 |
+| `KNOWWORK_ATTACHMENT_INLINE_CHARS` | 对话附件提取出的文字不超过这么多字（默认 `20000`）就整篇放进这一轮，模型不用再读文件，一步就能回答；超过的只给字数、页数和目录，模型按需分段读 |
+| `KNOWWORK_ATTACHMENT_INLINE_TOTAL_CHARS` | 一轮所有附件整篇放进去的合计上限（默认 `40000`），前面的附件用掉了，后面的只给目录。模型的上下文小时调低 |
+| `KNOWWORK_ATTACHMENT_DIGEST_CONCURRENCY` | 放不进对话的长附件会在后台生成导读（按段写要点、再汇总成全文摘要），这是同时调几次模型（默认 `4`）。本地部署的模型吞吐小就调低 |
+| `KNOWWORK_ATTACHMENT_STAGED_TTL_HOURS` | 输入框里传上来、一直没发出去的附件留多久（小时，默认 `24`），到时自动删除 |
 
 ## 后台任务
 

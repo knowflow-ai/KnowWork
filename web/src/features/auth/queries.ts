@@ -26,8 +26,10 @@ export function useIsWorkspaceAdmin(enabled = true) {
   return useQuery({ queryKey: ADMIN_KEY, queryFn: checkWorkspaceAdmin, staleTime: 60_000, enabled });
 }
 
-/** 登录或注册成功后直接写入缓存，免得进页面再等一次 /me。 */
+/** 登录或注册成功后先写入缓存（不然进页面时缓存里还是「未登录」，又被送回登录页），再重新取一次 /me：
+ * 登录接口不带本部署启用了哪些扩展，取到之前登录守卫先等着（RequireAuth），菜单不会先多后少。 */
 export function rememberUser(client: QueryClient, user: CurrentUser): void {
   client.setQueryData<Me>(ME_KEY, { ...user, authMethod: 'session', scopes: null });
+  void client.invalidateQueries({ queryKey: ME_KEY, exact: true });
   void client.invalidateQueries({ queryKey: ADMIN_KEY });
 }

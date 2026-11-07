@@ -152,13 +152,12 @@ class EventPump:
 
     async def _loop(self, stream: _Stream) -> None:
         attempt = 0
-        missing_since: int | None = None  # 会话在宿主侧不存在时，记下当时的 demand
         while True:
+            demand = stream.demand  # 这次读之前有多少人要过泵：读的过程中又有人要过，宿主说「会话不在」也再读一次
             try:
                 if not stream.loaded:
                     await self._load(stream)
                 received = await self._read(stream)
-                missing_since = None
                 # 宿主正常结束了订阅：有帧就马上续读，连续空读则逐步退避
                 attempt = 0 if received else attempt + 1
                 delay = self._t.retry_delays[0] if received else self._backoff(attempt)
@@ -171,10 +170,12 @@ class EventPump:
                 await self._host_restarted()
                 continue
             except SessionNotFound:
-                # 会话由发送方负责恢复；长时间没人要求就退出，不在这里空转
-                missing_since = stream.demand if missing_since is None else missing_since
-                attempt += 1
-                if attempt * self._t.retry_delays[0] >= self._t.idle_timeout and stream.demand == missing_since:
+                # 宿主上没有这段对话（空闲释放了、还没打开）：泵不在这里等，打开它的一方（发消息、回答提问、到点激活）
+                # 打开后会再 ensure。原来每 0.5 秒重试、一分钟没人要才退出，浏览器开着对话页时事件流每次重连都算有人要，
+                # 就一直空转（实测一段对话十几个小时拉了五千多次 404）。
+                # 读的过程中有人要过泵（ensure 看到泵还活着就没另起）才再读一次，否则当场退出：检查与退出之间没有 await，
+                # ensure 要么在之前（计数变了、再读），要么在之后（看到泵已停、另起一个），不会两头落空
+                if stream.demand == demand:
                     stream.active = False
                     return
                 delay = self._t.retry_delays[0]

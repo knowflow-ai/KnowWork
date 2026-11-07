@@ -17,6 +17,9 @@ class FakeSandbox:
     reads: list[str] = field(default_factory=list)
     conversions: list[tuple[str, str]] = field(default_factory=list)  # (会话, 扩展名)
     fail_convert: Exception | None = None
+    extractions: list[tuple[str, str]] = field(default_factory=list)  # (会话, 扩展名)
+    extracted: bytes | None = None
+    fail_extract: Exception | None = None
 
     async def put_input(self, workspace_id, session_id, name, data):
         if name in self.fail_put:
@@ -62,6 +65,15 @@ class FakeSandbox:
         if self.fail_convert is not None:
             raise self.fail_convert
         return data
+
+    async def extract_text(self, workspace_id, session_id, extension, data, *, max_bytes, timeout_seconds):
+        """默认提取出一段像样的正文；extracted 给了就用它（例如几乎没有字的扫描件），fail_extract 给了就抛。"""
+        self.extractions.append((session_id, extension))
+        if self.fail_extract is not None:
+            raise self.fail_extract
+        if self.extracted is not None:
+            return self.extracted
+        return f"# 从 {extension} 直接提取\n".encode() + "正文内容。".encode() * 20
 
     async def destroy(self, workspace_id, session_id):
         self.destroyed.append((workspace_id, session_id))

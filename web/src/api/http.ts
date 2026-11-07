@@ -142,6 +142,55 @@ export async function requestBytes(path: string, signal?: AbortSignal): Promise<
   return response.arrayBuffer();
 }
 
+/** 下载下来的一个文件：内容、服务端给的文件名（Content-Disposition 里的 filename*，没有就 null）与响应头。 */
+export interface DownloadedFile {
+  readonly blob: Blob;
+  readonly filename: string | null;
+  readonly headers: Headers;
+}
+
+/** 下载文件（例如导出的结果表）：方法可以是 POST（导出这类要进审计的读取），鉴权与错误翻译同 request。 */
+export async function requestFile(
+  path: string,
+  options: { readonly method?: Method } = {},
+): Promise<DownloadedFile> {
+  let response: Response;
+  try {
+    response = await fetch(path, { method: options.method ?? 'GET', credentials: 'same-origin' });
+  } catch {
+    throw new ApiError(0, NETWORK_MESSAGE);
+  }
+  if (!response.ok) {
+    if (response.status === 401) useSessionStore.getState().expire();
+    const body = await readJson(response);
+    throw new ApiError(response.status, messageForStatus(response.status, body), detailCode(body));
+  }
+  return { blob: await response.blob(), filename: filenameOf(response.headers), headers: response.headers };
+}
+
+/** Content-Disposition 里的文件名：优先 RFC 5987 的 filename*（中文名在这里），再看普通的 filename。 */
+function filenameOf(headers: Headers): string | null {
+  const value = headers.get('Content-Disposition') ?? '';
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(value)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      // 编码坏了就退回普通文件名
+    }
+  }
+  return /filename="?([^";]+)"?/i.exec(value)?.[1] ?? null;
+}
+
+/** 把下载的文件存到本机（浏览器的下载）。 */
+export function saveFile(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = Object.assign(document.createElement('a'), { href: url, download: filename });
+  link.click();
+  // 点完马上释放的话，Safari、Firefox 有时还没开始下载链接就失效了；等一会儿再放
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
 /** 把任意异常变成一句可读的话。 */
 export function readableError(error: unknown, fallback = '操作没有成功，请稍后重试'): string {
   if (error instanceof ApiError) return error.message;

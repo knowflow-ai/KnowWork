@@ -30,6 +30,11 @@ function setup(onSend = vi.fn(async () => undefined)) {
     'GET /api/workspaces/default/conversations/mention-options/documents': jsonResponse({
       documents: [{ id: 'kb1/d1', title: '差旅办法', base: 'builtin.kb1', base_name: '报销制度' }],
     }),
+    // 输入框一选文件就传上去暂存
+    'POST /api/workspaces/default/attachments': jsonResponse({
+      items: [{ id: 'att_1', filename: '合同.docx', size: 6, status: 'staged' }],
+      failures: [],
+    }),
   });
   renderWithApp(<Composer running={false} onSend={onSend} />);
   return { api, onSend, input: screen.getByRole('textbox', { name: '消息' }) };

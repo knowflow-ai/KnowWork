@@ -16,6 +16,8 @@ export interface Me extends CurrentUser {
   readonly authMethod: string;
   /** API Key 身份才有范围；浏览器会话为 null。 */
   readonly scopes: readonly string[] | null;
+  /** 本部署启用了的扩展（按授权）：前端只显示这些扩展的入口。服务端没给（或登录后先写进缓存的那份）为 undefined */
+  readonly extensions?: readonly string[];
 }
 
 export interface LoginInput {
@@ -66,6 +68,7 @@ function parseMe(value: unknown): Me | null {
     ...user,
     authMethod: text(value.authMethod) ?? 'session',
     scopes: Array.isArray(value.scopes) ? strings(value.scopes) : null,
+    ...(Array.isArray(value.extensions) ? { extensions: strings(value.extensions) } : {}),
   };
 }
 

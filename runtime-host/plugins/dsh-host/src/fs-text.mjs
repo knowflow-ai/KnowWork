@@ -2,7 +2,8 @@
  * 文本文件的解码、行尾与字面编辑：逐条照官方 dsh-fs-local 的行为（那几个函数没有导出，只能照抄语义）。
  * - 读：前 8KB 有 NUL 当二进制，UTF-8 严格解码，原样返回不做行尾规整；
  * - 编辑：先把内容与 old/new 都规整成 LF 再匹配，写回时按读到的行尾风格还原；
- *   没找到报 FS_EDIT_NOT_FOUND，不是 replaceAll 却出现多处报 FS_AMBIGUOUS_EDIT。
+ *   没找到报 FS_EDIT_NOT_FOUND，不是 replaceAll 却出现多处报 FS_AMBIGUOUS_EDIT；
+ * - 补丁（apply_patch）：同样在 LF 文本上应用，写回时还原行尾（restoreLike）。
  */
 
 import { FsError } from '@deepseek-ai/dsh-fs'
@@ -24,14 +25,19 @@ export function normalizeLineEndings(content) {
   return content.replaceAll('\r\n', '\n')
 }
 
-function detectLineEndings(raw) {
+export function detectLineEndings(raw) {
   const sample = raw.slice(0, 4096)
   const crlf = sample.split('\r\n').length - 1
   return crlf > sample.split('\n').length - 1 - crlf ? 'CRLF' : 'LF'
 }
 
-function restoreLineEndings(content, lineEndings) {
+export function restoreLineEndings(content, lineEndings) {
   return lineEndings === 'LF' ? content : normalizeLineEndings(content).split('\n').join('\r\n')
+}
+
+/** 按 raw 原来的行尾风格写回 LF 规整过的 content。 */
+export function restoreLike(raw, content) {
+  return restoreLineEndings(content, detectLineEndings(raw))
 }
 
 function countOccurrences(content, needle) {

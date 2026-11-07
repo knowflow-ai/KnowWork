@@ -9,12 +9,16 @@
  * - 每次操作都是「宿主 → 业务服务 → docker exec」一个来回，能省则省：沙箱的 read 顺带返回 stat，读文件不先 stat，
  *   编辑用读回来的版本核对（读 + 写两次）；写入要先知道文件在不在、版本对不对（大文件不能为拿版本整个读一遍），
  *   probe 之后读旧内容不再 stat；
- * - 文本读取与字面编辑的语义见 fs-text.mjs；不支持监听（基类默认拒绝）。
+ * - 文本读取与字面编辑的语义见 fs-text.mjs；不支持监听（基类默认拒绝）；
+ * - 补丁、删除、移动（0.2.2-rc.1 起基类新增，官方 apply_patch 用它们）照 dsh-fs-local 0.2.2-rc.1 的语义：
+ *   目标不在或版本对不上报 FS_STALE_VERSION，不是普通文件报 FS_NOT_REGULAR_FILE，补丁对不上报 FS_PATCH_MISMATCH；
+ *   移动是「先写目标、再删源」两步，源删不掉时目标照样算写成，结果里写明 sourceDeleted: false。
  */
 
 import { FileSystem, FsError, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
+import { applyHunks } from '@deepseek-ai/dsh-fs-patch'
 import { posix } from 'node:path'
-import { applyLiteralEdit, decodeText, normalizeLineEndings } from './fs-text.mjs'
+import { applyLiteralEdit, decodeText, normalizeLineEndings, restoreLike } from './fs-text.mjs'
 import { SandboxCallError, createSandboxClient, sessionPath, sessionRoot } from './sandbox-client.mjs'
 
 const READ_CHUNK = 4 * 1024 * 1024
@@ -70,6 +74,12 @@ export default class RemoteFileSystem extends FileSystem {
     } finally {
       if (this.locks.get(key) === tail) this.locks.delete(key)
     }
+  }
+
+  /** 几个目标一起改（移动）：按固定顺序逐个排队，两个移动互相等不会死锁。 */
+  async withLocks(keys, op) {
+    const [first, ...rest] = [...new Set(keys)].sort()
+    return first === undefined ? op() : this.withLock(first, () => this.withLocks(rest, op))
   }
 
   locate(path, cwd) {
@@ -266,6 +276,96 @@ export default class RemoteFileSystem extends FileSystem {
       throwIfAborted(signal, 'edit')
       const version = await this.put(target, written, signal)
       return { version, before, after }
+    })
+  }
+
+  /**
+   * 读出要改的文件：读回来的 stat 带着版本，一次来回。不在报 FS_STALE_VERSION（调用方读过它，现在没了就是变了），
+   * 不是普通文件由沙箱按错误码报，版本对不上报 FS_STALE_VERSION。
+   */
+  async readForChange(target, expected, verb, signal) {
+    let whole
+    try {
+      whole = await this.readWhole(target, signal, MAX_TEXT_BYTES)
+    } catch (error) {
+      if (error instanceof FsError && error.code === 'FS_NOT_FOUND') {
+        throw new FsError(`cannot ${verb} "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
+      }
+      throw error
+    }
+    if (expected && whole.stat?.version !== expected.version) {
+      throw new FsError(`cannot ${verb} "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
+    }
+    const raw = decodeText(whole.bytes, verb, target.displayPath)
+    return { raw, content: normalizeLineEndings(raw), size: whole.bytes.length }
+  }
+
+  patchContent(target, before, hunks) {
+    const result = applyHunks(before, hunks)
+    if (!result.ok) {
+      throw new FsError(`cannot patch "${target.displayPath}": hunk at patch line ${result.failure.hunkLineNumber} (${result.failure.stage}) does not match`, 'FS_PATCH_MISMATCH')
+    }
+    return result.after
+  }
+
+  async patchText(target, hunks, expected, signal) {
+    return this.withLock(String(target.targetKey), async () => {
+      const original = await this.readForChange(target, expected, 'patch', signal)
+      const after = this.patchContent(target, original.content, hunks)
+      throwIfAborted(signal, 'patch')
+      const version = await this.put(target, restoreLike(original.raw, after), signal)
+      return { version, before: original.content, after }
+    })
+  }
+
+  async deleteFile(target, expected, signal) {
+    return this.withLock(String(target.targetKey), async () => {
+      const info = await this.probe(target, 'delete', signal)
+      if (info === undefined) throw new FsError(`cannot delete "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
+      if (info.kind !== 'f') throw new FsError(`cannot delete "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
+      if (expected && info.version !== expected.version) {
+        throw new FsError(`cannot delete "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
+      }
+      const before = info.size < DIFF_BASIS_MAX_BYTES
+        ? await this.readText(target, signal).then(normalizeLineEndings, () => null) : null
+      throwIfAborted(signal, 'delete')
+      await this.call('delete', target, {}, 'delete', signal)
+      return { before }
+    })
+  }
+
+  async moveFile(source, destination, options, signal) {
+    if (String(source.targetKey) === String(destination.targetKey)) {
+      throw new FsError(`cannot move "${source.displayPath}" to itself`, 'FS_SAME_TARGET')
+    }
+    return this.withLocks([String(source.targetKey), String(destination.targetKey)], async () => {
+      const original = await this.readForChange(source, options.expectedSource, 'move', signal)
+      const existing = await this.probe(destination, 'write', signal)
+      const expected = options.expectedDestination
+      if (existing !== undefined && existing.kind !== 'f') {
+        throw new FsError(`cannot write "${destination.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
+      }
+      if (expected?.kind === 'replaceIfVersion') {
+        if (existing === undefined) throw new FsError(`cannot write "${destination.displayPath}": file no longer exists`, 'FS_STALE_VERSION')
+        if (existing.version !== expected.version) throw new FsError(`cannot write "${destination.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
+      } else if (expected?.kind === 'createIfAbsent' && existing !== undefined) {
+        throw new FsError(`cannot overwrite existing "${destination.displayPath}" without reading it first`, 'FS_NOT_OBSERVED')
+      }
+      const after = options.hunks === undefined ? original.content : this.patchContent(source, original.content, options.hunks)
+      const content = restoreLike(original.raw, after)
+      const before = existing !== undefined && Buffer.byteLength(content, 'utf8') < DIFF_BASIS_MAX_BYTES
+        ? await this.readText(destination, signal).then(normalizeLineEndings, () => null) : null
+      throwIfAborted(signal, 'move')
+      const version = await this.put(destination, content, signal)
+      const outcome = { operation: existing === undefined ? 'create' : 'update', version, before, after }
+      const sourceBefore = original.size < DIFF_BASIS_MAX_BYTES ? original.content : null
+      try {
+        await this.call('delete', source, {}, 'delete', undefined)
+      } catch (error) {
+        if (!(error instanceof FsError)) throw error
+        return { sourceBefore, destination: outcome, sourceDeleted: false, sourceFailure: { code: error.code, message: error.message } }
+      }
+      return { sourceBefore, destination: outcome, sourceDeleted: true }
     })
   }
 }

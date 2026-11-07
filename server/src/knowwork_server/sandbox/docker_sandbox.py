@@ -22,6 +22,8 @@ from .execution import ExecRequest, RawExec, run
 from .paths import WORKSPACE_DIR, check_name, resolve, resolve_writable
 from .scripts import (
     CONVERT_OFFICE,
+    DELETE_FILE,
+    EXTRACT_TEXT,
     FILE_ERRORS,
     LIST_DIR,
     PREPARE_WRITE,
@@ -40,6 +42,7 @@ NOT_STARTED = "这个会话还没有沙箱"
 SOFFICE = "/opt/knowwork/office/soffice.py"
 RECALC = "/opt/knowwork/office/recalc.py"
 CONVERTIBLE = frozenset({"doc", "docx", "odt", "rtf", "ppt", "pptx", "odp"})
+EXTRACTABLE = frozenset({"pdf", "docx", "pptx"})
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,12 @@ class DockerSessionSandbox:
 
     # -- 合同 ---------------------------------------------------------------
 
+    async def prepare(self, workspace_id: str, session_id: str) -> None:
+        """把会话容器备好（不在就新建、停了就启动，新建时照常重放附件），别的不做。用户在输入框里加了附件就预热：
+        容器空闲 30 分钟会被回收，发送时现建、现重放要多等一两秒。"""
+        async with self._containers.using(SandboxKey.of(workspace_id, session_id)):
+            pass
+
     async def put_input(self, workspace_id: str, session_id: str, name: str, data: bytes) -> SandboxFile:
         check_name(name)
         if len(data) > self._max_input:
@@ -266,6 +275,32 @@ class DockerSessionSandbox:
             raise SandboxError(f"公式重算失败（{detail.strip() or '没有输出'}）")
         return result.stdout
 
+    async def extract_text(self, workspace_id: str, session_id: str, extension: str, data: bytes, *,
+                           max_bytes: int, timeout_seconds: float) -> bytes:
+        """不经版面模型直接提取文字（会话附件用：一两秒就好）。和格式转换一样放在容器的私有临时目录里，提取完即删；
+        外来文档的解析风险留在断网、无凭证的沙箱里。"""
+        if extension not in EXTRACTABLE:
+            raise SandboxError("这种文件不能直接提取文字")
+        if len(data) > self._max_input:
+            raise SandboxTooLarge("文件超出提取上限")
+        directory = f"/tmp/kw-extract-{secrets.token_hex(8)}"
+        tar = build([Entry(f"{directory.lstrip('/')}/in.{extension}", 0, 0, 0o600, data)])
+        async with self._containers.using(SandboxKey.of(workspace_id, session_id)) as container_id:
+            await self._engine.put_archive(str(container_id), "/", tar)
+            result = await self._run(str(container_id), ["sh", "-c", EXTRACT_TEXT, "kw", directory, extension,
+                                                         str(max_bytes)],
+                                     timeout=timeout_seconds, cap=max_bytes, workdir="/", user="root")
+        if result.timed_out:
+            raise SandboxError("文字提取超时")
+        if result.exit_code == 9 or result.truncated:
+            raise SandboxTooLarge("提取出的文字超出上限")
+        if result.exit_code == 11:
+            raise SandboxError("沙箱内存不足，文字提取被系统终止，请让管理员调高沙箱内存上限")
+        if result.exit_code != 0:
+            detail = result.stderr.decode("utf-8", errors="replace")[-300:]
+            raise SandboxConversionFailed(f"文字提取失败（{detail.strip() or '没有输出'}）")
+        return result.stdout
+
     async def destroy(self, workspace_id: str, session_id: str) -> None:
         await self._containers.destroy(SandboxKey.of(workspace_id, session_id))
 
@@ -313,6 +348,15 @@ class DockerSessionSandbox:
             raise SandboxError("文件操作失败") from error
         return FileChunk(path=target, size=int(size), offset=offset, data=data[:limit],
                          version=f"{mtime}:{inode}:{size}")
+
+    async def delete_file(self, workspace_id: str, session_id: str, path: str) -> None:
+        """删一个文件（官方 apply_patch 的删除与移动用）。同写入：附件目录里的不让删。还没有容器时什么文件都不存在。"""
+        target = resolve_writable(path)
+        result = await self._script(workspace_id, session_id, DELETE_FILE, [target], create=False)
+        if result is None:
+            raise SandboxFileError(FILE_ERRORS[3], FILE_ERROR_CODES[3])
+        if result.exit_code != 0:
+            raise _file_error(result)
 
     async def write_file(self, workspace_id: str, session_id: str, path: str, data: bytes) -> int:
         target = resolve_writable(path)

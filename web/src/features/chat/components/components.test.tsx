@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '../../../test/user';
-import { renderWithApp } from '../../../test/render';
+import { jsonResponse, renderWithApp, routeFetch } from '../../../test/render';
 import { register } from '../../../slots/registry';
 import { ApprovalCard } from './ApprovalCard';
 import { AnswerActions } from './AnswerActions';
@@ -236,7 +236,20 @@ describe('Composer', () => {
     expect(onStop).toHaveBeenCalled();
   });
 
-  it('附件：选文件后显示在输入框上方，可以移除，随消息发出后清空；超过 20 MiB 的不加入', async () => {
+  it('附件：选文件后马上传上去、显示在输入框上方，可以移除（服务端那份也删），随消息发出后清空；超过 20 MiB 的不加入', async () => {
+    let uploaded = 0;
+    const { calls, fetchMock } = routeFetch({
+      'POST /api/workspaces/default/attachments': () => {
+        uploaded += 1;
+        return jsonResponse({
+          items: [{ id: `att_${uploaded}`, filename: 'x', size: 4, status: 'staged' }],
+          failures: [],
+        });
+      },
+      'DELETE /api/workspaces/default/attachments/*': new Response(null, { status: 204 }),
+      'GET /api/workspaces/default/conversations/mention-options': jsonResponse({ bases: [], services: [] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
     const onSend = vi.fn(async () => undefined);
     renderWithApp(<Composer running={false} onSend={onSend} />);
     const contract = new File(['合同正文'], '合同.docx');
@@ -247,12 +260,54 @@ describe('Composer', () => {
     expect(await screen.findByText('录像.mp4 超过 20 MiB，没有加入')).toBeInTheDocument();
     const rail = screen.getByRole('list', { name: '待发送的附件' });
     expect(within(rail).getByText('合同.docx')).toBeInTheDocument();
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2));
+    await waitFor(() => expect(within(rail).queryByText('上传中')).not.toBeInTheDocument());
     await userEvent.click(within(rail).getByRole('button', { name: '移除 明细.csv' }));
     expect(within(rail).queryByText('明细.csv')).not.toBeInTheDocument();
+    await waitFor(() => expect(calls.some((c) => c.method === 'DELETE')).toBe(true));
     await userEvent.type(screen.getByRole('textbox'), '改一下付款条款');
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('改一下付款条款', 'followup', [contract], []));
+    const deleted = calls.find((c) => c.method === 'DELETE')?.path ?? '';
+    const kept = deleted.endsWith('att_1') ? 'att_2' : 'att_1';
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith(
+        '改一下付款条款',
+        'followup',
+        [{ id: kept, name: '合同.docx', size: contract.size }],
+        [],
+      ),
+    );
     await waitFor(() => expect(screen.queryByRole('list', { name: '待发送的附件' })).not.toBeInTheDocument());
+    vi.unstubAllGlobals();
+  });
+
+  it('还在上传时就移除了：等它传上去，服务端那份马上删掉', async () => {
+    let release: () => void = () => undefined;
+    const uploaded = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { calls, fetchMock } = routeFetch({
+      'POST /api/workspaces/default/attachments': async () => {
+        await uploaded;
+        return jsonResponse({
+          items: [{ id: 'att_7', filename: 'a.txt', size: 1, status: 'staged' }],
+          failures: [],
+        });
+      },
+      'DELETE /api/workspaces/default/attachments/*': new Response(null, { status: 204 }),
+      'GET /api/workspaces/default/conversations/mention-options': jsonResponse({ bases: [], services: [] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithApp(<Composer running={false} onSend={vi.fn(async () => undefined)} />);
+    fireEvent.change(screen.getByLabelText('选择文件'), { target: { files: [new File(['a'], 'a.txt')] } });
+    const rail = screen.getByRole('list', { name: '待发送的附件' });
+    expect(within(rail).getByText('上传中')).toBeInTheDocument();
+    await userEvent.click(within(rail).getByRole('button', { name: '移除 a.txt' }));
+    release();
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'DELETE' && c.path.endsWith('/att_7'))).toBe(true),
+    );
+    vi.unstubAllGlobals();
   });
 
   it('发送失败时保留内容并提示', async () => {

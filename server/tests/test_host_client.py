@@ -11,9 +11,11 @@ from knowwork_server.kernel.contract import (
     KernelError,
     KnowledgeCatalog,
     KnowledgeEntry,
+    OutlineEntry,
     QuestionAnswer,
     QuestionAnswerItem,
     SessionNotFound,
+    SessionOwner,
     SessionPolicy,
     SessionSpec,
     SkillGate,
@@ -125,11 +127,42 @@ async def test_send_carries_turn_attachments_only_when_present():
     kernel = HostKernel("http://h", "t" * 32, client=client)
     file = TurnAttachment(name="合同.docx", path="/workspace/input/合同.docx", bytes=10, sha256="a" * 64,
                           extracted_path="/workspace/input/合同.md")
+    pending = file.model_copy(update={"extraction_pending": True})
     await kernel.send("s1", TurnInput(text="改一下", attachments=(file,)))
     await kernel.send("s1", TurnInput(text="再看看"))
+    await kernel.send("s1", TurnInput(text="还在解析", attachments=(pending,)))
     assert seen[0]["attachments"] == [{"name": "合同.docx", "path": "/workspace/input/合同.docx", "bytes": 10,
                                        "sha256": "a" * 64, "extractedPath": "/workspace/input/合同.md"}]
     assert "attachments" not in seen[1]
+    assert seen[2]["attachments"][0]["extractionPending"] is True, "解析还没完成要告诉宿主，那个文件现在还没有"
+    assert "extractionPending" not in seen[0]["attachments"][0]
+    assert "textChars" not in seen[0]["attachments"][0], "没有可读的文字时不带"
+
+
+async def test_send_carries_the_reading_plan():
+    """给模型读的文字：放得下的带全文，放不下的带字数、页数与目录。"""
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(202, json={"messageId": "m1", "mode": "followup"})
+
+    client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t" * 32, client=client)
+    small = TurnAttachment(name="说明.txt", path="/workspace/input/说明.txt", bytes=6, sha256="a" * 64,
+                           text="付款 30 天", text_chars=6)
+    big = TurnAttachment(name="年报.pdf", path="/workspace/input/年报.pdf", bytes=9, sha256="b" * 64,
+                         extracted_path="/workspace/input/年报.md", text_chars=90000, text_pages=30,
+                         outline=(OutlineEntry(line=1, text="第 1 页：封面"),), digest_path="/workspace/input/年报.导读.md",
+                         digest_pending=True)
+    await kernel.send("s1", TurnInput(text="看看", attachments=(small, big)))
+    first, second = seen[0]["attachments"]
+    assert (first["text"], first["textChars"]) == ("付款 30 天", 6) and "outline" not in first
+    assert (second["textChars"], second["textPages"], second["outline"]) == (90000, 30, [{"line": 1, "text": "第 1 页：封面"}])
+    assert "text" not in second
+    assert (second["digestPath"], second["digestPending"]) == ("/workspace/input/年报.导读.md", True)
+    assert "digestPath" not in first
+    await kernel.aclose()
     await kernel.aclose()
 
 
@@ -147,6 +180,23 @@ async def test_send_carries_the_chosen_language_or_the_one_resolved_from_the_pro
     await kernel.send("s1", TurnInput(text="Zleap-AI/SAG-Wiki", language="zh"))  # 聊天页选了中文
     await kernel.send("s1", TurnInput(text="总结一下", language="en"))
     assert [body["language"] for body in seen] == ["zh", "en", "zh", "en"]
+    await kernel.aclose()
+
+
+async def test_send_carries_the_time_zone_only_when_known():
+    """提问人的时区随消息给宿主；没有时不带，宿主用部署时区（IM、后台会话、工作流都走这条）。"""
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(202, json={"messageId": "m1", "mode": "followup"})
+
+    client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t" * 32, client=client)
+    await kernel.send("s1", TurnInput(text="这份合同到期了吗", time_zone="Asia/Shanghai"))
+    await kernel.send("s1", TurnInput(text="再看看"))
+    assert seen[0]["timeZone"] == "Asia/Shanghai"
+    assert "timeZone" not in seen[1]
     await kernel.aclose()
 
 
@@ -193,6 +243,23 @@ async def test_skills_token_and_gate_without_required_tool_reach_the_host():
     assert path == "/v1/sessions" and body["skills"] == {"token": "s" * 40}
     assert body["policy"] == {"gate": {"maxNudges": 1}} and "tools" not in body
     assert (method, rotate_path, rotate_body) == ("PUT", "/v1/sessions/s1/skill-credential", {"token": "n" * 40})
+    await kernel.aclose()
+
+
+async def test_the_owner_reaches_the_host_only_when_given():
+    """对话的属主（空间、人）随打开会话带给宿主：宿主上的多用户适配层据此记录、过滤属主级资源（定时任务）。"""
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content or b"{}"))
+        return httpx.Response(201, json={"sessionId": "s1", "status": "idle", "epoch": "e1"})
+
+    client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t" * 32, client=client)
+    await kernel.open_session(SessionSpec(session_id="s1", owner=SessionOwner(workspace_id="ws_a", user_id="u1")))
+    await kernel.open_session(SessionSpec(session_id="s2"))
+    assert seen[0]["owner"] == {"workspaceId": "ws_a", "userId": "u1"}
+    assert "owner" not in seen[1]
     await kernel.aclose()
 
 

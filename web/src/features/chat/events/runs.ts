@@ -299,6 +299,18 @@ export function onMessage(state: ChatState, event: V1Event, runId: string): Chat
       ? onAsked(state, event, runId, value, attachments, mentions)
       : state;
   }
+  if (role === 'trigger') {
+    const trigger = {
+      id: event.itemId ?? `trigger-${runId}`,
+      source: str(event.data.source) ?? 'unknown',
+      text: value,
+      time: event.time,
+    };
+    // 只认一轮的第一条：Agent 正忙时官方把后台任务、子 Agent 做完的通知塞进当前这一轮，那一轮不是它发起的
+    return updateRun(withRun(state, runId, event.time), runId, (r) =>
+      r.trigger !== undefined || r.asked.length > 0 ? r : { ...r, trigger },
+    );
+  }
   if (!value) return state;
   if (role !== undefined && role !== 'assistant') return state;
   return updateRun(withRun(state, runId, event.time), runId, (r) => ({

@@ -12,10 +12,15 @@
   `chart`（可选）说怎么把这张表画成图：`{type, x, y, series?}`，type 是 line / bar / pie，x 是横轴（饼图的分类）那一列，
   y 是要画的数值列（一列或几列，界面一次画一列、可以切换），series 是按它分成几条线的那一列；都写列名，对不上表里的列
   就不带图。画什么由工具定（例如问数按结果的形状推断），界面只照着画，用户可以在兼容的图形之间切换、也可以切回表；
+  `drill`（可选）说哪几列的取值能点着往下钻：`{name, ref, columns}`，name 是扩展在前端插槽 chat.card.drill 里登记的
+  组件名，ref 原样交给它（例如查询编号），columns 是能点的那几列（列名，对不上表里的列的去掉，一列都不剩就不带）；
+  前端没登记那个组件时值不能点，下钻本身由扩展的接口判权；
 - provenance：出处。`label` 是最前面那个词（如「口径」），`text` 一行说明，`items` 展开后的明细 `{name, value}`，
   `code` 是展开后的代码块（如 SQL，`code_language` 标语言），`open` 为真时默认展开；`actions` 是这张卡上的操作
-  `{name, ref}`（最多 3 个）：name 是扩展在前端插槽 chat.card.actions 里登记的操作名，ref 原样交给它（例如查询编号）。
-  前端没登记的操作不显示；操作本身由扩展的接口判权，这里只管形状。
+  `{name, ref}`（最多 6 个）：name 是扩展在前端插槽 chat.card.actions 里登记的操作名，ref 原样交给它（例如查询编号）。
+  前端没登记的操作不显示；操作本身由扩展的接口判权，这里只管形状；
+- suggestions：几个可以接着问的问题（例如查不了时的换个问法、示例问题）。`title`、`text`（可选）是标题与一段说明，
+  `questions` 是问题（最多 6 个），界面上点了就在这个对话里问；一个问题都没有的不要。
 
 这里只做形状校验与截断，界面只渲染文本、不渲染 HTML。认不出的卡片丢掉、不让整份失败；一张都认不出时返回 None。
 工具执行完与投影给前端时各过一次：前者限制回执里存多少，后者是交给浏览器前的最后一道。
@@ -35,10 +40,13 @@ MAX_ITEMS = 20
 MAX_CODE = 20_000
 MAX_BYTES = 256 * 1024
 COLUMN_KINDS = ("number", "text", "date")
-MAX_ACTIONS = 3
+MAX_ACTIONS = 6
 CHART_TYPES = ("line", "bar", "pie")
 MAX_CHART_Y = 8
 MAX_REF = 256
+MAX_DRILL_REF = 4000  # 下钻编号可以带着前面钻过的几步（例如看板卡片），比操作的 ref 长；超了不截，整个不带
+MAX_QUESTIONS = 6
+MAX_QUESTION = 200
 ACTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
@@ -62,6 +70,8 @@ def _card(item: Any) -> dict[str, Any] | None:
         return _table(item)
     if item.get("type") == "provenance":
         return _provenance(item)
+    if item.get("type") == "suggestions":
+        return _suggestions(item)
     return None
 
 
@@ -78,9 +88,21 @@ def _table(item: dict[str, Any]) -> dict[str, Any] | None:
              "row_count": row_count if isinstance(row_count, int) and row_count >= len(shown) else len(shown),
              "more_rows": item.get("more_rows") is True}
     title, subtitle = _text(item.get("title")), _text(item.get("subtitle"))
-    chart = _chart(item.get("chart"), {c["name"] for c in columns})
+    names = {c["name"] for c in columns}
+    chart, drill = _chart(item.get("chart"), names), _drill(item.get("drill"), names)
     return {**table, **({"title": title} if title else {}), **({"subtitle": subtitle} if subtitle else {}),
-            **({"chart": chart} if chart else {})}
+            **({"chart": chart} if chart else {}), **({"drill": drill} if drill else {})}
+
+
+def _drill(value: Any, names: set[str]) -> dict[str, Any] | None:
+    """能下钻的那几列：组件名合规、有编号（截断了就对不上，超长的不带）、列都在表里。"""
+    if not isinstance(value, dict) or not isinstance(value.get("name"), str) or not ACTION_NAME.fullmatch(value["name"]):
+        return None
+    ref, columns = value.get("ref"), value.get("columns")
+    if not isinstance(ref, str) or not ref.strip() or len(ref) > MAX_DRILL_REF or not isinstance(columns, list):
+        return None
+    kept = list(dict.fromkeys(c for c in columns if isinstance(c, str) and c in names))
+    return {"name": value["name"], "ref": ref, "columns": kept} if kept else None
 
 
 def _chart(value: Any, names: set[str]) -> dict[str, Any] | None:
@@ -132,6 +154,20 @@ def _provenance(item: dict[str, Any]) -> dict[str, Any] | None:
     if actions:
         card["actions"] = actions
     return card
+
+
+def _suggestions(item: dict[str, Any]) -> dict[str, Any] | None:
+    raw = item.get("questions") if isinstance(item.get("questions"), list) else []
+    questions: list[str] = []
+    for value in raw:
+        question = value.strip()[:MAX_QUESTION] if isinstance(value, str) else ""
+        if question and question not in questions:
+            questions.append(question)
+    if not questions:
+        return None
+    title, text = _text(item.get("title")), _text(item.get("text"))
+    return {"type": "suggestions", **({"title": title} if title else {}), **({"text": text} if text else {}),
+            "questions": questions[:MAX_QUESTIONS]}
 
 
 def _actions(value: Any) -> list[dict[str, str]]:

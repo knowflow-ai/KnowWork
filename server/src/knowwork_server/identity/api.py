@@ -57,7 +57,9 @@ async def _holds(check: WorkspaceCheck, principal: Principal, workspace_id: str)
 
 
 def build_router(identity: Identity, *, is_admin: WorkspaceCheck = _no_workspace,
-                 can_bind_workspace: WorkspaceCheck = _no_workspace) -> APIRouter:
+                 can_bind_workspace: WorkspaceCheck = _no_workspace, extensions: tuple[str, ...] = ()) -> APIRouter:
+    """extensions：本部署启用了的扩展名（按授权），随当前用户信息给前端：前端只显示启用了的扩展的入口，
+    装了扩展、没授权的不在侧栏留一个点开就加载失败的菜单。"""
     router = APIRouter(prefix="/api/auth")
     workspace = APIRouter(prefix="/api/workspaces/{workspace_id}")
     Who = Annotated[Principal, Depends(identity.get_principal)]
@@ -133,7 +135,7 @@ def build_router(identity: Identity, *, is_admin: WorkspaceCheck = _no_workspace
         if user is None:
             raise unauthorized()
         scopes = sorted(who.scopes) if who.scopes is not None else None
-        return {**_user_view(user), "authMethod": who.auth_method, "scopes": scopes}
+        return {**_user_view(user), "authMethod": who.auth_method, "scopes": scopes, "extensions": list(extensions)}
 
     @workspace.post("/invitations", status_code=201)
     async def invite(workspace_id: WorkspacePath, body: InviteBody, who: Who):

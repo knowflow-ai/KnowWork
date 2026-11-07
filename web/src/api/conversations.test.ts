@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  browserTimeZone,
   cancelRun,
   createConversation,
   decideApproval,
@@ -56,9 +57,11 @@ describe('conversations api', () => {
     });
     expect(send?.body).not.toHaveProperty('dropped_conditions');
     expect(send?.body).not.toHaveProperty('answer_mode');
+    const zone = browserTimeZone();
     expect(resend?.body).toEqual({
       text: '再答',
       mode: 'followup',
+      ...(zone ? { time_zone: zone } : {}),
       answer_mode: 'quick',
       dropped_conditions: ['部门 = 财务部'],
       mentions: [
@@ -73,6 +76,28 @@ describe('conversations api', () => {
     expect(rename).toMatchObject({ method: 'PATCH', body: { title: '新名' } });
     expect(remove?.method).toBe('DELETE');
     expect(eventsUrl('c 1')).toBe('/api/workspaces/default/conversations/c%201/events');
+  });
+
+  it('发消息带上浏览器时区（模型按它算「今天」）；取不到时不带', async () => {
+    const api = routeFetch({
+      'POST /api/workspaces/default/conversations/*/messages': jsonResponse({ messageId: 'm' }, 202),
+    });
+    const real = Intl.DateTimeFormat;
+    const zoned = vi
+      .spyOn(Intl, 'DateTimeFormat')
+      .mockImplementation(
+        () => ({ resolvedOptions: () => ({ timeZone: 'Asia/Shanghai' }) }) as Intl.DateTimeFormat,
+      );
+    await sendMessage('c1', '合同到期了吗', 'followup');
+    zoned.mockImplementation(() => {
+      throw new RangeError('no time zone');
+    });
+    await sendMessage('c1', '再看看', 'followup');
+    zoned.mockRestore();
+    expect(Intl.DateTimeFormat).toBe(real);
+    const [withZone, withoutZone] = api.calls;
+    expect(withZone?.body).toMatchObject({ time_zone: 'Asia/Shanghai' });
+    expect(withoutZone?.body).not.toHaveProperty('time_zone');
   });
 
   it('列表分页：带游标、解析下一页，坏数据丢弃', async () => {

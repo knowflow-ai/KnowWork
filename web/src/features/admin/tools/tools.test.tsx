@@ -341,6 +341,8 @@ describe('工具与 MCP 页', () => {
     ).toBeInTheDocument();
     const read = within(drawer).getByRole('heading', { name: '只读工具' }).closest('section') as HTMLElement;
     expect(within(read).getByText('search')).toBeInTheDocument();
+    // 说明很长时只占剩下的宽度、超出省略，三档那一列不被挤出抽屉
+    expect(within(read).getByText('search').closest('td')).toHaveClass('is-ellipsis');
     const policy = within(drawer).getByRole('radiogroup', { name: 'create_issue 怎么调用' });
     await userEvent.click(within(policy).getByRole('radio', { name: '禁用' }));
     await userEvent.click(within(read).getByRole('button', { name: '挪到写入组' }));

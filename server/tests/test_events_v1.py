@@ -187,11 +187,52 @@ def test_user_messages_are_projected_into_the_current_run_and_injected_ones_are_
     [event] = events
     assert (event["type"], event["kind"], event["item_id"], event["run_id"]) == ("item.completed", "message", "u-1", "run-3")
     assert event["data"] == {"role": "user", "text": "宿舍退宿有什么规定？"}
-    for source in ("runtime-context", "agent-message", "subagent-settled"):
+    # 子 Agent、后台任务做完的通知另投影成 trigger（见下面两条），这里只看纯注入的上下文
+    for source in ("runtime-context", "agent-message", "skill-catalog"):
         injected = {**mine, "id": "x", "source": {"kind": source}}
         assert project(state, "session/event", session("user/message", injected), seq=3)[1] == []
     empty = {**mine, "content": [{"type": "image", "url": "x"}]}
     assert project(state, "session/event", session("user/message", empty), seq=4)[1] == []
+
+
+def test_schedule_reminders_become_a_trigger_with_the_task_prompts():
+    """定时任务到点投进来的消息（source=schedule）不当用户的话，投影成 role=trigger 的消息，文字是任务的提示词
+    （照官方 dsh-schedule 的单条与合并两种提醒正文取）；认不出来就给全文。"""
+    state, _ = project(ProjectionState(), "session/event", session("turn/start", {"turn": 2}), seq=1)
+
+    def reminder(text, id_="s-1"):
+        message = {"id": id_, "role": "user", "source": {"kind": "schedule"}, "content": [{"type": "text", "text": text}]}
+        [event] = project(state, "session/event", session("user/message", message), seq=2)[1]
+        return event
+
+    single = ('[SCHEDULE REMINDER]\n说明\nschedule_id_json: "t1"\noccurrence_at: 2026-11-06T01:00:00Z\n'
+              'reminder_prompt_json: "写日报：\\n列出今天的进展"')
+    event = reminder(single)
+    assert (event["kind"], event["item_id"], event["run_id"]) == ("message", "s-1", "run-2")
+    assert event["data"] == {"role": "trigger", "source": "schedule", "text": "写日报：\n列出今天的进展"}
+    batch = "\n".join(["[SCHEDULE REMINDER BATCH]", "说明", "reminders_json: " + json.dumps([
+        {"schedule_id": "t1", "occurrence_at": "x", "reminder_prompt": "写日报"},
+        {"schedule_id": "t2", "occurrence_at": "x", "reminder_prompt": "看看库存"}])])
+    assert reminder(batch)["data"]["text"] == "写日报\n\n看看库存"
+    assert reminder("官方改了正文格式")["data"]["text"] == "官方改了正文格式"
+    assert reminder("reminder_prompt_json: {坏的")["data"]["text"] == "reminder_prompt_json: {坏的"
+
+
+def test_finished_background_work_that_opens_a_turn_is_a_trigger_with_the_official_summary():
+    """后台任务、后台子 Agent 做完时 Agent 正空闲，官方自己开一轮：同样投影成 role=trigger，文字取官方写在来源上的摘要，
+    没有摘要给全文。"""
+    state, _ = project(ProjectionState(), "session/event", session("turn/start", {"turn": 4}), seq=1)
+
+    def notice(kind, text, summary=None):
+        source = {"kind": kind, "form": "notice", **({"summary": summary} if summary is not None else {})}
+        message = {"id": "n-1", "role": "user", "source": source, "content": [{"type": "text", "text": text}]}
+        [event] = project(state, "session/event", session("user/message", message), seq=2)[1]
+        return event["data"]
+
+    assert notice("tool-jobs", "长通知……", "bash npm test [status: exited, code 0]") == {
+        "role": "trigger", "source": "tool-jobs", "text": "bash npm test [status: exited, code 0]"}
+    assert notice("subagent-settled", "全文", "Subagent s2 finished.")["text"] == "Subagent s2 finished."
+    assert notice("tool-jobs", "只有全文")["text"] == "只有全文"
 
 
 def test_question_frames_become_one_input_request_item():
@@ -253,12 +294,19 @@ def test_question_frames_without_id_are_dropped(kind):
     assert one(S0, kind, {"questions": []})[1] == []
 
 
-def test_attachment_handles_become_attachments_not_text():
+@pytest.mark.parametrize("extracted", [
+    '[Markdown extracted from "合同 \\"终版\\".docx" by the document parser, saved at "/workspace/input/x.md".]',
+    # 解析还没完成时的那句（runtime-host attachment-handles.mjs 的 pendingText），同一个开头
+    ('[Markdown extracted from "合同 \\"终版\\".docx" by the document parser is not ready yet: parsing is still '
+     'running and the result will be saved at "/workspace/input/x.md".]'),
+    # 给模型读的全文或目录（contentsText）：整篇文档不能出现在用户的气泡里
+    '[Contents of "合同 \\"终版\\".docx" (12 characters, the text of "/workspace/input/x.md"), included in full.]\n付款 30 天',
+])
+def test_attachment_handles_become_attachments_not_text(extracted):
     """宿主在用户原话后附的文件说明块（逐字照官方 fileHandleText）不进显示文字，换成附件列表；路径不给浏览器。"""
     state, _ = project(ProjectionState(), "session/event", session("turn/start", {"turn": 1}), seq=1)
     handle = ('[File "合同 \\"终版\\".docx" (2048 bytes, sha256:aaaaaaaa): verbatim read-only copy saved at '
               '"/workspace/input/合同 \\"终版\\".docx". Read that path with your file tools when its contents are needed.]')
-    extracted = '[Markdown extracted from "合同 \\"终版\\".docx" by the document parser, saved at "/workspace/input/x.md".]'
     message = {"id": "u1", "source": {"kind": "user"},
                "content": [{"type": "text", "text": "帮我改付款条款"}, {"type": "text", "text": handle},
                            {"type": "text", "text": extracted}]}

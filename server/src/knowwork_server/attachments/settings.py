@@ -19,12 +19,20 @@ class AttachmentSettings(BaseSettings):
     mineru_request_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
     # 一次解析（提交 + 轮询 + 取结果）的总时限；超过按「服务超时」处理，可重试
     mineru_parse_timeout_seconds: float = Field(default=600.0, gt=0, le=6 * 3600)
-    mineru_poll_interval_seconds: float = Field(default=2.0, gt=0, le=60)
+    mineru_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
     # MinerU 同时最多接几个解析：所有 worker 进程共用这个名额（附件与知识库一起算），按 MinerU 的 max_concurrent_requests 设
     mineru_max_concurrency: int = Field(default=3, ge=1, le=64)
 
     attachment_max_bytes: int = Field(default=20 * MIB, gt=0, le=512 * MIB)
     attachment_max_files_per_request: int = Field(default=10, ge=1, le=100)
+    # 给模型读附件：单个附件的文字不超过这么多字就整篇放进这一轮（模型不用调工具读文件）；一轮所有附件合计不超过
+    # 第二个数。超过的只给字数、页数和目录，模型按行号分段读（attachments/reading.py）
+    attachment_inline_chars: int = Field(default=20_000, ge=0, le=500_000)
+    attachment_inline_total_chars: int = Field(default=40_000, ge=0, le=1_000_000)
+    # 生成导读时同时调几次模型（各段要点并发写）：本地模型别打满
+    attachment_digest_concurrency: int = Field(default=4, ge=1, le=32)
+    # 输入框里传上来、一直没发出去的附件留多久（小时），到时由 attachment.expire 删掉
+    attachment_staged_ttl_hours: float = Field(default=24.0, gt=0, le=24 * 30)
     # 总尝试次数：3 = 首次 + 服务超时时最多重试 2 次
     attachment_parse_max_attempts: int = Field(default=3, ge=1, le=10)
     attachment_parse_retry_delay_seconds: float = Field(default=30.0, ge=0, le=3600)

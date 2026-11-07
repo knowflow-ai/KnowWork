@@ -7,6 +7,13 @@ import type { StreamHandlers } from '../../api/sse';
 import type { WireEvent } from './events/types';
 import { useAnswerMode } from '../../stores/answerMode';
 import { useReplyLanguage } from '../../stores/replyLanguage';
+import { browserTimeZone } from '../../api/conversations';
+
+/** 发消息的请求体原文：浏览器时区跟在 language 后面（sendMessage 的字段顺序），时区按跑测试的机器取。 */
+function sentBody({ text, mode, language, ...rest }: Record<string, unknown>): string {
+  const zone = browserTimeZone();
+  return JSON.stringify({ text, mode, language, ...(zone ? { time_zone: zone } : {}), ...rest });
+}
 
 const streams: StreamHandlers[] = [];
 vi.mock('../../api/sse', () => ({
@@ -21,8 +28,12 @@ const { default: ChatPage } = await import('./ChatPage');
 
 type Call = { url: string; method?: string; body?: string | FormData };
 let calls: Call[] = [];
+/** 输入框暂存附件的地址（还没有会话也能传） */
+const STAGE = '/api/workspaces/default/attachments';
 /** 附件上传的应答；测试里按需改成有失败的。 */
 let uploadReply: unknown = { items: [], failures: [] };
+/** 查附件状态的应答（等解析时轮询它）。 */
+let listReply: unknown = { items: [] };
 
 beforeEach(() => {
   streams.length = 0;
@@ -33,7 +44,10 @@ beforeEach(() => {
       calls.push({ url, method: init?.method, body: init?.body as string | FormData | undefined });
       if (url === '/api/workspaces/default/conversations' && init?.method === 'POST')
         return jsonResponse({ id: 'c-new', title: 't' }, 201);
-      if (url.endsWith('/attachments') && init?.method === 'POST') return jsonResponse(uploadReply, 201);
+      if (url === STAGE && init?.method === 'POST') return jsonResponse(uploadReply);
+      if (url.startsWith(`${STAGE}?`)) return jsonResponse(listReply);
+      if (url.startsWith(`${STAGE}/`) && init?.method === 'DELETE')
+        return new Response(null, { status: 204 });
       if (url === '/api/workspaces/default/conversations/mention-options')
         return jsonResponse(MENTION_OPTIONS);
       return jsonResponse({ messageId: 'm1' }, 202);
@@ -44,6 +58,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   uploadReply = { items: [], failures: [] };
+  listReply = { items: [] };
   window.localStorage.clear();
   useReplyLanguage.setState({ language: 'zh' });
   useAnswerMode.setState({ mode: 'agent' });
@@ -120,7 +135,7 @@ describe('ChatPage', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     await waitFor(() =>
       expect(calls.find((c) => c.url.endsWith('/messages'))?.body).toBe(
-        '{"text":"Zleap-AI/SAG-Wiki","mode":"followup","language":"en","answer_mode":"agent"}',
+        sentBody({ text: 'Zleap-AI/SAG-Wiki', mode: 'followup', language: 'en', answer_mode: 'agent' }),
       ),
     );
   });
@@ -133,14 +148,14 @@ describe('ChatPage', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     await waitFor(() =>
       expect(calls.find((c) => c.url.endsWith('/messages'))?.body).toBe(
-        '{"text":"报销标准是多少","mode":"followup","language":"zh","answer_mode":"quick"}',
+        sentBody({ text: '报销标准是多少', mode: 'followup', language: 'zh', answer_mode: 'quick' }),
       ),
     );
   });
 
-  it('附件：先传到这个会话，再带着附件 id 发消息；消息上方显示文件', async () => {
+  it('附件：一选文件就传上去暂存，发消息时带上附件 id；消息上方显示文件', async () => {
     uploadReply = {
-      items: [{ id: 'att_1', filename: '合同.docx', size: 9, status: 'ready', inputName: '合同.docx' }],
+      items: [{ id: 'att_1', filename: '合同.docx', size: 9, status: 'staged' }],
       failures: [],
     };
     renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
@@ -148,21 +163,209 @@ describe('ChatPage', () => {
     fireEvent.change(screen.getByLabelText('选择文件'), {
       target: { files: [new File(['合同正文'], '合同.docx')] },
     });
+    await waitFor(() => expect(calls.some((c) => c.url === STAGE && c.method === 'POST')).toBe(true));
+    const upload = calls.find((c) => c.url === STAGE);
+    expect((upload?.body as FormData).getAll('files').map((f) => (f as File).name)).toEqual(['合同.docx']);
     await userEvent.type(screen.getByRole('textbox'), '改一下付款条款');
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     await waitFor(() =>
       expect(calls.find((c) => c.url.endsWith('/messages'))?.body).toBe(
-        '{"text":"改一下付款条款","mode":"followup","language":"zh","answer_mode":"agent","attachments":["att_1"]}',
+        sentBody({
+          text: '改一下付款条款',
+          mode: 'followup',
+          language: 'zh',
+          answer_mode: 'agent',
+          attachments: ['att_1'],
+        }),
       ),
     );
-    const upload = calls.find((c) => c.url === '/api/workspaces/default/conversations/c1/attachments');
-    expect((upload?.body as FormData).getAll('files').map((f) => (f as File).name)).toEqual(['合同.docx']);
+    expect(calls.some((c) => c.url.includes('/conversations/c1/attachments'))).toBe(false);
     expect(
       within(screen.getByRole('list', { name: '这条消息带的附件' })).getByText('合同.docx'),
     ).toBeInTheDocument();
   });
 
-  it('附件没有全部收下时消息不发，并说明是哪个文件', async () => {
+  it('新对话：还没有会话时就传上去，发首条时才建会话、带上附件 id', async () => {
+    uploadReply = { items: [{ id: 'att_9', filename: '年报.pdf', size: 9, status: 'staged' }], failures: [] };
+    renderWithApp(<ChatPage />, { route: '/chat', path: '/chat' });
+    fireEvent.change(screen.getByLabelText('选择文件'), {
+      target: { files: [new File(['%PDF-'], '年报.pdf')] },
+    });
+    await waitFor(() => expect(calls.some((c) => c.url === STAGE)).toBe(true));
+    expect(calls.some((c) => c.url === '/api/workspaces/default/conversations')).toBe(false);
+    await userEvent.type(screen.getByRole('textbox'), '总结一下');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() =>
+      expect(
+        JSON.parse(String(calls.find((c) => c.url.endsWith('/c-new/messages'))?.body)).attachments,
+      ).toEqual(['att_9']),
+    );
+  });
+
+  it('加附件时预热对话；发出去马上清空输入框、显示「思考中」，不等发送接口；发送失败把文字和附件放回输入框', async () => {
+    uploadReply = {
+      items: [{ id: 'att_1', filename: '合同.docx', size: 9, status: 'staged' }],
+      failures: [],
+    };
+    const original = globalThis.fetch;
+    let reply: (response: Response) => void = () => undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) => {
+        if (!url.endsWith('/messages')) return original(url, init);
+        calls.push({ url, method: init?.method, body: init?.body as string | undefined });
+        return new Promise<Response>((resolve) => {
+          reply = resolve;
+        });
+      }),
+    );
+    renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    fireEvent.change(screen.getByLabelText('选择文件'), {
+      target: { files: [new File(['合同正文'], '合同.docx')] },
+    });
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === '/api/workspaces/default/conversations/c1/warm')).toBe(true),
+    );
+    await waitFor(() => expect(calls.some((c) => c.url === STAGE && c.method === 'POST')).toBe(true));
+    await userEvent.type(screen.getByRole('textbox'), '改一下付款条款');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() => expect(calls.some((c) => c.url.endsWith('/messages'))).toBe(true));
+    expect(screen.getByRole('textbox')).toHaveValue('');
+    expect(screen.getByText('思考中')).toBeInTheDocument();
+    expect(screen.getByText('改一下付款条款')).toBeInTheDocument();
+    await act(async () => reply(jsonResponse({ detail: '沙箱暂时不可用' }, 503)));
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('改一下付款条款'));
+    expect(screen.queryByText('思考中')).not.toBeInTheDocument();
+    expect(screen.getByText('合同.docx')).toBeInTheDocument();
+  });
+
+  it('新对话：按了发送马上换成这条消息和「思考中」，不等建会话；建好进会话页', async () => {
+    const original = globalThis.fetch;
+    let created: () => void = () => undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) =>
+        url === '/api/workspaces/default/conversations' && init?.method === 'POST'
+          ? new Promise<Response>((resolve) => {
+              created = () => resolve(jsonResponse({ id: 'c-new', title: 't' }, 201));
+            })
+          : original(url, init),
+      ),
+    );
+    renderWithApp(<ChatPage />, {
+      route: '/chat',
+      path: '/chat',
+      extraRoutes: { '/chat/:conversationId': <ChatPage /> },
+    });
+    await userEvent.type(screen.getByRole('textbox'), '帮我写周报');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(await screen.findByText('思考中')).toBeInTheDocument();
+    expect(screen.getByText('帮我写周报')).toBeInTheDocument();
+    expect(screen.queryByText('有什么可以帮你？')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toHaveValue('');
+    act(() => created());
+    await waitFor(() => expect(screen.getByText('正在连接…')).toBeInTheDocument());
+    expect(screen.getByText('帮我写周报')).toBeInTheDocument();
+  });
+
+  it('新对话建不成：换回欢迎页，刚才的话放回输入框', async () => {
+    const original = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) =>
+        url === '/api/workspaces/default/conversations' && init?.method === 'POST'
+          ? Promise.resolve(jsonResponse({ detail: '宿主暂时不可用' }, 503))
+          : original(url, init),
+      ),
+    );
+    renderWithApp(<ChatPage />, { route: '/chat', path: '/chat' });
+    await userEvent.type(screen.getByRole('textbox'), '帮我写周报');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('帮我写周报'));
+    expect(screen.getByText('有什么可以帮你？')).toBeInTheDocument();
+    expect(screen.queryByText('思考中')).not.toBeInTheDocument();
+  });
+
+  it('附件还在解析：点了发送先等着，卡片上显示解析中，解析完自动发出去', async () => {
+    const pdf = { id: 'att_1', filename: '年报.pdf', size: 9, status: 'staged', parseStatus: 'parsing' };
+    uploadReply = { items: [pdf], failures: [] };
+    listReply = { items: [pdf] };
+    renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    fireEvent.change(screen.getByLabelText('选择文件'), {
+      target: { files: [new File(['%PDF-'], '年报.pdf')] },
+    });
+    const draft = await screen.findByRole('list', { name: '待发送的附件' });
+    expect(await within(draft).findByText('解析中')).toBeInTheDocument();
+    await userEvent.type(screen.getByRole('textbox'), '总结一下');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(await screen.findByText('解析完自动发送')).toBeInTheDocument();
+    expect(calls.some((c) => c.url.endsWith('/messages'))).toBe(false);
+    listReply = { items: [{ ...pdf, parseStatus: 'ready' }] };
+    await waitFor(
+      () =>
+        expect(calls.find((c) => c.url.endsWith('/messages'))?.body).toBe(
+          sentBody({
+            text: '总结一下',
+            mode: 'followup',
+            language: 'zh',
+            answer_mode: 'agent',
+            attachments: ['att_1'],
+          }),
+        ),
+      { timeout: 4000 },
+    );
+    expect(calls.find((c) => c.url.startsWith(`${STAGE}?`))?.url).toBe(`${STAGE}?ids=att_1`);
+  });
+
+  it('长文档解析完还在生成导读：卡片上显示做到第几段，点了发送等导读做完再发', async () => {
+    const pdf = {
+      id: 'att_1',
+      filename: '年报.pdf',
+      size: 9,
+      status: 'staged',
+      parseStatus: 'ready',
+      digestStatus: 'digesting',
+      digestDone: 3,
+      digestTotal: 10,
+    };
+    uploadReply = { items: [pdf], failures: [] };
+    listReply = { items: [pdf] };
+    renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    fireEvent.change(screen.getByLabelText('选择文件'), {
+      target: { files: [new File(['%PDF-'], '年报.pdf')] },
+    });
+    const draft = await screen.findByRole('list', { name: '待发送的附件' });
+    expect(await within(draft).findByText('生成导读 3/10')).toBeInTheDocument();
+    await userEvent.type(screen.getByRole('textbox'), '总结全文');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(await screen.findByText('导读生成完自动发送')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '不等了，直接发送' })).toBeInTheDocument();
+    expect(calls.some((c) => c.url.endsWith('/messages'))).toBe(false);
+    listReply = { items: [{ ...pdf, digestStatus: 'ready', digestDone: 10 }] };
+    await waitFor(() => expect(calls.some((c) => c.url.endsWith('/messages'))).toBe(true), {
+      timeout: 4000,
+    });
+  });
+
+  it('解析太久可以不等：点「直接发送」马上发出去', async () => {
+    const pdf = { id: 'att_1', filename: '年报.pdf', size: 9, status: 'staged', parseStatus: 'parsing' };
+    uploadReply = { items: [pdf], failures: [] };
+    listReply = { items: [pdf] };
+    renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    fireEvent.change(screen.getByLabelText('选择文件'), {
+      target: { files: [new File(['%PDF-'], '年报.pdf')] },
+    });
+    await userEvent.type(screen.getByRole('textbox'), '总结一下');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await userEvent.click(await screen.findByRole('button', { name: '不等了，直接发送' }));
+    await waitFor(() => expect(calls.some((c) => c.url.endsWith('/messages'))).toBe(true));
+  });
+
+  it('传不上去的文件马上提示原因、从输入框里去掉；移除的附件服务端那份也删', async () => {
     uploadReply = {
       items: [],
       failures: [{ filename: 'a.exe', code: 'unsupported_format', message: '不支持这种文件' }],
@@ -170,10 +373,16 @@ describe('ChatPage', () => {
     renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
     act(() => streams[0]?.onStatus?.('connected'));
     fireEvent.change(screen.getByLabelText('选择文件'), { target: { files: [new File(['MZ'], 'a.exe')] } });
-    await userEvent.type(screen.getByRole('textbox'), '看看');
-    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     expect(await screen.findByText(/a\.exe：不支持这种文件/)).toBeInTheDocument();
-    expect(calls.some((c) => c.url.endsWith('/messages'))).toBe(false);
+    await waitFor(() => expect(screen.queryByRole('list', { name: '待发送的附件' })).not.toBeInTheDocument());
+    uploadReply = { items: [{ id: 'att_2', filename: 'b.txt', size: 1, status: 'staged' }], failures: [] };
+    fireEvent.change(screen.getByLabelText('选择文件'), { target: { files: [new File(['b'], 'b.txt')] } });
+    const draft = await screen.findByRole('list', { name: '待发送的附件' });
+    await waitFor(() => expect(within(draft).queryByText('上传中')).not.toBeInTheDocument());
+    await userEvent.click(within(draft).getByRole('button', { name: '移除 b.txt' }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'DELETE' && c.url === `${STAGE}/att_2`)).toBe(true),
+    );
   });
 
   it('撤掉回答上方的检索条件：用同一个问题重新回答，带上这一轮要去掉的条件', async () => {
@@ -197,7 +406,13 @@ describe('ChatPage', () => {
     await userEvent.click(await screen.findByRole('button', { name: '撤掉「部门 = 财务部」重新回答' }));
     await waitFor(() =>
       expect(calls.filter((c) => c.url.endsWith('/messages')).at(-1)?.body).toBe(
-        '{"text":"财务部的报销标准","mode":"followup","language":"zh","answer_mode":"agent","dropped_conditions":["部门 = 财务部"]}',
+        sentBody({
+          text: '财务部的报销标准',
+          mode: 'followup',
+          language: 'zh',
+          answer_mode: 'agent',
+          dropped_conditions: ['部门 = 财务部'],
+        }),
       ),
     );
   });
@@ -272,7 +487,7 @@ describe('ChatPage', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', metaKey: true });
     await waitFor(() =>
       expect(calls.find((c) => c.url.endsWith('/messages'))?.body).toBe(
-        '{"text":"顺便加上目录","mode":"steer","language":"zh","answer_mode":"agent"}',
+        sentBody({ text: '顺便加上目录', mode: 'steer', language: 'zh', answer_mode: 'agent' }),
       ),
     );
     expect(screen.getByText('顺便加上目录')).toBeInTheDocument();
@@ -292,7 +507,7 @@ describe('ChatPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '重新生成' }));
     await waitFor(() =>
       expect(calls.filter((c) => c.url.endsWith('/messages')).at(-1)?.body).toBe(
-        '{"text":"顺便加上目录","mode":"followup","language":"zh","answer_mode":"agent"}',
+        sentBody({ text: '顺便加上目录', mode: 'followup', language: 'zh', answer_mode: 'agent' }),
       ),
     );
   });

@@ -215,6 +215,10 @@ def build_internal_router(sandbox: DockerSessionSandbox, tokens: TokenVerifier, 
         await sandbox.write_file(claims.workspace_id, claims.session_id, path, data)
         return {"stat": _stat(await sandbox.stat_path(claims.workspace_id, claims.session_id, path, follow=True))}
 
+    async def do_delete(claims: ToolTokenClaims, body: _PathBody, _request: Request) -> dict[str, Any]:
+        await sandbox.delete_file(claims.workspace_id, claims.session_id, container_path(claims, body.path))
+        return {}
+
     async def do_ssh_identity(claims: ToolTokenClaims, _body: _Body, _request: Request) -> dict[str, Any]:
         if ssh is None:
             raise SshUnavailable("这个部署没有打开流式执行")
@@ -223,7 +227,8 @@ def build_internal_router(sandbox: DockerSessionSandbox, tokens: TokenVerifier, 
 
     routes: dict[str, tuple[type[_Body], Callable[[ToolTokenClaims, Any, Request], Awaitable[dict[str, Any]]]]] = {
         "exec": (_ExecBody, do_exec), "stat": (_StatBody, do_stat), "read": (_ReadBody, do_read),
-        "list": (_PathBody, do_list), "write": (_WriteBody, do_write), "ssh-identity": (_Body, do_ssh_identity),
+        "list": (_PathBody, do_list), "write": (_WriteBody, do_write), "delete": (_PathBody, do_delete),
+        "ssh-identity": (_Body, do_ssh_identity),
     }
 
     for operation, (model, run) in routes.items():
