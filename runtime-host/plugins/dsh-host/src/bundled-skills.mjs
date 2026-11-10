@@ -2,7 +2,8 @@
  * KnowWork 自带的技能（plugins/dsh-host/skills/<名字>/SKILL.md），交给 DSH 官方技能注册表。
  *
  * 现在是三个 Office 技能（Word、Excel、PPT），照搬自 KnowFlow（knowflow/server/deep_agent/skills/office-*），
- * 用原生 LibreOffice、pandoc、docx-js、pptxgenjs 与 /opt/knowwork/office 下的辅助脚本——这些都装在沙箱镜像里
+ * 和画示意图的 diagram（对话界面把 mermaid 代码块画成图，原来常驻在系统提示里，2026-11-09 改成要用时才加载）。
+ * Office 技能用原生 LibreOffice、pandoc、docx-js、pptxgenjs 与 /opt/knowwork/office 下的辅助脚本——这些都装在沙箱镜像里
  * （deploy/docker/sandbox.Dockerfile）。不用 DSH 官方的 dsh-skill-office：它绑定的 LibreOffice Kit 在 Linux 上只有
  * WASM 引擎，又慢又吃内存；它也没有修订模式、PPT 设计与必做质检这些内容。
  *
@@ -27,7 +28,9 @@ export const name = 'knowwork-bundled-skills'
 export const inject = ['skills']
 
 export const SKILL_ROOT = fileURLToPath(new URL('../skills/', import.meta.url))
+// Office 技能的辅助脚本在沙箱镜像里的目录；diagram 没有资源，不报目录（报了模型加载技能时会看到一个用不着的路径）
 const RESOURCE_BASE = '/opt/knowwork/office'
+const OFFICE = 'office-'
 
 /** 拆出 frontmatter 的 description 与正文（frontmatter 只用单行的 name、description）。 */
 export function parseSkill(raw, path) {
@@ -67,7 +70,7 @@ export function bundledCandidates() {
       provider: 'knowwork-bundled',
       source: 'bundled',
       rank: BUNDLED_SKILL_RANK,
-      resourceBase: { kind: 'directory', path: RESOURCE_BASE },
+      ...(skillName.startsWith(OFFICE) ? { resourceBase: { kind: 'directory', path: RESOURCE_BASE } } : {}),
       locator,
     })
   }))

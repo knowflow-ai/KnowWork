@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Protocol, TypeVar
 
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from ..kernel.contract import (
@@ -47,6 +48,7 @@ from .mention_kinds import MentionKinds
 from .models import Conversation, RunEvent
 from .pump import EventPump
 from .replay import Cursor, EventFeed, Outgoing
+from .scopes import ConversationScopes
 from .search import SearchHit, search_conversations
 from .tool_credentials import ToolCredentials
 from .turn_context import TurnContextHook, TurnContextRequest
@@ -81,6 +83,10 @@ async def _nothing() -> None:
 
 class ConversationNotFound(Exception):
     pass
+
+
+class ConversationExists(Exception):
+    """指定的对话 id 已经有了（扩展建后台对话时指定 id，见 background.py 的 LocalBackground）。"""
 
 
 class ProfileProvider(Protocol):
@@ -124,6 +130,7 @@ class ConversationService:
                  turn_context: TurnContextHook | None = None,
                  answer_modes: AnswerModes | None = None,
                  mention_kinds: MentionKinds | None = None,
+                 scopes: ConversationScopes | None = None,
                  resume_retry_delays: tuple[float, ...] = RESUME_RETRY_DELAYS) -> None:
         self._kernel = kernel
         self._sessionmaker = sessionmaker
@@ -145,6 +152,7 @@ class ConversationService:
         # 后来登记的 @ 类型这里就看不到（@ 了数据源报「不认识这种 @」）
         self._answer_modes = answer_modes if answer_modes is not None else AnswerModes()
         self._mention_kinds = mention_kinds if mention_kinds is not None else MentionKinds()
+        self._scopes = scopes if scopes is not None else ConversationScopes()
         self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
     @staticmethod
@@ -179,12 +187,21 @@ class ConversationService:
                 credentials.track(conversation)
 
     async def create(self, *, workspace_id: str, user_id: str, title: str = "",
-                     selection: TurnSelection = NO_SELECTION, background: bool = False) -> Conversation:
-        conversation = Conversation(id=f"c_{uuid.uuid4().hex}", workspace_id=workspace_id, user_id=user_id, title=title,
-                                    background=background)
+                     selection: TurnSelection = NO_SELECTION, background: bool = False,
+                     channel_id: str | None = None, source: str = "", conversation_id: str | None = None) -> Conversation:
+        """channel_id、source：从 IM 渠道来的会话记下渠道与平台（channels/service.py），「最近」里打来源标记。
+        conversation_id：扩展建后台对话时可以指定，拿自己的记录对上对话；已有同 id 的抛 ConversationExists。"""
+        conversation = Conversation(id=conversation_id or f"c_{uuid.uuid4().hex}", workspace_id=workspace_id,
+                                    user_id=user_id, title=title, background=background, channel_id=channel_id,
+                                    source=source)
         async with self._sessionmaker() as session:
+            if conversation_id is not None and await session.get(Conversation, conversation_id) is not None:
+                raise ConversationExists(conversation_id)
             session.add(conversation)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError as error:  # 别的空间有同 id 的（行级安全下看不见），主键撞上
+                raise ConversationExists(conversation.id) from error
         try:
             profile = await self._profile(conversation, selection)
             await self._kernel.open_session(await self._spec(conversation, resume=False, profile=profile))
@@ -238,6 +255,7 @@ class ConversationService:
             if self._attachments is None:
                 raise AttachmentUnavailable("附件功能没有开启")
             turn = turn.model_copy(update={"attachments": await self._attachments.for_turn(conversation, attachment_ids)})
+        turn = await self._fixed_mode(conversation, turn)
         turn = await self._with_mentions(conversation, turn)
         turn = await self._with_answer_mode(conversation, turn)
         lock = self._lock(conversation.id)
@@ -283,6 +301,14 @@ class ConversationService:
             profile = await self._profile(conversation, NO_SELECTION)
             await self._resume_then(conversation, profile, _nothing)
             await self._refresh_credentials(conversation)
+
+    async def _fixed_mode(self, conversation: Conversation, turn: TurnInput) -> TurnInput:
+        """扩展给这段对话定了回答方式（scopes.py）：每一轮都按它，输入框里选的不算。取不到范围抛 ScopeUnavailable，
+        这一轮不发。"""
+        scope = await self._scopes.of(conversation.workspace_id, conversation.id)
+        if scope is None or scope.answer_mode is None or scope.answer_mode == turn.answer_mode:
+            return turn
+        return turn.model_copy(update={"answer_mode": scope.answer_mode})
 
     async def _with_mentions(self, conversation: Conversation, turn: TurnInput) -> TurnInput:
         """扩展登记的 @（mention_kinds.py）：核对、交给扩展（例如问数把会话绑定到 @ 的数据源）。要在回答方式的指令算出来

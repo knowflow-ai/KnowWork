@@ -11,14 +11,14 @@ import { startHost, collectEvents, isTurnEnd } from './support/harness.mjs'
 import { startOpenAiStub } from './support/openai-stub.mjs'
 import { SKILL_ROOT, bundledSkillNames, parseSkill } from '../plugins/dsh-host/src/bundled-skills.mjs'
 
-test('自带技能按目录发现：Word、Excel、PPT 三个，frontmatter 都能解析，脚本路径指向 KnowWork 镜像', () => {
-  assert.deepEqual(bundledSkillNames(), ['office-docx', 'office-pptx', 'office-xlsx'])
+test('自带技能按目录发现：Word、Excel、PPT 三个和画示意图的 diagram，frontmatter 都能解析，Office 的脚本路径指向 KnowWork 镜像', () => {
+  assert.deepEqual(bundledSkillNames(), ['diagram', 'office-docx', 'office-pptx', 'office-xlsx'])
   for (const name of bundledSkillNames()) {
     const raw = readFileSync(join(SKILL_ROOT, name, 'SKILL.md'), 'utf8')
     const { description, content } = parseSkill(raw, name)
     assert.ok(description.length > 0 && content.length > 0, name)
     assert.ok(!raw.includes('/opt/knowflow') && !raw.includes('read_file'), `${name} 还留着 KnowFlow 的路径或工具名`)
-    assert.match(content, /present/, `${name} 没说怎么交付`)
+    if (name.startsWith('office-')) assert.match(content, /present/, `${name} 没说怎么交付`)
   }
 })
 
@@ -37,6 +37,7 @@ test('加载 Word 技能：正文原样交给模型，资源目录是容器里�
     const requests = gateway.requests.filter(r => r.path.endsWith('/chat/completions'))
     const catalog = JSON.stringify(requests[0].body.messages)
     assert.ok(catalog.includes('office-docx') && !catalog.includes('office-export-pdf'), '目录里还有官方 Office 技能')
+    assert.ok(catalog.includes('diagram'), '画示意图的自带技能不在模型看到的技能目录里')
     const loaded = requests.at(-1).body.messages.filter(m => m.role === 'tool').map(m => String(m.content)).join('\n')
     const body = parseSkill(readFileSync(join(SKILL_ROOT, 'office-docx', 'SKILL.md'), 'utf8'), 'x').content
     assert.ok(loaded.includes(body.slice(0, 200)), '正文没有原样交给模型')
@@ -53,7 +54,7 @@ test('业务服务能问到自带技能清单（技能页与 @ 菜单列出来�
   try {
     const { status, body: { skills } } = await host.call('GET', '/v1/skills/bundled')
     assert.equal(status, 200)
-    assert.deepEqual(skills.map(s => s.name), ['office-docx', 'office-pptx', 'office-xlsx'])
+    assert.deepEqual(skills.map(s => s.name), ['diagram', 'office-docx', 'office-pptx', 'office-xlsx'])
     assert.ok(skills.every(s => s.description.length > 0 && s.userInvocable === true))
   } finally {
     await host.stop()

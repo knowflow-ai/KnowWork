@@ -1,6 +1,6 @@
 """渠道与平台无关的部分：入站消息、各平台要实现的回发能力。"""
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -20,6 +20,9 @@ class IncomingMessage:
     message_id: str
     text: str
     display_name: str = ""
+    # 平台给的各种用户 ID，认人时按顺序对（identity/im_identities.py）：企业微信 userid；钉钉 userid；
+    # 飞书 user_id、open_id、union_id。键名和组织同步存别名用的一致
+    ids: Mapping[str, str] = field(default_factory=dict, compare=False)
     raw: Any = field(default=None, compare=False, repr=False)
 
     @property

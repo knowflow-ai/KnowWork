@@ -22,6 +22,7 @@ const LABELS: Readonly<Record<string, string>> = {
   job_kill: '停止后台任务',
   job_list: '查看后台任务',
   kw_now: '获取当前时间',
+  show_chart: '展示图表',
   skill: '加载技能',
   subagent: '交给子任务',
   send_message: '给子任务发消息',
@@ -37,6 +38,7 @@ const TARGET_KEY: Readonly<Record<string, string>> = {
   write: 'file_path',
   edit: 'file_path',
   skill: 'name',
+  show_chart: 'title',
 };
 
 // 会话工作目录（/sessions/<会话 id>）是内部路径，显示时去掉

@@ -8,6 +8,7 @@ from knowwork_server.extensions import ENTRY_GROUP, VERIFIER_GROUP, discover
 
 DEMO = EntryPoint("demo", "tests.extensions.demo:EXTENSION", ENTRY_GROUP)
 ADDON = EntryPoint("addon", "tests.extensions.demo:ADDON", ENTRY_GROUP)
+FREE = EntryPoint("free", "tests.extensions.demo:FREE", ENTRY_GROUP)
 
 
 def found(*entries: EntryPoint):
@@ -73,3 +74,12 @@ def test_an_extension_needs_the_ones_it_requires():
         ("demo", "授权里没有「demo」模块"), ("addon", "它依赖的扩展没有启用：demo")], "授权里只有 addon 也不启用"
     missing = discover(found(ADDON, verifier("granting_both")))
     assert [(s.name, s.reason) for s in missing.skipped] == [("addon", "它依赖的扩展没有启用：demo")], "没装 demo"
+
+
+@pytest.mark.parametrize("license_entry", [None, "Expired", "granting_other"])
+def test_an_extension_without_a_license_module_is_enabled_whatever_the_license(license_entry):
+    """闭源但不收费的扩展：没有授权、授权过期、授权里没有它，都照样启用；收费的扩展照旧按授权。"""
+    entries = (FREE, DEMO, verifier(license_entry)) if license_entry else (FREE, DEMO)
+    extensions = discover(found(*entries))
+    assert [e.name for e in extensions.active] == ["free"]
+    assert [s.name for s in extensions.skipped] == ["demo"]

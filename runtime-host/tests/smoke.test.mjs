@@ -30,20 +30,46 @@ test('系统提示用中文的企业助手人设，要求调工具前先说明�
     assert.ok(system.includes('KnowWork 企业智能助手'), `系统提示里没有人设：${system.slice(0, 300)}`)
     assert.ok(system.includes('调用工具前，先用一两句话告诉用户你要做什么'), '人设里没有工具前说明的要求')
     assert.ok(!system.includes('software engineer assistant'), '官方英文人设没有被替换')
-    assert.ok(system.includes('```mermaid'), '系统提示里没有说对话界面能显示 mermaid 图')
+    // 画 mermaid 示意图写在自带技能 diagram 里，要用时才加载，系统提示里不常驻（问数里会被引着在正文再画一遍图）
+    assert.ok(!system.includes('mermaid'), '系统提示里不该常驻 mermaid 的说明')
   } finally {
     await host.stop()
   }
 })
 
-test('换了人设（KNOWWORK_PERSONA）也还告诉模型对话界面能显示 mermaid 图', async () => {
+test('扩展给对话定的身份（例如专家）进系统提示、只换这个会话的人设，通用要求还在；身份清空回到默认人设', async () => {
+  const host = await startHost({ sequence: ['success', 'success', 'success'], successText: '好' })
+  try {
+    await host.call('POST', '/v1/sessions', { sessionId: 'expert-1' })
+    await host.call('POST', '/v1/sessions', { sessionId: 'plain-1' })
+    const persona = '你是专家「经营分析」：查销售、财务数据，按认证过的口径算数。'
+    await host.call('POST', '/v1/sessions/expert-1/messages', { text: '你是谁', context: { standing: '', turn: '', persona } })
+    await collectEvents(host, 'expert-1', isTurnEnd)
+    const expert = JSON.stringify(host.llm.requests.at(-1)?.body?.system ?? '')
+    assert.ok(expert.includes('你是专家「经营分析」'), `系统提示里没有专家的身份：${expert.slice(0, 300)}`)
+    assert.ok(!expert.includes('KnowWork 企业智能助手'), '部署人设没有被这个会话的身份替换')
+    assert.ok(expert.includes('调用工具前，先用一两句话告诉用户你要做什么'), '换了身份，人设后缀里的通用要求丢了')
+    await host.call('POST', '/v1/sessions/plain-1/messages', { text: '你是谁' })
+    await collectEvents(host, 'plain-1', isTurnEnd)
+    const plain = JSON.stringify(host.llm.requests.at(-1)?.body?.system ?? '')
+    assert.ok(plain.includes('KnowWork 企业智能助手') && !plain.includes('经营分析'), '别的会话不该受影响')
+    await host.call('POST', '/v1/sessions/expert-1/messages', { text: '还在吗', context: { standing: '', turn: '', persona: '' } })
+    await collectEvents(host, 'expert-1', (frame) => isTurnEnd(frame) && host.llm.requests.length >= 3)
+    const cleared = JSON.stringify(host.llm.requests.at(-1)?.body?.system ?? '')
+    assert.ok(cleared.includes('KnowWork 企业智能助手') && !cleared.includes('经营分析'), '身份清空后没回到默认人设')
+  } finally {
+    await host.stop()
+  }
+})
+
+test('换了人设（KNOWWORK_PERSONA）系统提示里是换上的人设', async () => {
   const host = await startHost({ sequence: ['success'], successText: '好' }, { KNOWWORK_PERSONA: '你是测试助手。' })
   try {
     await host.call('POST', '/v1/sessions', { sessionId: 'persona-2' })
     await host.call('POST', '/v1/sessions/persona-2/messages', { text: '你好' })
     await collectEvents(host, 'persona-2', isTurnEnd)
     const system = JSON.stringify(host.llm.requests[0]?.body?.system ?? '')
-    assert.ok(system.includes('你是测试助手。') && system.includes('```mermaid'), system.slice(0, 300))
+    assert.ok(system.includes('你是测试助手。') && !system.includes('KnowWork 企业智能助手'), system.slice(0, 300))
   } finally {
     await host.stop()
   }

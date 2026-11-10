@@ -169,12 +169,15 @@ test('扩展登记的回答方式：官方工具只剩放行的、业务工具�
     const asked = modelInput(host, 0)
     assert.ok(asked.lastIndexOf(SPEC.prompt) > asked.indexOf('查一下上个月的数'), '指令应当在提问之后')
     assert.ok(!asked.includes(RULE), '不该出现快速问答的指令')
+    // 扩展的方式不放行 skill，画示意图的自带技能（diagram，mermaid 的写法在里面）连名字也不该出现；切回智能体才有
+    assert.ok(!JSON.stringify(host.llm.requests[0].body).includes('diagram'), '扩展的方式下模型还看得到画示意图的技能')
     await host.call('POST', '/v1/sessions/am-ext/messages', { text: '帮我整理一下' })
     await collectEvents(host, 'am-ext', turnEnds(2))
     const back = toolNamesOf(host.llm.requests[1])
     assert.ok(['crm_lookup', 'knowledge_search', 'kw_echo', 'ext_lookup'].every(n => back.includes(n)), back.join(','))
     const later = modelInput(host, 1)
     assert.ok(later.lastIndexOf(SPEC.prompt) < later.indexOf('帮我整理一下'), '切回智能体后不应再有扩展方式的指令')
+    assert.ok(JSON.stringify(host.llm.requests[1].body).includes('diagram'), '切回智能体后画示意图的技能没回来')
   } finally {
     await host.stop()
     await stub.close()

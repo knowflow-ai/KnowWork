@@ -6,6 +6,7 @@ import {
   roleLabel,
   splitKey,
   SUBJECT_KINDS,
+  type Action,
   type Department,
   type Member,
   type UserGroup,
@@ -41,6 +42,8 @@ export interface Directory {
     readonly value: string;
     readonly label: string;
     readonly help?: string;
+    /** 能授哪几档；不给是三档都能 */
+    readonly actions?: readonly Action[];
   }[];
   /** 扩展给的知识源层级树（知识源 id → 树），授权时按树选。 */
   readonly trees: Readonly<Record<string, readonly GrantTreeNode[]>>;

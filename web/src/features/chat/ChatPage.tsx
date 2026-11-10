@@ -1,16 +1,16 @@
 /** 对话页：居中单栏消息列表 + 底部输入框。没有会话 id 时是新对话的欢迎页。 */
 import { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { chipsOf, type SentAttachment } from '../../api/attachments';
 import type { Mention } from '../../api/mentions';
 import { readableError } from '../../api/http';
-import type { AnswerMode } from '../../api/conversations';
+import { getConversationScope, type AnswerMode, type ConversationScope } from '../../api/conversations';
 import { currentAnswerMode, effectiveAnswerMode, useAnswerMode } from '../../stores/answerMode';
 import { slotItems } from '../../slots/registry';
 import { toast } from '../../ui/toastStore';
 import { CONVERSATIONS_KEY } from '../conversations/queries';
-import { Composer } from './components/Composer';
+import { Composer, DEFAULT_FOOTNOTE } from './components/Composer';
 import { MessageList } from './components/MessageList';
 import { ConversationView } from './ConversationView';
 import { chatReducer, initialChatState } from './events/reducer';
@@ -119,10 +119,49 @@ function NewChat() {
   );
 }
 
+/** 挂了范围的对话：顶部、开场、输入框下面那行字由扩展画（chat.scope），没登记顶部时只写范围的名字；占位文字写「问 xx…」。 */
+function scopeParts(conversationId: string, scope: ConversationScope) {
+  const items = slotItems('chat.scope');
+  const bars = items.flatMap(({ Bar }) => (Bar ? [Bar] : []));
+  const intros = items.flatMap(({ Intro }) => (Intro ? [Intro] : []));
+  const notes = items.flatMap(({ Footnote }) => (Footnote ? [Footnote] : []));
+  return {
+    scoped: true,
+    placeholder: `问${scope.label}…`,
+    top: bars.length ? (
+      bars.map((Bar, index) => <Bar key={index} conversationId={conversationId} label={scope.label} />)
+    ) : (
+      <div className="kw-chat-scope">{scope.label}</div>
+    ),
+    intro: intros.length
+      ? (ask: (text: string) => void) =>
+          intros.map((Intro, index) => <Intro key={index} conversationId={conversationId} ask={ask} />)
+      : undefined,
+    footnote: notes.length
+      ? notes.map((Footnote, index) => (
+          <Footnote key={index} conversationId={conversationId} fallback={DEFAULT_FOOTNOTE} />
+        ))
+      : undefined,
+  };
+}
+
 function ExistingChat({ conversationId }: { readonly conversationId: string }) {
   const location = useLocation();
   const firstMessage = (location.state as NavigationState | null)?.firstMessage;
-  return <ConversationView conversationId={conversationId} firstMessage={firstMessage} />;
+  // 扩展给这段对话定的范围：固定了回答方式就按它、不让换；取不到（接口出错）按没有范围，发消息时服务端照样按范围来
+  const scope = useQuery({
+    queryKey: ['conversations', conversationId, 'scope'],
+    queryFn: () => getConversationScope(conversationId),
+    staleTime: Infinity,
+  }).data;
+  return (
+    <ConversationView
+      conversationId={conversationId}
+      firstMessage={firstMessage}
+      answerMode={scope?.answerMode ?? undefined}
+      {...(scope ? scopeParts(conversationId, scope) : {})}
+    />
+  );
 }
 
 export default function ChatPage() {

@@ -17,7 +17,7 @@ from typing import Annotated, Literal
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sse_starlette.sse import EventSourceResponse
+from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from ..audit.context import annotate
 from ..kernel.contract import (
@@ -36,7 +36,8 @@ from .feedback import MAX_NOTE, RUN_ID, Feedback, FeedbackStore
 from .mention_kinds import MentionRejected
 from .mentions import MAX_MENTIONS, Mention, mentioned, turn_mentions
 from .models import Conversation
-from .replay import parse_cursor
+from .replay import Outgoing, parse_cursor
+from .scopes import ConversationScopes, ScopeUnavailable
 from .service import MAX_PAGE, AttachmentUnavailable, ConversationNotFound, ConversationService
 from .tool_credentials import ToolAccessRevoked, ToolCredentialUnavailable
 
@@ -64,6 +65,8 @@ class RenameConversation(BaseModel):
 
 def conversation_view(conversation: Conversation) -> dict:
     return {"id": conversation.id, "title": conversation.title,
+            # 从哪来：IM 机器人认人时私聊的会话为平台名（wecom 等），前端打来源标记；网页上开的为空
+            "source": getattr(conversation, "source", "") or "",
             "createdAt": conversation.created_at.isoformat() if conversation.created_at else None,
             "updatedAt": conversation.updated_at.isoformat() if conversation.updated_at else None}
 
@@ -226,7 +229,7 @@ def feedback_view(item: Feedback) -> dict:
 
 
 def build_router(service: ConversationService, current_actor: ActorDependency,
-                 feedback: FeedbackStore | None = None) -> APIRouter:
+                 feedback: FeedbackStore | None = None, scopes: ConversationScopes | None = None) -> APIRouter:
     router = APIRouter(prefix="/api/workspaces/{workspace_id}/conversations")
     Who = Annotated[Actor, Depends(current_actor)]
 
@@ -269,6 +272,16 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         conversation = await owned(conversation_id, who)
         return conversation_view(await service.rename(conversation, body.title))
 
+    @router.get("/{conversation_id}/scope")
+    async def scope(conversation_id: str, who: Who):
+        """对话的范围：扩展给它定的名字与固定的回答方式（scopes.py）；没有范围是 null"""
+        conversation = await owned(conversation_id, who)
+        try:
+            found = await scopes.of(conversation.workspace_id, conversation.id) if scopes else None
+        except ScopeUnavailable as error:
+            raise HTTPException(status_code=503, detail="这段对话的设置暂时取不到，请稍后再试") from error
+        return None if found is None else {"label": found.label, "answerMode": found.answer_mode}
+
     @router.delete("/{conversation_id}", status_code=204)
     async def remove(conversation_id: str, who: Who):
         """删除对话"""
@@ -292,6 +305,8 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
             raise HTTPException(status_code=422, detail=str(error)) from error
         except AnswerModeUnavailable as error:
             raise HTTPException(status_code=503, detail="这个回答方式暂时不可用，换一种试试") from error
+        except ScopeUnavailable as error:
+            raise HTTPException(status_code=503, detail="这段对话的设置暂时取不到，请稍后再试") from error
         except AttachmentUnavailable as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except CREDENTIAL_ERRORS as error:
@@ -401,17 +416,21 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         """对话事件流（SSE）"""
         conversation = await owned(conversation_id, who)
         feed = service.events(conversation, parse_cursor(last_event_id, after))
-
-        async def stream() -> AsyncIterator[dict]:
-            async for item in feed:
-                data = json.dumps(item.payload, ensure_ascii=False)
-                # 逐字片段不带 id：浏览器的 Last-Event-ID 只停在落库的事件上
-                yield ({"event": item.type, "data": data} if item.sse_id is None
-                       else {"id": item.sse_id, "event": item.type, "data": data})
-
-        return EventSourceResponse(stream(), ping=15)
+        return EventSourceResponse(event_stream(feed), ping=15)
 
     return router
+
+
+async def event_stream(feed: AsyncIterator[Outgoing]) -> AsyncIterator[dict | ServerSentEvent]:
+    """对话事件流的内容。一开头先发一行注释：还没有任何事件的对话（例如扩展先建好、还没问过的），经开发服务器这类 Node
+    代理时，响应头要等第一段内容才转给浏览器，不先发一行就要干等到第一个心跳（15 秒），页面一直写「正在连接…」。
+    浏览器那边注释行直接跳过（api/sse.ts）。"""
+    yield ServerSentEvent(comment="connected")
+    async for item in feed:
+        data = json.dumps(item.payload, ensure_ascii=False)
+        # 逐字片段不带 id：浏览器的 Last-Event-ID 只停在落库的事件上
+        yield ({"event": item.type, "data": data} if item.sse_id is None
+               else {"id": item.sse_id, "event": item.type, "data": data})
 
 
 def build_answer_modes_router(modes: AnswerModes, current_actor: ActorDependency) -> APIRouter:

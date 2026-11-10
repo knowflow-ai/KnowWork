@@ -333,11 +333,12 @@ async def test_send_carries_the_extension_context_only_when_computed():
 
     client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
     kernel = HostKernel("http://h", "t" * 32, client=client)
-    await kernel.send("s1", TurnInput(text="一", context=TurnContext(standing="你的记忆：用表格", turn="相关：A 项目")))
+    await kernel.send("s1", TurnInput(text="一", context=TurnContext(standing="你的记忆：用表格", turn="相关：A 项目",
+                                                                    persona="你是专家「经营分析」")))
     await kernel.send("s1", TurnInput(text="二", context=TurnContext()))
     await kernel.send("s1", TurnInput(text="三"))
-    assert seen[0]["context"] == {"standing": "你的记忆：用表格", "turn": "相关：A 项目"}
-    assert seen[1]["context"] == {"standing": "", "turn": ""}, "空的也要发：宿主据此说一句不再适用"
+    assert seen[0]["context"] == {"standing": "你的记忆：用表格", "turn": "相关：A 项目", "persona": "你是专家「经营分析」"}
+    assert seen[1]["context"] == {"standing": "", "turn": "", "persona": ""}, "空的也要发：宿主据此说一句不再适用、换回默认人设"
     assert "context" not in seen[2], "没算出来就不发，宿主沿用上一轮的"
     await kernel.aclose()
 

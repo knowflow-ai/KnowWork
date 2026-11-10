@@ -59,6 +59,9 @@ function RenameDialog({
   );
 }
 
+/** IM 机器人里私聊来的对话：标题后面标上是哪个平台（IM 认人，会话记在本人名下） */
+const SOURCES: Readonly<Record<string, string>> = { wecom: '企业微信', feishu: '飞书', dingtalk: '钉钉' };
+
 export function ConversationItem({ item }: { readonly item: ConversationSummary }) {
   const navigate = useNavigate();
   const remove = useDeleteConversation();
@@ -87,6 +90,7 @@ export function ConversationItem({ item }: { readonly item: ConversationSummary 
     <div className="kw-conversation-item">
       <NavLink to={to} className={linkClass} title={title}>
         <span className="kw-ellipsis">{title}</span>
+        {SOURCES[item.source] ? <span className="kw-conversation-source">{SOURCES[item.source]}</span> : null}
       </NavLink>
       <Menu>
         <Menu.Trigger>

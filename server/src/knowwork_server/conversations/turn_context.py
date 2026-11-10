@@ -54,8 +54,10 @@ class TurnContextHook:
         except Exception:
             log.warning("turn context for conversation %s unavailable", request.conversation_id, exc_info=True)
             return None
+        # 身份只能有一个：先登记的扩展说了算
         return TurnContext(standing=_joined([p.standing for p in parts], STANDING_MAX),
-                           turn=_joined([p.turn for p in parts], TURN_MAX))
+                           turn=_joined([p.turn for p in parts], TURN_MAX),
+                           persona=next((p.persona for p in parts if p.persona), ""))
 
 
 def _joined(texts: list[str], limit: int) -> str:

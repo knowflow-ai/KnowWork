@@ -6,6 +6,9 @@
 - POST   /api/workspaces/{ws}/channels/{id}/enabled                  启用、停用
 - DELETE /api/workspaces/{ws}/channels/{id}                          删除
 - GET    /api/workspaces/{ws}/channels/{id}/sessions                 最近在问的人（私聊、群里）
+- GET    /api/workspaces/{ws}/channels/{id}/strangers                认人的渠道里私聊了却没认出来的人
+- GET    /api/workspaces/{ws}/channels/identity-sources?platform=    认人可选的组织来源（同平台）
+- GET    /api/workspaces/{ws}/channels/answer-modes                  可选的回答方式（带群聊按哪类资源选）
 """
 
 from collections.abc import Awaitable, Callable
@@ -33,11 +36,13 @@ class ChannelBody(BaseModel):
     bot_name: str = Field(default="", max_length=100)
     secret: str | None = Field(default=None, max_length=512)
     settings: ChannelSettings = Field(default_factory=ChannelSettings)
+    # public 不认人（用渠道账号回答）；member 认人：私聊按提问人本人回答，settings.identity_source 选组织来源
+    audience: Literal["public", "member"] = "public"
 
     def input(self) -> ChannelInput:
         return ChannelInput(name=self.name, platform=self.platform, enabled=self.enabled, bot_id=self.bot_id,
                             bot_name=self.bot_name, secret=(self.secret or "").strip() or None,
-                            settings=self.settings)
+                            settings=self.settings, audience=self.audience)
 
 
 class EnabledBody(BaseModel):
@@ -59,6 +64,18 @@ def build_router(admin: ChannelAdmin, workspace_principal: PrincipalDependency) 
     router = APIRouter(tags=["channels"])
     Admin = Annotated[Principal, Depends(workspace_principal)]
     base = "/api/workspaces/{workspace_id}/channels"
+
+    @router.get(base + "/answer-modes")
+    async def answer_modes(workspace_id: IdPath, who: Admin):
+        """IM 渠道可选的回答方式"""
+        return {"items": [asdict(view) for view in await _call(admin.answer_modes(who.user_id, workspace_id))]}
+
+    @router.get(base + "/identity-sources")
+    async def identity_sources(workspace_id: IdPath, who: Admin,
+                               platform: Literal["wecom", "feishu", "dingtalk"] = "wecom"):
+        """IM 渠道认人可选的组织来源"""
+        found = await _call(admin.identity_sources(who.user_id, workspace_id, platform))
+        return {"items": [asdict(view) for view in found]}
 
     @router.get(base)
     async def list_channels(workspace_id: IdPath, who: Admin):
@@ -90,6 +107,12 @@ def build_router(admin: ChannelAdmin, workspace_principal: PrincipalDependency) 
     async def sessions(workspace_id: IdPath, channel_id: IdPath, who: Admin):
         """IM 渠道里的会话"""
         found = await _call(admin.sessions(who.user_id, workspace_id, channel_id))
+        return {"items": [asdict(view) for view in found]}
+
+    @router.get(base + "/{channel_id}/strangers")
+    async def strangers(workspace_id: IdPath, channel_id: IdPath, who: Admin):
+        """IM 渠道里没认出来的人"""
+        found = await _call(admin.strangers(who.user_id, workspace_id, channel_id))
         return {"items": [asdict(view) for view in found]}
 
     return router

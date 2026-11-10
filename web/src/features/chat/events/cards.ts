@@ -42,7 +42,29 @@ function chart(value: unknown, names: ReadonlySet<string>): TableChart | undefin
   const series = text(value.series);
   if (!names.has(x) || y.length === 0 || !y.every((v) => names.has(v) && v !== x)) return undefined;
   if (series && (!names.has(series) || series === x || y.includes(series))) return undefined;
-  return { type: value.type as TableChart['type'], x, y, ...(series ? { series } : {}) };
+  const groups = series ? undefined : groupsOf(value.groups, y);
+  return {
+    type: value.type as TableChart['type'],
+    x,
+    y,
+    ...(series ? { series } : {}),
+    ...(groups ? { groups } : {}),
+  };
+}
+
+/** 几列数值的分组：正好把 y 分完、每列只出现一次才要；不对就不分组（一列一列画），图照样画 */
+function groupsOf(value: unknown, y: readonly string[]): string[][] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const groups = value.filter(
+    (g): g is string[] => Array.isArray(g) && g.length > 0 && g.every((v) => typeof v === 'string'),
+  );
+  const flat = groups.flat();
+  const exact =
+    groups.length === value.length &&
+    flat.length === y.length &&
+    new Set(flat).size === flat.length &&
+    flat.every((name) => y.includes(name));
+  return exact ? groups.map((g) => [...g]) : undefined;
 }
 
 /** 下钻：组件名、编号都在，列都在表里才要 */

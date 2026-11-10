@@ -201,7 +201,7 @@ class WecomConnection:
                                external_id=external_id, chat_type="group" if group else "direct",
                                chat_id=str(body.get("chatid") or "") if group else "",
                                message_id=str(body.get("msgid") or ""), text=text,
-                               display_name=external_id, raw=frame)
+                               display_name=external_id, ids={"userid": external_id}, raw=frame)
 
     async def reply(self, message: IncomingMessage, text: str) -> None:
         if self.client is None:

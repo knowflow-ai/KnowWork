@@ -79,6 +79,7 @@ RLS_TABLES = (
     "document_parser",
     "channel",
     "channel_session",
+    "channel_stranger",
 )
 
 

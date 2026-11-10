@@ -1,6 +1,8 @@
 /**
- * 渠道：企业微信、飞书、钉钉机器人。机器人不认人，私聊、群聊都用渠道账号回答，只查选的知识库；问答记在
- * 渠道账号名下，运行记录里按它筛。一律长连接，服务器主动连出去，不用开入站端口。连接状态与最近一次错误在表里看。
+ * 渠道：企业微信、飞书、钉钉机器人。不认人的私聊、群聊都用渠道账号回答，只查选的资料（知识库，或回答方式要的那类资源），
+ * 问答记在渠道账号名下，
+ * 运行记录里按它筛；认人的私聊按提问人本人回答、记在本人名下，「谁在问」里显示成员姓名，另列没认出的人。
+ * 一律长连接，服务器主动连出去，不用开入站端口。连接状态与最近一次错误在表里看。
  */
 import { useState } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
@@ -8,14 +10,20 @@ import { Plus } from '@openai/apps-sdk-ui/components/Icon';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import {
+  BUILT_IN_CHANNEL_MODES,
   deleteChannel,
+  KNOWLEDGE_RESOURCE,
+  listChannelAnswerModes,
   listChannels,
   listChannelSessions,
+  listChannelStrangers,
   platformOf,
   setChannelEnabled,
   type Channel,
   type ChannelSession,
   type ChannelStatus,
+  type ChannelStranger,
+  type StrangerReason,
 } from '../../../api/channels';
 import { Sheet } from '../../../ui/Sheet';
 import { Skeleton } from '../../../ui/Skeleton';
@@ -47,6 +55,12 @@ function StatusCell({ channel }: { readonly channel: Channel }) {
   );
 }
 
+const REASONS: Readonly<Record<StrangerReason, string>> = {
+  unknown: '还没对上：没同步进来，也没用组织来源登录过',
+  inactive: '账号已停用或已离职',
+  not_member: '不是这个空间的成员',
+};
+
 /** 运行记录按渠道账号（和渠道同 id）筛，看最近 30 天的问答。 */
 const runsOf = (channel: Channel) =>
   `/admin/runs?${new URLSearchParams({ user: channel.id, days: '30' }).toString()}`;
@@ -56,20 +70,27 @@ function SessionsSheet({ channel, onClose }: { readonly channel: Channel; readon
     queryKey: [...KEYS.channels, channel.id, 'sessions'],
     queryFn: () => listChannelSessions(channel.id),
   });
+  const member = channel.audience === 'member';
+  const strangers = useQuery({
+    queryKey: [...KEYS.channels, channel.id, 'strangers'],
+    queryFn: () => listChannelStrangers(channel.id),
+    enabled: member,
+  });
   const columns: readonly Column<ChannelSession>[] = [
     {
       key: 'who',
       title: '提问人',
       width: 160,
       ellipsis: true,
-      render: (s) => s.displayName || s.externalId,
+      // 认出的人显示成员姓名；渠道账号回答的（群聊、不认人）显示平台上的名字
+      render: (s) => s.userName || s.displayName || s.externalId,
     },
     {
       key: 'where',
       title: '在哪',
       width: 160,
       ellipsis: true,
-      render: (s) => (s.chatType === 'group' ? `群 ${s.chatId}` : '私聊'),
+      render: (s) => (s.chatType === 'group' ? `群 ${s.chatId}` : s.userId ? '私聊 · 本人权限' : '私聊'),
     },
     { key: 'title', title: '第一个问题', ellipsis: true, render: (s) => s.title || '未命名' },
     { key: 'at', title: '最近提问', width: 170, render: (s) => formatDateTime(s.updatedAt) },
@@ -90,13 +111,59 @@ function SessionsSheet({ channel, onClose }: { readonly channel: Channel; readon
           empty={sessions.isError ? '加载失败，请刷新重试' : '还没有人提问'}
         />
       )}
+      {member ? <Strangers query={strangers} /> : null}
     </Sheet>
+  );
+}
+
+function Strangers({
+  query,
+}: {
+  readonly query: {
+    readonly isPending: boolean;
+    readonly isError: boolean;
+    readonly data?: readonly ChannelStranger[];
+  };
+}) {
+  const columns: readonly Column<ChannelStranger>[] = [
+    {
+      key: 'who',
+      title: '平台账号',
+      width: 160,
+      ellipsis: true,
+      render: (s) =>
+        s.displayName && s.displayName !== s.externalId
+          ? `${s.displayName}（${s.externalId}）`
+          : s.externalId,
+    },
+    { key: 'reason', title: '原因', ellipsis: true, render: (s) => REASONS[s.reason] },
+    { key: 'attempts', title: '次数', width: 70, render: (s) => s.attempts },
+    { key: 'at', title: '最近一次', width: 170, render: (s) => formatDateTime(s.lastAt) },
+  ];
+  return (
+    <>
+      <h3>没认出的人</h3>
+      <p className="kw-secondary">私聊了机器人却没认出来，没有回答。认出来以后会从这里消失。</p>
+      {query.isPending ? (
+        <Skeleton rows={2} />
+      ) : (
+        <Table<ChannelStranger>
+          rowKey={(s) => s.externalId}
+          columns={columns}
+          rows={query.data ?? []}
+          empty={query.isError ? '加载失败，请刷新重试' : '都认出来了'}
+        />
+      )}
+    </>
   );
 }
 
 export default function ChannelsPage() {
   // 连接中、出错时状态会变：每 10 秒刷新一次
   const channels = useQuery({ queryKey: KEYS.channels, queryFn: listChannels, refetchInterval: 10_000 });
+  const modes = useQuery({ queryKey: [...KEYS.channels, 'answer-modes'], queryFn: listChannelAnswerModes });
+  const modeOf = (c: Channel) =>
+    (modes.data ?? BUILT_IN_CHANNEL_MODES).find((m) => m.id === c.settings.answerMode);
   const [editing, setEditing] = useState<{ readonly item?: Channel } | null>(null);
   const [people, setPeople] = useState<Channel | null>(null);
   const toggle = useAction(
@@ -117,13 +184,29 @@ export default function ChannelsPage() {
       render: (c) => platformOf(c.platform).label,
     },
     { key: 'bot', title: '机器人', ellipsis: true, render: (c) => c.botName || c.botId },
+    {
+      key: 'audience',
+      title: '提问的人',
+      width: 110,
+      render: (c) => (c.audience === 'member' ? '认出是谁' : '不认人'),
+    },
     { key: 'status', title: '状态', width: 220, render: (c) => <StatusCell channel={c} /> },
     {
       key: 'bases',
-      title: '知识库',
-      width: 90,
-      align: 'right',
-      render: (c) => `${c.settings.bases.length} 个`,
+      title: '回答方式',
+      width: 150,
+      render: (c) => {
+        const mode = modeOf(c);
+        if (!mode) return c.settings.answerMode;
+        const count =
+          mode.resourceType === KNOWLEDGE_RESOURCE ? c.settings.bases.length : c.settings.resources.length;
+        // 认人的渠道私聊按本人权限，选的只管群聊：一个没选就是只开私聊
+        if (c.audience === 'member')
+          return count > 0
+            ? `${mode.label} · 群聊 ${count} 个${mode.resourceLabel}`
+            : `${mode.label} · 只开私聊`;
+        return `${mode.label} · ${count} 个${mode.resourceLabel}`;
+      },
     },
     { key: 'sessions', title: '对话', width: 90, align: 'right', render: (c) => `${c.sessions} 个` },
     {
@@ -144,7 +227,7 @@ export default function ChannelsPage() {
               key: 'delete',
               label: '删除',
               danger: true,
-              confirm: `删除渠道「${c.name}」？机器人会断开，授给它的知识库一并收回；运行记录里的问答还留着。`,
+              confirm: `删除渠道「${c.name}」？机器人会断开，授给它的知识库、数据这些权限一并收回；运行记录里的问答还留着。`,
               onClick: () => void remove.run(c.id),
             },
           ]}
@@ -155,7 +238,7 @@ export default function ChannelsPage() {
   return (
     <AdminPage
       title="渠道"
-      description="让员工在企业微信、飞书、钉钉里直接向智能助手提问，不用登录 KnowWork。机器人只查给它选的知识库，谁能找到机器人由 IM 平台的可见范围决定。"
+      description="让员工在企业微信、飞书、钉钉里直接向智能助手提问，不用登录 KnowWork。机器人只查给它选的资料，谁能找到机器人由 IM 平台的可见范围决定。"
     >
       <Toolbar
         right={

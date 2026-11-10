@@ -12,8 +12,12 @@
 - GET  /internal/background/conversations/{id}?user_id=          最近一轮：status（running / completed / cancelled /
                                                                   failed，还没开始是 pending）、asking（在等用户回答）、answer
 - POST /internal/background/conversations/{id}/cancel            取消正在跑的一轮，body {user_id}
+
+业务服务进程里的扩展用 LocalBackground 替用户建对话：判定和上面一样，只是不走 HTTP；能指定对话 id，扩展先拿这个 id
+记下自己的东西（例如对话挂的专家），建对话时编译运行配置就已经按它来。
 """
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated
@@ -26,20 +30,22 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from ..access.rls import set_workspace
 from ..db.base import in_workspace
-from ..kernel.contract import ANSWER_MODE_PATTERN, TurnInput
+from ..kernel.contract import ANSWER_MODE_PATTERN, KernelError, TurnInput
 from ..kernel.tokens import TokenError, TokenSigner, derive_key
 from .answer_modes import AnswerModeUnavailable, UnknownAnswerMode
 from .events_v1 import assistant_text
 from .mention_kinds import MentionRejected
 from .models import RunEvent, RunSummary
-from .service import ConversationNotFound, ConversationService
+from .service import ConversationExists, ConversationNotFound, ConversationService
 
 AUDIENCE = "background"
 PURPOSE = "background-turns"  # 子密钥的用途，和宿主回调的令牌互不通用
 TOKEN_TTL_SECONDS = 60
 PENDING = "pending"
 ANSWER_EVENTS = 500  # 找回答时往回看的事件条数
-ID = Annotated[str, Path(pattern=r"^[A-Za-z0-9_\-]{1,64}$")]
+ID_PATTERN = r"^[A-Za-z0-9_\-]{1,64}$"
+CONVERSATION_ID = re.compile(ID_PATTERN)
+ID = Annotated[str, Path(pattern=ID_PATTERN)]
 UserId = Annotated[str, Field(min_length=1, max_length=64)]
 MemberCheck = Callable[[str, str], bool]  # (用户, 空间) → 是不是空间成员
 
@@ -142,6 +148,31 @@ def build_background_router(service: ConversationService, signer: TokenSigner, s
         return {"ok": True}
 
     return router
+
+
+class LocalBackground:
+    """业务服务进程里替用户建对话（扩展经 ApiContext.background 用）。出错抛 BackgroundTurnError，status 同内部端口：
+    403 不是空间成员、409 指定的 id 已经有了、422 id 不合规、502 宿主连不上（同公开端口建对话）。"""
+
+    def __init__(self, service: ConversationService, *, member: MemberCheck) -> None:
+        self._service, self._member = service, member
+
+    async def create(self, workspace_id: str, user_id: str, *, title: str = "",
+                     conversation_id: str | None = None, background: bool = True) -> str:
+        """background 为真时对话不进本人的「最近」和搜索（同内部端口），为假时照常进（例如他从专家页开的对话）。"""
+        if not self._member(user_id, workspace_id):
+            raise BackgroundTurnError("这个人不是这个空间的成员", status=403)
+        if conversation_id is not None and not CONVERSATION_ID.fullmatch(conversation_id):
+            raise BackgroundTurnError(f"对话 id 不合规：{conversation_id}", status=422)
+        with in_workspace(workspace_id):
+            try:
+                conversation = await self._service.create(workspace_id=workspace_id, user_id=user_id, title=title,
+                                                          background=background, conversation_id=conversation_id)
+            except ConversationExists as error:
+                raise BackgroundTurnError(f"已经有这个对话：{conversation_id}", status=409) from error
+            except (KernelError, httpx.HTTPError, OSError) as error:  # 宿主开不了会话：对话已经撤掉
+                raise BackgroundTurnError("运行时暂时连不上，请稍后再试", status=502) from error
+        return conversation.id
 
 
 async def _latest(sessionmaker: async_sessionmaker, workspace_id: str, conversation_id: str) -> tuple[str, str]:

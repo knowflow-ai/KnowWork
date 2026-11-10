@@ -108,8 +108,18 @@ class Addon(Demo):
     requires = ("demo",)
 
 
+class Free(Demo):
+    """不需要授权模块的扩展（license_module 为 None）：装了就启用，授权有没有、过没过期都不影响它。"""
+
+    name = "free"
+    license_module = None
+    rls_tables = ()
+    migrations = None
+
+
 EXTENSION = Demo()
 ADDON = Addon()
+FREE = Free()
 BROKEN = Broken()
 BROKEN_INSIDE = BrokenInside()
 PUBLIC_ONLY = PublicOnly()

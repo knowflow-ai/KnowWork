@@ -61,6 +61,9 @@ const BUFFER_BYTES = 8 * 1024 * 1024
  * @property {'zh' | 'en' | undefined} language 最近一轮的交互语言，由业务服务随消息下发
  * @property {{ bases: readonly object[], omitted: number } | undefined} knowledgeCatalog 最近一次下发的知识库目录
  * @property {string | undefined} turnContext 扩展补的常驻上下文（turn-context），最近一次下发的；空串是「现在没有」
+ * @property {string | undefined} persona 扩展给这段对话的身份（turn-context），最近一次下发的；空串是照部署人设
+ * @property {string | undefined} personaShown 系统提示里现在放着的那份身份（换了才重新注册）
+ * @property {(() => void) | undefined} personaOff 撤掉系统提示里那份身份
  * @property {Map<string, string>} turnTexts 已收下、还没进入步骤的消息各自带的这一轮上下文，键是消息 id
  * @property {string} answerMode 当前步骤按哪种回答方式（answer-mode）：agent、quick 或扩展登记的；随消息进入步骤切换
  * @property {{ tools: string[], prompt: string } | undefined} answerModeSpec 扩展登记的回答方式随消息带来的放行清单与指令
@@ -98,6 +101,9 @@ export function createSession(sessionId, policy) {
     timeZone: undefined, // 最近一条用户消息上的时区，子 Agent 沿用（subagent-policy）
     knowledgeCatalog: undefined,
     turnContext: undefined,
+    persona: undefined,
+    personaShown: undefined,
+    personaOff: undefined,
     turnTexts: new Map(),
     answerMode: 'agent',
     answerModeSpec: undefined,

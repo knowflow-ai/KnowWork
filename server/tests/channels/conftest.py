@@ -11,13 +11,23 @@ import pytest
 from knowwork_server.access.service import AccessService
 from knowwork_server.channels import build_channels
 from knowwork_server.channels.models import Channel
+from knowwork_server.conversations.answer_modes import (
+    AnswerMode,
+    AnswerModes,
+    ChannelResource,
+    ModeContext,
+    UnknownAnswerMode,
+)
 from knowwork_server.conversations.models import Conversation
 from knowwork_server.conversations.replay import Outgoing
 from knowwork_server.conversations.service import ConversationNotFound
 from knowwork_server.db.base import make_engine, make_sessionmaker, make_workspace_sessionmaker
+from knowwork_server.identity.im_identities import ImIdentities, ImIdentitySource
 from knowwork_server.identity.users import UserService
+from knowwork_server.kernel.contract import KernelError
 
 MASTER = "test-master-key-for-channels-0123456789"
+BASE_URL = "https://kw.example.com"
 SEQ = itertools.count(1)
 
 
@@ -40,16 +50,23 @@ def answer(turn: int, text: str) -> list[Outgoing]:
 @dataclass
 class FakeConversations:
     sessionmaker: object
+    modes: AnswerModes = field(default_factory=AnswerModes)
     scripts: list[list[Outgoing]] = field(default_factory=list)
     created: list = field(default_factory=list)
     sent: list = field(default_factory=list)
     gone: set = field(default_factory=set)
     cancelled: list = field(default_factory=list)
+    pending: list = field(default_factory=list)  # 等着回答的提问（kernel.contract.PendingQuestion）
+    approvals_waiting: list = field(default_factory=list)  # 等着批准的操作
+    asks: dict = field(default_factory=dict)  # 事件流走到这个 id 的 run.waiting 时，这次提问开始等回答
+    answered: list = field(default_factory=list)
 
-    async def create(self, *, workspace_id, user_id, title="", selection=None):
-        conversation = SimpleNamespace(id=f"c_{uuid.uuid4().hex}", workspace_id=workspace_id, user_id=user_id)
+    async def create(self, *, workspace_id, user_id, title="", selection=None, channel_id=None, source=""):
+        conversation = SimpleNamespace(id=f"c_{uuid.uuid4().hex}", workspace_id=workspace_id, user_id=user_id,
+                                       channel_id=channel_id, source=source)
         async with self.sessionmaker() as session, session.begin():
-            session.add(Conversation(id=conversation.id, workspace_id=workspace_id, user_id=user_id, title=title))
+            session.add(Conversation(id=conversation.id, workspace_id=workspace_id, user_id=user_id, title=title,
+                                     channel_id=channel_id, source=source))
         self.created.append((conversation, title, selection))
         return conversation
 
@@ -59,6 +76,10 @@ class FakeConversations:
         return SimpleNamespace(id=conversation_id, workspace_id=workspace_id, user_id=user_id)
 
     async def send(self, conversation, turn, selection=None):
+        # 同 ConversationService：这个人此刻用不了这种回答方式就发不出去
+        offered = await self.modes.for_user(ModeContext(conversation.workspace_id, conversation.user_id))
+        if turn.answer_mode not in {mode.id for mode in offered}:
+            raise UnknownAnswerMode(turn.answer_mode)
         self.sent.append((conversation.id, turn, selection))
         return "msg-1"
 
@@ -66,10 +87,24 @@ class FakeConversations:
         for item in self.scripts.pop(0) if self.scripts else []:
             if item.type == "hang":
                 await asyncio.sleep(3600)
+            if item.type == "run.waiting" and item.payload.get("item_id") in self.asks:
+                self.pending.append(self.asks[item.payload["item_id"]])
             yield item
 
     async def cancel(self, conversation):
         self.cancelled.append(conversation.id)
+
+    async def questions(self, conversation):
+        return list(self.pending)
+
+    async def approvals(self, conversation):
+        return list(self.approvals_waiting)
+
+    async def answer(self, conversation, question_id, answer):
+        if all(q.id != question_id for q in self.pending):
+            raise KernelError("question_not_found", "这个问题已经结束", 404)
+        self.pending = [q for q in self.pending if q.id != question_id]
+        self.answered.append((conversation.id, question_id, answer))
 
 
 @dataclass
@@ -133,21 +168,43 @@ async def env(database_url):
     scoped = make_workspace_sessionmaker(engine)
     ws = "ws_" + uuid.uuid4().hex[:10]
     access = AccessService(global_sessionmaker)
+    access.add_resource_types(frozenset({"data_source"}))  # 扩展登记的资源类型（例如问数的数据源）
     assert await access.reload()
     await access.create_workspace(workspace_id=ws, name="渠道", owner_user_id="boss")
     await access.add_member("boss", ws, "alice", "editor")
-    conversations = FakeConversations(scoped)
+    # 扩展登记的回答方式：查数据源，有数据源授权的人（和空间管理员）才能用
+    async def numbers_available(ctx):
+        if access.check(ctx.user_id, ctx.workspace_id, "workspace", "edit"):
+            return True
+        grants = await access.list_grants("boss", ctx.workspace_id, subject=f"user:{ctx.user_id}")
+        return any(grant.resource.startswith("data_source:") for grant in grants)
+
+    modes = AnswerModes()
+    modes.add(AnswerMode("numbers", "问数", "查数据库里的数", channel=ChannelResource("data_source", "数据源"),
+                         available=numbers_available))
+    modes.add(AnswerMode("modeling", "建模", "改语义模型"))  # 没写查哪类资源：不进渠道
+    conversations = FakeConversations(scoped, modes)
     platform = FakePlatform()
     users = UserService(global_sessionmaker)
+    identities = ImIdentities()  # 测试里登记的组织来源（扩展登记的那种）
+    sources: list[ImIdentitySource] = []
+    identities.add(lambda: list(sources))
     channels = build_channels(MASTER, scoped, global_sessionmaker, None, access, conversations,
-                              accounts=users, factories={"wecom": platform})
+                              accounts=users, factories={"wecom": platform}, identities=identities,
+                              public_base_url=BASE_URL, answer_modes=modes)
     yield SimpleNamespace(ws=ws, access=access, conversations=conversations, platform=platform, users=users,
-                          channels=channels, scoped=scoped, engine=engine, global_sessionmaker=global_sessionmaker)
+                          channels=channels, scoped=scoped, engine=engine, global_sessionmaker=global_sessionmaker,
+                          sources=sources)
     await channels.supervisor.stop()
+    # 删掉这个测试建的渠道：supervisor 的测试会连上库里全部启用的渠道（每个占一条连接拿锁），留多了会把连接池耗尽
+    from knowwork_server.db.base import in_workspace
+    with in_workspace(ws):
+        for channel in await channels.admin._store.of_workspace(ws):
+            await channels.admin._store.delete(ws, channel.id)
     await engine.dispose()
 
 
-async def make_channel(env, **settings) -> Channel:
+async def make_channel(env, *, audience="public", **settings) -> Channel:
     settings = {"bases": ["builtin.kb1"], **settings}
     from knowwork_server.channels.admin import ChannelInput
     from knowwork_server.channels.settings import ChannelSettings
@@ -155,5 +212,6 @@ async def make_channel(env, **settings) -> Channel:
     with in_workspace(env.ws):
         view = await env.channels.admin.create("boss", env.ws, ChannelInput(
             name="行政助手", platform="wecom", enabled=True, bot_id=f"bot-{uuid.uuid4().hex[:6]}",
-            bot_name="行政助手", secret="sk-wecom-secret-123456", settings=ChannelSettings(**settings)))
+            bot_name="行政助手", secret="sk-wecom-secret-123456", settings=ChannelSettings(**settings),
+            audience=audience))
         return await env.channels.admin._store.get(env.ws, view.id)

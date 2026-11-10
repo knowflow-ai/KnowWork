@@ -34,8 +34,9 @@ async def stop_when_license_ends(extensions: Extensions, stop: asyncio.Event, *,
                                  clock: Callable[[], datetime] = datetime.now) -> bool:
     """授权到期又没续上：置 stop 并返回 True，调用方据此以 EXIT_LICENSE_ENDED 退出。
 
-    没有启用的扩展、永久授权、stop 先被置位（正常停机）都返回 False。clock 与授权里的到期时间一样按服务器本地时间。"""
-    modules = {extension.license_module for extension in extensions.active}
+    没有启用收费的扩展、永久授权、stop 先被置位（正常停机）都返回 False。clock 与授权里的到期时间一样按服务器本地时间。"""
+    # 不要授权模块的扩展不随授权到期停，只盯收费的
+    modules = {extension.license_module for extension in extensions.active if extension.license_module is not None}
     until = extensions.license.valid_until
     if not modules:
         return False

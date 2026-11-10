@@ -7,6 +7,8 @@ import {
   compact,
   compatibleKinds,
   dataColors,
+  groupOf,
+  measureGroups,
   seriesNames,
   type ChartTokens,
 } from './chartOption';
@@ -104,6 +106,45 @@ describe('结果表画成图的配置', () => {
     expect(orders.series[0]?.areaStyle).toBeDefined();
   });
 
+  it('同一组的几列数值画在一张图里（几条线、几组柱子），组用第一列的列名认；分类不画饼；没分组时一列一组', () => {
+    const plan: TableCard = {
+      ...trend,
+      columns: [...trend.columns, { name: 'target', label: '目标', kind: 'number' }],
+      rows: [
+        ['2026-01', 120000, 30, 130000],
+        ['2026-02', 98000, 25, 100000],
+      ],
+      chart: {
+        type: 'line',
+        x: 'month',
+        y: ['revenue', 'orders', 'target'],
+        groups: [['revenue', 'target'], ['orders']],
+      },
+    };
+    expect(measureGroups(plan.chart!)).toEqual([['revenue', 'target'], ['orders']]);
+    expect(measureGroups(trend.chart!)).toEqual([['revenue'], ['orders']]);
+    expect(groupOf(plan.chart!, 'target')).toEqual(['revenue', 'target']);
+    expect(groupOf(plan.chart!, 'nope')).toEqual(['revenue', 'target']);
+    const option = shape(
+      chartOption(plan, plan.chart!, { kind: 'line', measure: 'revenue', tokens: TOKENS }),
+    );
+    expect(option.series.map((s) => [s.name, s.data])).toEqual([
+      ['销售额', [120000, 98000]],
+      ['目标', [130000, 100000]],
+    ]);
+    const single = shape(chartOption(plan, plan.chart!, { kind: 'line', measure: 'orders', tokens: TOKENS }));
+    expect(single.series.map((s) => s.name)).toEqual(['订单数']);
+    const byRegion: TableCard = {
+      ...regions,
+      columns: [...regions.columns, { name: 'target', label: '目标', kind: 'number' }],
+      rows: [
+        ['华东', 300, 280],
+        ['华南', 200, 210],
+      ],
+      chart: { type: 'bar', x: 'region', y: ['revenue', 'target'], groups: [['revenue', 'target']] },
+    };
+    expect(compatibleKinds(byRegion, byRegion.chart!, 'revenue')).toEqual(['bar']);
+  });
   it('柱子朝向照通行做法：少而短的分类、年份这类竖着画；分类多或名字长的横着画（分类在纵轴、从上往下按原顺序）', () => {
     const few = shape(
       chartOption(regions, regions.chart!, { kind: 'bar', measure: 'revenue', tokens: TOKENS }),

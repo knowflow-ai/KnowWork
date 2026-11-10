@@ -79,7 +79,7 @@ deploy/install.sh --timeout 600
 ## 升级
 
 1. 先备份数据（见下一节）；
-2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.7`（换成要升级到的版本）。编排文件
+2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.8`（换成要升级到的版本）。编排文件
    可能随版本变，只改版本号会用旧的编排文件跑新镜像。`deploy/.env` 不在仓库里，切换版本不会动它；
 3. 把 `deploy/.env` 的 `KNOWWORK_VERSION` 改成新版本；
 4. 重新执行 `deploy/install.sh`：它会拉新镜像（包括会话沙箱镜像）并重启服务。

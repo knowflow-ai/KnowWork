@@ -25,6 +25,8 @@ export function validateTitle(value: string): string | null {
 export interface ConversationSummary {
   readonly id: string;
   readonly title: string;
+  /** 从哪来：IM 机器人认人时私聊的会话为平台（wecom 等），侧栏打来源标记；网页上开的为空 */
+  readonly source: string;
   readonly createdAt: string | null;
   readonly updatedAt: string | null;
 }
@@ -42,6 +44,7 @@ function parseSummary(value: unknown): ConversationSummary | undefined {
   return {
     id,
     title: str(value.title) ?? '',
+    source: str(value.source) ?? '',
     createdAt: text(value.createdAt) ?? null,
     updatedAt: text(value.updatedAt) ?? null,
   };
@@ -109,6 +112,19 @@ export function renameConversation(conversationId: string, title: string): Promi
 
 export function deleteConversation(conversationId: string): Promise<void> {
   return request(workspacePath(`/conversations/${seg(conversationId)}`), { method: 'DELETE' });
+}
+
+/** 扩展给这段对话定的范围（服务端 conversations/scopes.py）：顶部显示的名字，和固定的回答方式（固定了就不让换）。 */
+export interface ConversationScope {
+  readonly label: string;
+  readonly answerMode: AnswerMode | null;
+}
+
+export async function getConversationScope(conversationId: string): Promise<ConversationScope | null> {
+  const body = await request<unknown>(workspacePath(`/conversations/${seg(conversationId)}/scope`));
+  if (!isRecord(body)) return null;
+  const label = text(body.label);
+  return label ? { label, answerMode: text(body.answerMode) ?? null } : null;
 }
 
 /** 回答语言（服务端 kernel/locale.py）：不传时服务端按提问里有没有汉字判断。 */

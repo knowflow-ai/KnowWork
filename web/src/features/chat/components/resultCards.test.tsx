@@ -462,6 +462,53 @@ describe('回答里的卡片', () => {
     expect(within(screen.getByRole('banner')).queryByRole('radiogroup', { name: '图形' })).toBeNull();
   });
 
+  it('同一组的几列数值画在一起，图上面一排是图例；还有别的组时在组之间切换', async () => {
+    const plan: TableCard = {
+      type: 'table',
+      columns: [
+        { name: 'month', label: '月份', kind: 'date' },
+        { name: 'revenue', label: '营收', kind: 'number' },
+        { name: 'target', label: '目标', kind: 'number' },
+        { name: 'n', label: '订单数', kind: 'number' },
+      ],
+      rows: [
+        ['2026-01', 50.8, 56.4, 1200],
+        ['2026-02', 53.5, 59.4, 1300],
+      ],
+      rowCount: 2,
+      moreRows: false,
+      chart: { type: 'line', x: 'month', y: ['revenue', 'target'], groups: [['revenue', 'target']] },
+    };
+    const { unmount } = render(<ResultCards cards={[plan]} />);
+    expect(await screen.findByRole('img', { name: '营收、目标按月份的折线图' })).toBeInTheDocument();
+    const legend = screen.getByRole('list', { name: '图例' });
+    expect(
+      within(legend)
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual(['营收', '目标']);
+    expect(screen.queryByRole('radiogroup', { name: '画哪一列' })).toBeNull();
+    unmount();
+    const mixed: TableCard = {
+      ...plan,
+      chart: {
+        type: 'line',
+        x: 'month',
+        y: ['revenue', 'target', 'n'],
+        groups: [['revenue', 'target'], ['n']],
+      },
+    };
+    const changed = vi.fn();
+    render(
+      <ResultCards cards={[mixed]} chartPreference={{ metric: 'target' }} onChartPreference={changed} />,
+    );
+    expect(await screen.findByRole('img', { name: '营收、目标按月份的折线图' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: '营收、目标' })).toBeChecked();
+    await userEvent.click(screen.getByRole('radio', { name: '订单数' }));
+    expect(await screen.findByRole('img', { name: '订单数按月份的折线图' })).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: '图例' })).toBeNull();
+    expect(changed).toHaveBeenLastCalledWith({ type: 'line', metric: 'n' });
+  });
   it('调用方能给看图的初始设置、换了告诉它（看板记住卡片上换过的图形、画哪一列、图还是表）', async () => {
     const chartTable: TableCard = {
       ...table(3),
@@ -507,6 +554,22 @@ describe('回答里的卡片', () => {
       cards: [{ ...base, chart: { type: 'bar', x: 'region', y: ['n'] } }],
     });
     expect(parsed?.[0]).toMatchObject({ chart: { type: 'bar', x: 'region', y: ['n'] } });
+    const twoColumns = {
+      ...base,
+      columns: [...base.columns, { name: 'm', kind: 'number' }],
+      rows: [['华东', 1, 2]],
+    };
+    const grouped = resultCards({
+      version: 1,
+      cards: [{ ...twoColumns, chart: { type: 'bar', x: 'region', y: ['n', 'm'], groups: [['n', 'm']] } }],
+    });
+    expect(grouped?.[0]).toMatchObject({ chart: { y: ['n', 'm'], groups: [['n', 'm']] } });
+    const loose = resultCards({
+      version: 1,
+      cards: [{ ...twoColumns, chart: { type: 'bar', x: 'region', y: ['n', 'm'], groups: [['n']] } }],
+    });
+    expect(loose?.[0]).toMatchObject({ chart: { y: ['n', 'm'] } });
+    expect((loose?.[0] as TableCard).chart).not.toHaveProperty('groups');
     const wrong = resultCards({
       version: 1,
       cards: [{ ...base, chart: { type: 'bar', x: 'nope', y: ['n'] } }],

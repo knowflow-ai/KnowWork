@@ -9,7 +9,7 @@
  * 附件一加进来就传上去、开始解析（useDraftAttachments），打字的工夫多半就好了；点发送时还没好的先等着（卡片上显示
  * 上传中、解析中），好了自动发出去，这一轮模型就拿得到解析出的全文。等不及解析可以点「直接发送」。
  */
-import { useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import { useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { ArrowUp, AtSign, PlusComposer, StopSm } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
@@ -25,7 +25,14 @@ import { activeTrigger, withoutTrigger } from '../mentions/candidates';
 import { MentionChips } from '../mentions/MentionChips';
 import { MentionMenu } from '../mentions/MentionMenu';
 import { suggestMode } from '../mentions/suggest';
-import { activeOption, MENTION_MENU_ID, useMentionMenu, useMentionOptions } from '../mentions/useMentionMenu';
+import {
+  activeOption,
+  MENTION_MENU_ID,
+  MentionScopeContext,
+  useMentionMenu,
+  useMentionOptions,
+  type MentionScope,
+} from '../mentions/useMentionMenu';
 import { AnswerModeSelect } from './AnswerModeSelect';
 import { AttachmentChips } from './AttachmentChips';
 import { modeForKey } from './keys';
@@ -43,16 +50,20 @@ interface Props {
   readonly initialMentions?: readonly Mention[];
   readonly disabled?: boolean;
   readonly placeholder?: string;
-  /** 输入框下面那行小字；不给就是「回答可能有误，重要结论请点开出处核对」 */
-  readonly footnote?: string;
+  /** 输入框下面那行小字；不给就是 DEFAULT_FOOTNOTE */
+  readonly footnote?: ReactNode;
   /** 固定的回答方式（嵌在别的页面里的会话，例如扩展的建模面板）：给了就不显示回答方式下拉，按它判断能不能带附件 */
   readonly answerMode?: AnswerMode;
   /** 已有会话的 id（新对话没有）：给左上角那一行里扩展的组件用 */
   readonly conversationId?: string;
   /** 加了附件（快要发消息了）：已有会话借此预热，发送时不用现开宿主上的对话、现建沙箱容器 */
   readonly onAttach?: () => void;
+  /** @ 候选按谁的范围取（见 MentionScope）：挂了范围的对话给对话 id，还没建对话的专家新对话页给收窄；不给按本人能用的全部 */
+  readonly mentionScope?: MentionScope;
 }
 
+const NO_SCOPE: MentionScope = {};
+export const DEFAULT_FOOTNOTE = '回答可能有误，重要结论请点开出处核对';
 const NO_FILES_IN_QUICK = '快速问答不能带附件，去掉附件或切换到智能体再发';
 const UNPARSED = '有文件没能解析，已按原文件交给模型';
 const SETTLE_POLL_MS = 200;
@@ -127,10 +138,11 @@ export function Composer({
   initialMentions = [],
   disabled,
   placeholder,
-  footnote = '回答可能有误，重要结论请点开出处核对',
+  footnote = DEFAULT_FOOTNOTE,
   answerMode,
   conversationId,
   onAttach,
+  mentionScope = NO_SCOPE,
 }: Props) {
   const [value, setValue] = useState('');
   const [caret, setCaret] = useState(0);
@@ -147,7 +159,8 @@ export function Composer({
   const chosen = useAnswerMode((s) => s.mode);
   const modes = useAnswerMode((s) => s.options);
   const setMode = useAnswerMode((s) => s.setMode);
-  const { options: offered } = useMentionOptions();
+  const scope = mentionScope;
+  const { options: offered } = useMentionOptions(scope);
   const quick = (answerMode ?? chosen) === 'quick';
   // 这一问算数的 @：快速问答用不了技能
   const scoped = quick ? mentions.filter((m) => m.type !== 'skill') : mentions;
@@ -178,6 +191,7 @@ export function Composer({
     },
     () => setDismissed(found?.start ?? null),
     !quick,
+    scope,
   );
   const openMention = () => {
     // 点 @ 按钮：在光标处补一个 @（前面不是空白就先空一格），菜单随之弹出
@@ -270,172 +284,177 @@ export function Composer({
   };
 
   return (
-    <div className="kw-composer">
-      {answerMode ? null : (
-        <div className="kw-composer-top">
-          <AnswerModeSelect disabled={disabled} />
-          {slotItems('chat.composer.top').map(({ Component }, index) => (
-            <Component
-              key={index}
-              conversationId={conversationId}
-              answerMode={effectiveAnswerMode(chosen, modes)}
-              running={running}
-            />
-          ))}
-        </div>
-      )}
-      {suggestion ? (
-        <div className="kw-composer-suggest" role="status">
-          <span>
-            @ 了{suggestion.kind}，切换到「{suggestion.mode.label}」回答会更准
-          </span>
-          <Button
-            color="secondary"
-            variant="ghost"
-            size="xs"
-            disabled={disabled}
-            onClick={() => setMode(suggestion.mode.id)}
-          >
-            切换
-          </Button>
-        </div>
-      ) : null}
-      {/* @ 菜单贴着输入框弹出，不算上面那一行 */}
-      <div className="kw-composer-main">
-        <MentionMenu menu={menu} />
-        <div
-          className={cx('kw-composer-box', dragging && 'is-dragging', disabled && 'is-disabled')}
-          onDragOver={(event) => {
-            event.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={onDrop}
-          onClick={(event) => {
-            // 点框里的空白处也能开始输入，和 ChatGPT 一样
-            if (event.target === event.currentTarget) input.current?.focus();
-          }}
-        >
-          {draft.items.length > 0 ? (
-            // 点了发送以后不能移除：要发出去的就是这几个
-            <AttachmentChips
-              items={draft.items.map(chipOf)}
-              onRemove={sending ? undefined : (index) => draft.remove(draft.items[index]?.key ?? '')}
-              label="待发送的附件"
-            />
-          ) : null}
-          {waitingFor ? (
-            <div className="kw-composer-waiting">
-              <span>{WAITING_TEXT[waitingFor]}</span>
-              {waitingFor !== 'uploading' ? (
-                <Button color="secondary" variant="ghost" size="2xs" onClick={skipParsing}>
-                  不等了，直接发送
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
-          <MentionChips
-            items={scoped}
-            label="这一问 @ 点名的内容"
-            onRemove={(mention) =>
-              setMentions((current) => current.filter((m) => mentionKey(m) !== mentionKey(mention)))
-            }
-          />
-          <textarea
-            ref={input}
-            className="kw-composer-input"
-            rows={1}
-            value={value}
-            disabled={disabled}
-            placeholder={
-              placeholder ?? (running ? '补充要求或下一条消息' : quick ? '在知识库里查…' : '有问题，尽管问')
-            }
-            aria-label="消息"
-            aria-controls={menu.open ? MENTION_MENU_ID : undefined}
-            aria-activedescendant={activeOption(menu)}
-            onChange={(event) => {
-              setValue(event.target.value);
-              setCaret(event.target.selectionStart);
+    <MentionScopeContext.Provider value={scope}>
+      <div className="kw-composer">
+        {answerMode ? null : (
+          <div className="kw-composer-top">
+            <AnswerModeSelect disabled={disabled} />
+            {slotItems('chat.composer.top').map(({ Component }, index) => (
+              <Component
+                key={index}
+                conversationId={conversationId}
+                answerMode={effectiveAnswerMode(chosen, modes)}
+                running={running}
+              />
+            ))}
+          </div>
+        )}
+        {suggestion ? (
+          <div className="kw-composer-suggest" role="status">
+            <span>
+              @ 了{suggestion.kind}，切换到「{suggestion.mode.label}」回答会更准
+            </span>
+            <Button
+              color="secondary"
+              variant="ghost"
+              size="xs"
+              disabled={disabled}
+              onClick={() => setMode(suggestion.mode.id)}
+            >
+              切换
+            </Button>
+          </div>
+        ) : null}
+        {/* @ 菜单贴着输入框弹出，不算上面那一行 */}
+        <div className="kw-composer-main">
+          <MentionMenu menu={menu} />
+          <div
+            className={cx('kw-composer-box', dragging && 'is-dragging', disabled && 'is-disabled')}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragging(true);
             }}
-            onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
-            onBlur={() => setDismissed(found?.start ?? null)}
-            onFocus={() => setDismissed(null)}
-            onKeyDown={onKeyDown}
-          />
-          <div className="kw-composer-bar">
-            {/* 快速问答没有读文件的工具，附件放进去也没人读 */}
-            <Tooltip content={quick ? '快速问答不能带附件' : '添加文件'} compact>
-              <span>
+            onDragLeave={() => setDragging(false)}
+            onDrop={onDrop}
+            onClick={(event) => {
+              // 点框里的空白处也能开始输入，和 ChatGPT 一样
+              if (event.target === event.currentTarget) input.current?.focus();
+            }}
+          >
+            {draft.items.length > 0 ? (
+              // 点了发送以后不能移除：要发出去的就是这几个
+              <AttachmentChips
+                items={draft.items.map(chipOf)}
+                onRemove={sending ? undefined : (index) => draft.remove(draft.items[index]?.key ?? '')}
+                label="待发送的附件"
+              />
+            ) : null}
+            {waitingFor ? (
+              <div className="kw-composer-waiting">
+                <span>{WAITING_TEXT[waitingFor]}</span>
+                {waitingFor !== 'uploading' ? (
+                  <Button color="secondary" variant="ghost" size="2xs" onClick={skipParsing}>
+                    不等了，直接发送
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+            <MentionChips
+              items={scoped}
+              label="这一问 @ 点名的内容"
+              onRemove={(mention) =>
+                setMentions((current) => current.filter((m) => mentionKey(m) !== mentionKey(mention)))
+              }
+            />
+            <textarea
+              ref={input}
+              className="kw-composer-input"
+              rows={1}
+              value={value}
+              disabled={disabled}
+              placeholder={
+                placeholder ?? (running ? '补充要求或下一条消息' : quick ? '在知识库里查…' : '有问题，尽管问')
+              }
+              aria-label="消息"
+              aria-controls={menu.open ? MENTION_MENU_ID : undefined}
+              aria-activedescendant={activeOption(menu)}
+              onChange={(event) => {
+                setValue(event.target.value);
+                setCaret(event.target.selectionStart);
+              }}
+              onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+              onBlur={() => setDismissed(found?.start ?? null)}
+              onFocus={() => setDismissed(null)}
+              onKeyDown={onKeyDown}
+            />
+            <div className="kw-composer-bar">
+              {/* 快速问答没有读文件的工具，附件放进去也没人读 */}
+              <Tooltip content={quick ? '快速问答不能带附件' : '添加文件'} compact>
+                <span>
+                  <Button
+                    color="secondary"
+                    variant="ghost"
+                    uniform
+                    aria-label="添加文件"
+                    disabled={disabled || quick}
+                    onClick={() => picker.current?.click()}
+                  >
+                    <PlusComposer />
+                  </Button>
+                </span>
+              </Tooltip>
+              <input
+                ref={picker}
+                type="file"
+                multiple
+                hidden
+                aria-label="选择文件"
+                onChange={(event) => {
+                  addFiles(Array.from(event.target.files ?? []));
+                  event.target.value = '';
+                }}
+              />
+              <Tooltip
+                content={quick ? '@ 点名知识库、文件或标签' : '@ 点名知识库、文件、标签或技能'}
+                compact
+              >
                 <Button
                   color="secondary"
                   variant="ghost"
                   uniform
-                  aria-label="添加文件"
-                  disabled={disabled || quick}
-                  onClick={() => picker.current?.click()}
+                  aria-label="@ 点名"
+                  disabled={disabled}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={openMention}
                 >
-                  <PlusComposer />
-                </Button>
-              </span>
-            </Tooltip>
-            <input
-              ref={picker}
-              type="file"
-              multiple
-              hidden
-              aria-label="选择文件"
-              onChange={(event) => {
-                addFiles(Array.from(event.target.files ?? []));
-                event.target.value = '';
-              }}
-            />
-            <Tooltip content={quick ? '@ 点名知识库、文件或标签' : '@ 点名知识库、文件、标签或技能'} compact>
-              <Button
-                color="secondary"
-                variant="ghost"
-                uniform
-                aria-label="@ 点名"
-                disabled={disabled}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={openMention}
-              >
-                <AtSign />
-              </Button>
-            </Tooltip>
-            <span className="kw-composer-spacer" />
-            {running && onStop ? (
-              <Tooltip content="停止" compact>
-                <Button
-                  color="secondary"
-                  variant="outline"
-                  uniform
-                  aria-label="停止"
-                  loading={stopping}
-                  onClick={() => void stop()}
-                >
-                  <StopSm />
+                  <AtSign />
                 </Button>
               </Tooltip>
-            ) : null}
-            <Tooltip content={running ? '完成后发送' : '发送'} compact>
-              <Button
-                color="primary"
-                uniform
-                aria-label="发送"
-                loading={sending}
-                disabled={!value.trim() || disabled}
-                onClick={() => void submit('followup')}
-              >
-                <ArrowUp />
-              </Button>
-            </Tooltip>
+              <span className="kw-composer-spacer" />
+              {running && onStop ? (
+                <Tooltip content="停止" compact>
+                  <Button
+                    color="secondary"
+                    variant="outline"
+                    uniform
+                    aria-label="停止"
+                    loading={stopping}
+                    onClick={() => void stop()}
+                  >
+                    <StopSm />
+                  </Button>
+                </Tooltip>
+              ) : null}
+              <Tooltip content={running ? '完成后发送' : '发送'} compact>
+                <Button
+                  color="primary"
+                  uniform
+                  aria-label="发送"
+                  loading={sending}
+                  disabled={!value.trim() || disabled}
+                  onClick={() => void submit('followup')}
+                >
+                  <ArrowUp />
+                </Button>
+              </Tooltip>
+            </div>
           </div>
         </div>
+        <div className="kw-composer-hint">
+          {running ? '回车：完成后发送 · Ctrl/⌘ + 回车：补充到当前任务 · ' : ''}
+          {footnote}
+        </div>
       </div>
-      <div className="kw-composer-hint">
-        {running ? '回车：完成后发送 · Ctrl/⌘ + 回车：补充到当前任务 · ' : ''}
-        {footnote}
-      </div>
-    </div>
+    </MentionScopeContext.Provider>
   );
 }

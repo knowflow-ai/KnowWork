@@ -17,11 +17,13 @@ from ..access.service import AccessService
 from ..attachments.mineru import MinerUProvider
 from ..config import Settings
 from ..conversations.answer_modes import AnswerModes
-from ..conversations.background import BackgroundTurns
+from ..conversations.background import BackgroundTurns, LocalBackground
 from ..conversations.mention_kinds import MentionKinds
+from ..conversations.scopes import ConversationScopes
 from ..conversations.summaries import Contributor
 from ..conversations.turn_context import TurnContextHook
 from ..identity.directory_accounts import DirectoryAccounts
+from ..identity.im_identities import ImIdentities
 from ..identity.methods import LoginMethods
 from ..identity.password_logins import PasswordLogins
 from ..identity.sso import RedirectLogins
@@ -67,6 +69,9 @@ class ApiContext:
     # 登记 @ 类型（conversations/mention_kinds.py，mentions.add）：输入框 @ 菜单里多一组（例如数据源），发消息时核对权限、
     # 这一轮开始前交给扩展
     mentions: MentionKinds = field(default_factory=MentionKinds)
+    # 登记对话的范围（conversations/scopes.py，conversation_scopes.add）：给某段对话定顶部的名字、固定的回答方式，
+    # 知识库、技能、MCP 收窄到哪些（和本人的权限取交集）；每一轮的说明经 turn_context 给
+    conversation_scopes: ConversationScopes = field(default_factory=ConversationScopes)
     # 对外检索结果里的短期签名链接（图片等）：扩展的取文件接口用 links.verify 认签名，取时仍按签名里的用户判权
     links: LinkSigner | None = None
     # 按用户 id 批量取姓名、邮箱与账号类型（同成员列表），给扩展的页面显示人名、分真人与渠道账号；查不到的 id 不出现在结果里
@@ -88,6 +93,11 @@ class ApiContext:
     password_logins: PasswordLogins | None = None
     redirect_logins: RedirectLogins | None = None
     verify_files: VerifyFiles | None = None
+    # IM 机器人认人用的身份来源：扩展把组织来源登记进来（id、平台、身份域、免登入口），渠道选一个来认人
+    im_identities: ImIdentities = field(default_factory=ImIdentities)
+    # 替用户建对话（conversations/background.py 的 LocalBackground，同 WorkerContext.turns 的判定，不走 HTTP）：
+    # 可指定对话 id，扩展先拿它记下自己的东西再建
+    background: LocalBackground | None = None
 
 
 @dataclass(frozen=True)
@@ -116,7 +126,8 @@ class WorkerContext:
 
 class Extension(Protocol):
     name: str                         # 扩展名，日志与系统信息里显示
-    license_module: str               # 授权里的模块名；授权里没有这个模块就不加载
+    # 授权里的模块名；授权里没有这个模块就不加载。None：闭源但不收费，装了就启用，不看授权（也不随授权到期停）
+    license_module: str | None
     model_modules: tuple[str, ...]    # 建表与迁移要导入的模型模块
     rls_tables: tuple[str, ...]       # 要开行级安全的表（迁移里开，测试核对）
     migrations: Path | None           # Alembic 迁移目录，单独一条分支；装了包就升级，不看授权

@@ -194,7 +194,9 @@ class DingtalkConnection:
                                external_id=external_id, chat_type="group" if group else "direct",
                                chat_id=str(incoming.conversation_id or "") if group else "",
                                message_id=str(incoming.message_id or ""), text=text.strip(),
-                               display_name=str(incoming.sender_nick or external_id), raw=incoming)
+                               display_name=str(incoming.sender_nick or external_id),
+                               # senderStaffId 就是企业里的 userid，只有内部成员有；外部的人只有加密 ID，认不了
+                               ids={"userid": str(incoming.sender_staff_id or "")}, raw=incoming)
 
     def card(self, incoming: ChatbotMessage) -> Any:
         return self._card_factory(self.client, incoming)

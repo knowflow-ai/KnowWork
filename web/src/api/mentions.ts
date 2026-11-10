@@ -141,8 +141,12 @@ function parseDocument(value: unknown): MentionDocument | undefined {
   return { id, title: text(value.title) ?? id, base, baseName: str(value.base_name) ?? base };
 }
 
-export async function getMentionOptions(): Promise<MentionOptions> {
-  const data = await request<unknown>(base());
+/** @ 候选；给了对话就按它的范围收窄（例如专家对话只列专家能查的库） */
+export async function getMentionOptions(conversationId?: string): Promise<MentionOptions> {
+  const data = await request<unknown>(
+    base(),
+    conversationId ? { query: { conversation_id: conversationId } } : undefined,
+  );
   const body = isRecord(data) ? data : {};
   return {
     bases: listOf(body.bases, parseBase),
@@ -152,8 +156,13 @@ export async function getMentionOptions(): Promise<MentionOptions> {
   };
 }
 
-export async function findMentionDocuments(query: string): Promise<readonly MentionDocument[]> {
-  const data = await request<unknown>(base('/documents'), { query: { q: query } });
+export async function findMentionDocuments(
+  query: string,
+  conversationId?: string,
+): Promise<readonly MentionDocument[]> {
+  const data = await request<unknown>(base('/documents'), {
+    query: { q: query, ...(conversationId ? { conversation_id: conversationId } : {}) },
+  });
   return listOf(isRecord(data) ? data.documents : undefined, parseDocument);
 }
 

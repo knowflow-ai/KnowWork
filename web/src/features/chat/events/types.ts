@@ -77,6 +77,8 @@ export interface TableChart {
   readonly x: string;
   readonly y: readonly string[];
   readonly series?: string;
+  /** 几列数值怎么分组（正好分完 y）：同一组的画在一张图里，组之间在图上面切换；没有时一列一组 */
+  readonly groups?: readonly (readonly string[])[];
 }
 
 /** 表上哪几列的取值能点着往下钻：点了交给插槽 chat.card.drill 里登记了 name 的组件（扩展的），ref 是它认的编号 */

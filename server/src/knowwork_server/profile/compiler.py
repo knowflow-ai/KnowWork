@@ -6,7 +6,9 @@
   （例如没开沙箱时的 bash、文件工具）一并进 denied_tools；
 - 技能：逐个转换，单个技能不合法只跳过并记日志，不影响其他技能；
 - 知识：按知识源分组列出可查的知识库；本轮选了知识库时只保留选中且可查的，并记下选择范围
-  （一个都查不了时由知识工具直接说明原因）。
+  （一个都查不了时由知识工具直接说明原因）；
+- 扩展给这段对话的范围（ProfileNarrowing，conversations/scopes.py）：知识库、技能、MCP 服务收窄到范围里的。只会更少，
+  和本人的权限、这一轮的选择取交集，扩展给不了本人没有的。
 """
 
 import logging
@@ -18,18 +20,23 @@ from pydantic import ValidationError
 
 from ..tools.registry import ToolSpec
 from .snapshot import (
+    NO_NARROWING,
     NO_SELECTION,
     ProfileKnowledgeSource,
+    ProfileNarrowing,
     ProfileSkill,
     ProfileTool,
     RuntimeProfile,
     TurnSelection,
+    base_in,
 )
 
 log = logging.getLogger(__name__)
 
 MAX_SUMMARY = 1024
 ALL_BASES = "*"
+# MCP 工具名 mcp__<服务>__<工具>（同 tools/mcp/naming.py；那个包的初始化会绕回这里，不引它）
+MCP_PREFIX = "mcp__"
 
 
 @dataclass(frozen=True)
@@ -56,23 +63,64 @@ class ProfileFacts:
     knowledge: tuple[KnowledgeEntry, ...] = ()
     selection: TurnSelection = field(default=NO_SELECTION)
     host_denied: tuple[str, ...] = ()
+    narrowing: ProfileNarrowing | None = None
 
 
 def compile_profile(facts: ProfileFacts) -> RuntimeProfile:
-    selection = facts.selection.normalized()
+    narrowing = facts.narrowing or NO_NARROWING
+    selection = _within(facts.selection, narrowing.knowledge_bases).normalized()
     names = sorted({spec.name for spec in facts.tools})
     if not facts.member:
         return RuntimeProfile(workspace_id=facts.workspace_id, user_id=facts.user_id, role=None, member=False,
                               denied_tools=_denied(names, facts.host_denied), bound_knowledge=selection.knowledge_bases,
                               dropped_conditions=selection.dropped_conditions, pins=selection.pins)
-    tools = _tools(facts.tools, facts.permitted_tools, facts.builtin_tools)
+    tools = _tools(facts.tools, _servers_within(facts.permitted_tools, narrowing.mcp_servers), facts.builtin_tools)
     allowed = {tool.name for tool in tools}
     knowledge, bound = _knowledge(facts.knowledge, selection.knowledge_bases)
+    skills = facts.skills if narrowing.skills is None else tuple(
+        entry for entry in facts.skills if getattr(entry, "name", None) in narrowing.skills)
     return RuntimeProfile(
         workspace_id=facts.workspace_id, user_id=facts.user_id, role=facts.role, member=True,
         tools=tools, denied_tools=_denied((n for n in names if n not in allowed), facts.host_denied),
-        skills=_skills(facts.skills, selection.skills), knowledge=knowledge, bound_knowledge=bound,
+        skills=_skills(skills, selection.skills), knowledge=knowledge, bound_knowledge=bound,
         dropped_conditions=selection.dropped_conditions, pins=selection.pins)
+
+
+def _within(selection: TurnSelection, allowed: tuple[str, ...] | None) -> TurnSelection:
+    """这一轮的选择收进范围：选了的取交集；什么都没选就是范围本身；只点名了文件、标签的照原来只查点名的库
+    （范围外的点名去掉）。"""
+    if allowed is None:
+        return selection
+    pins = tuple(pin for pin in selection.pins if _allows(allowed, pin.base))
+    if selection.knowledge_bases is not None:
+        bases: tuple[str, ...] | None = _intersect(selection.knowledge_bases, allowed)
+    else:
+        bases = None if pins else allowed
+    return selection.model_copy(update={"knowledge_bases": bases, "pins": pins})
+
+
+def _allows(allowed: tuple[str, ...], item: str) -> bool:
+    return base_in(allowed, item)
+
+
+def _intersect(selected: tuple[str, ...], allowed: tuple[str, ...]) -> tuple[str, ...]:
+    """选中的在范围里的留下；选了整个知识源（<知识源>.*）的换成范围里这个来源下的那几个。"""
+    kept: set[str] = set()
+    for item in selected:
+        source, _, kb = item.partition(".")
+        if _allows(allowed, item):
+            kept.add(item)
+        elif kb in ("", ALL_BASES):
+            kept.update(a for a in allowed if a.partition(".")[0] == source)
+    return tuple(sorted(kept))
+
+
+def _servers_within(permitted: frozenset[str], servers: tuple[str, ...] | None) -> frozenset[str]:
+    """范围外 MCP 服务的工具不给（进 denied_tools）；不是 MCP 的工具不受影响。"""
+    if servers is None:
+        return permitted
+    prefixes = tuple(f"{MCP_PREFIX}{server}__" for server in servers)
+    return frozenset(name for name in permitted if not name.startswith(MCP_PREFIX) or name.startswith(prefixes))
 
 
 def _denied(names: Iterable[str], host_denied: tuple[str, ...]) -> tuple[str, ...]:

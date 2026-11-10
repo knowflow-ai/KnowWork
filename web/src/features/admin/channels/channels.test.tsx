@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent, { pickOption } from '../../../test/user';
 import { jsonResponse, renderWithApp, routeFetch } from '../../../test/render';
+import { register } from '../../../slots/registry';
 import ChannelsPage from './ChannelsPage';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -21,7 +22,30 @@ const CHANNEL = {
   last_error: '认证失败，请检查 Bot ID 与 Secret',
   status_at: null,
   sessions: 2,
+  audience: 'public',
 };
+const MEMBER_CHANNEL = {
+  ...CHANNEL,
+  id: 'ch2',
+  name: '数据助手',
+  audience: 'member',
+  status: 'connected',
+  last_error: '',
+  settings: { answer_mode: 'agent', bases: [], identity_source: 'src-wecom' },
+};
+const SOURCES = [{ id: 'src-wecom', name: '示例科技', login: true }];
+const KB = { resource_type: 'knowledge_base', resource_label: '知识库' };
+const MODES = [
+  { id: 'agent', label: '智能体', description: '能用技能', ...KB },
+  { id: 'quick', label: '快速问答', description: '只查知识库', ...KB },
+  {
+    id: 'numbers',
+    label: '问数',
+    description: '按语义模型的口径查数据库里的数',
+    resource_type: 'data_source',
+    resource_label: '数据源',
+  },
+];
 const BASES = [
   {
     source_id: 'builtin',
@@ -32,9 +56,37 @@ const BASES = [
   },
 ];
 
-function api() {
+function api({ sources = SOURCES }: { readonly sources?: readonly unknown[] } = {}) {
   return routeFetch({
-    [`GET ${B}`]: jsonResponse({ items: [CHANNEL] }),
+    [`GET ${B}`]: jsonResponse({ items: [CHANNEL, MEMBER_CHANNEL] }),
+    [`GET ${B}/identity-sources`]: jsonResponse({ items: sources }),
+    [`GET ${B}/answer-modes`]: jsonResponse({ items: MODES }),
+    [`GET ${B}/ch2/sessions`]: jsonResponse({
+      items: [
+        {
+          external_id: 'zhangsan',
+          display_name: 'zhangsan',
+          chat_type: 'direct',
+          chat_id: '',
+          conversation_id: 'c3',
+          title: '我的报销额度',
+          updated_at: '2026-11-07T02:00:00Z',
+          user_id: 'u-zhang',
+          user_name: '张三',
+        },
+      ],
+    }),
+    [`GET ${B}/ch2/strangers`]: jsonResponse({
+      items: [
+        {
+          external_id: 'xiaowang',
+          display_name: '小王',
+          reason: 'unknown',
+          attempts: 2,
+          last_at: '2026-11-07T03:00:00Z',
+        },
+      ],
+    }),
     [`POST ${B}`]: jsonResponse(CHANNEL, 201),
     [`PUT ${B}/ch1`]: jsonResponse(CHANNEL),
     [`POST ${B}/ch1/enabled`]: jsonResponse({ ...CHANNEL, enabled: false }),
@@ -74,7 +126,7 @@ describe('渠道', () => {
     const row = (await screen.findByText('行政助手', { selector: 'td *, td' })).closest('tr') as HTMLElement;
     expect(within(row).getByText('出错')).toBeInTheDocument();
     expect(within(row).getByText('认证失败，请检查 Bot ID 与 Secret')).toBeInTheDocument();
-    expect(within(row).getByText('1 个')).toBeInTheDocument();
+    expect(within(row).getByText('智能体 · 1 个知识库')).toBeInTheDocument();
     expect(within(row).getByText('2 个')).toBeInTheDocument();
     // 四个操作：露两个，停用、删除收在「更多」里
     await userEvent.click(within(row).getByRole('button', { name: /更多/ }));
@@ -112,9 +164,88 @@ describe('渠道', () => {
         bot_id: 'bot-2',
         bot_name: '',
         secret: 'sk-secret-000000',
-        settings: { answer_mode: 'agent', bases: ['builtin.kb1'] },
+        audience: 'public',
+        settings: { answer_mode: 'agent', bases: ['builtin.kb1'], resources: [], identity_source: null },
       }),
     );
+  });
+
+  it('回答方式选查数据源的：可查的资料换成数据源，列表来自授权页登记的那一类', async () => {
+    register('grants.resources', {
+      type: 'data_source',
+      label: '数据源',
+      load: async () => [{ id: 'ds_sales', name: '销售库' }],
+    });
+    const calls = api();
+    renderWithApp(<ChannelsPage />);
+    await screen.findAllByText('行政助手');
+    await userEvent.click(screen.getByRole('button', { name: /添加机器人/ }));
+    const dialog = await screen.findByRole('dialog');
+    fill(dialog, '名称', '数据助手');
+    fill(dialog, 'Bot ID', 'bot-9');
+    fill(dialog, 'Secret', 'sk-secret-999999');
+    await userEvent.click(await within(dialog).findByRole('radio', { name: '问数' }));
+    expect(within(dialog).getByText(/它追问时直接在 IM 里回答/)).toBeInTheDocument();
+    expect(within(dialog).queryByText('可查的知识库')).toBeNull();
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    expect(await screen.findByText('请至少选一个数据源')).toBeInTheDocument();
+    await pickOption(dialog, '可查的数据源', '销售库');
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(calls.find('POST', B)[0]?.body).toMatchObject({
+        settings: { answer_mode: 'numbers', resources: ['ds_sales'] },
+      }),
+    );
+  });
+
+  it('认出是谁：选组织来源，群聊知识库可以不选；没有组织来源时置灰', async () => {
+    const calls = api();
+    renderWithApp(<ChannelsPage />);
+    const row = (await screen.findByText('数据助手', { selector: 'td *, td' })).closest('tr') as HTMLElement;
+    expect(row).toHaveTextContent('认出是谁');
+    expect(row).toHaveTextContent('智能体 · 只开私聊');
+    await userEvent.click(screen.getByRole('button', { name: /添加机器人/ }));
+    const dialog = await screen.findByRole('dialog');
+    fill(dialog, '名称', '数据助手二');
+    fill(dialog, 'Bot ID', 'bot-3');
+    fill(dialog, 'Secret', 'sk-secret-111111');
+    await userEvent.click(await within(dialog).findByRole('radio', { name: '认出是谁' }));
+    expect(within(dialog).getByText(/私聊按提问人自己的知识库、数据权限回答/)).toBeInTheDocument();
+    expect(within(dialog).getByText('群聊可查的知识库')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    expect(await screen.findByText('请选认人用的组织来源')).toBeInTheDocument();
+    await pickOption(dialog, '按哪个组织来源认人', '示例科技');
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() =>
+      expect(calls.find('POST', B)[0]?.body).toMatchObject({
+        audience: 'member',
+        settings: { answer_mode: 'agent', bases: [], identity_source: 'src-wecom' },
+      }),
+    );
+  });
+
+  it('没有可选的组织来源时不能切到认出是谁', async () => {
+    api({ sources: [] });
+    renderWithApp(<ChannelsPage />);
+    await screen.findAllByText('行政助手');
+    await userEvent.click(screen.getByRole('button', { name: /添加机器人/ }));
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText(/先在「组织架构」里配置同平台的组织来源/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('radio', { name: '认出是谁' })).toBeDisabled();
+  });
+
+  it('认人的渠道：谁在问里显示成员姓名，另列没认出的人', async () => {
+    api();
+    renderWithApp(<ChannelsPage />);
+    const row = (await screen.findByText('数据助手', { selector: 'td *, td' })).closest('tr') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: '谁在问' }));
+    const sheet = await screen.findByRole('dialog', { name: /谁在问/ });
+    const person = (await within(sheet).findByText('张三')).closest('tr') as HTMLElement;
+    expect(person).toHaveTextContent('私聊 · 本人权限');
+    const stranger = (await within(sheet).findByText('小王（xiaowang）')).closest('tr') as HTMLElement;
+    expect(stranger).toHaveTextContent('还没对上');
+    expect(stranger).toHaveTextContent('2');
   });
 
   it('修改时 Secret 留空表示不改；可以看谁在问', async () => {

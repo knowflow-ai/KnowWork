@@ -119,7 +119,7 @@ def discover(found: EntryPoints = _installed) -> Extensions:
         except Exception:
             log.exception("loading extension %s failed", entry.name)
             skipped.append(Skipped(entry.name, "扩展加载失败，详情见业务服务日志"))
-    licensed = tuple(e for e in installed if license_state.allows(e.license_module))
+    licensed = tuple(e for e in installed if e.license_module is None or license_state.allows(e.license_module))
     skipped += [Skipped(e.name, _reason(license_state, e)) for e in installed if e not in licensed]
     active = _with_requirements(licensed, skipped)
     for item in skipped:

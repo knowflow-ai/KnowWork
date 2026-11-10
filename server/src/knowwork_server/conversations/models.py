@@ -21,6 +21,9 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     # 后台会话（background.py）：扩展在 worker 里替这个人发起的，例如评测逐题发问；不进本人的「最近」和搜索
     background: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # 从哪个渠道来的：IM 机器人认人时私聊的会话记在本人名下，「最近」里按 source（平台）打来源标记；网页上开的为空
+    channel_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="", server_default="")
 
 
 class RunEvent(Base):

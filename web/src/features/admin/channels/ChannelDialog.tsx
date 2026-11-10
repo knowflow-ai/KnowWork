@@ -1,6 +1,8 @@
 /**
  * 新建或修改渠道：企业微信、飞书、钉钉机器人。平台建好后不能改（凭据不通用）；Secret 只能写不能读，修改时留空表示不改。
- * 机器人不认人：私聊、群聊都只查这里选的知识库，能找到机器人的人都能查到，所以页面写明只放大家都可以看的。
+ * 回答方式从接口取：内置两种查知识库，扩展登记的查别的资源（例如数据源），可查的资料跟着回答方式换（ResourceField）。
+ * 「提问的人」：不认人时私聊、群聊都只查这里选的资料，能找到机器人的人都能查到，所以页面写明只放大家都可以看的；
+ * 认出是谁时私聊按提问人本人的权限查（用选的组织来源认人），选的资料只管群聊、可以不选。没有可选的组织来源时置灰。
  */
 import { useState } from 'react';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
@@ -9,31 +11,40 @@ import { Select } from '@openai/apps-sdk-ui/components/Select';
 import { Switch } from '@openai/apps-sdk-ui/components/Switch';
 import { useQuery } from '@tanstack/react-query';
 import {
+  BUILT_IN_CHANNEL_MODES,
   createChannel,
+  KNOWLEDGE_RESOURCE,
+  listChannelAnswerModes,
   platformOf,
   PLATFORMS,
   updateChannel,
+  listIdentitySources,
   type AnswerMode,
   type Channel,
+  type ChannelAnswerMode,
+  type ChannelAudience,
   type ChannelInput,
   type ChannelPlatform,
 } from '../../../api/channels';
-import { listKnowledgeBases, type SourceBases } from '../../../api/knowledge';
 import { Dialog, DialogActions } from '../../../ui/Dialog';
 import { Field } from '../../../ui/Field';
 import { toast } from '../../../ui/toastStore';
 import { KEYS } from '../queries';
 import { useAction } from '../useAction';
+import { ResourceField } from './ResourceField';
 
-const ANSWER_MODES: readonly { readonly value: AnswerMode; readonly label: string; readonly help: string }[] =
-  [
-    {
-      value: 'agent',
-      label: '智能体',
-      help: '能查资料、多步完成任务；需要人工确认的操作机器人做不了，会停下说明',
-    },
-    { value: 'quick', label: '快速问答', help: '只查知识库作答，回答更快' },
-  ];
+const ASKS_IN_CHAT = '它追问时直接在 IM 里回答';
+
+/** 回答方式下面那句说明：内置两种写机器人里的特点，扩展的用它自己的说明 */
+function modeHelp(mode: ChannelAnswerMode | undefined, member: boolean): string {
+  if (!mode) return '原来选的回答方式现在用不了，请重新选';
+  if (mode.id === 'agent')
+    return member
+      ? `能查资料、多步完成任务；${ASKS_IN_CHAT}，需要人工确认时私聊里给网页链接接着确认，群里会停下说明`
+      : `能查资料、多步完成任务；${ASKS_IN_CHAT}，需要人工确认的操作机器人做不了，会停下说明`;
+  if (mode.id === 'quick') return '只查知识库作答，回答更快';
+  return `${mode.description}；${ASKS_IN_CHAT}，结果附前几行和口径，完整的在网页里看`;
+}
 
 function initial(channel?: Channel): ChannelInput {
   return {
@@ -43,32 +54,35 @@ function initial(channel?: Channel): ChannelInput {
     botId: channel?.botId ?? '',
     botName: channel?.botName ?? '',
     secret: '',
-    settings: channel?.settings ?? { answerMode: 'agent', bases: [] },
+    settings: channel?.settings ?? { answerMode: 'agent', bases: [], resources: [], identitySource: null },
+    audience: channel?.audience ?? 'public',
   };
 }
 
-function baseOptions(sources: readonly SourceBases[]) {
-  return sources
-    .filter((source) => source.enabled && source.bases.length > 0)
-    .map((source) => ({
-      label: source.sourceName,
-      options: source.bases.map((base) => ({ value: base.id, label: base.name })),
-    }));
-}
+const AUDIENCES: readonly { readonly value: ChannelAudience; readonly label: string }[] = [
+  { value: 'public', label: '不认人' },
+  { value: 'member', label: '认出是谁' },
+];
 
 /** 企业微信最常见的填错：拿了自建应用的 AgentId（1000002 这种纯数字），智能机器人的 Bot ID 不是纯数字。 */
 const looksLikeAgentId = (input: ChannelInput) =>
   input.platform === 'wecom' && /^\d+$/.test(input.botId.trim());
 
-function problem(input: ChannelInput, editing: boolean): string | undefined {
+function problem(
+  input: ChannelInput,
+  editing: boolean,
+  mode: ChannelAnswerMode | undefined,
+): string | undefined {
   const platform = platformOf(input.platform);
   if (!input.name.trim()) return '请填写名称';
   if (!input.botId.trim()) return `请填写 ${platform.idLabel}`;
   if (looksLikeAgentId(input))
     return '这像是自建应用的 AgentId：请填「智能机器人」API 模式（使用长连接）页面上的 Bot ID';
   if (!editing && !input.secret.trim()) return `请填写 ${platform.secretLabel}`;
-  if (input.settings.bases.length === 0) return '请至少选一个知识库';
-  return undefined;
+  if (!mode) return '请选回答方式';
+  if (input.audience === 'member') return input.settings.identitySource ? undefined : '请选认人用的组织来源';
+  const chosen = mode.resourceType === KNOWLEDGE_RESOURCE ? input.settings.bases : input.settings.resources;
+  return chosen.length === 0 ? `请至少选一个${mode.resourceLabel}` : undefined;
 }
 
 export function ChannelDialog({
@@ -80,9 +94,19 @@ export function ChannelDialog({
 }) {
   const editing = channel !== undefined;
   const [input, setInput] = useState<ChannelInput>(() => initial(channel));
-  const bases = useQuery({ queryKey: KEYS.knowledgeBases, queryFn: listKnowledgeBases });
-  const options = baseOptions(bases.data ?? []);
+  const modes = useQuery({ queryKey: [...KEYS.channels, 'answer-modes'], queryFn: listChannelAnswerModes });
+  const sources = useQuery({
+    queryKey: [...KEYS.channels, 'identity-sources', input.platform],
+    queryFn: () => listIdentitySources(input.platform),
+  });
+  const sourceList = sources.data ?? [];
+  // 没有可选的组织来源时不能切到认人；已经是认人的照样显示，好改回去
+  const canRecognize = sourceList.length > 0 || input.audience === 'member';
+  const member = input.audience === 'member';
   const settings = input.settings;
+  const modeList = modes.data ?? BUILT_IN_CHANNEL_MODES;
+  // 取到之前先按内置的显示；原来选的回答方式不在里面（扩展停了）时要重新选
+  const mode = modeList.find((item) => item.id === settings.answerMode);
   const patch = (next: Partial<ChannelInput>) => setInput((current) => ({ ...current, ...next }));
   const patchSettings = (next: Partial<ChannelInput['settings']>) =>
     setInput((current) => ({ ...current, settings: { ...current.settings, ...next } }));
@@ -95,7 +119,7 @@ export function ChannelDialog({
     },
   );
   const submit = async () => {
-    const found = problem(input, editing);
+    const found = problem(input, editing, mode);
     if (found) {
       toast.warning(found);
       return;
@@ -181,35 +205,65 @@ export function ChannelDialog({
           />
         )}
       </Field>
-      <Field label="回答方式" help={ANSWER_MODES.find((mode) => mode.value === settings.answerMode)?.help}>
+      <Field label="回答方式" help={modes.isPending && !mode ? undefined : modeHelp(mode, member)}>
         <RadioGroup<AnswerMode>
           aria-label="回答方式"
           direction="row"
           value={settings.answerMode}
           onChange={(answerMode) => patchSettings({ answerMode })}
         >
-          {ANSWER_MODES.map((mode) => (
-            <RadioGroup.Item key={mode.value} value={mode.value}>
-              {mode.label}
+          {modeList.map((item) => (
+            <RadioGroup.Item key={item.id} value={item.id}>
+              {item.label}
             </RadioGroup.Item>
           ))}
         </RadioGroup>
       </Field>
       <Field
-        label="可查的知识库"
-        help="私聊和群里都只查这些。能找到这个机器人的人都能查到，只放大家都可以看的；谁能找到机器人在 IM 平台的可见范围里设"
+        label="提问的人"
+        help={
+          !canRecognize
+            ? '要认出是谁，先在「组织架构」里配置同平台的组织来源'
+            : member
+              ? '私聊按提问人自己的知识库、数据权限回答，会话记在本人名下；群聊回答全群可见，仍按下面的群聊范围查'
+              : '所有人都用机器人自己的身份查，能查的就是下面选的知识库'
+        }
       >
-        <Select
-          block
-          multiple
-          value={[...settings.bases]}
-          placeholder="选择知识库"
-          searchPlaceholder="搜索知识库"
-          searchEmptyMessage="没有匹配的知识库"
-          options={options}
-          onChange={(chosen) => patchSettings({ bases: chosen.map((option) => option.value) })}
-        />
+        <RadioGroup<ChannelAudience>
+          aria-label="提问的人"
+          direction="row"
+          value={input.audience}
+          disabled={!canRecognize}
+          onChange={(audience) => patch({ audience })}
+        >
+          {AUDIENCES.map((item) => (
+            <RadioGroup.Item key={item.value} value={item.value}>
+              {item.label}
+            </RadioGroup.Item>
+          ))}
+        </RadioGroup>
       </Field>
+      {member ? (
+        <Field
+          label="按哪个组织来源认人"
+          help={
+            sourceList.find((source) => source.id === settings.identitySource)?.login === false
+              ? '这个来源没开「用它登录」：没同步到的人认不出来，只能请管理员同步'
+              : '没认出的人私聊时会收到一个登录链接，在 IM 里点开登录一次就认出来了'
+          }
+        >
+          <Select
+            block
+            value={settings.identitySource ?? ''}
+            placeholder="选择组织来源"
+            options={sourceList.map((source) => ({ value: source.id, label: source.name }))}
+            onChange={(chosen) => patchSettings({ identitySource: chosen.value || null })}
+          />
+        </Field>
+      ) : null}
+      {mode ? (
+        <ResourceField mode={mode} member={member} settings={settings} onChange={patchSettings} />
+      ) : null}
       {editing ? (
         <Switch label="启用" checked={input.enabled} onCheckedChange={(enabled) => patch({ enabled })} />
       ) : null}

@@ -37,15 +37,22 @@ interface Props {
   /** 刚发出的第一条（新建会话的那一页带过来），回显之前先摆上 */
   readonly firstMessage?: FirstMessage;
   readonly answerMode?: AnswerMode;
+  /** 输入框的占位文字；正在跑时照样提示「补充要求或下一条消息」 */
   readonly placeholder?: string;
   /** 输入框下面那行小字（见 Composer） */
-  readonly footnote?: string;
+  readonly footnote?: ReactNode;
   /** 一轮跑完（运行中变回空闲）时调：嵌入的页面据此刷新自己的数据，例如 Agent 刚改了页面上显示的东西 */
   readonly onTurnEnd?: () => void;
   /** 输入框正上方的内容（例如嵌入的页面写「正在看：订单」） */
   readonly above?: ReactNode;
   /** 用户发的每一条（不含插话）发出前过一遍，例如嵌入的页面在开头带上正在看的对象 */
   readonly decorate?: (text: string) => string;
+  /** 最上面一行（挂了范围的对话顶部，例如专家的头像与名字），一直在 */
+  readonly top?: ReactNode;
+  /** 还没问过时摆在输入框上面的一块（开场白、快捷提问），这时它和输入框一起在页面中间；ask 等同在输入框里打了这句发出去 */
+  readonly intro?: (ask: (text: string) => void) => ReactNode;
+  /** 挂了范围的对话：@ 候选按它的范围取（服务端收窄） */
+  readonly scoped?: boolean;
 }
 
 function ConnectionNotice({ state, message }: { readonly state: string; readonly message?: string }) {
@@ -68,6 +75,9 @@ export function ConversationView({
   onTurnEnd,
   above,
   decorate,
+  top,
+  intro,
+  scoped = false,
 }: Props) {
   const feedback = useFeedback(conversationId);
   const client = useQueryClient();
@@ -154,10 +164,16 @@ export function ConversationView({
     [answer],
   );
 
+  const empty = connection === 'connected' && !running && selectLastUserMessage(state) === undefined;
+  const ask = (text: string) => void onSend(text, 'followup', [], []);
+  const opening = empty && intro !== undefined;
+  // 有开场时开场和输入框一起居中（kw-chat-intro）；问过以后照常消息在上、输入框贴底，输入框在树里的位置不变、不会重新挂载
   return (
-    <div className="kw-chat">
+    <div className={opening ? 'kw-chat kw-chat-intro' : 'kw-chat'}>
+      {top}
       <div className="kw-chat-scroll">
         <ConnectionNotice state={connection} message={connectionMessage} />
+        {opening ? intro(ask) : null}
         <MessageList
           state={state}
           onDecide={onDecide}
@@ -166,7 +182,7 @@ export function ConversationView({
           onDropConditions={onDropConditions}
           onInspect={onInspect}
           feedback={feedback}
-          onAsk={(text) => void onSend(text, 'followup', [], [])}
+          onAsk={ask}
         />
       </div>
       {inspecting !== undefined ? (
@@ -187,9 +203,10 @@ export function ConversationView({
           initialMentions={firstMessage?.mentions}
           disabled={connection === 'failed'}
           answerMode={answerMode}
-          placeholder={placeholder}
+          placeholder={running ? undefined : placeholder}
           footnote={footnote}
           conversationId={conversationId}
+          mentionScope={scoped ? { conversationId } : undefined}
           onAttach={warm}
         />
       </div>

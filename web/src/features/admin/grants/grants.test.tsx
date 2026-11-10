@@ -379,6 +379,24 @@ describe('扩展登记的资源类型', () => {
       }),
     );
   });
+
+  it('扩展说了只能授哪几档的类型（例如专家只有使用、编辑），权限里只列这几档', async () => {
+    register('grants.resources', {
+      type: 'expert',
+      label: '专家',
+      help: '使用：和它对话；编辑：维护人',
+      actions: ['use', 'edit'],
+      load: async () => [{ id: 'ex_1', name: '经营分析' }],
+    });
+    api({ [`GET ${B}/grants`]: jsonResponse([]) });
+    renderWithApp(<GrantsPage />);
+    await userEvent.click(await screen.findByRole('button', { name: /新增授权/ }));
+    const dialog = await screen.findByRole('dialog');
+    await pickOption(dialog, '资源类型', '专家');
+    await userEvent.click(within(within(dialog).getByRole('group', { name: '权限' })).getByRole('button'));
+    expect(await screen.findByRole('option', { name: '编辑' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '管理' })).toBeNull();
+  });
 });
 
 describe('授权的纯函数', () => {

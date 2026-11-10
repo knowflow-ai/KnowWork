@@ -77,6 +77,14 @@ def test_table_charts_must_name_columns_of_the_table():
     assert chart_of({"type": "line", "x": "month", "y": ["revenue", "orders"]}) == {
         "type": "line", "x": "month", "y": ["revenue", "orders"]}
     assert chart_of({"type": "line", "x": "month", "y": ["revenue"], "series": "region"})["series"] == "region"
+    grouped = {"type": "line", "x": "month", "y": ["revenue", "orders"], "groups": [["revenue", "orders"]]}
+    assert chart_of(grouped) == grouped, "几列数值的分组（同一组画在一张图里）原样带上"
+    plain = {"type": "line", "x": "month", "y": ["revenue", "orders"]}
+    for groups in ([["revenue"]], [["revenue", "orders"], ["orders"]], [["revenue", "nope"]], [[], ["revenue", "orders"]],
+                   "revenue", [["revenue", 1]]):
+        assert chart_of({**grouped, "groups": groups}) == plain, f"分组不正好分完 y 就不分组，图照样画：{groups}"
+    split = {"type": "line", "x": "month", "y": ["revenue"], "series": "region", "groups": [["revenue"]]}
+    assert "groups" not in chart_of(split), "按组分线时不分组"
     for bad in ({"type": "radar", "x": "month", "y": ["revenue"]}, {"type": "bar", "x": "nope", "y": ["revenue"]},
                 {"type": "bar", "x": "month", "y": []}, {"type": "bar", "x": "month", "y": ["month"]},
                 {"type": "bar", "x": "month", "y": ["revenue", "revenue"]},

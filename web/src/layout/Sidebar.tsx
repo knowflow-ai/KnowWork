@@ -1,10 +1,11 @@
 /**
- * 使用端左侧浅灰侧栏：新对话、技能、扩展注册的入口（app.nav）、最近会话（分页）；底部是用户菜单（管理员从这里进管理后台）。
+ * 使用端左侧浅灰侧栏：新对话、技能、扩展注册的入口（app.nav，入口下面可以挂子项）、最近会话（分页）；底部是用户菜单
+ * （管理员从这里进管理后台）。
  * 顶上一行右边是「搜索对话」（放大镜，或 Ctrl/⌘ + K）和「收起侧栏」，照 ChatGPT；收起时放大镜在「新对话」下面。
  * 照 ChatGPT 可以收起：右上角的按钮（或 Ctrl/⌘ + Shift + S）收成一条只有图标的窄栏，最近会话不显示，
  * 入口的名字悬停时显示；窄栏顶上是产品图标，悬停变成「展开侧栏」。收起与否只记在本浏览器里。
  */
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { Bolt, ComposeEditSquare, Search, Sidebar as SidebarIcon } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
@@ -158,8 +159,11 @@ export function Sidebar() {
         </Tooltip>
       ) : null}
       <Entry to="/skills" icon={<Bolt />} label="技能" collapsed={collapsed} />
-      {slotItems('app.nav').map((item) => (
-        <Entry key={item.to} to={item.to} icon={item.icon} label={item.label} collapsed={collapsed} />
+      {slotItems('app.nav').map(({ to, end, icon, label, Sub }) => (
+        <Fragment key={to}>
+          <Entry to={to} end={end} icon={icon} label={label} collapsed={collapsed} />
+          {Sub ? <Sub collapsed={collapsed} /> : null}
+        </Fragment>
       ))}
       {collapsed ? (
         <div className="kw-sidebar-spacer" />

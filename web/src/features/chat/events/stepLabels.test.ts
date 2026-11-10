@@ -32,6 +32,12 @@ describe('官方工具的步骤说明', () => {
     expect(stepTarget(s)).toBe('报告.docx、明细.xlsx');
   });
 
+  it('展示图表显示卡片标题', () => {
+    const s = step('show_chart', { title: '销售额 · 按月', columns: [], rows: [], source: '附件' });
+    expect(stepLabel(s)).toBe('展示图表');
+    expect(stepTarget(s)).toBe('销售额 · 按月');
+  });
+
   it('记下知识库缺口显示缺什么', () => {
     const s = step('knowledge_gap', { missing: '会员续费的退款规则' });
     expect(stepLabel(s)).toBe('记下知识库缺口');

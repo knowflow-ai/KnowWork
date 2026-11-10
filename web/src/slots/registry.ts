@@ -73,6 +73,8 @@ export interface GrantResourceType {
   readonly icon?: ReactNode;
   /** 能授权的资源；授权页打开时取 */
   readonly load: () => Promise<readonly { readonly id: string; readonly name: string }[]>;
+  /** 这类资源能授哪几档（例如专家只有使用、编辑）；不给就是使用、编辑、管理三档 */
+  readonly actions?: readonly ('use' | 'edit' | 'owner')[];
 }
 
 /** 结果卡片（出处那一张）上的一个操作，例如「存为可信查询」：工具在卡片里写上操作名与 ref，前端按名字找这里登记的组件，
@@ -110,6 +112,19 @@ export interface ChatWelcomeItem {
     readonly answerMode: string;
     readonly ask: (text: string, mentions: readonly Mention[]) => void;
   }>;
+}
+
+/**
+ * 挂了范围的对话（例如专家对话）由扩展画的几块。组件自己判断这段对话归不归它管（调扩展自己的接口），不管就什么都不画；
+ * 没注册顶部那块时，顶部只写范围的名字。
+ */
+export interface ChatScopeItem {
+  /** 对话最上面一行（例如专家的头像、名字、详情），一直在 */
+  readonly Bar?: ComponentType<{ readonly conversationId: string; readonly label: string }>;
+  /** 还没问过时和输入框一起居中、摆在输入框上面的一块（开场白、快捷提问）；ask 等同在输入框里打了这句发出去 */
+  readonly Intro?: ComponentType<{ readonly conversationId: string; readonly ask: (text: string) => void }>;
+  /** 输入框下面那行小字（例如能查哪些数据）；不归它管的对话画 fallback */
+  readonly Footnote?: ComponentType<{ readonly conversationId: string; readonly fallback: string }>;
 }
 
 export interface ComposerTopItem {
@@ -185,6 +200,8 @@ export interface ExtensionSlots {
   'chat.composer.top': ComposerTopItem;
   /** 新对话页输入框下面的一块（建议问题这类）；没注册时什么都没有 */
   'chat.welcome': ChatWelcomeItem;
+  /** 挂了范围的对话：顶部、还没问过时的开场、输入框下面那行字（例如专家对话）；没注册时顶部只显示范围的名字 */
+  'chat.scope': ChatScopeItem;
   /** 技能页「企业」页签里系统管理员看到的内容（管理企业技能本身，连同本空间的设置）；没注册时只有本空间的设置 */
   'admin.skills.enterprise': PanelItem;
   /** 「工具与 MCP」页的「企业」页签：注册了才有这个页签；系统管理员看到这里给的内容（管理企业 MCP 本身，连同本空间的设置），

@@ -45,7 +45,12 @@ const CAPABILITY_HELP: Readonly<Record<string, string>> = {
 };
 const isCapability = (type: string) => type in CAPABILITY_HELP;
 
-const actionsOf = (type: string) => (isCapability(type) ? ACTIONS.filter((a) => a.value !== 'use') : ACTIONS);
+/** 这类资源能授的几档：能力类不授「使用」；扩展登记时说了只有哪几档的（例如专家只有使用、编辑）照它 */
+function actionsOf(type: string, dir: Directory) {
+  if (isCapability(type)) return ACTIONS.filter((a) => a.value !== 'use');
+  const allowed = dir.resourceTypes.find((t) => t.value === type)?.actions;
+  return allowed ? ACTIONS.filter((a) => allowed.includes(a.value)) : ACTIONS;
+}
 
 function problemField(problem: string | null): 'subject' | 'resource' | null {
   if (!problem) return null;
@@ -119,14 +124,15 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
             block
             value={value.resourceType}
             options={dir.resourceTypes.map((t) => ({ value: t.value, label: t.label }))}
-            onChange={(option) =>
+            onChange={(option) => {
+              // 换到这类资源授不了的档（能力类不授「使用」，有的扩展类型没有「管理」）：落到它能授的第一档
+              const allowed = actionsOf(option.value, dir);
               patch({
                 resourceType: option.value,
                 resourceIds: [],
-                // 换到能力类时「使用」不在这里授，落到「编辑」
-                ...(isCapability(option.value) && value.action === 'use' ? { action: 'edit' as Action } : {}),
-              })
-            }
+                ...(allowed.some((a) => a.value === value.action) ? {} : { action: allowed[0]!.value }),
+              });
+            }}
           />
         </Field>
         {value.all ? null : value.resourceType === 'knowledge_base' ? (
@@ -197,7 +203,7 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
         <Select
           block
           value={value.action}
-          options={actionsOf(value.resourceType).map((a) => ({ ...a }))}
+          options={actionsOf(value.resourceType, dir).map((a) => ({ ...a }))}
           onChange={(option) => patch({ action: option.value as Action })}
         />
       </Field>

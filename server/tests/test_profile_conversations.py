@@ -341,6 +341,24 @@ async def test_turns_carry_the_extension_context_only_when_one_is_provided(db):
     await env.pump.close()
 
 
+async def test_context_from_several_providers_joins_text_and_keeps_the_first_persona(db):
+    """几个扩展各补一段：常驻与这一轮的按登记顺序拼；身份只能有一个，先登记的说了算。"""
+    async def expert(request):
+        return TurnContext(persona="你是专家「经营分析」")
+
+    async def memory(request):
+        return TurnContext(standing="你的记忆：回答用表格", persona="别的身份")
+
+    hook = TurnContextHook()
+    hook.add(expert)
+    hook.add(memory)
+    env = Env(db, turn_context=hook)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="你是谁"))
+    assert env.kernel.sent[-1].context == TurnContext(standing="你的记忆：回答用表格", persona="你是专家「经营分析」")
+    await env.pump.close()
+
+
 async def test_a_failing_or_slow_context_provider_does_not_block_the_turn(db):
     async def broken(request):
         raise RuntimeError("记忆服务挂了")

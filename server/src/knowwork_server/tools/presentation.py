@@ -10,8 +10,9 @@
   （单元格只能是字符串、数字、布尔或空），`row_count` 是这次结果一共多少行，`more_rows` 表示结果本身还被截过；
   `title`、`subtitle`（可选）是卡片头上的标题与它下面一行灰字（例如「销售额 · 按区域」「2026-07-01 至 2026-09-30」）；
   `chart`（可选）说怎么把这张表画成图：`{type, x, y, series?}`，type 是 line / bar / pie，x 是横轴（饼图的分类）那一列，
-  y 是要画的数值列（一列或几列，界面一次画一列、可以切换），series 是按它分成几条线的那一列；都写列名，对不上表里的列
-  就不带图。画什么由工具定（例如问数按结果的形状推断），界面只照着画，用户可以在兼容的图形之间切换、也可以切回表；
+  y 是要画的数值列（一列或几列），series 是按它分成几条线的那一列；`groups`（可选，有 series 时不认）把 y 分成几组，
+  同一组的画在一张图里（几条线、几组柱子），组之间可以切换，没有时一列一组；都写列名，对不上表里的列就不带图，
+  分组没正好分完 y 就不分组。画什么由工具定（例如问数按结果的形状推断），界面只照着画，用户可以在兼容的图形之间切换、也可以切回表；
   `drill`（可选）说哪几列的取值能点着往下钻：`{name, ref, columns}`，name 是扩展在前端插槽 chat.card.drill 里登记的
   组件名，ref 原样交给它（例如查询编号），columns 是能点的那几列（列名，对不上表里的列的去掉，一列都不剩就不带）；
   前端没登记那个组件时值不能点，下钻本身由扩展的接口判权；
@@ -116,7 +117,19 @@ def _chart(value: Any, names: set[str]) -> dict[str, Any] | None:
         return None
     if series is not None and (not isinstance(series, str) or series not in names or series == x or series in y):
         return None
-    return {"type": value["type"], "x": x, "y": list(y), **({"series": series} if series else {})}
+    groups = None if series else _groups(value.get("groups"), y)
+    return {"type": value["type"], "x": x, "y": list(y), **({"series": series} if series else {}),
+            **({"groups": groups} if groups else {})}
+
+
+def _groups(value: Any, y: list[str]) -> list[list[str]] | None:
+    """几列数值的分组：正好把 y 分完、每列只出现一次才要；不对就不分组（一列一列画），图照样画。"""
+    if not isinstance(value, list) or not all(isinstance(g, list) and g for g in value):
+        return None
+    flat = [name for group in value for name in group]
+    if not all(isinstance(name, str) for name in flat) or len(flat) != len(y) or set(flat) != set(y):
+        return None
+    return [list(group) for group in value]
 
 
 def _column(item: Any) -> dict[str, Any] | None:

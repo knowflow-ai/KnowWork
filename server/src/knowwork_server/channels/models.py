@@ -5,12 +5,14 @@
   settings 是对话配置（回答方式、可查的知识库，见 settings.py）；status / last_error 是连接状态，管理页显示。
   每个渠道有一个同 id 的渠道账号（user.kind = channel），IM 里的提问都用它的身份回答，能查的就是授给它的知识库；
 - channel_session：渠道里的一个对话位置（私聊的人、群里的人）当前对应哪个会话，发「新会话」时换掉；
-  display_name 记下提问人在平台上的名字，管理页看谁问过。
+  display_name 记下提问人在平台上的名字，管理页看谁问过。认人的渠道里私聊的 user_id 是本人；
+- channel_stranger：认人的渠道里私聊了、却没认出来的人（没同步到、离职、不是空间成员），管理页「谁在问」里单列，
+  认出来后删掉（docs 里的 IM 认人方案）。
 """
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,4 +54,16 @@ class ChannelSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-CHANNEL_TABLES = ("channel", "channel_session")
+class ChannelStranger(Base):
+    __tablename__ = "channel_stranger"
+
+    channel_id: Mapped[str] = mapped_column(ForeignKey("channel.id", ondelete="CASCADE"), primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ID, index=True)
+    display_name: Mapped[str] = mapped_column(String(100), default="")
+    reason: Mapped[str] = mapped_column(String(16))  # unknown / inactive / not_member
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    last_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+CHANNEL_TABLES = ("channel", "channel_session", "channel_stranger")

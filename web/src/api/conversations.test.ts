@@ -113,7 +113,7 @@ describe('conversations api', () => {
     });
     const page = await listConversations('2026-10-20T00:00:00+00:00');
     expect(page.items).toEqual([
-      { id: 'c1', title: '周报', createdAt: null, updatedAt: '2026-10-19T00:00:00+00:00' },
+      { id: 'c1', title: '周报', source: '', createdAt: null, updatedAt: '2026-10-19T00:00:00+00:00' },
     ]);
     expect(page.next).toBe('2026-10-18T00:00:00+00:00');
     expect(api.calls[0]?.query.get('before')).toBe('2026-10-20T00:00:00+00:00');

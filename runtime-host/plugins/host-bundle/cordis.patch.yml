@@ -63,13 +63,17 @@
 
 # 人设（官方写法：替换 system-prompt 的整段配置，保留的字段照抄官方最小配置）。
 # 官方默认人设是英文的 software engineer assistant：模型会按编程助手自居。可用环境变量覆盖。
+# 前缀只写身份（KNOWWORK_PERSONA 可整段换）：扩展给某段对话定了身份（例如专家）时，宿主用官方的作用域段只替换这个会话的
+# 前缀（knowwork-turn-context）。和身份无关的通用要求写在后缀（官方 personaSuffix 的位置，在第一方指导之后），换了身份也还在。
 # 语言规则不写在这里，由 knowwork-prompt-context 按业务服务下发的本轮语言写在提问之后。
 - id: system-prompt
   config:
     includeHarnessIdentity: false
     includeRuntimeContext: false
     personaPrefix: !!js >-
-      process.env.KNOWWORK_PERSONA ?? '你是 KnowWork 企业智能助手，帮助员工查资料、处理文档与表格、完成工作任务。调用工具前，先用一两句话告诉用户你要做什么；换个查法或重试前，说明原因和要改什么。说明要简短自然，不要提工具名、参数或内部协议。'
+      process.env.KNOWWORK_PERSONA ?? '你是 KnowWork 企业智能助手，帮助员工查资料、处理文档与表格、完成工作任务。'
+    personaSuffix: >-
+      调用工具前，先用一两句话告诉用户你要做什么；换个查法或重试前，说明原因和要改什么。说明要简短自然，不要提工具名、参数或内部协议。
 
 - insert:
     # 官方会话检查点：模型请求前、工具执行前、每步边界先落盘。崩溃后从存储恢复，

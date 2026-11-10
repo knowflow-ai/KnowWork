@@ -4,12 +4,13 @@
  * ← 退回分组列表，Esc 先退出分组再关。
  * 键盘事件由输入框转过来（焦点一直在输入框里，边打字边选）。
  */
-import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   findMentionDocuments,
   getMentionOptions,
   type Mention,
+  type MentionDocument,
   type MentionOptions,
 } from '../../../api/mentions';
 import { sections, type Candidate, type Trigger } from './candidates';
@@ -43,10 +44,55 @@ function useDebounced(value: string, delay: number): string {
   return settled;
 }
 
-export function useMentionOptions(): { readonly options: MentionOptions; readonly loading: boolean } {
-  const query = useQuery({ queryKey: MENTION_OPTIONS_KEY, queryFn: getMentionOptions, staleTime: 60_000 });
-  return { options: query.data ?? EMPTY, loading: query.isPending };
+/** 外层自己收窄 @ 候选（例如还没建对话的专家新对话页，按专家设的范围）；不给的那一类不收窄。 */
+export interface MentionNarrowing {
+  readonly bases?: (id: string) => boolean;
+  readonly skills?: (name: string) => boolean;
+  readonly services?: (name: string) => boolean;
+  readonly extension?: (kind: string, id: string) => boolean;
 }
+
+/** @ 候选按谁的范围取：已有对话给对话 id（服务端按对话的范围收窄），还没有对话的由外层收窄。 */
+export interface MentionScope {
+  readonly conversationId?: string;
+  readonly narrowing?: MentionNarrowing;
+}
+
+/** 输入框把自己的范围放进来，里面的小标签等取 @ 候选时按同一份 */
+export const MentionScopeContext = createContext<MentionScope>({});
+
+function narrowed(options: MentionOptions, by: MentionNarrowing | undefined): MentionOptions {
+  if (!by) return options;
+  return {
+    bases: by.bases ? options.bases.filter((b) => by.bases!(b.id)) : options.bases,
+    skills: by.skills ? options.skills.filter((s) => by.skills!(s.name)) : options.skills,
+    services: by.services ? options.services.filter((s) => by.services!(s.name)) : options.services,
+    extensions: by.extension
+      ? options.extensions.map((e) => ({ ...e, items: e.items.filter((i) => by.extension!(e.kind, i.id)) }))
+      : options.extensions,
+  };
+}
+
+/** 没有范围时就是 MENTION_OPTIONS_KEY：和解析小标签名字的那份（resolve.ts）共用一次请求 */
+const optionsKey = (conversationId?: string) =>
+  conversationId ? ([...MENTION_OPTIONS_KEY, conversationId] as const) : MENTION_OPTIONS_KEY;
+
+export function useMentionOptions(scope?: MentionScope): {
+  readonly options: MentionOptions;
+  readonly loading: boolean;
+} {
+  const inherited = useContext(MentionScopeContext);
+  const { conversationId, narrowing } = scope ?? inherited;
+  const query = useQuery({
+    queryKey: optionsKey(conversationId),
+    queryFn: () => getMentionOptions(conversationId),
+    staleTime: 60_000,
+  });
+  const options = useMemo(() => narrowed(query.data ?? EMPTY, narrowing), [query.data, narrowing]);
+  return { options, loading: query.isPending };
+}
+
+const NO_DOCUMENTS: readonly MentionDocument[] = [];
 
 function rootRows(options: MentionOptions): Row[] {
   const tags = options.bases.filter((b) => b.pinnable).reduce((sum, b) => sum + b.tags.length, 0);
@@ -88,8 +134,10 @@ export function useMentionMenu(
   onDismiss: () => void,
   /** 智能体模式：快速问答用不了技能和 MCP 工具，菜单里不列 */
   agent = true,
+  /** 按谁的范围列候选（见 MentionScope）；不给按本人能用的全部 */
+  scope: MentionScope = {},
 ): MentionMenu {
-  const { options: offered, loading } = useMentionOptions();
+  const { options: offered, loading } = useMentionOptions(scope);
   const options = useMemo(
     () => (agent ? offered : { ...offered, services: [], skills: [] }),
     [offered, agent],
@@ -111,23 +159,31 @@ export function useMentionMenu(
   // 进了「文件」组就列（没打字时是最近更新的）；直接输入查找时有字才搜
   const wantsDocuments = open && (group === 'documents' || (group === null && searched.length > 0));
   const documents = useQuery({
-    queryKey: ['mention-documents', searched],
-    queryFn: () => findMentionDocuments(searched),
+    queryKey: ['mention-documents', searched, scope.conversationId ?? null],
+    queryFn: () => findMentionDocuments(searched, scope.conversationId),
     enabled: wantsDocuments,
     staleTime: 30_000,
   });
+  const bases = scope.narrowing?.bases;
+  const docs = useMemo(
+    () =>
+      bases
+        ? (documents.data ?? NO_DOCUMENTS).filter((d) => bases(d.base))
+        : (documents.data ?? NO_DOCUMENTS),
+    [documents.data, bases],
+  );
 
   const rows = useMemo<readonly Row[]>(() => {
     if (!open) return [];
     if (group === null && !query) return rootRows(options);
-    const found = sections(options, wantsDocuments ? (documents.data ?? []) : [], query, group);
+    const found = sections(options, wantsDocuments ? docs : [], query, group);
     return found.flatMap((section): Row[] => [
       ...section.items.map((candidate): Row => ({ kind: 'item', group: section.group, candidate })),
       ...(group === null && section.total > section.items.length
         ? [{ kind: 'more' as const, group: section.group, total: section.total }]
         : []),
     ]);
-  }, [open, group, query, options, wantsDocuments, documents.data]);
+  }, [open, group, query, options, wantsDocuments, docs]);
 
   const busy = loading || (wantsDocuments && documents.isFetching);
   const empty = rows.length > 0 || busy ? null : '没有匹配的内容';

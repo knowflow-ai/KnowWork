@@ -11,6 +11,28 @@
   overflow-y: auto;
 }
 
+/* 挂了范围的对话（扩展给它定了名字与回答方式）顶部那行名字，扩展没画自己的顶部时用：和消息列同宽居中 */
+.kw-chat-scope {
+  flex: none;
+  width: 100%;
+  max-width: var(--kw-chat-max-width);
+  margin: 0 auto;
+  padding: 16px 16px 0;
+  box-sizing: border-box;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+}
+
+/* 挂了范围的对话还没问过：开场和输入框一起在中间（同新对话页），顶部那行照样在最上面。上下的空白平分 */
+.kw-chat-intro > .kw-chat-scroll {
+  flex: none;
+  margin-top: auto;
+}
+
+.kw-chat-intro > .kw-composer-dock {
+  margin-bottom: auto;
+}
+
 .kw-chat-column {
   max-width: var(--kw-chat-max-width);
   margin: 0 auto;
@@ -1194,6 +1216,14 @@ a.kw-source-item:hover {
   justify-content: space-between;
   gap: 8px;
   padding-bottom: 8px;
+}
+
+/* 图上面一排的左边：切换画哪一组、图例，放不下时换行 */
+.kw-result-chart-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
 }
 
 .kw-result-legend {

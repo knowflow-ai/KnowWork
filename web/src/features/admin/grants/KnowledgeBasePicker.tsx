@@ -2,6 +2,7 @@
  * 授权时选知识库：树形选择，按知识源分组（分组本身不能选），每组第一项是「全部知识库」，选它就是授 <知识源id>.*
  * （这个来源下的全部，含以后新开放的）。扩展给了层级树的知识源（插槽 grants.knowledge，例如目录 → 知识库）按树显示，
  * 选目录就是按目录授权，下面的子目录和知识库都算；其余知识源平铺知识库。值是完整资源（`类型:id`）。
+ * 给专家选能查的知识库时也用它（folders 为假：目录只能展开、不能选，专家的范围只认知识库和「全部知识库」）。
  */
 import { BookClosed, BookOpen } from '@openai/apps-sdk-ui/components/Icon';
 import type { SourceBases } from '../../../api/knowledge';
@@ -14,24 +15,29 @@ function sourceTitle(s: SourceBases): string {
   return notes.length > 0 ? `${s.sourceName}（${notes.join('；')}）` : s.sourceName;
 }
 
-function fromTree(nodes: readonly GrantTreeNode[]): readonly TreeSelectNode[] {
+const FOLDER = 'knowledge_folder:';
+
+function fromTree(nodes: readonly GrantTreeNode[], folders: boolean): readonly TreeSelectNode[] {
   return nodes.map((node) => ({
     key: node.resource,
     label: node.name,
     icon: resourceIcon(node.resource),
-    ...(node.selectable === false ? { selectable: false } : {}),
-    children: fromTree(node.children),
+    ...(node.selectable === false || (!folders && node.resource.startsWith(FOLDER))
+      ? { selectable: false }
+      : {}),
+    children: fromTree(node.children, folders),
   }));
 }
 
 export function knowledgeNodes(
   sources: readonly SourceBases[],
   trees: Readonly<Record<string, readonly GrantTreeNode[]>>,
+  folders = true,
 ): readonly TreeSelectNode[] {
   return sources.map((s) => {
     const tree = trees[s.sourceId];
     const below = tree
-      ? fromTree(tree)
+      ? fromTree(tree, folders)
       : s.bases.map((b) => ({
           key: `knowledge_base:${b.id}`,
           label: b.name,
@@ -59,6 +65,8 @@ export function KnowledgeBasePicker({
   value,
   disabled,
   invalid,
+  folders = true,
+  placeholder,
   onChange,
 }: {
   readonly sources: readonly SourceBases[];
@@ -66,17 +74,21 @@ export function KnowledgeBasePicker({
   readonly value: readonly string[];
   readonly disabled?: boolean;
   readonly invalid?: boolean;
+  /** 目录能不能选（按目录授权）；不能选时只用来展开 */
+  readonly folders?: boolean;
+  /** 一个都没选时写的；不给就是「选择知识库」 */
+  readonly placeholder?: string;
   readonly onChange: (resources: string[]) => void;
 }) {
   return (
     <TreeSelect
       multiple
       aria-label="知识库"
-      nodes={knowledgeNodes(sources, trees)}
+      nodes={knowledgeNodes(sources, trees, folders)}
       value={value}
       disabled={disabled}
       invalid={invalid}
-      placeholder={sources.length > 0 ? '选择知识库' : '还没有知识源'}
+      placeholder={sources.length > 0 ? (placeholder ?? '选择知识库') : '还没有知识源'}
       searchPlaceholder="搜索知识库或目录"
       emptyMessage="没有匹配的选项"
       onChange={onChange}

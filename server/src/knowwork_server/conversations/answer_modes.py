@@ -6,7 +6,9 @@
 - 扩展登记的方式发消息时现算（指令可能按会话变，例如带上会话范围的摘要），随消息交给宿主；
 - available 决定这个空间、这个人能不能选（下拉里出不出现、发消息时认不认），判断出错时按不能选；
 - listed 为假的不进下拉，只给扩展的后台对话用（conversations/background.py，例如在 worker 里起草，没人在旁边点审批，
-  这种方式只放只读的工具、把结果写在回答里交回去）。发消息时照样认。
+  这种方式只放只读的工具、把结果写在回答里交回去）。发消息时照样认；
+- channel 写了才能在 IM 渠道里选（channels/settings.py）：渠道不认人或在群里时用机器人账号回答，按这一类资源给它授权，
+  内置两种查知识库。没写的（例如改模型的那种，IM 里没法审阅）不进渠道。
 """
 
 import logging
@@ -20,6 +22,7 @@ log = logging.getLogger(__name__)
 
 MODE_ID = re.compile(ANSWER_MODE_PATTERN)
 TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+RESOURCE_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")  # 同权限词汇的资源类型（access/vocab.py TYPE_PATTERN）
 MAX_PROMPT = 20_000
 MAX_LABEL = 20
 MAX_DESCRIPTION = 60
@@ -33,6 +36,17 @@ class ModeContext:
 
 
 @dataclass(frozen=True)
+class ChannelResource:
+    """IM 渠道里这种回答方式查哪类资源：授权里的资源类型与它的名字（机器人账号按它授权，界面上写「群聊可查的<名字>」）。"""
+
+    type: str
+    label: str
+
+
+KNOWLEDGE = ChannelResource("knowledge_base", "知识库")
+
+
+@dataclass(frozen=True)
 class AnswerMode:
     id: str
     label: str  # 下拉里的名字
@@ -41,10 +55,11 @@ class AnswerMode:
     prompt: Callable[[ModeContext], Awaitable[str]] | None = None
     available: Callable[[ModeContext], Awaitable[bool]] | None = None
     listed: bool = True  # 进不进下拉；只给后台对话用的设 False
+    channel: ChannelResource | None = None  # IM 渠道里能不能选、机器人账号按哪类资源授权
 
 
-AGENT = AnswerMode("agent", "智能体", "能用技能、读文件、执行任务，适合复杂的事")
-QUICK = AnswerMode("quick", "快速问答", "只查知识库，回答更快")
+AGENT = AnswerMode("agent", "智能体", "能用技能、读文件、执行任务，适合复杂的事", channel=KNOWLEDGE)
+QUICK = AnswerMode("quick", "快速问答", "只查知识库，回答更快", channel=KNOWLEDGE)
 BUILT_IN = (AGENT, QUICK)
 
 
@@ -69,10 +84,29 @@ class AnswerModes:
             raise ValueError(f"answer mode {mode.id} needs a short label and description")
         if not all(TOOL_NAME.fullmatch(name) for name in mode.official_tools):
             raise ValueError(f"answer mode {mode.id} has an invalid tool name")
+        if mode.channel is not None and (not RESOURCE_TYPE.fullmatch(mode.channel.type) or not mode.channel.label):
+            raise ValueError(f"answer mode {mode.id} has an invalid channel resource")
         self._items = {**self._items, mode.id: mode}
 
     async def for_user(self, ctx: ModeContext) -> list[AnswerMode]:
         return [mode for mode in self._items.values() if mode.listed and await _offered(mode, ctx)]
+
+    async def offered(self, mode_id: str, ctx: ModeContext) -> bool:
+        """这个人此刻能不能选这种回答方式（下拉里有没有它）。"""
+        mode = self._items.get(mode_id)
+        return mode is not None and mode.listed and await _offered(mode, ctx)
+
+    async def for_channels(self, ctx: ModeContext) -> list[AnswerMode]:
+        """IM 渠道能选的：这个人（配渠道的管理员）能用、又写了查哪类资源的。"""
+        return [mode for mode in await self.for_user(ctx) if mode.channel is not None]
+
+    def channel_resource(self, mode_id: str) -> ChannelResource | None:
+        mode = self._items.get(mode_id)
+        return mode.channel if mode is not None else None
+
+    def channel_types(self) -> frozenset[str]:
+        """渠道里会用到的全部资源类型：机器人账号在这几类上的授权由渠道配置管。"""
+        return frozenset(mode.channel.type for mode in self._items.values() if mode.channel is not None)
 
     async def spec(self, mode_id: str, ctx: ModeContext) -> AnswerModeSpec | None:
         """这一轮随消息带给宿主的内容；内置的两种不带。"""

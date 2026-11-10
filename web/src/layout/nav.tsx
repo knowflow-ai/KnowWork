@@ -16,13 +16,17 @@ import {
   Sparkle,
   Tools,
 } from '@openai/apps-sdk-ui/components/Icon';
-import type { ReactNode } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 import { slotItems } from '../slots/registry';
 
 export interface NavItem {
   readonly to: string;
   readonly label: string;
   readonly icon: ReactNode;
+  /** 只在正好是这个地址时选中（下面挂的子项各自选中时，这一项不跟着亮） */
+  readonly end?: boolean;
+  /** 使用端侧栏里挂在这一项下面的子项（例如固定的常用专家）；侧栏收起时也给，由它自己决定画不画 */
+  readonly Sub?: ComponentType<{ readonly collapsed: boolean }>;
 }
 
 export interface NavGroup {

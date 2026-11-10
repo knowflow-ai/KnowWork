@@ -150,7 +150,8 @@ class HostKernel:
                                             **({"routes": list(e.routes)} if e.routes else {})}
                                            for e in turn.knowledge.bases], "omitted": turn.knowledge.omitted}
         if turn.context is not None:
-            body["context"] = {"standing": turn.context.standing, "turn": turn.context.turn}
+            body["context"] = {"standing": turn.context.standing, "turn": turn.context.turn,
+                               "persona": turn.context.persona}
         if turn.mentions:
             body["mentions"] = [{"type": m.type, "id": m.id, "name": m.name,
                                  **({"base": m.base, "baseName": m.base_name or m.base} if m.base else {}),

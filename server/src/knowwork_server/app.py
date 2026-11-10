@@ -35,7 +35,7 @@ from .conversations.activation import build_activation_router
 from .conversations.answer_modes import AnswerModes
 from .conversations.api import build_answer_modes_router
 from .conversations.api import build_router as conversation_router
-from .conversations.background import background_signer, build_background_router
+from .conversations.background import LocalBackground, background_signer, build_background_router
 from .conversations.feedback import FeedbackStore
 from .conversations.listeners import Broadcaster
 from .conversations.mention_api import MentionSources
@@ -45,6 +45,7 @@ from .conversations.models import Conversation
 from .conversations.observers import fan_out
 from .conversations.pump import EventPump
 from .conversations.replay import EventFeed
+from .conversations.scopes import ConversationScopes
 from .conversations.service import ConversationService
 from .conversations.summaries import RunSummaries
 from .conversations.tool_credentials import ToolCredentials, require_membership
@@ -66,6 +67,7 @@ from .gateway.model_gateway import build_router as gateway_router
 from .identity.api import build_router as identity_router
 from .identity.config import IdentityConfig, OidcConfig
 from .identity.container import Identity, build_identity
+from .identity.im_identities import ImIdentities
 from .identity.providers import SECRET_PURPOSE as LOGIN_SECRET_PURPOSE
 from .identity.providers_api import build_router as login_providers_router
 from .insights import InsightsService, build_insights
@@ -138,6 +140,7 @@ from .tools.mcp.api import build_router as mcp_router
 from .tools.provided import ProvidedTools
 from .tools.registry import KW_NOW, CompositeToolRegistry, StaticToolRegistry, ToolContext
 from .tools.service import ToolService
+from .tools.show_chart import SHOW_CHART
 from .workflows import STALE_AFTER, Workflows, build_workflows
 from .workflows.api import build_router as workflows_router
 
@@ -179,6 +182,7 @@ class Runtime:
     mention_sources: MentionSources  # 输入框 @ 菜单的候选
     answer_modes: AnswerModes  # 输入框左上角的回答方式（内置两种加扩展登记的）
     feedback: FeedbackStore  # 对每轮回答的赞、踩
+    scopes: ConversationScopes  # 扩展给对话定的范围（conversations/scopes.py）
     links: LinkSigner  # 站内链接签名：知识库图片在回答、引用里显示要带签名
     knowledge_mcp: KnowledgeMcp
     mcp: McpModule
@@ -380,9 +384,9 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     summaries.contribute("knowledge", knowledge.search_log.close_turn)
     # 回答引用了扩展知识源的哪几份文档、是谁问的，告诉声明了 cited 的知识源（例如按人记常用资料）
     summaries.contribute("knowledge_cited", CitationNotifier(global_sessionmaker, knowledge.provided).turn_ended)
-    # 内置工具（时间、知识检索、沙箱）只要求是空间成员；MCP 工具要 tool:<名字> 授权（默认只有 owner、admin）。
+    # 内置工具（时间、图表、知识检索、沙箱）只要求是空间成员；MCP 工具要 tool:<名字> 授权（默认只有 owner、admin）。
     # 执行时注册表按当前授权再判一次，权限收回立即生效。内置工具排在前面，外部工具不能顶替同名的内置工具。
-    builtin_tools = (KW_NOW, *knowledge.tools)
+    builtin_tools = (KW_NOW, SHOW_CHART, *knowledge.tools)
     # 扩展提供的工具（例如记忆写入）在扩展装配时登记，排在内置工具之后、MCP 工具之前，同内置工具只要求是空间成员
     provided_tools = ProvidedTools()
     clearance = ToolClearance(access, builtin=frozenset(tool.spec.name for tool in builtin_tools),
@@ -432,9 +436,12 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
         await tools.discard_session(conversation.id)
 
     workflows = build_workflows(global_sessionmaker, tools, kernel, skills.delivery.catalog)
+    # 扩展给对话定的范围（固定的回答方式，知识库、技能、MCP 收窄）：扩展装配时登记提供者，没登记时和没有这个功能一样
+    scopes = ConversationScopes()
     profiles = build_profiles(global_sessionmaker, registry, clearance, skills=skills.delivery.catalog,
                               models=models.catalog, knowledge=knowledge.admin,
-                              host_denied=() if sandbox else EXECUTION_TOOLS, bindings=bindings)
+                              host_denied=() if sandbox else EXECUTION_TOOLS, bindings=bindings,
+                              narrowing_of=scopes.narrowing)
     # 「本会话内同类操作不再询问」的授权按对话当前绑定的运行配置版本记与查
     # 「本会话内不再询问」按宿主相关版本记：工具、权限、技能变了才重新问，只是本轮 @ 变了不重新问
     grants = SessionGrants(global_sessionmaker, profiles.bound_host_version)
@@ -447,7 +454,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     mention_sources = MentionSources(bases=partial(mentionable_bases, knowledge.service), skills=mention_skills,
                                      documents=partial(mentionable_documents, knowledge.service),
                                      services=lambda workspace_id, user_id: mcp.me.mentionable(user_id, workspace_id),
-                                     extensions=mention_kinds.listing)
+                                     extensions=mention_kinds.listing, scopes=scopes)
 
     async def knowledge_catalog(conversation: Conversation, profile: RuntimeProfile) -> KnowledgeCatalog:
         if not profile.knowledge:
@@ -463,7 +470,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                   refresh_model_credential=rotator.ensure_fresh, profiles=profiles,
                                   grants=grants, attachments=TurnAttachments(attachments.service),
                                   knowledge_catalog=knowledge_catalog, turn_context=turn_context,
-                                  answer_modes=answer_modes, mention_kinds=mention_kinds,
+                                  answer_modes=answer_modes, mention_kinds=mention_kinds, scopes=scopes,
                                   tool_credentials=tool_credentials, skill_credentials=skill_credentials,
                                   erasers=(erase_knowledge, erase_receipts,
                                            attachments.service.erase, artifacts.service.erase,
@@ -486,16 +493,20 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     links = LinkSigner(derive_key(master_key, "knowledge-links"))
     knowledge_reader_ = KnowledgeReader(knowledge.service, links)
     knowledge_mcp = KnowledgeMcp(knowledge_reader_, knowledge_reader(identity, access))
+    im_identities = ImIdentities()  # 扩展登记组织来源，渠道认人时用（同一个实例交给两边）
     context = ApiContext(settings=settings, engine=engine, sessionmaker=scoped,
                          global_sessionmaker=global_sessionmaker, access=access,
                          models=ModelClient(models.catalog, routed_http),
                          stores_for=lambda namespace: namespaced_stores(settings, namespace),
                          knowledge_sources=knowledge.provided, tools=provided_tools, turn_context=turn_context,
-                         answer_modes=answer_modes, mentions=mention_kinds,
+                         answer_modes=answer_modes, mentions=mention_kinds, conversation_scopes=scopes,
                          links=links, profiles=identity.users.get_many, on_turn_ended=summaries.contribute,
                          platform_skills=skills.platform, enterprise_mcp=mcp.enterprise, accounts=identity.accounts,
                          login_methods=identity.methods, password_logins=identity.password_logins,
                          redirect_logins=identity.redirect_logins, verify_files=identity.verify_files,
+                         im_identities=im_identities,
+                         background=LocalBackground(service, member=lambda user_id, workspace_id:
+                                                    access.check(user_id, workspace_id, WORKSPACE_RESOURCE, Action.USE)),
                          principal=lambda scope: scoped_principal(identity, scope) if scope else bound_principal(identity))
     extensions, extension_routers, extension_internal = _setup_extensions(extensions or installed_extensions(),
                                                                           context)
@@ -510,13 +521,16 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                    access=access, models=models, usage=usage, knowledge=knowledge, mcp=mcp,
                    knowledge_reader=knowledge_reader_, links=links, knowledge_mcp=knowledge_mcp,
                    mention_sources=mention_sources, answer_modes=answer_modes, feedback=FeedbackStore(scoped),
+                   scopes=scopes,
                    debug=debug,
                    runs=build_run_records(scoped, models.recorder, debug, service, access, audit.sink,
                                           identity.users.get_many),
                    insights=build_insights(scoped, access, timezone=settings.usage_timezone,
                                            base_names=partial(_base_names, knowledge.service)),
                    channels=build_channels(master_key, scoped, global_sessionmaker, held_engine, access, service,
-                                           accounts=identity.users, catalogs=knowledge.citations, sign=links.sign),
+                                           accounts=identity.users, catalogs=knowledge.citations, sign=links.sign,
+                                           identities=im_identities, public_base_url=settings.public_base_url,
+                                           answer_modes=answer_modes),
                    jobs=JobsAdmin(global_sessionmaker), parsers=parsers,
                    global_sessionmaker=global_sessionmaker,
                    engine=engine, held_engine=held_engine, upstream=upstream, routed_http=routed_http,
@@ -577,7 +591,7 @@ def create_public_app(runtime: Runtime) -> FastAPI:
     app.include_router(mcp_oauth_router(runtime.mcp.login, bound_principal(identity)))
     actor = conversation_actor(identity, access)
     app.include_router(mention_router(runtime.mention_sources, actor))  # 排在会话路由前，见 mention_api
-    app.include_router(conversation_router(runtime.service, actor, runtime.feedback))
+    app.include_router(conversation_router(runtime.service, actor, runtime.feedback, runtime.scopes))
     app.include_router(build_answer_modes_router(runtime.answer_modes, actor))
     app.include_router(citations_router(runtime.knowledge.citations, runtime.service, actor, runtime.links))
     app.include_router(debug_router(runtime.debug, runtime.service, actor))

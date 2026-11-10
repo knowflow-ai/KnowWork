@@ -25,6 +25,7 @@ const at = (daysAgo: number) => new Date(now - daysAgo * 24 * 60 * 60 * 1000).to
 const item = (id: string, title: string, daysAgo: number) => ({
   id,
   title,
+  source: '',
   createdAt: null,
   updatedAt: at(daysAgo),
 });

@@ -216,7 +216,10 @@ class FeishuConnection:
                                external_id=external_id, chat_type="group" if group else "direct",
                                chat_id=str(getattr(conversation, "chat_id", "") or ""),
                                message_id=str(getattr(inbound, "id", "") or ""), text=text,
-                               display_name=str(getattr(sender, "display_name", "") or external_id), raw=inbound)
+                               display_name=str(getattr(sender, "display_name", "") or external_id),
+                               # open_id 每个应用一套：机器人和组织同步不是同一个应用时靠 user_id、union_id 对上
+                               ids={key: str(getattr(sender, key, "") or "") for key in ("user_id", "open_id", "union_id")},
+                               raw=inbound)
 
     async def reply(self, message: IncomingMessage, text: str) -> None:
         await asyncio.wrap_future(self.schedule(self.channel.send(

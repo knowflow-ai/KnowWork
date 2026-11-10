@@ -14,7 +14,7 @@ export async function resolveMentions(
   if (!mentions.some((m) => m.type === 'folder' && !m.bases?.length)) return mentions;
   const options = await client.fetchQuery({
     queryKey: MENTION_OPTIONS_KEY,
-    queryFn: getMentionOptions,
+    queryFn: () => getMentionOptions(),
     staleTime: 60_000,
   });
   return mentions.flatMap((mention) => {

@@ -395,6 +395,14 @@ body {
   padding-right: 36px;
 }
 
+/* IM 机器人里私聊来的对话：标题后面的平台小字（「企业微信」） */
+.kw-conversation-source {
+  flex-shrink: 0;
+  margin-left: 6px;
+  color: var(--kw-text-tertiary, var(--kw-text-secondary));
+  font-size: 12px;
+}
+
 .kw-conversation-item .kw-conversation-more {
   position: absolute;
   top: 50%;

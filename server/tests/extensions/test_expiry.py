@@ -10,7 +10,7 @@ import pytest
 from knowwork_server.extensions import LicenseState, discover
 from knowwork_server.extensions.expiry import stop_when_license_ends
 
-from .test_loader import DEMO, found, verifier
+from .test_loader import DEMO, FREE, found, verifier
 
 pytestmark = pytest.mark.anyio
 
@@ -75,6 +75,7 @@ async def test_renewal_to_a_permanent_license_stops_watching_without_exiting():
 @pytest.mark.parametrize("extensions", [
     pytest.param(lambda: licensed(None), id="permanent-license"),
     pytest.param(lambda: discover(found(DEMO)), id="no-extension-enabled"),
+    pytest.param(lambda: discover(found(FREE)), id="only-free-extensions"),
 ])
 async def test_nothing_to_watch_returns_at_once(extensions):
     stop = asyncio.Event()

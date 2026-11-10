@@ -90,7 +90,7 @@ test('自带技能按会话给：本空间停用的、和清单里同名的不�
 
 test('本空间把自带技能全停用、清单里也没有技能时，收掉 skill 工具', async () => {
   const env = await startSkillHost([{ text: '好的' }],
-    { skills: [], bundledOff: ['office-docx', 'office-pptx', 'office-xlsx'] })
+    { skills: [], bundledOff: ['diagram', 'office-docx', 'office-pptx', 'office-xlsx'] })
   try {
     await env.open('sk-none-left')
     await env.host.call('POST', '/v1/sessions/sk-none-left/messages', { text: '随便问问' })

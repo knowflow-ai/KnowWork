@@ -123,10 +123,13 @@ class TurnContext(_Frozen):
 
     - standing（常驻）：会话里一直有效的，宿主照知识库目录的办法发——内容没变不重发（不动前缀缓存），变了追加一份新的，
       从有变成空时追加一句「不再适用」；
-    - turn：只和这一轮有关的（例如按本轮提问召回的几条），宿主紧跟在本轮提问后面追加一次。"""
+    - turn：只和这一轮有关的（例如按本轮提问召回的几条），宿主紧跟在本轮提问后面追加一次；
+    - persona：这段对话的身份（例如专家是谁、管什么、怎么回答），宿主放进系统提示里部署人设的那一段（官方的作用域段，只替换
+      这个会话的），比追加在对话里的背景分量重，问「你是谁」按它答；空的照部署的默认人设。部署人设后面的通用要求不受影响。"""
 
     standing: str = Field(default="", max_length=8000)
     turn: str = Field(default="", max_length=4000)
+    persona: str = Field(default="", max_length=8000)
 
 
 # 回答方式的标识：内置 agent、quick，扩展可以登记别的（conversations/answer_modes.py）

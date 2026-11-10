@@ -1,5 +1,6 @@
 """后台会话（conversations/background.py）：worker 经内部端口替用户建会话、按回答方式发一轮、看状态、取消；
-会话不进本人的「最近」和搜索；令牌要对、人要是空间成员、会话要是这个人的。"""
+会话不进本人的「最近」和搜索；令牌要对、人要是空间成员、会话要是这个人的。业务服务进程里的扩展用 LocalBackground
+建对话，判定一样，还能指定对话 id。"""
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from knowwork_server.conversations.background import (
     AUDIENCE,
     BackgroundTurnError,
     BackgroundTurns,
+    LocalBackground,
     background_signer,
     build_background_router,
 )
@@ -23,6 +25,7 @@ from knowwork_server.conversations.service import ConversationService
 from knowwork_server.conversations.writer import BatchWriter
 from knowwork_server.db.base import in_workspace, make_engine, make_sessionmaker, make_workspace_sessionmaker
 from knowwork_server.db.migrate import MAIN_LINE, upgrade_to_head
+from knowwork_server.kernel.contract import KernelError
 from knowwork_server.kernel.tokens import TokenSigner, derive_key
 
 from .fakes import FakeKernel
@@ -48,8 +51,9 @@ async def world(app_db):
     app.include_router(build_background_router(service, background_signer(MASTER), make_sessionmaker(engine),
                                                member=lambda user, ws: (user, ws) in MEMBERS))
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://internal")
+    local = LocalBackground(service, member=lambda user, ws: (user, ws) in MEMBERS)
     yield SimpleNamespace(kernel=kernel, service=service, http=http, sessionmaker=sessionmaker,
-                          turns=BackgroundTurns("http://internal", background_signer(MASTER), http))
+                          turns=BackgroundTurns("http://internal", background_signer(MASTER), http), local=local)
     await http.aclose()
     await pump.close()
     await engine.dispose()
@@ -121,3 +125,29 @@ async def test_unknown_answer_modes_are_refused(world):
     conversation_id = await turns.create("ws_a", "u1")
     with pytest.raises(BackgroundTurnError, match="422"):
         await turns.send("ws_a", "u1", conversation_id, "随便问问", answer_mode="nope")
+
+
+async def status_of(call) -> int | None:
+    """本地入口的报错只写一句原因，状态码在 status 上。"""
+    with pytest.raises(BackgroundTurnError) as caught:
+        await call
+    return caught.value.status
+
+
+async def test_local_background_takes_a_chosen_id_and_checks_like_the_internal_port(world):
+    """扩展先拿自己的 id 记下东西再建对话：指定 id 建；已有同 id 的拒绝；id 不合规、不是成员都拒绝；宿主连不上报 502；
+    不藏起来的进「最近」。"""
+    local, kernel = world.local, world.kernel
+    assert await local.create("ws_a", "u1", title="经营分析", conversation_id="exc_1") == "exc_1"
+    assert kernel.opened[-1].session_id == "exc_1"
+    assert await status_of(local.create("ws_a", "u1", conversation_id="exc_1")) == 409
+    assert await status_of(local.create("ws_a", "u1", conversation_id="带空格 的 id")) == 422
+    assert await status_of(local.create("ws_a", "outsider")) == 403
+    world.kernel.open_effects.append(KernelError("unreachable", "宿主没起来", 503))
+    assert await status_of(local.create("ws_a", "u1", conversation_id="exc_3")) == 502, "宿主连不上同公开端口建对话"
+    await local.create("ws_a", "u1", conversation_id="exc_2", background=False)
+    with in_workspace("ws_a"):
+        async with world.sessionmaker() as session:
+            assert (await session.get(Conversation, "exc_1")).background is True
+        page = await world.service.list_page(workspace_id="ws_a", user_id="u1")
+    assert [c.id for c in page.items] == ["exc_2"], "不藏起来的进本人的「最近」"

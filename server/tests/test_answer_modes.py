@@ -3,9 +3,11 @@
 import pytest
 
 from knowwork_server.conversations.answer_modes import (
+    KNOWLEDGE,
     AnswerMode,
     AnswerModes,
     AnswerModeUnavailable,
+    ChannelResource,
     ModeContext,
     UnknownAnswerMode,
 )
@@ -76,3 +78,22 @@ async def test_unlisted_modes_stay_out_of_the_menu_but_still_work():
     modes.add(AnswerMode("drafting", "起草", "后台起草用", prompt=prompt, listed=False))
     assert [m.id for m in await modes.for_user(CTX)] == ["agent", "quick"]
     assert (await modes.spec("drafting", CTX)).prompt == "起草规则"
+
+
+async def test_only_modes_that_name_their_resource_go_into_channels():
+    # IM 渠道里不认人或群聊时用机器人账号回答，要知道按哪类资源给它授权；没写的（改东西的建模这类）不进渠道
+    async def available(ctx):
+        return ctx.user_id != "outsider"
+
+    modes = AnswerModes()
+    modes.add(AnswerMode("numbers", "问数", "查数", channel=ChannelResource("data_source", "数据源"),
+                         available=available))
+    modes.add(AnswerMode("modeling", "建模", "改模型"))
+    assert [(m.id, m.channel) for m in await modes.for_channels(CTX)] == [
+        ("agent", KNOWLEDGE), ("quick", KNOWLEDGE), ("numbers", ChannelResource("data_source", "数据源"))]
+    assert [m.id for m in await modes.for_channels(ModeContext("ws", "outsider"))] == ["agent", "quick"]
+    assert modes.channel_resource("numbers") == ChannelResource("data_source", "数据源")
+    assert modes.channel_resource("modeling") is None and modes.channel_resource("missing") is None
+    assert modes.channel_types() == frozenset({"knowledge_base", "data_source"})
+    with pytest.raises(ValueError):
+        modes.add(AnswerMode("bad", "坏的", "", channel=ChannelResource("Data Source", "数据源")))

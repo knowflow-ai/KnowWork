@@ -12,11 +12,14 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from ..conversations.answer_modes import AnswerModes
+from ..identity.im_identities import ImIdentities
 from .admin import Access, Accounts, ChannelAdmin
 from .api import build_router
 from .dingtalk import DingtalkConnection
 from .feishu import FeishuConnection
 from .models import Channel
+from .people import People
 from .pictures import Catalogs, InProcessFetch, Pictures, Sign
 from .service import ChannelService, Conversations
 from .store import ChannelStore
@@ -63,17 +66,20 @@ PLATFORMS = {"wecom": _wecom, "feishu": _feishu, "dingtalk": _dingtalk}
 def build_channels(master_key: str, sessionmaker: async_sessionmaker, global_sessionmaker: async_sessionmaker,
                    engine: AsyncEngine | None, access: Access, conversations: Conversations, *,
                    accounts: Accounts, catalogs: Catalogs | None = None, sign: Sign | None = None,
-                   factories: dict | None = None) -> Channels:
+                   factories: dict | None = None, identities: ImIdentities | None = None,
+                   public_base_url: str = "", answer_modes: AnswerModes | None = None) -> Channels:
     """sessionmaker 要按空间声明（make_workspace_sessionmaker）；engine 给运行管理拿按机器人的 advisory 锁，
     测试里可以不给。factories 不给时用真实的平台连接（测试里换成假的）。catalogs（引用目录）与 sign（站内链接签名）
-    给了才发回答里的图。"""
+    给了才发回答里的图。identities 是扩展登记的身份来源，给了才能认人；public_base_url 拼免登入口与网页会话链接。
+    answer_modes 是回答方式登记表（同输入框的那一份），扩展登记的回答方式写了查哪类资源的，渠道里也能选。"""
     store = ChannelStore(sessionmaker, global_sessionmaker)
     secrets = ChannelSecrets(master_key)
     fetch = InProcessFetch()
     pictures = Pictures(catalogs, sign, fetch) if catalogs is not None and sign is not None else None
-    service = ChannelService(store, conversations, pictures=pictures,
+    people = People(identities, global_sessionmaker, public_base_url) if identities is not None else None
+    service = ChannelService(store, conversations, pictures=pictures, people=people, modes=answer_modes,
                              member=lambda user_id, workspace_id: access.check(user_id, workspace_id,
                                                                                "workspace", "use"))
     supervisor = ChannelSupervisor(store, secrets, engine, service.handle, factories or PLATFORMS)
-    admin = ChannelAdmin(store, secrets, supervisor, access, accounts)
+    admin = ChannelAdmin(store, secrets, supervisor, access, accounts, identities, answer_modes)
     return Channels(admin=admin, service=service, supervisor=supervisor, picture_fetch=fetch)

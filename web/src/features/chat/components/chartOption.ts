@@ -2,7 +2,8 @@
  * 结果表画成图：表格卡片里工具给的「怎么画」（TableChart）加上用户选的图形与数值列，拼成 ECharts 的配置。
  * 纯函数，不碰 DOM（颜色、字体由调用方从组件库的设计变量里取好传进来）。
  *
- * - 一次只画一列数值：几个指标量级常差很远（金额与单数），画在一根轴上小的那个就看不见了；上面切换看哪一列；
+ * - 几列数值按工具给的分组画（groups，问数按单位、量级分）：同一组的画在一张图里（营收和目标两条线），组之间在上面
+ *   切换；量级差很远的（金额与单数）不同组，画在一根轴上小的那个就看不见了。没给分组时一列一组；
  * - 柱子朝向照通行做法（2026-11-04 用户报「柱状图都是横的」，原来分类一律横着画）：时间（日期列，或年份、季度、
  *   月份这种写法）、按组分线、少而短的分类竖着画；分类多（超过 8 个）或名字长（竖着放标签得斜着排）的横着画，
  *   数写在柱子尾巴上、不画数值轴；
@@ -55,11 +56,24 @@ export const dataColors = (tokens: ChartTokens): string[] => [
 const columnIndex = (table: TableCard, name: string | undefined) =>
   name === undefined ? -1 : table.columns.findIndex((c) => c.name === name);
 
-/** 这张表能切成哪几种图：时间序列折线、面积、柱状；分类柱状、折线，单列非负、块数不多时还能画饼 */
+/** 几列数值的分组：同一组的画在一张图里，组之间切换；没分组、按组分线时一列一组 */
+export function measureGroups(chart: TableChart): string[][] {
+  if (chart.series || !chart.groups) return chart.y.map((name) => [name]);
+  return chart.groups.map((group) => [...group]);
+}
+
+/** 这一列所在的那一组；对不上（看板记着的旧列名）的是第一组。界面用组里第一列的列名认一组 */
+export function groupOf(chart: TableChart, name: string | undefined): string[] {
+  const groups = measureGroups(chart);
+  return groups.find((group) => name !== undefined && group.includes(name)) ?? groups[0] ?? [];
+}
+
+/** 这张表能切成哪几种图：时间序列折线、面积、柱状；分类柱状，单列非负、块数不多时还能画饼（一组几列的不画饼） */
 export function compatibleKinds(table: TableCard, chart: TableChart, measure: string): ChartKind[] {
   const x = columnIndex(table, chart.x);
   const xIsTime = table.columns[x]?.kind === 'date';
   if (chart.series || xIsTime || chart.type === 'line') return ['line', 'area', 'bar'];
+  if (groupOf(chart, measure).length > 1) return ['bar'];
   const y = columnIndex(table, measure);
   const values = table.rows.map((row) => numberOf(row[y] ?? null));
   const pieable =
@@ -138,16 +152,21 @@ export function seriesNames(table: TableCard, chart: TableChart): string[] {
   return [...new Set(table.rows.map((row) => label(row[s] ?? null)))].slice(0, SERIES_MAX);
 }
 
-/** 取数：没有 series 是一条；有 series 按它的取值分成几条，横轴按出现的先后 */
+/** 取数：没有 series 时这一组的每列一条；有 series 按它的取值分成几条，横轴按出现的先后 */
 function build(table: TableCard, chart: TableChart, measure: string): Built {
   const x = columnIndex(table, chart.x);
   const y = columnIndex(table, measure);
   const s = columnIndex(table, chart.series);
-  const yLabel = table.columns[y]?.label ?? measure;
   if (s < 0)
     return {
       categories: table.rows.map((row) => label(row[x] ?? null)),
-      series: [{ name: yLabel, values: table.rows.map((row) => numberOf(row[y] ?? null)) }],
+      series: groupOf(chart, measure).map((name) => {
+        const i = columnIndex(table, name);
+        return {
+          name: table.columns[i]?.label ?? name,
+          values: table.rows.map((row) => numberOf(row[i] ?? null)),
+        };
+      }),
     };
   const categories = [...new Set(table.rows.map((row) => label(row[x] ?? null)))];
   const names = seriesNames(table, chart);

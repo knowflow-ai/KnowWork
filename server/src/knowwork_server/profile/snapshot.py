@@ -6,6 +6,7 @@
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -74,6 +75,26 @@ class TurnSelection(_Frozen):
 
 
 NO_SELECTION = TurnSelection()
+
+
+@dataclass(frozen=True)
+class ProfileNarrowing:
+    """扩展给一段对话的范围（conversations/scopes.py），编译时收窄（compiler.py）；None 是这一项不收窄。知识库的写法同
+    TurnSelection.knowledge_bases（<知识源>.<知识库> 或 <知识源>.*），技能是技能名，MCP 服务是工具名前缀
+    mcp__<服务>__ 里那段（同 @ MCP 的 id）。"""
+
+    knowledge_bases: tuple[str, ...] | None = None
+    skills: tuple[str, ...] | None = None
+    mcp_servers: tuple[str, ...] | None = None
+
+
+NO_NARROWING = ProfileNarrowing()
+
+
+def base_in(allowed: tuple[str, ...], base_id: str) -> bool:
+    """知识库在不在范围里：<知识源>.* 是这个来源下的全部。编译时收窄（compiler.py）和 @ 菜单按对话范围收窄
+    （conversations/scopes.py）用同一条规则。"""
+    return base_id in allowed or f"{base_id.partition('.')[0]}.*" in allowed
 
 
 class ProfileTool(_Frozen):

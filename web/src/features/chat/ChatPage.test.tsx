@@ -105,8 +105,8 @@ describe('ChatPage', () => {
     expect(
       calls
         .map((c) => c.url)
-        // 进会话后台自动拉的（产物、@ 候选、每轮的赞踩、可选的回答方式）不算
-        .filter((url) => !/\/(artifacts|mention-options|feedback|answer-modes)$/.test(url)),
+        // 进会话后台自动拉的（产物、@ 候选、每轮的赞踩、可选的回答方式、对话的范围）不算
+        .filter((url) => !/\/(artifacts|mention-options|feedback|answer-modes|scope)$/.test(url)),
     ).toEqual([
       '/api/workspaces/default/conversations',
       '/api/workspaces/default/conversations/c-new/messages',
@@ -657,5 +657,67 @@ describe('新对话页输入框下面的扩展内容（chat.welcome）', () => {
     expect(body.mentions).toEqual([
       expect.objectContaining({ type: 'extension', kind: 'data_source', id: 'p1' }),
     ]);
+  });
+});
+
+describe('挂了范围的对话（扩展给它定了名字与固定的回答方式）', () => {
+  function withScope(scope: unknown) {
+    const original = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) =>
+        url === '/api/workspaces/default/conversations/c1/scope' ? jsonResponse(scope) : original(url, init),
+      ),
+    );
+  }
+
+  it('顶部写范围的名字；不显示回答方式，发消息按固定的那种', async () => {
+    withScope({ label: '经营分析', answerMode: 'quick' });
+    renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    expect(await screen.findByText('经营分析')).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: '回答方式' })).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('问经营分析…')).toBeInTheDocument();
+    // @ 候选按这段对话的范围取（服务端收窄，例如专家对话只列专家能查的库）
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.url.includes('mention-options') && c.url.includes('conversation_id=c1')),
+      ).toBe(true),
+    );
+    await userEvent.type(screen.getByRole('textbox'), '上月华东区营收');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', metaKey: true });
+    await waitFor(() =>
+      expect(JSON.parse(String(calls.find((c) => c.url.endsWith('/c1/messages'))?.body)).answer_mode).toBe(
+        'quick',
+      ),
+    );
+  });
+
+  it('扩展登记了 chat.scope 就画它的顶部、开场和输入框下那行字：开场里点快捷提问就发出去', async () => {
+    const { register } = await import('../../slots/registry');
+    register('chat.scope', {
+      Bar: ({ label }) => <div>专家：{label}</div>,
+      Intro: ({ ask }) => (
+        <button type="button" onClick={() => ask('上月营收是多少')}>
+          快捷提问
+        </button>
+      ),
+      Footnote: ({ conversationId, fallback }) => (
+        <span>{conversationId === 'c1' ? '可查：销售库' : fallback}</span>
+      ),
+    });
+    withScope({ label: '经营分析', answerMode: null });
+    renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    expect(await screen.findByText('专家：经营分析')).toBeInTheDocument();
+    expect(screen.queryByText('经营分析', { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByText('可查：销售库')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: '回答方式' })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: '快捷提问' }));
+    await waitFor(() =>
+      expect(JSON.parse(String(calls.find((c) => c.url.endsWith('/c1/messages'))?.body)).text).toBe(
+        '上月营收是多少',
+      ),
+    );
   });
 });

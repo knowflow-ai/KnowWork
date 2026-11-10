@@ -54,6 +54,9 @@ class MentionKind:
     options: Callable[[str, str], Awaitable[Sequence[MentionOption]]]  # （工作空间，用户）→ 能 @ 的
     before_turn: Callable[[MentionTurn], Awaitable[None]] | None = None
     answer_mode: str | None = None
+    # （工作空间，用户，对话）→ 这段对话里能 @ 的：扩展给对话定了范围时（scopes.py 的 resources）由扩展自己按范围收窄，
+    # 它自己认得范围里的资源和候选怎么对应；不给就同 options
+    scoped: Callable[[str, str, str], Awaitable[Sequence[MentionOption]]] | None = None
 
 
 class MentionRejected(Exception):
@@ -79,21 +82,30 @@ class MentionKinds:
     def __bool__(self) -> bool:
         return bool(self._kinds)
 
-    async def listing(self, workspace_id: str, user_id: str) -> list[dict]:
-        """@ 菜单里扩展的几组（按登记顺序）；出错或超时的那组不列。"""
-        groups = await asyncio.gather(*(self._group(kind, workspace_id, user_id) for kind in self._kinds.values()))
+    async def listing(self, workspace_id: str, user_id: str, conversation_id: str | None = None) -> list[dict]:
+        """@ 菜单里扩展的几组（按登记顺序）；给了对话就按这段对话的范围（MentionKind.scoped）。出错或超时的那组不列。"""
+        groups = await asyncio.gather(*(self._group(kind, workspace_id, user_id, conversation_id)
+                                        for kind in self._kinds.values()))
         return [group for group in groups if group is not None]
 
-    async def _group(self, kind: MentionKind, workspace_id: str, user_id: str) -> dict | None:
-        options = await self._options(kind, workspace_id, user_id)
+    async def _group(self, kind: MentionKind, workspace_id: str, user_id: str,
+                     conversation_id: str | None = None) -> dict | None:
+        if conversation_id is not None and kind.scoped is not None:
+            options = await self._guarded(kind, kind.scoped(workspace_id, user_id, conversation_id), workspace_id)
+        else:
+            options = await self._options(kind, workspace_id, user_id)
         if options is None:
             return None
         return {"kind": kind.kind, "label": kind.label, "effect": kind.effect, "answer_mode": kind.answer_mode,
                 "items": [{"id": o.id, "name": o.name, "description": o.description} for o in options[:MAX_OPTIONS]]}
 
     async def _options(self, kind: MentionKind, workspace_id: str, user_id: str) -> Sequence[MentionOption] | None:
+        return await self._guarded(kind, kind.options(workspace_id, user_id), workspace_id)
+
+    async def _guarded(self, kind: MentionKind, pending: Awaitable[Sequence[MentionOption]],
+                       workspace_id: str) -> Sequence[MentionOption] | None:
         try:
-            return await asyncio.wait_for(kind.options(workspace_id, user_id), self._timeout)
+            return await asyncio.wait_for(pending, self._timeout)
         except Exception:
             log.warning("mention options of %s unavailable for workspace %s", kind.kind, workspace_id, exc_info=True)
             return None

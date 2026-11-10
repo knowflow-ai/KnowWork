@@ -7,6 +7,10 @@
  * - turn：只和这一轮有关（例如按本轮提问召回的几条），紧跟在本轮提问后面追加一次，和提问一起进入那一步。
  * - 某一轮业务服务没算（不带 context）：常驻那段沿用上一轮的，这一轮也没有 turn 那段。
  * - 只给根会话：子 Agent 做的是分出去的具体任务，需要的背景由根会话交代。
+ * - persona（这段对话的身份，例如专家是谁、管什么、怎么回答）：不进对话，进系统提示——用官方 dsh-system-prompt 的作用域段，
+ *   同名 deployment:persona-prefix 只遮这个会话的部署人设（cordis.patch.yml 的 personaPrefix），部署人设后缀里的通用要求
+ *   照旧在。追加在对话里的背景压不过系统提示里的「你是 KnowWork 企业智能助手」，问「你是谁」会照部署人设答
+ *   （2026-11-09 专家对话实测）。每一步开始前对一次：变了换掉，空了撤掉回到默认人设；身份不变时系统提示不变，不动前缀缓存。
  */
 
 import { createHash } from 'node:crypto'
@@ -19,19 +23,26 @@ const KIND = 'knowwork-turn-context'
 const CLEARED = 'cleared'
 const MAX_STANDING = 8000
 const MAX_TURN = 4000
+const MAX_PERSONA = 8000
+// 官方 dsh-system-prompt 导出的 PERSONA_PREFIX_SECTION；作用域里同名的段遮蔽全局的部署人设，顺序同全局那段
+const PERSONA_SECTION = 'deployment:persona-prefix'
+const PERSONA_ORDER = 0
 
 /**
  * 校验业务服务下发的 context；没下发时返回 undefined。格式不对抛错，消息可以回给调用方。
- * @returns {{ standing: string, turn: string } | undefined}
+ * @returns {{ standing: string, turn: string, persona: string } | undefined}
  */
 export function turnContextOf(value) {
   if (value === undefined || value === null) return undefined
-  const { standing = '', turn = '' } = typeof value === 'object' ? value : {}
-  if (typeof value !== 'object' || typeof standing !== 'string' || typeof turn !== 'string') {
-    throw new Error('context 格式错误：要有 standing、turn 两段文字')
+  const { standing = '', turn = '', persona = '' } = typeof value === 'object' ? value : {}
+  if (typeof value !== 'object' || typeof standing !== 'string' || typeof turn !== 'string'
+    || typeof persona !== 'string') {
+    throw new Error('context 格式错误：要有 standing、turn 两段文字（persona 可选）')
   }
-  if (standing.length > MAX_STANDING || turn.length > MAX_TURN) throw new Error('context 过长')
-  return Object.freeze({ standing, turn })
+  if (standing.length > MAX_STANDING || turn.length > MAX_TURN || persona.length > MAX_PERSONA) {
+    throw new Error('context 过长')
+  }
+  return Object.freeze({ standing, turn, persona })
 }
 
 /**
@@ -41,7 +52,22 @@ export function turnContextOf(value) {
 export function receiveTurnContext(state, messageId, context) {
   if (state === undefined || context === undefined) return
   state.turnContext = context.standing
+  state.persona = context.persona
   if (context.turn !== '') state.turnTexts.set(String(messageId), context.turn)
+  // 收下时就换：系统提示在步骤开始前组装，等到这条消息进入步骤再换就晚了一步
+  if (state.agent !== undefined) syncPersona(state, state.agent)
+}
+
+/** 系统提示里的身份对上这个会话现在的 persona：变了换掉，空了撤掉（回到部署人设）。 */
+function syncPersona(state, agent) {
+  const wanted = state.persona ?? ''
+  if (state.personaShown === wanted) return
+  state.personaOff?.()
+  state.personaOff = undefined
+  state.personaShown = wanted
+  const prompt = agent.ctx.systemPrompt
+  if (wanted === '' || prompt === undefined) return
+  state.personaOff = prompt.section({ name: PERSONA_SECTION, order: PERSONA_ORDER, interpolate: false, text: wanted })
 }
 
 const digestOf = text => createHash('sha256').update(text).digest('hex')
@@ -78,6 +104,9 @@ function standingMessage(agent, text) {
 /** @param {import('@deepseek-ai/cordis').Context} ctx */
 export function apply(ctx) {
   ctx.on('agent/pre-step', async ({ agent }, next) => {
+    // 身份在这一步组装系统提示之前就要对上
+    const known = getSession(String(agent.session.id))
+    if (known !== undefined) syncPersona(known, agent)
     const decision = await next()
     if (decision.kind === 'reject') return decision
     const state = getSession(String(agent.session.id))

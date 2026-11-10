@@ -126,6 +126,32 @@ describe('前端插槽', () => {
     expect(links.slice(0, 3)).toEqual(['新对话', '技能', '知识库']);
   });
 
+  it('侧栏入口下面可以挂子项，收起时子项拿得到 collapsed；只在正好是这个地址时选中的入口，到子项的页面不跟着亮', async () => {
+    routeFetch({
+      'GET /api/auth/me': jsonResponse(ME),
+      'GET /api/workspaces/default/conversations': jsonResponse({ items: [], next: null }),
+      'GET /api/brand': jsonResponse({ name: 'KnowWork', logo_url: null }),
+    });
+    register('app.nav', {
+      to: '/experts',
+      end: true,
+      label: '专家',
+      icon: <BookOpen />,
+      Sub: ({ collapsed }) =>
+        collapsed ? null : (
+          <a href="/experts/ex_1" className="kw-sidebar-link">
+            经营分析
+          </a>
+        ),
+    });
+    renderWithApp(<Sidebar />, { route: '/experts/ex_1' });
+    const nav = await screen.findByRole('navigation', { name: '主导航' });
+    const links = Array.from(nav.querySelectorAll('a')).map((link) => link.textContent);
+    // 注册表跨用例保留（上一条注册的知识库还在），只看子项紧跟在它的入口后面
+    expect(links.slice(links.indexOf('专家'), links.indexOf('专家') + 2)).toEqual(['专家', '经营分析']);
+    expect(screen.getByRole('link', { name: '专家' })).not.toHaveClass('is-active');
+  });
+
   it('输入框左上角回答方式后面放扩展的一小段，拿得到会话 id 与回答方式；固定了回答方式的输入框不放', () => {
     routeFetch({
       'GET /api/workspaces/default/conversations/mention-options': jsonResponse({
