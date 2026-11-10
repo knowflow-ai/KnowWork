@@ -41,6 +41,7 @@ class ExecuteRequest:
     arguments: dict[str, Any]
     agent_session_id: str
     call_key: str  # 宿主给出的「实际发起调用的会话 ID:调用 ID」
+    answer_mode: str = "agent"  # 这一步的回答方式（宿主给的），交给工具上下文
 
 
 @dataclass(frozen=True)
@@ -155,7 +156,8 @@ class ToolService:
             raise ToolAccessError(409, "action_in_progress", "同一调用正在执行，请稍后再试")
         call_id = request.call_key.removeprefix(f"{request.agent_session_id}:")
         status, content, presentation = await self._run(
-            replace(ctx, agent_session_id=request.agent_session_id, call_id=call_id), spec, request.arguments)
+            replace(ctx, agent_session_id=request.agent_session_id, call_id=call_id, answer_mode=request.answer_mode),
+            spec, request.arguments)
         return await self._receipts.settle(call, claim.action_id, status, content, presentation)
 
     async def _report(self, ctx: ToolContext, request: ExecuteRequest, risk: str | None, outcome: str, *,

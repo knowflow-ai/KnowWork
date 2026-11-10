@@ -76,6 +76,13 @@ describe('summarizeProcess', () => {
     expect(hasProcess(run({ endedAt: 1 }))).toBe(false);
     expect(hasProcess(run({ endedAt: 1, notes: ['x'] }))).toBe(true);
     expect(hasProcess(run({ endedAt: 1, problems: ['x'] }))).toBe(true);
+    expect(hasProcess(run({ endedAt: 1, thinking: ['想'] }))).toBe(true);
+  });
+
+  it('只有思考没有步骤时写「已思考」', () => {
+    expect(summarizeProcess(run({ startedAt: 0, endedAt: 12_000, thinking: ['想'] }))).toBe(
+      '已思考 · 用时 12 秒',
+    );
   });
 });
 

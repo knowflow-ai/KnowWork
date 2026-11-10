@@ -172,14 +172,14 @@ export function summarizeProcess(run: RunView, preparing: readonly string[] = []
   }
   const elapsed =
     run.startedAt !== undefined && run.endedAt !== undefined ? run.endedAt - run.startedAt : undefined;
-  const head = count > 0 ? `已完成 ${count} 个步骤` : '已完成';
+  const head = count > 0 ? `已完成 ${count} 个步骤` : run.thinking.length > 0 ? '已思考' : '已完成';
   const timeText = elapsed !== undefined && elapsed > 0 ? ` · 用时 ${formatDuration(elapsed)}` : '';
   return `${head}${timeText}`;
 }
 
-/** 这一轮是否有可展开的执行细节。模型思考原文不展示，不算细节。 */
+/** 这一轮是否有可展开的执行细节：步骤、说明、问题，或模型的思考（照 ChatGPT，点开能看完整的思考）。 */
 export function hasDetails(run: RunView): boolean {
-  return run.steps.length > 0 || run.notes.length > 0 || run.problems.length > 0;
+  return run.steps.length > 0 || run.notes.length > 0 || run.problems.length > 0 || run.thinking.length > 0;
 }
 
 /** 这一轮是否需要显示执行过程那一行。 */

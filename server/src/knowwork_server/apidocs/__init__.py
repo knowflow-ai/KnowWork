@@ -55,7 +55,7 @@ TAGS: tuple[tuple[str, str], ...] = (
 )
 
 _SEGMENTS = {
-    "conversations": "对话", "attachments": "对话", "answer-modes": "对话", "runs": "运行记录", "usage": "用量", "insights": "问答大盘", "channels": "IM 渠道",
+    "conversations": "对话", "attachments": "对话", "answer-modes": "对话", "chat-models": "对话", "runs": "运行记录", "usage": "用量", "insights": "问答大盘", "channels": "IM 渠道",
     "knowledge-sources": "知识源", "knowledge-bases": "知识源", "mcp-servers": "工具（MCP）", "enterprise-mcp": "工具（MCP）", "skills": "技能",
     "skill-submissions": "技能", "platform-skills": "技能", "workflow-runs": "工作流", "jobs": "后台任务", "audit-logs": "审计", "members": "成员与权限",
     "departments": "成员与权限", "groups": "成员与权限", "grants": "成员与权限", "invitations": "成员与权限",

@@ -84,18 +84,16 @@ export async function createConversation(
   first: FirstTurn = {},
 ): Promise<{ readonly id: string; readonly title: string }> {
   const { answerMode, mentions = [] } = first;
+  // 第一轮的回答方式：服务端按它定进不进「最近」（只在扩展页面里用的方式，例如扩展页面右栏里的对话，不进）
+  const firstTurn = {
+    ...(answerMode ? { answer_mode: answerMode } : {}),
+    ...(mentions.length > 0 ? { mentions: mentions.map(mentionBody) } : {}),
+  };
   const body = await request<unknown>(workspacePath('/conversations'), {
     method: 'POST',
     body: {
       title: title.slice(0, MAX_TITLE_LENGTH),
-      ...(mentions.length > 0
-        ? {
-            first_turn: {
-              ...(answerMode ? { answer_mode: answerMode } : {}),
-              mentions: mentions.map(mentionBody),
-            },
-          }
-        : {}),
+      ...(Object.keys(firstTurn).length > 0 ? { first_turn: firstTurn } : {}),
     },
   });
   const id = isRecord(body) ? text(body.id) : undefined;
@@ -178,6 +176,8 @@ export interface SendExtras {
   readonly droppedConditions?: readonly string[];
   /** 输入框里 @ 的知识库、目录、文件、标签、技能 */
   readonly mentions?: readonly Mention[];
+  /** 输入框右下角选的对话模型（别名）；不带 = 这段对话沿用上次选的 */
+  readonly model?: string;
 }
 
 /** 浏览器的时区（IANA 名字）：随每条消息带上，模型按它算「今天」；取不到就不带，服务端用部署时区。 */
@@ -195,7 +195,7 @@ export function sendMessage(
   mode: SendMode,
   extras: SendExtras = {},
 ): Promise<{ messageId: string }> {
-  const { language, answerMode, attachments = [], droppedConditions = [], mentions = [] } = extras;
+  const { language, answerMode, attachments = [], droppedConditions = [], mentions = [], model } = extras;
   const timeZone = browserTimeZone();
   return request(workspacePath(`/conversations/${seg(conversationId)}/messages`), {
     method: 'POST',
@@ -208,8 +208,44 @@ export function sendMessage(
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(droppedConditions.length > 0 ? { dropped_conditions: droppedConditions } : {}),
       ...(mentions.length > 0 ? { mentions: mentions.map(mentionBody) } : {}),
+      ...(model ? { model } : {}),
     },
   });
+}
+
+/** 输入框能选的一个对话模型（服务端 models/api.py 的 chat-models）。 */
+export interface ChatModelOption {
+  readonly alias: string;
+  readonly name: string;
+  /** 能看图 */
+  readonly vision: boolean;
+  /** 平台的默认模型 */
+  readonly isDefault: boolean;
+}
+
+export interface ChatModels {
+  readonly items: readonly ChatModelOption[];
+  /** 默认选哪个：这段对话上次用的；新对话用这个人上次用的；都没有用默认模型 */
+  readonly selected: string | null;
+}
+
+export async function listChatModels(conversationId?: string): Promise<ChatModels> {
+  const query = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : '';
+  const body = await request<unknown>(workspacePath(`/chat-models${query}`));
+  const record = isRecord(body) ? body : {};
+  const items = listOf(record.items, (value) => {
+    if (!isRecord(value)) return undefined;
+    const alias = text(value.alias);
+    if (!alias) return undefined;
+    return {
+      alias,
+      name: str(value.name) ?? alias,
+      vision: value.vision === true,
+      isDefault: value.default === true,
+    };
+  });
+  const selected = text(record.selected);
+  return { items, selected: selected && items.some((m) => m.alias === selected) ? selected : null };
 }
 
 /**

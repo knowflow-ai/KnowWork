@@ -42,6 +42,9 @@ class ToolContext:
     agent_session_id: str | None = None
     # 宿主给的这次工具调用编号（同会话日志里的 callId）：只用来把业务记录（例如检索记录）对上运行详情里的那一步
     call_id: str | None = None
+    # 这一步的回答方式（宿主随调用带来，同 kernel/contract.TurnInput.answer_mode）：只给工具区分自己的行为用（例如 show_result
+    # 只在智能体里收模型直接交的数据），工具能不能用不靠它判
+    answer_mode: str = "agent"
 
     @property
     def from_root(self) -> bool:

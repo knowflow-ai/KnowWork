@@ -39,12 +39,12 @@ class SkillSource(Protocol):
 
 
 class ModelSource(Protocol):
-    async def default_capabilities(self, workspace_id: str) -> frozenset[str] | None: ...
+    async def capabilities_of(self, workspace_id: str, alias: str | None) -> frozenset[str] | None: ...
 
 
 # 要模型能看图才有用的宿主官方工具。官方 dsh-tool-fs 的 read_image 对所有会话可见、执行时才因模型不收图而失败，
 # 模型会先转图片再去调它，白做几步（官方的做法是由组合方用作用域收窄收掉，见 dsh-tool-fs README）。
-# 默认模型没勾「看图」（或查不到默认模型）时进 denied_tools，宿主经官方 tools.restrict 收掉。
+# 这一轮用的模型没勾「看图」（或查不到）时进 denied_tools，宿主经官方 tools.restrict 收掉。
 VISION_TOOLS: tuple[str, ...] = ("read_image",)
 
 
@@ -90,7 +90,8 @@ class ProfileCompiler:
         if not clearance.member(user_id, workspace_id):
             return ProfileFacts(workspace_id=workspace_id, user_id=user_id, role=None, member=False, tools=specs,
                                 selection=selection, host_denied=self._s.host_denied)
-        capabilities = await self._s.models.default_capabilities(workspace_id) or frozenset()
+        # 这一轮用的模型（输入框选的，没选按 default）能不能看图
+        capabilities = await self._s.models.capabilities_of(workspace_id, selection.model) or frozenset()
         host_denied = self._s.host_denied if "vision" in capabilities else (*self._s.host_denied, *VISION_TOOLS)
         return ProfileFacts(
             workspace_id=workspace_id, user_id=user_id, role=await self._s.role_of(user_id, workspace_id),

@@ -33,13 +33,15 @@ test('回答边生成边推正文片段，拼起来就是正式消息；重新�
   }
 })
 
-test('开始写工具调用时报一次工具名（参数片段不转），页面不用一直写「思考中」', () => {
+test('开始写工具调用时报一次工具名（参数片段不转）、思考片段照转，页面不用一直写「思考中」', () => {
   const announced = new Map()
   const delta = (index, name, argumentsDelta) => ({ type: 'chunk', attemptId: 'a1', chunk: { type: 'tool-call-delta', index, name, argumentsDelta } })
   assert.deepEqual(liveFrame(delta(0, 'write', '{"pa'), announced), { type: 'tool', attemptId: 'a1', name: 'write' })
   assert.equal(liveFrame(delta(0, 'write', 'th":'), announced), undefined, '同一个调用只报一次')
   assert.deepEqual(liveFrame(delta(1, 'present', '{'), announced), { type: 'tool', attemptId: 'a1', name: 'present' })
-  assert.equal(liveFrame({ type: 'chunk', attemptId: 'a1', chunk: { type: 'reasoning-delta', text: '想' } }, announced), undefined)
+  assert.deepEqual(liveFrame({ type: 'chunk', attemptId: 'a1', chunk: { type: 'reasoning-delta', text: '想' } }, announced),
+    { type: 'reasoning', attemptId: 'a1', text: '想' }, '思考片段照官方界面边想边转')
+  assert.equal(liveFrame({ type: 'chunk', attemptId: 'a1', chunk: { type: 'reasoning-delta', text: '' } }, announced), undefined)
   assert.deepEqual(liveFrame({ type: 'end', attemptId: 'a1' }, announced), { type: 'end', attemptId: 'a1' })
   assert.equal(announced.size, 0, '这次输出结束就忘掉')
 })

@@ -1,13 +1,13 @@
-# KnowWork 默认部署：常驻 7 个容器（gateway、api、worker、runtime-host、postgres、redis、rustfs），
+# KnowWork 默认部署：常驻 8 个容器（gateway、api、model-gateway、worker、runtime-host、postgres、redis、rustfs），
 # 另有一个一次性任务 bootstrap（生成部署密钥），跑完即退出。数据库迁移由 api 启动时自动执行（KNOWWORK_AUTO_MIGRATE）：
 # 迁移用库所有者 knowwork_owner，运行用只有增删改查的 knowwork_app（不是表的所有者，关不掉行级安全）。
 #
 # 网络划分（除 edge、egress 外全部 internal，不能出公网）：
-#   edge            gateway ↔ api 公开端口；api 经它访问模型上游
-#   egress          worker 访问外部 MinerU
-#   backend         api、worker ↔ postgres、redis、rustfs
-#   host-link       api、runtime-host、worker；api 的内部端口只绑定在这张网卡上，网关连不到。worker 经它替用户
-#                   发起后台对话（扩展的评测等，对话只能在 api 里跑）
+#   edge            gateway ↔ api 公开端口；api 经它访问模型上游（自己调模型：嵌入、重排、看图等）
+#   egress          worker 访问外部 MinerU；model-gateway 经它访问模型上游
+#   backend         api、worker、model-gateway ↔ postgres、redis、rustfs
+#   host-link       api、runtime-host、worker、model-gateway；api 的内部端口只绑定在这张网卡上，网关连不到。
+#                   worker 经它替用户发起后台对话（扩展的评测等，对话只能在 api 里跑）；宿主经它调模型网关
 #
 # 镜像都在阿里云容器镜像服务（KNOWWORK_REGISTRY）：我们的四个镜像，以及照原样同步过去的 postgres、redis、rustfs，
 # 国内拉取不依赖 Docker Hub。镜像同时有 linux/amd64 与 linux/arm64（同一个标签），按机器架构自动拉取。
@@ -28,7 +28,7 @@ x-logging: &logging
     max-file: "5"
 
 x-server-image: &server-image
-  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.0.8}
+  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.0.9}
   pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
 
 x-hardening: &hardening
@@ -66,7 +66,7 @@ x-server-env: &server-env
 # 并把含 ca.pem、cert.pem、key.pem 的证书目录挂进来、填到 TLS_CERT_PATH。
 x-sandbox-env: &sandbox-env
   KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-false}
-  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.8}}
+  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.9}}
   KNOWWORK_SANDBOX_DOCKER_HOST: ${KNOWWORK_SANDBOX_DOCKER_HOST:-}
   KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH: ${KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH:-}
   KNOWWORK_SANDBOX_ALLOW_INTERNET: ${KNOWWORK_SANDBOX_ALLOW_INTERNET:-true}
@@ -156,14 +156,15 @@ services:
     logging: *logging
 
   runtime-host:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.0.8}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.0.9}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped
     read_only: true
     environment:
       KNOWWORK_HOST_TOKEN_FILE: /run/knowwork/host/host_token
-      KNOWWORK_MODEL_BASE_URL: http://api:8001/internal/model/v1
+      # 调模型走独立的模型网关（model-gateway），不和 api 的事件泵、推送抢 CPU
+      KNOWWORK_MODEL_BASE_URL: http://model-gateway:8002/internal/model/v1
       KNOWWORK_TOOLS_BASE_URL: http://api:8001/internal/extensions/tools
       KNOWWORK_SKILLS_BASE_URL: http://api:8001/internal/extensions/skills
       # 会话沙箱：模型的文件读写与命令经它落到会话容器。不配时插件退回 127.0.0.1:8001（本机开发的默认值），
@@ -196,6 +197,8 @@ services:
     depends_on:
       bootstrap:
         condition: service_completed_successfully
+      model-gateway:
+        condition: service_healthy
     networks: [host-link]
     healthcheck:
       test: ["CMD", "node", "-e",
@@ -289,10 +292,43 @@ services:
     networks: [backend, egress, host-link]
     logging: *logging
 
+  model-gateway:
+    <<: [*server-image, *hardening]
+    restart: unless-stopped
+    read_only: true
+    # 宿主调模型都经它：校验宿主令牌、按模型目录换成厂商地址与密钥、原样转发流式输出（server 的 ops/model_gateway.py）。
+    # 不记状态，从 api 里拆出来单独一个进程，不和事件泵、实时推送抢一个核；忙不过来调大 KNOWWORK_MODEL_GATEWAY_WORKERS。
+    # 管理员改了模型，api 在改的事务里发数据库通知，这里收到就换上新配置
+    command: ["python", "-m", "knowwork_server.ops.model_gateway"]
+    environment:
+      <<: *server-env
+      KNOWWORK_AUTO_MIGRATE: "false"
+      KNOWWORK_MODEL_GATEWAY_PORT: "8002"
+      KNOWWORK_MODEL_GATEWAY_WORKERS: ${KNOWWORK_MODEL_GATEWAY_WORKERS:-1}
+    volumes:
+      - secrets:/run/knowwork/secrets:ro
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=1777
+    depends_on:
+      # 不等 api：/health 不碰数据库；宿主要等它起来。首次安装时表由 api 建，用户能发消息时 api 已经迁移完
+      bootstrap:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    networks: [backend, egress, host-link]
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    logging: *logging
+
   sandbox-image:
     # 会话沙箱镜像：只用于拉取或本地构建，不常驻；api 按会话用它创建容器。
     # 拉取：docker compose --profile sandbox pull sandbox-image（install.sh 会做）；本地构建：把 pull 换成 build。
-    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.8}}
+    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.0.9}}
     build:
       context: ..
       dockerfile: deploy/docker/sandbox.Dockerfile
@@ -303,7 +339,7 @@ services:
     logging: *logging
 
   gateway:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.0.8}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.0.9}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped

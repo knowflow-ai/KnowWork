@@ -83,6 +83,8 @@ export function apply(ctx, config) {
           args,
           agentSessionId: String(exec.agent.session.id),
           callId: String(exec.callId),
+          // 这一步的回答方式：工具按它区分自己的行为（例如 show_result 只在智能体里收模型直接交的数据），能不能用不靠它
+          answerMode: root.answerMode ?? 'agent',
           signal: exec.signal,
         })
         if (result.status !== 'succeeded') throw new Error(result.content)

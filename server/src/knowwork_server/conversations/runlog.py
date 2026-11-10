@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from ..models.usage import REQUEST_HEADER, model_from_header
 from .models import RunEvent
 
 PAGE_SIZE = 500
@@ -79,3 +80,15 @@ class RunLog:
                 return RunLogPage(events=tuple(events), truncated=False)
             after = rows[-1].seq
         return RunLogPage(events=tuple(events[:self._max_events]), truncated=True)
+
+
+async def last_requested_model(sessionmaker: async_sessionmaker, conversation_id: str) -> str | None:
+    """这段对话最近一次记下的请求模型（DSH 只在第一次请求与换模型时记 request/header）；没记过为 None。
+    业务服务重启后内存里不知道各段对话在用哪个模型，事件泵（显示思考）与用量记录从这里补。"""
+    async with sessionmaker() as session:
+        data = await session.scalar(
+            select(RunEvent.data).where(RunEvent.conversation_id == conversation_id,
+                                        RunEvent.kind == "session/event",
+                                        RunEvent.data["type"].astext == REQUEST_HEADER)
+            .order_by(RunEvent.seq.desc()).limit(1))
+    return model_from_header(REQUEST_HEADER, data.get("data")) if isinstance(data, dict) else None

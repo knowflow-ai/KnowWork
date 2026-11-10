@@ -15,6 +15,7 @@ import {
 import { chipsOf, type AttachmentChip, type SentAttachment } from '../../../api/attachments';
 import type { Mention } from '../../../api/mentions';
 import { currentAnswerMode } from '../../../stores/answerMode';
+import { currentChatModel } from '../../../stores/chatModel';
 import { currentReplyLanguage } from '../../../stores/replyLanguage';
 import { ApiError, readableError } from '../../../api/http';
 import { openEventStream } from '../../../api/sse';
@@ -123,6 +124,7 @@ export function useConversation(
         const { messageId } = await sendMessage(conversationId, text, mode, {
           language: currentReplyLanguage(),
           answerMode: answerMode ?? currentAnswerMode(),
+          model: currentChatModel(conversationId),
           attachments: attachments.map((item) => item.id),
           droppedConditions: dropped,
           mentions,

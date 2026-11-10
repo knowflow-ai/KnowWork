@@ -19,7 +19,8 @@ class Conversation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # 最近一次发消息或改名的时间，会话列表按它倒序
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
-    # 后台会话（background.py）：扩展在 worker 里替这个人发起的，例如评测逐题发问；不进本人的「最近」和搜索
+    # 不进本人的「最近」和搜索（链接照样能打开）：后台会话（background.py，扩展在 worker 里替这个人发起的，例如评测
+    # 逐题发问），和只在扩展页面里用的回答方式开的会话（例如扩展页面右栏里的对话，见 service.create）
     background: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # 从哪个渠道来的：IM 机器人认人时私聊的会话记在本人名下，「最近」里按 source（平台）打来源标记；网页上开的为空
     channel_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

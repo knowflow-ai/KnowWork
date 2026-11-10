@@ -271,3 +271,20 @@ async def test_discard_session_removes_receipts_and_blobs(env):
         assert await session.get(ActionResultBlob, body["resultRef"]) is None
         left = (await session.execute(select(ActionReceipt).where(ActionReceipt.session_id == env["session_id"]))).all()
     assert left == []
+
+
+async def test_execute_hands_the_answer_mode_to_the_tool(env):
+    """宿主随调用带来这一步的回答方式，交到工具上下文里（例如 show_result 只在智能体收模型直接交的数据）；老的宿主不带，按智能体算。"""
+    agent = env["session_id"]
+    plain = await call(env, "a", call_id="m1")
+    assert plain.status_code == 200 and env["handler"].contexts[-1].answer_mode == "agent"
+
+    def execute(call_id, mode):
+        return env["client"].post(f"{PREFIX}/execute",
+                                  json={"toolName": "kw_note", "arguments": {"q": "b"}, "agentSessionId": agent,
+                                        "callId": call_id, "answerMode": mode},
+                                  headers={"authorization": f"Bearer {env['token']}", "idempotency-key": f"{agent}:{call_id}"})
+
+    moded = await execute("m2", "numbers")
+    assert moded.status_code == 200 and env["handler"].contexts[-1].answer_mode == "numbers"
+    assert (await execute("m3", "Not A Mode")).status_code == 400

@@ -1,12 +1,15 @@
 """厂商与模型的增删改查、网关路由解析。管理操作要求系统管理员；配置全平台共用（见 core）。"""
 
+from decimal import Decimal
+
 from sqlalchemy import delete, func, select
 
 from ..access.members import PLATFORM_WORKSPACE_ID
+from .cache import CatalogSnapshot, ModelEntry, ProviderEntry
 from .core import CatalogCore, check_id, model_view, new_id, provider_view
 from .crypto import SecretError, last4
 from .errors import Conflict, Invalid, NotFound, Unavailable
-from .schemas import ModelCreate, ModelUpdate, ModelView, ProviderCreate, ProviderUpdate, ProviderView, Route
+from .schemas import ChatModel, ModelCreate, ModelUpdate, ModelView, ProviderCreate, ProviderUpdate, ProviderView, Route
 from .tables import Model, ModelProvider
 
 # 宿主请求模型时用的名字。没有哪个模型的别名正好叫它时，用平台里最早添加、已启用的对话模型，
@@ -14,20 +17,11 @@ from .tables import Model, ModelProvider
 DEFAULT_ALIAS = "default"
 
 
-async def _first_enabled_chat_model(session):
-    return (await session.execute(
-        select(Model, ModelProvider).join(ModelProvider, ModelProvider.id == Model.provider_id)
-        .where(Model.enabled.is_(True), ModelProvider.enabled.is_(True), Model.capabilities.any("chat"))
-        .order_by(Model.created_at, Model.id).limit(1))).first()
-
-
-async def _lookup(session, alias: str):
+def _lookup(snapshot: CatalogSnapshot, alias: str) -> tuple[ModelEntry, ProviderEntry] | None:
     """按别名找模型与厂商；default 找不到时退到最早添加、已启用的对话模型。网关路由与能力查询共用。"""
-    found = (await session.execute(
-        select(Model, ModelProvider).join(ModelProvider, ModelProvider.id == Model.provider_id)
-        .where(Model.alias == alias))).first()
+    found = snapshot.by_alias(alias)
     if found is None and alias == DEFAULT_ALIAS:
-        found = await _first_enabled_chat_model(session)
+        found = snapshot.first_enabled_chat()
     return found
 
 
@@ -37,7 +31,7 @@ class ProviderMixin(CatalogCore):
         row = ModelProvider(id=new_id("mp"), workspace_id=PLATFORM_WORKSPACE_ID, name=body.name.strip(), kind=body.kind,
                             base_url=body.base_url, enabled=body.enabled)
         self._set_key(row, body.api_key)
-        async with self._tx() as session:
+        async with self._write() as session:
             session.add(row)
         return provider_view(row)
 
@@ -51,7 +45,7 @@ class ProviderMixin(CatalogCore):
     async def update_provider(self, actor_id: str, provider_id: str,
                               body: ProviderUpdate) -> ProviderView:
         self._require_admin(actor_id)
-        async with self._tx() as session:
+        async with self._write() as session:
             row = await self._provider(session, provider_id)
             if body.name is not None:
                 row.name = body.name.strip()
@@ -65,7 +59,7 @@ class ProviderMixin(CatalogCore):
 
     async def delete_provider(self, actor_id: str, provider_id: str) -> None:
         self._require_admin(actor_id)
-        async with self._tx() as session:
+        async with self._write() as session:
             row = await self._provider(session, provider_id)
             used = await session.scalar(select(func.count()).select_from(Model).where(Model.provider_id == row.id))
             if used:
@@ -87,7 +81,7 @@ class ProviderMixin(CatalogCore):
             raise NotFound("厂商不存在")
         return row
 
-    def _decrypt(self, row: ModelProvider) -> str:
+    def _decrypt(self, row: ModelProvider | ProviderEntry) -> str:
         if not row.api_key_ciphertext:
             return ""
         try:
@@ -99,12 +93,12 @@ class ProviderMixin(CatalogCore):
 class ModelMixin(ProviderMixin):
     async def create_model(self, actor_id: str, body: ModelCreate) -> ModelView:
         self._require_admin(actor_id)
-        async with self._tx() as session:
+        async with self._write() as session:
             await self._provider(session, body.provider_id)
             row = Model(id=new_id("md"), workspace_id=PLATFORM_WORKSPACE_ID, provider_id=body.provider_id, alias=body.alias,
                         name=body.name.strip(), capabilities=[c.value for c in body.capabilities],
                         context_length=body.context_length, max_output_tokens=body.max_output_tokens,
-                        thinking=body.thinking,
+                        thinking=body.thinking, show_thinking=body.show_thinking,
                         input_price_per_mtok=body.input_price_per_mtok,
                         output_price_per_mtok=body.output_price_per_mtok, currency=body.currency,
                         enabled=body.enabled)
@@ -124,7 +118,7 @@ class ModelMixin(ProviderMixin):
                if key not in ("context_length", "max_output_tokens", "thinking", "input_price_per_mtok",
                               "output_price_per_mtok")):
             raise Invalid("该字段不能置空")
-        async with self._tx() as session:
+        async with self._write() as session:
             row = await self._model(session, model_id)
             for key, value in changes.items():
                 if key == "capabilities":
@@ -134,7 +128,7 @@ class ModelMixin(ProviderMixin):
 
     async def delete_model(self, actor_id: str, model_id: str) -> None:
         self._require_admin(actor_id)
-        async with self._tx() as session:
+        async with self._write() as session:
             row = await self._model(session, model_id)
             await session.execute(delete(Model).where(Model.id == row.id))
 
@@ -162,12 +156,12 @@ class ModelMixin(ProviderMixin):
         """按别名取转发路由。平台里一个模型都没配置时返回 None，由网关决定是否回退到固定上游；
         配置了模型但别名不存在、模型或厂商停用，一律 NotFound（不回退，免得静默换模型）。"""
         check_id(workspace_id, "workspace_id")
-        async with self._tx() as session:
-            found = await _lookup(session, alias)
-            if found is None:
-                if not await session.scalar(select(func.count()).select_from(Model)):
-                    return None
-                raise NotFound("模型不存在")
+        snapshot = await self._snapshot.get()
+        found = _lookup(snapshot, alias)
+        if found is None:
+            if not snapshot.models:
+                return None
+            raise NotFound("模型不存在")
         model, provider = found
         if not (model.enabled and provider.enabled):
             raise NotFound("模型不存在")
@@ -179,8 +173,7 @@ class ModelMixin(ProviderMixin):
         """内部模型客户端用：按别名取路由并核对能力。没配置、找不到、停用、不支持这种能力都抛错，不回退到别的模型
         （嵌入模型换了，向量就和已有的对不上）。default 的规则同 resolve，但只对对话、看图有意义。"""
         check_id(workspace_id, "workspace_id")
-        async with self._tx() as session:
-            found = await _lookup(session, alias)
+        found = _lookup(await self._snapshot.get(), alias)
         if found is None:
             raise NotFound(f"模型「{alias}」不存在，请在「管理 → 模型」里添加")
         model, provider = found
@@ -194,13 +187,42 @@ class ModelMixin(ProviderMixin):
 
     async def default_capabilities(self, workspace_id: str) -> frozenset[str] | None:
         """宿主请求的 default 实际落到的那个模型有哪些能力（规则同 resolve）。没配模型、找不到或已停用时
-        返回 None，调用方按「不知道」处理。运行配置据此决定要不要收掉看图工具。"""
+        返回 None，调用方按「不知道」处理。"""
+        return await self.capabilities_of(workspace_id, None)
+
+    async def chat_models(self) -> tuple[ChatModel, ...]:
+        """输入框里能选的对话模型：模型与厂商都启用、标了「对话」，按添加先后排；标出 default 实际落到的那个。"""
+        snapshot = await self._snapshot.get()
+        default = _lookup(snapshot, DEFAULT_ALIAS)
+        default_id = default[0].id if default is not None and default[0].enabled and default[1].enabled else None
+        return tuple(ChatModel(alias=m.alias, name=m.name, vision="vision" in m.capabilities, default=m.id == default_id)
+                     for m in snapshot.models
+                     if m.enabled and "chat" in m.capabilities
+                     and (p := snapshot.providers.get(m.provider_id)) is not None and p.enabled)
+
+    async def capabilities_of(self, workspace_id: str, alias: str | None) -> frozenset[str] | None:
+        """这一轮用的模型有哪些能力：没选按 default（规则同 resolve）。找不到或停用时为 None，调用方按「不知道」处理。
+        运行配置据此决定要不要收掉看图工具。"""
         check_id(workspace_id, "workspace_id")
-        async with self._tx() as session:
-            found = await _lookup(session, DEFAULT_ALIAS)
+        found = _lookup(await self._snapshot.get(), alias or DEFAULT_ALIAS)
         if found is None or not (found[0].enabled and found[1].enabled):
             return None
-        return frozenset(found[0].capabilities or ())
+        return frozenset(found[0].capabilities)
+
+    async def shows_thinking(self, alias: str | None) -> bool:
+        """页面上要不要显示这个模型的思考（事件泵按每次请求的模型问）。别名找不到、没配模型时照常显示，
+        规则同 resolve（default 退到最早添加、已启用的对话模型）。"""
+        found = _lookup(await self._snapshot.get(), alias or DEFAULT_ALIAS)
+        return True if found is None else found[0].show_thinking
+
+    async def price_of(self, alias: str) -> tuple[str, Decimal | None, Decimal | None] | None:
+        """用量记录估费用：别名精确对上的模型 id 与每百万 token 的输入、输出单价。不按 default 退到别的模型，
+        和原来按别名查价一致。"""
+        found = (await self._snapshot.get()).by_alias(alias)
+        if found is None:
+            return None
+        model = found[0]
+        return model.id, model.input_price_per_mtok, model.output_price_per_mtok
 
     async def route_by_id(self, actor_id: str, model_id: str) -> tuple[Route, ModelView]:
         """连通测试用：管理员按 id 取路由，停用的也能测。"""

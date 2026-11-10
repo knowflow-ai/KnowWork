@@ -107,6 +107,8 @@ export interface Model {
   /** 对话模型单次最多输出多少 token；网关据此收紧请求里的 max_tokens，空表示不限 */
   readonly maxOutputTokens: number | null;
   readonly thinking: Thinking;
+  /** 页面上边想边显示思考；关了只显示「思考中」（有的模型不管怎么要求都用英文想） */
+  readonly showThinking: boolean;
   readonly inputPrice: number | null;
   readonly outputPrice: number | null;
   readonly currency: string;
@@ -127,6 +129,7 @@ function parseModel(value: unknown): Model | undefined {
     contextLength: num(value.context_length) ?? null,
     maxOutputTokens: num(value.max_output_tokens) ?? null,
     thinking: thinkingOf(value.thinking),
+    showThinking: bool(value.show_thinking, true),
     inputPrice: num(value.input_price_per_mtok) ?? null,
     outputPrice: num(value.output_price_per_mtok) ?? null,
     currency: str(value.currency) ?? 'CNY',
@@ -146,6 +149,7 @@ export interface ModelInput {
   readonly contextLength: number | null;
   readonly maxOutputTokens: number | null;
   readonly thinking: Thinking;
+  readonly showThinking: boolean;
   readonly inputPrice: number | null;
   readonly outputPrice: number | null;
   readonly enabled: boolean;
@@ -161,6 +165,7 @@ function modelBody(input: ModelInput): Record<string, unknown> {
     context_length: input.contextLength,
     max_output_tokens: input.maxOutputTokens,
     thinking: input.thinking,
+    show_thinking: input.showThinking,
     input_price_per_mtok: input.inputPrice,
     output_price_per_mtok: input.outputPrice,
     enabled: input.enabled,

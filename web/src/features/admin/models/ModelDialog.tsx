@@ -55,6 +55,7 @@ export function ModelDialog({ model, providers, onClose }: Props) {
       contextLength: model?.contextLength ?? null,
       maxOutputTokens: model?.maxOutputTokens ?? null,
       thinking: model?.thinking ?? null,
+      showThinking: model?.showThinking ?? true,
       inputPrice: model?.inputPrice ?? null,
       outputPrice: model?.outputPrice ?? null,
       enabled: model?.enabled ?? true,
@@ -125,6 +126,18 @@ export function ModelDialog({ model, providers, onClose }: Props) {
             options={THINKING_OPTIONS}
             value={values.thinking ?? 'default'}
             onChange={(option) => set('thinking', thinkingFrom(option.value))}
+          />
+        </Field>
+      ) : null}
+      {values.capabilities.includes('chat') ? (
+        <Field
+          label="显示思考过程"
+          help="打开时，对话页在执行过程下面边想边显示模型的思考。有的模型不管怎么要求都用英文想（比如 Qwen3.8），不想给用户看就关掉，关了只显示「思考中」"
+        >
+          <Switch
+            label="显示"
+            checked={values.showThinking}
+            onCheckedChange={(checked) => set('showThinking', checked)}
           />
         </Field>
       ) : null}

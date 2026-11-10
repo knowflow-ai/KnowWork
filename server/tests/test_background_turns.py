@@ -1,6 +1,6 @@
 """后台会话（conversations/background.py）：worker 经内部端口替用户建会话、按回答方式发一轮、看状态、取消；
 会话不进本人的「最近」和搜索；令牌要对、人要是空间成员、会话要是这个人的。业务服务进程里的扩展用 LocalBackground
-建对话，判定一样，还能指定对话 id。"""
+建对话，判定一样，还能指定对话 id。只在扩展页面里用的回答方式（不进下拉）开的对话同样不进「最近」和搜索。"""
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -9,6 +9,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from knowwork_server.conversations.answer_modes import AnswerMode, AnswerModes
 from knowwork_server.conversations.background import (
     AUDIENCE,
     BackgroundTurnError,
@@ -33,6 +34,8 @@ from .fakes import FakeKernel
 pytestmark = pytest.mark.anyio
 MASTER = "m" * 48
 MEMBERS = {("u1", "ws_a"), ("u2", "ws_a")}
+MODES = AnswerModes()
+MODES.add(AnswerMode("page_only", "建模", "只在扩展页面的右栏里用", listed=False))
 
 
 @pytest.fixture
@@ -46,7 +49,7 @@ async def world(app_db):
     broadcaster = Broadcaster()
     pump = EventPump(kernel, sessionmaker, writer, broadcaster, timings=PumpTimings(idle_timeout=0.2))
     service = ConversationService(kernel, sessionmaker, pump, EventFeed(sessionmaker, writer, broadcaster,
-                                                                         pump.produced_upto))
+                                                                         pump.produced_upto), answer_modes=MODES)
     app = FastAPI()
     app.include_router(build_background_router(service, background_signer(MASTER), make_sessionmaker(engine),
                                                member=lambda user, ws: (user, ws) in MEMBERS))
@@ -99,6 +102,22 @@ async def test_background_conversations_stay_out_of_recents_and_search(world):
         assert [h.conversation.id for h in hits] == [shown.id]
         opened = await service.get(conversation_id=hidden, workspace_id="ws_a", user_id="u1")
     assert opened.id == hidden, "链接照样能打开"
+
+
+async def test_page_only_answer_modes_keep_their_conversations_out_of_recents_and_search(world):
+    """扩展页面右栏这类只在扩展页面里用的回答方式（listed=False）：开出来的对话不进「最近」和搜索（聊天页的下拉里没有它，
+    在那里接着发会换成别的方式答），链接照样能打开；下拉里有的方式照常进。"""
+    service = world.service
+    with in_workspace("ws_a"):
+        page_only = await service.create(workspace_id="ws_a", user_id="u1", title="诊断：退款率",
+                                         answer_mode="page_only")
+        chat = await service.create(workspace_id="ws_a", user_id="u1", title="退款率是多少", answer_mode="agent")
+        page = await service.list_page(workspace_id="ws_a", user_id="u1")
+        assert [c.id for c in page.items] == [chat.id]
+        hits = await service.search(workspace_id="ws_a", user_id="u1", query="退款率")
+        assert [h.conversation.id for h in hits] == [chat.id]
+        opened = await service.get(conversation_id=page_only.id, workspace_id="ws_a", user_id="u1")
+    assert opened.id == page_only.id, "链接照样能打开"
 
 
 async def test_tokens_members_and_owners_are_checked(world):

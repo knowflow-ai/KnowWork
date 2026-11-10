@@ -31,6 +31,7 @@ from ..kernel.contract import (
     CancelResult,
     KernelError,
     KnowledgeCatalog,
+    ModelUnknown,
     PendingApproval,
     PendingQuestion,
     QuestionAnswer,
@@ -103,6 +104,18 @@ class AttachmentUnavailable(Exception):
     """本轮要带的附件不属于这个会话、还没放进沙箱或已失效。message 可以直接给用户看。"""
 
 
+class UnknownModel(Exception):
+    """输入框选的模型不存在、停用了，或不是对话模型。"""
+
+
+class TurnModels(Protocol):
+    """输入框能选的对话模型（models.host_sync.HostModelSync 满足它）：核对选的模型，宿主不认识时重推清单。"""
+
+    async def choosable(self, alias: str) -> bool: ...
+
+    async def push(self) -> None: ...
+
+
 class AttachmentSource(Protocol):
     """本轮消息带的附件（实现见 attachments.turns.TurnAttachments），不可用时抛 AttachmentUnavailable。"""
 
@@ -131,6 +144,7 @@ class ConversationService:
                  answer_modes: AnswerModes | None = None,
                  mention_kinds: MentionKinds | None = None,
                  scopes: ConversationScopes | None = None,
+                 models: TurnModels | None = None,
                  resume_retry_delays: tuple[float, ...] = RESUME_RETRY_DELAYS) -> None:
         self._kernel = kernel
         self._sessionmaker = sessionmaker
@@ -138,6 +152,7 @@ class ConversationService:
         self._feed = feed
         self._on_host_restart = on_host_restart
         self._refresh_model_credential = refresh_model_credential
+        self._models = models
         self._resume_retry_delays = resume_retry_delays
         self._tool_credentials = tool_credentials
         self._skill_credentials = skill_credentials
@@ -188,11 +203,15 @@ class ConversationService:
 
     async def create(self, *, workspace_id: str, user_id: str, title: str = "",
                      selection: TurnSelection = NO_SELECTION, background: bool = False,
-                     channel_id: str | None = None, source: str = "", conversation_id: str | None = None) -> Conversation:
+                     channel_id: str | None = None, source: str = "", conversation_id: str | None = None,
+                     answer_mode: str | None = None) -> Conversation:
         """channel_id、source：从 IM 渠道来的会话记下渠道与平台（channels/service.py），「最近」里打来源标记。
-        conversation_id：扩展建后台对话时可以指定，拿自己的记录对上对话；已有同 id 的抛 ConversationExists。"""
+        conversation_id：扩展建后台对话时可以指定，拿自己的记录对上对话；已有同 id 的抛 ConversationExists。
+        answer_mode：第一轮的回答方式。不进下拉的（只在扩展页面里用，例如扩展页面右栏里的对话）开的对话不进「最近」和搜索，
+        同后台对话：聊天页的下拉里没有这种方式，在那里打开接着发会换成别的方式答；链接照样能打开。"""
+        hidden = background or (answer_mode is not None and not self._answer_modes.listed(answer_mode))
         conversation = Conversation(id=conversation_id or f"c_{uuid.uuid4().hex}", workspace_id=workspace_id,
-                                    user_id=user_id, title=title, background=background, channel_id=channel_id,
+                                    user_id=user_id, title=title, background=hidden, channel_id=channel_id,
                                     source=source)
         async with self._sessionmaker() as session:
             if conversation_id is not None and await session.get(Conversation, conversation_id) is not None:
@@ -251,6 +270,8 @@ class ConversationService:
 
     async def send(self, conversation: Conversation, turn: TurnInput,
                    selection: TurnSelection = NO_SELECTION, attachment_ids: tuple[str, ...] = ()) -> str:
+        if turn.model is not None and self._models is not None and not await self._models.choosable(turn.model):
+            raise UnknownModel(turn.model)
         if attachment_ids:
             if self._attachments is None:
                 raise AttachmentUnavailable("附件功能没有开启")
@@ -268,12 +289,22 @@ class ConversationService:
             turn = await self._with_catalog(conversation, turn, profile)
             turn = await self._with_context(conversation, turn)
             try:
-                message_id = await self._kernel.send(conversation.id, turn)
-            except SessionNotFound:
-                message_id = await self._resume_and_send(conversation, turn, profile)
+                message_id = await self._deliver(conversation, turn, profile)
+            except ModelUnknown:
+                # 宿主还没收到这个模型（刚重启、还没推清单）：推一次再发；再不认识就让调用方报错
+                if self._models is None:
+                    raise
+                await self._models.push()
+                message_id = await self._deliver(conversation, turn, profile)
         await self._touch(conversation.id)
         self._pump.ensure(conversation.id, conversation.workspace_id)
         return message_id
+
+    async def _deliver(self, conversation: Conversation, turn: TurnInput, profile: RuntimeProfile | None) -> str:
+        try:
+            return await self._kernel.send(conversation.id, turn)
+        except SessionNotFound:
+            return await self._resume_and_send(conversation, turn, profile)
 
     async def activate(self, conversation: Conversation) -> None:
         """宿主上的插件要在这段对话里自己发起一轮（定时任务到点）：确保宿主上开着它、事件泵开着——宿主随后投进来的

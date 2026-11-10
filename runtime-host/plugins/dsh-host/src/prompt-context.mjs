@@ -30,11 +30,12 @@ const SILENCED = 'working-directory:current'
 const LANGUAGE = 'knowwork:language'
 
 const LANGUAGE_RULES = {
-  zh: '语言要求：所有给用户看的文字都用简体中文，包括调用工具前的说明、重试的原因、向用户的提问和最终回答；'
-    + '用户明确要求其他语言时照办。工具参数、代码与文件名保持原样。',
-  en: 'Language: write all user-facing text in English, including notes before tool calls, retry explanations, '
-    + 'questions to the user and the final answer. Follow an explicit request for another language. '
-    + 'Tool arguments, code and file names stay as they are.',
+  // 思考也列上：页面边想边显示思考（2026-11-10 起），不写的话 Qwen 这类模型常用英文想
+  zh: '语言要求：所有给用户看的文字都用简体中文，包括思考过程（会显示给用户）、调用工具前的说明、重试的原因、'
+    + '向用户的提问和最终回答；用户明确要求其他语言时照办。工具参数、代码与文件名保持原样。',
+  en: 'Language: write all user-facing text in English, including your reasoning (it is shown to the user), '
+    + 'notes before tool calls, retry explanations, questions to the user and the final answer. '
+    + 'Follow an explicit request for another language. Tool arguments, code and file names stay as they are.',
 }
 
 /** @param {import('@deepseek-ai/cordis').Context} ctx */

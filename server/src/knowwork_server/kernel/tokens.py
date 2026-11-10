@@ -29,6 +29,11 @@ def derive_key(master_key: str, purpose: str) -> bytes:
     return hkdf.derive(master_key.encode())
 
 
+def host_callback_signer(master_key: str) -> "TokenSigner":
+    """宿主回调用的签名器。业务服务签发、校验，独立的模型网关进程（ops/model_gateway.py）也要校验，两边必须同一把。"""
+    return TokenSigner(derive_key(master_key, "host-callback"))
+
+
 def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 

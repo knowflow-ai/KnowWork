@@ -38,6 +38,7 @@ from ..sessionfiles.storage import SessionStores
 from ..skills.platform import PlatformSkillAdmin
 from ..tools.mcp.enterprise import EnterpriseMcpAdmin
 from ..tools.provided import ProvidedTools
+from ..tools.results import ResultSources
 
 ENTRY_GROUP = "knowwork.extensions"
 VERIFIER_GROUP = "knowwork.license"
@@ -66,6 +67,9 @@ class ApiContext:
     # 登记回答方式（conversations/answer_modes.py，answer_modes.add）：输入框下拉里多一项，选了它这一轮按它收窄官方工具、
     # 注入指令；业务工具在不在这种方式里由工具自己的 answer_modes 声明
     answer_modes: AnswerModes = field(default_factory=AnswerModes)
+    # 登记结果来源（tools/results.py，results.add）：查询类工具查出来的结果按编号交给 show_result 展示，来源自己的回答方式里
+    # 也给 show_result（只收编号）
+    results: ResultSources = field(default_factory=ResultSources)
     # 登记 @ 类型（conversations/mention_kinds.py，mentions.add）：输入框 @ 菜单里多一组（例如数据源），发消息时核对权限、
     # 这一轮开始前交给扩展
     mentions: MentionKinds = field(default_factory=MentionKinds)

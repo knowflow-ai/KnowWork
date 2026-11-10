@@ -37,7 +37,8 @@ deploy/install.sh --timeout 600
 | 容器 | 作用 |
 |---|---|
 | gateway | nginx：前端静态文件，反向代理 `/api/`，对外端口默认 8080 |
-| api | 业务服务：公开接口、模型网关、工具桥、附件解析、审计；启动时自动执行数据库迁移 |
+| api | 业务服务：公开接口、工具桥、附件解析、审计；启动时自动执行数据库迁移 |
+| model-gateway | 模型网关：运行时宿主调模型都经它，换成厂商地址与密钥后转发；和 api 同一个镜像，单独一个进程 |
 | worker | 后台任务：附件解析等；和 api 连同一个 Docker，把解析结果放进会话沙箱 |
 | runtime-host | 运行时宿主：Node 与 DSH |
 | postgres、redis、rustfs | 数据库、缓存与队列、对象存储 |
@@ -79,7 +80,7 @@ deploy/install.sh --timeout 600
 ## 升级
 
 1. 先备份数据（见下一节）；
-2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.8`（换成要升级到的版本）。编排文件
+2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.9`（换成要升级到的版本）。编排文件
    可能随版本变，只改版本号会用旧的编排文件跑新镜像。`deploy/.env` 不在仓库里，切换版本不会动它；
 3. 把 `deploy/.env` 的 `KNOWWORK_VERSION` 改成新版本；
 4. 重新执行 `deploy/install.sh`：它会拉新镜像（包括会话沙箱镜像）并重启服务。

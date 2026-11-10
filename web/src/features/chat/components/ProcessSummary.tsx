@@ -1,7 +1,8 @@
 /**
- * 执行过程：默认收起成一行摘要，点开后按发生先后列出说明与每一步（照 ChatGPT 的思考面板）。
+ * 执行过程：默认收起成一行摘要，点开后按发生先后列出思考、说明与每一步（照 ChatGPT 的思考面板）。
  * - 单色低调：左侧一条细竖线，正文一律次要色小字，不用彩色状态图标；
- * - 模型思考原文不展示：进行中只显示带微光的「思考中」；给用户看的是模型调工具前写的说明；
+ * - 思考照 ChatGPT：边想边在摘要下面滚动显示最新几行（上沿渐隐），正文开始写或这一步结束就收起；
+ *   想完的思考收进执行过程，点开按先后看全文（2026-11-10 起；之前只显示「思考中」，不展示思考原文）；
  * - 步骤一行：人话标题（「检索知识库」）+ 目标 + 耗时，进行中的标题带微光；
  *   失败或拒绝只在行尾写一句原因，不变色；参数与结果默认收起，点标题才在代码框里看。
  */
@@ -71,10 +72,10 @@ function TextRow({ text }: { readonly text: string }) {
   );
 }
 
-function rowsOf(run: RunView) {
+function rowsOf(run: RunView, thinking?: string) {
   const steps = new Map(run.steps.map((step) => [step.callId, step]));
   const fromTrail = run.trail.map((entry: TrailEntry, i) => {
-    if (entry.type === 'thinking') return null;
+    if (entry.type === 'thinking') return <TextRow key={`thinking-${i}`} text={entry.text} />;
     if (entry.type === 'note') return <TextRow key={`note-${i}`} text={entry.text} />;
     const step = steps.get(entry.callId);
     return step ? <StepRow key={`step-${step.callId}`} step={step} /> : null;
@@ -84,21 +85,30 @@ function rowsOf(run: RunView) {
       <div className="kw-step-problem">{problem}</div>
     </li>
   ));
-  return [...fromTrail, ...problems];
+  // 正在想的这一步：思考还没成为正式事件，接在最后
+  const current = thinking ? [<TextRow key="thinking-live" text={thinking} />] : [];
+  return [...fromTrail, ...current, ...problems];
 }
 
 export function ProcessSummary({
   run,
   preparing,
+  thinking,
+  answering = false,
 }: {
   readonly run: RunView;
   /** 模型正在写的工具调用（还没开始跑，events/live.ts） */
   readonly preparing?: readonly string[];
+  /** 正在输出的那一步到目前为止的思考（events/live.ts） */
+  readonly thinking?: string;
+  /** 这一步已经开始写正文：思考预览收起，和 ChatGPT 一样 */
+  readonly answering?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const running = run.endedAt === undefined;
   const summary = summarizeProcess(run, preparing);
-  const expandable = hasDetails(run);
+  const expandable = hasDetails(run) || Boolean(thinking);
+  const preview = running && !open && !answering ? thinking : undefined;
   return (
     <div>
       <button
@@ -112,7 +122,14 @@ export function ProcessSummary({
         <span className={running ? 'kw-shimmer' : undefined}>{summary}</span>
         {expandable ? open ? <ChevronDown /> : <ChevronRight /> : null}
       </button>
-      {open && expandable ? <ol className="kw-process-body">{rowsOf(run)}</ol> : null}
+      {preview ? (
+        <div className="kw-thinking-preview">
+          <div className="kw-step-text">{preview}</div>
+        </div>
+      ) : null}
+      {open && expandable ? (
+        <ol className="kw-process-body">{rowsOf(run, running ? thinking : undefined)}</ol>
+      ) : null}
     </div>
   );
 }

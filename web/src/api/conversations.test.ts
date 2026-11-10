@@ -120,7 +120,7 @@ describe('conversations api', () => {
     expect(api.calls[0]?.query.get('limit')).toBe('30');
   });
 
-  it('新建会话带上第一条消息的 @ 与回答方式（没有 @ 时不带）', async () => {
+  it('新建会话带上第一条消息的回答方式与 @（服务端按回答方式定进不进「最近」）', async () => {
     const api = routeFetch({
       'POST /api/workspaces/default/conversations': jsonResponse({ id: 'c1', title: 't' }, 201),
     });
@@ -133,6 +133,7 @@ describe('conversations api', () => {
     } as const;
     await createConversation('合同模板有哪些内容', { answerMode: 'agent', mentions: [mention] });
     await createConversation('你好', { answerMode: 'agent' });
+    await createConversation('没选回答方式');
     expect(api.calls.map((c) => c.body)).toEqual([
       {
         title: '合同模板有哪些内容',
@@ -143,7 +144,8 @@ describe('conversations api', () => {
           ],
         },
       },
-      { title: '你好' },
+      { title: '你好', first_turn: { answer_mode: 'agent' } },
+      { title: '没选回答方式' },
     ]);
   });
 

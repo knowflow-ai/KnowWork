@@ -21,6 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    true,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
@@ -64,6 +65,9 @@ class Model(Base):
     max_output_tokens: Mapped[int | None] = mapped_column(Integer)
     # 对话模型的思考：on、off，空是跟随服务默认（不补参数）；转发时按服务商的写法补（models/thinking.py）
     thinking: Mapped[str | None] = mapped_column(String(8))
+    # 页面上要不要边想边显示这个模型的思考：有的模型（如 Qwen3.8-27B）不管怎么要求都用英文想，管理员可以关掉，
+    # 关了就只显示「思考中」（conversations/pump.py 不推思考片段、不留思考记录）
+    show_thinking: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     input_price_per_mtok: Mapped[Decimal | None] = mapped_column(PRICE)
     output_price_per_mtok: Mapped[Decimal | None] = mapped_column(PRICE)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")

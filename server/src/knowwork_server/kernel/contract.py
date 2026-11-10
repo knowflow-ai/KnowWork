@@ -134,6 +134,8 @@ class TurnContext(_Frozen):
 
 # 回答方式的标识：内置 agent、quick，扩展可以登记别的（conversations/answer_modes.py）
 ANSWER_MODE_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+# 模型别名（同 models.schemas 的 Alias）：输入框选的模型，宿主按它换这段对话的模型
+MODEL_ALIAS_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
 
 
 class AnswerModeSpec(_Frozen):
@@ -158,6 +160,8 @@ class TurnInput(_Frozen):
     mentions: tuple[TurnMention, ...] = Field(default=(), max_length=30)
     # 扩展补的上下文（conversations/turn_context.py）；None = 这轮没算（宿主沿用上一轮的常驻那段，也没有这一轮的那段）
     context: TurnContext | None = None
+    # 输入框选的模型别名；宿主按官方会话级选择换（存进会话，之后不带也沿用）。None = 不换
+    model: str | None = Field(default=None, pattern=MODEL_ALIAS_PATTERN)
 
 
 class KernelEvent(_Frozen):
@@ -232,6 +236,14 @@ class QuestionAnswer(_Frozen):
     answers: tuple[QuestionAnswerItem, ...] = Field(min_length=1, max_length=64)
 
 
+class HostModel(_Frozen):
+    """推给宿主的一个可选对话模型：宿主据此声明官方模型适配器的路由（id 就是模型网关认的别名）。"""
+
+    id: str = Field(pattern=MODEL_ALIAS_PATTERN)
+    name: str = Field(min_length=1, max_length=200)
+    vision: bool = False
+
+
 class BundledSkill(_Frozen):
     """宿主内置的技能（KnowWork 随宿主发的 Word、Excel、PPT 这类）：只给名字与说明，「技能」页与 @ 菜单列出来用。"""
 
@@ -266,6 +278,10 @@ class EpochMismatch(KernelError):
     """宿主重启过，旧游标失效。调用方应从头重新读取。"""
 
 
+class ModelUnknown(KernelError):
+    """宿主还没收到过这个模型（刚重启、还没推可选模型）。调用方推一次清单再发。"""
+
+
 class AgentKernel(Protocol):
     async def open_session(self, spec: SessionSpec) -> str: ...
 
@@ -290,5 +306,7 @@ class AgentKernel(Protocol):
     async def rotate_skill_credential(self, session_id: str, token: str) -> None: ...
 
     async def bundled_skills(self) -> tuple[BundledSkill, ...]: ...
+
+    async def sync_models(self, models: tuple[HostModel, ...]) -> None: ...
 
     def subscribe(self, session_id: str, *, after: int = 0, epoch: str | None = None) -> AsyncIterator[KernelEvent]: ...

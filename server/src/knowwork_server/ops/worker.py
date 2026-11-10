@@ -41,6 +41,7 @@ from ..sandbox import SandboxModule, SandboxSettings, build_sandbox
 from ..sandbox.unavailable import UnavailableSandbox
 from ..storage import namespaced_stores, session_stores
 from . import logredact
+from .eventloop import loop_factory
 
 log = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ async def run(stop: asyncio.Event | None = None) -> bool:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logredact.install()
-    if asyncio.run(run()):
+    if asyncio.run(run(), loop_factory=loop_factory()):
         sys.exit(EXIT_LICENSE_ENDED)
 
 

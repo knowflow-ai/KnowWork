@@ -22,7 +22,9 @@ from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from ..audit.context import annotate
 from ..kernel.contract import (
     ANSWER_MODE_PATTERN,
+    MODEL_ALIAS_PATTERN,
     KernelError,
+    ModelUnknown,
     QuestionAnswer,
     QuestionAnswerItem,
     SessionBusy,
@@ -38,7 +40,7 @@ from .mentions import MAX_MENTIONS, Mention, mentioned, turn_mentions
 from .models import Conversation
 from .replay import Outgoing, parse_cursor
 from .scopes import ConversationScopes, ScopeUnavailable
-from .service import MAX_PAGE, AttachmentUnavailable, ConversationNotFound, ConversationService
+from .service import MAX_PAGE, AttachmentUnavailable, ConversationNotFound, ConversationService, UnknownModel
 from .tool_credentials import ToolAccessRevoked, ToolCredentialUnavailable
 
 log = logging.getLogger(__name__)
@@ -103,6 +105,8 @@ class TurnChoice(BaseModel):
     # 回答方式：智能体、只查知识库的快速问答（宿主只放行 knowledge_search、knowledge_read），或扩展登记的
     # （answer_modes.py）；用户在输入框里随时切换。登记了没有、这个人能不能用，发消息时由会话服务核对
     answer_mode: str = Field(default="agent", pattern=ANSWER_MODE_PATTERN)
+    # 输入框选的对话模型（别名）；不传 = 不换，这段对话沿用上次选的（宿主按官方会话级选择存着），没选过用默认模型
+    model: str | None = Field(default=None, pattern=MODEL_ALIAS_PATTERN)
 
     def _scoped(self) -> tuple[list[str] | None, list[Mention]]:
         """这一轮算数的技能与 @：快速问答用不了技能（宿主拦下 skill），选了也不算，免得技能目录把它标成选中。"""
@@ -114,7 +118,7 @@ class TurnChoice(BaseModel):
         skills, mentions = self._scoped()
         chosen = TurnSelection(skills=None if skills is None else tuple(skills),
                                knowledge_bases=None if self.knowledge_bases is None else tuple(self.knowledge_bases),
-                               dropped_conditions=tuple(self.dropped_conditions))
+                               dropped_conditions=tuple(self.dropped_conditions), model=self.model)
         return mentioned(chosen, mentions)
 
 
@@ -150,7 +154,7 @@ class SendMessage(TurnChoice):
         # 插话进行中的回合，新的选择留到下一轮才生效（service.send），@ 也就不写进这条消息，免得模型以为已经限定了
         mentions = turn_mentions(self._scoped()[1]) if self.mode == "followup" else ()
         return TurnInput(text=self.text, mode=self.mode, language=self.language, time_zone=self.time_zone,
-                         mentions=mentions, answer_mode=self.answer_mode)
+                         mentions=mentions, answer_mode=self.answer_mode, model=self.model)
 
 
 class Decision(BaseModel):
@@ -245,7 +249,8 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         try:
             selection = body.first_turn.selection() if body.first_turn else NO_SELECTION
             conversation = await service.create(workspace_id=who.workspace_id, user_id=who.user_id, title=body.title,
-                                                selection=selection)
+                                                selection=selection,
+                                                answer_mode=body.first_turn.answer_mode if body.first_turn else None)
         except CREDENTIAL_ERRORS as error:
             raise credential_error(error) from error
         except HOST_ERRORS as error:
@@ -309,6 +314,10 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
             raise HTTPException(status_code=503, detail="这段对话的设置暂时取不到，请稍后再试") from error
         except AttachmentUnavailable as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except UnknownModel as error:
+            raise HTTPException(status_code=422, detail="这个模型不存在或已停用，换一个试试") from error
+        except ModelUnknown as error:
+            raise HTTPException(status_code=503, detail="这个模型暂时用不了，请稍后再试或换一个") from error
         except CREDENTIAL_ERRORS as error:
             raise credential_error(error) from error
         except HOST_ERRORS as error:

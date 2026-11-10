@@ -105,8 +105,12 @@ describe('ChatPage', () => {
     expect(
       calls
         .map((c) => c.url)
-        // 进会话后台自动拉的（产物、@ 候选、每轮的赞踩、可选的回答方式、对话的范围）不算
-        .filter((url) => !/\/(artifacts|mention-options|feedback|answer-modes|scope)$/.test(url)),
+        // 进会话后台自动拉的（产物、@ 候选、每轮的赞踩、可选的回答方式、对话的范围、可选的模型）不算
+        .filter(
+          (url) =>
+            !/\/(artifacts|mention-options|feedback|answer-modes|scope)$/.test(url) &&
+            !url.includes('/chat-models'),
+        ),
     ).toEqual([
       '/api/workspaces/default/conversations',
       '/api/workspaces/default/conversations/c-new/messages',

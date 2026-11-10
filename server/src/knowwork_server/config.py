@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     public_port: int = Field(default=8000, ge=1, le=65535)
     internal_host: str = "0.0.0.0"
     internal_port: int = Field(default=8001, ge=1, le=65535)
+    # 独立的模型网关进程（ops/model_gateway.py）：宿主调模型经它，不记状态，忙不过来就多开几个 worker 进程
+    model_gateway_host: str = "0.0.0.0"
+    model_gateway_port: int = Field(default=8002, ge=1, le=65535)
+    model_gateway_workers: int = Field(default=1, ge=1, le=32)
     # worker 连业务服务内部端口的地址：扩展经它替用户发起后台对话（conversations/background.py）
     internal_url: str = "http://127.0.0.1:8001"
 

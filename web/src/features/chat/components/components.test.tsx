@@ -44,20 +44,21 @@ const endedTurn: RunView = {
 };
 
 describe('ProcessSummary', () => {
-  it('默认收起成一行摘要，点开按先后列出说明与每一步，不展示思考原文', async () => {
+  it('默认收起成一行摘要，点开按先后列出思考、说明与每一步', async () => {
     renderWithApp(<ProcessSummary run={endedTurn} />);
     const toggle = screen.getByRole('button', { name: /已完成 2 个步骤 · 用时 38 秒/ });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('read_file')).not.toBeInTheDocument();
-    await userEvent.click(toggle);
     expect(screen.queryByText('想一想')).toBeNull();
+    await userEvent.click(toggle);
+    expect(screen.getByText('想一想')).toBeInTheDocument();
     expect(screen.getByText('我先读取文件')).toBeInTheDocument();
     expect(screen.getByText('read_file')).toBeInTheDocument();
     expect(screen.getByText('path: a.txt')).toBeInTheDocument();
     expect(screen.getByText(/网络不可用/)).toBeInTheDocument();
     expect(screen.getByText('部分执行过程没有记录下来')).toBeInTheDocument();
     const texts = [...document.querySelectorAll('.kw-step-text')].map((el) => el.textContent);
-    expect(texts).toEqual(['我先读取文件']);
+    expect(texts).toEqual(['想一想', '我先读取文件']);
   });
 
   it('步骤用人话标题，参数与结果默认收起，点开在代码框里看（JSON 格式化）', async () => {
@@ -88,7 +89,7 @@ describe('ProcessSummary', () => {
     expect(document.querySelector('.kw-step-code pre')?.textContent).toContain('"query": "微短剧 代表作品"');
   });
 
-  it('只有思考没有步骤时不可展开（思考原文不展示）', () => {
+  it('只有思考没有步骤时写「已思考」，点开看完整的思考', async () => {
     renderWithApp(
       <ProcessSummary
         run={{
@@ -100,8 +101,32 @@ describe('ProcessSummary', () => {
         }}
       />,
     );
-    expect(screen.getByRole('button', { name: /已完成/ })).toBeDisabled();
+    const toggle = screen.getByRole('button', { name: /已思考 · 用时 38 秒/ });
     expect(screen.queryByText('想一想')).toBeNull();
+    await userEvent.click(toggle);
+    expect(screen.getByText('想一想')).toBeInTheDocument();
+  });
+
+  it('边想边在摘要下面显示思考，开始写正文或点开后不再重复显示', async () => {
+    const thinking: RunView = {
+      ...endedTurn,
+      endedAt: undefined,
+      status: 'running',
+      steps: [],
+      notes: [],
+      problems: [],
+      thinking: [],
+      trail: [],
+    };
+    const first = renderWithApp(<ProcessSummary run={thinking} thinking="先看看去年的数据" />);
+    expect(screen.getByText('思考中')).toBeInTheDocument();
+    expect(document.querySelector('.kw-thinking-preview')?.textContent).toBe('先看看去年的数据');
+    await userEvent.click(screen.getByRole('button', { name: /思考中/ }));
+    expect(document.querySelector('.kw-thinking-preview')).toBeNull();
+    expect(document.querySelector('.kw-process-body')?.textContent).toContain('先看看去年的数据');
+    first.unmount();
+    renderWithApp(<ProcessSummary run={thinking} thinking="先看看去年的数据" answering />);
+    expect(document.querySelector('.kw-thinking-preview')).toBeNull();
   });
 
   it('运行中显示当前步骤', () => {

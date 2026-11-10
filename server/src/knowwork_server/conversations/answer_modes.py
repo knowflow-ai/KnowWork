@@ -5,8 +5,9 @@
 - 内置的两种宿主自己认得，发消息时不带额外内容，行为与原来一样；
 - 扩展登记的方式发消息时现算（指令可能按会话变，例如带上会话范围的摘要），随消息交给宿主；
 - available 决定这个空间、这个人能不能选（下拉里出不出现、发消息时认不认），判断出错时按不能选；
-- listed 为假的不进下拉，只给扩展的后台对话用（conversations/background.py，例如在 worker 里起草，没人在旁边点审批，
-  这种方式只放只读的工具、把结果写在回答里交回去）。发消息时照样认；
+- listed 为假的不进下拉，只在扩展自己的页面里用（例如扩展页面右栏里的对话），或给扩展的后台对话用（conversations/background.py，
+  例如在 worker 里起草，没人在旁边点审批，这种方式只放只读的工具、把结果写在回答里交回去）。发消息时照样认；用它开的对话
+  也不进本人的「最近」和搜索（service.create）：在聊天页里打开它接着发，下拉里没有这种方式，会换成别的方式答；
 - channel 写了才能在 IM 渠道里选（channels/settings.py）：渠道不认人或在群里时用机器人账号回答，按这一类资源给它授权，
   内置两种查知识库。没写的（例如改模型的那种，IM 里没法审阅）不进渠道。
 """
@@ -54,7 +55,7 @@ class AnswerMode:
     official_tools: tuple[str, ...] = ()  # 放行的官方全局工具（ask_user_question、present、todo_write、skill……）
     prompt: Callable[[ModeContext], Awaitable[str]] | None = None
     available: Callable[[ModeContext], Awaitable[bool]] | None = None
-    listed: bool = True  # 进不进下拉；只给后台对话用的设 False
+    listed: bool = True  # 进不进下拉；只在扩展页面里或后台对话用的设 False，用它开的对话也不进「最近」
     channel: ChannelResource | None = None  # IM 渠道里能不能选、机器人账号按哪类资源授权
 
 
@@ -90,6 +91,11 @@ class AnswerModes:
 
     async def for_user(self, ctx: ModeContext) -> list[AnswerMode]:
         return [mode for mode in self._items.values() if mode.listed and await _offered(mode, ctx)]
+
+    def listed(self, mode_id: str) -> bool:
+        """这种回答方式进不进下拉（没登记的按进）：不进的开出来的对话也不进「最近」和搜索。"""
+        mode = self._items.get(mode_id)
+        return mode is None or mode.listed
 
     async def offered(self, mode_id: str, ctx: ModeContext) -> bool:
         """这个人此刻能不能选这种回答方式（下拉里有没有它）。"""

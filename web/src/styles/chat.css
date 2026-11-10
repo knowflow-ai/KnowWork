@@ -559,6 +559,20 @@ a.kw-source-item:hover {
   list-style: none;
 }
 
+/* 思考中的预览（照 ChatGPT）：摘要下面几行，只露最新的部分、上沿渐隐；样子同展开后的执行过程 */
+.kw-thinking-preview {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: calc(var(--kw-font-sm) * 1.7 * 4);
+  margin: 6px 0 0;
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--kw-border-secondary);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 45%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 45%);
+}
+
 .kw-step + .kw-step {
   margin-top: 10px;
 }
@@ -1104,6 +1118,16 @@ a.kw-source-item:hover {
 }
 
 /* 回答方式下拉里每项的说明：比模式名小一号、灰一档，一眼分得开名字和说明；选中项的名字加粗，说明不跟着加粗 */
+/* 输入框右下角的对话模型下拉：不抢输入区的地方，名字太长省略 */
+.kw-model-select {
+  min-width: 0;
+  max-width: 40%;
+}
+
+.kw-model-select button {
+  max-width: 100%;
+}
+
 .kw-answer-mode-description {
   margin-top: 2px;
   color: var(--color-text-secondary);

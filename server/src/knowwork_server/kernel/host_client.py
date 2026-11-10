@@ -20,8 +20,10 @@ from .contract import (
     BundledSkill,
     CancelResult,
     EpochMismatch,
+    HostModel,
     KernelError,
     KernelEvent,
+    ModelUnknown,
     PendingApproval,
     PendingQuestion,
     Question,
@@ -37,7 +39,8 @@ from .locale import resolve_turn_language
 
 log = logging.getLogger(__name__)
 
-_ERRORS = {"session_not_found": SessionNotFound, "session_busy": SessionBusy, "epoch_mismatch": EpochMismatch}
+_ERRORS = {"session_not_found": SessionNotFound, "session_busy": SessionBusy, "epoch_mismatch": EpochMismatch,
+           "model_unknown": ModelUnknown}
 
 CONTROL_TIMEOUT = httpx.Timeout(30.0)
 STREAM_TIMEOUT = httpx.Timeout(30.0, read=15.0)
@@ -142,6 +145,8 @@ class HostKernel:
             body["answerModeSpec"] = {"tools": list(turn.answer_mode_spec.tools), "prompt": turn.answer_mode_spec.prompt}
         if turn.time_zone is not None:
             body["timeZone"] = turn.time_zone
+        if turn.model is not None:
+            body["model"] = turn.model
         if turn.attachments:
             body["attachments"] = [_attachment(a) for a in turn.attachments]
         if turn.knowledge is not None:
@@ -206,6 +211,10 @@ class HostKernel:
         _raise_for(response)
         return tuple(BundledSkill(name=s["name"], description=s["description"], user_invocable=s.get("userInvocable", True))
                      for s in response.json()["skills"])
+
+    async def sync_models(self, models: tuple[HostModel, ...]) -> None:
+        body = {"models": [{"id": m.id, "name": m.name, "vision": m.vision} for m in models]}
+        _raise_for(await self._client.put("/v1/models", json=body))
 
     async def subscribe(self, session_id: str, *, after: int = 0, epoch: str | None = None) -> AsyncIterator[KernelEvent]:
         params: dict[str, str | int] = {"after": after}

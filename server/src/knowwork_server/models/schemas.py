@@ -67,6 +67,7 @@ class ModelCreate(_Input):
     context_length: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
     max_output_tokens: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
     thinking: ThinkingSetting | None = None
+    show_thinking: bool = True
     input_price_per_mtok: Price | None = None
     output_price_per_mtok: Price | None = None
     currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] = "CNY"
@@ -80,6 +81,7 @@ class ModelUpdate(_Input):
     context_length: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
     max_output_tokens: Annotated[int | None, Field(default=None, ge=1, le=10_000_000)] = None
     thinking: ThinkingSetting | None = None
+    show_thinking: bool | None = None
     input_price_per_mtok: Price | None = None
     output_price_per_mtok: Price | None = None
     currency: Annotated[str | None, Field(default=None, pattern=r"^[A-Z]{3}$")] = None
@@ -111,6 +113,17 @@ class ModelView:
     enabled: bool
     thinking: str | None = None  # on、off；空是跟随服务默认
     max_output_tokens: int | None = None
+    show_thinking: bool = True  # 页面上边想边显示思考；关了只显示「思考中」
+
+
+@dataclass(frozen=True)
+class ChatModel:
+    """输入框里能选的一个对话模型（成员可见，不含厂商与价格）。default：宿主请求 default 时实际落到的就是它。"""
+
+    alias: str
+    name: str
+    vision: bool
+    default: bool
 
 
 @dataclass(frozen=True)

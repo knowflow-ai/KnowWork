@@ -107,6 +107,7 @@ describe('模型', () => {
         name: 'deepseek-reasoner',
         capabilities: ['chat'],
         thinking: null,
+        show_thinking: true,
       }),
     );
 
@@ -115,6 +116,7 @@ describe('模型', () => {
     const edit = await screen.findByRole('dialog');
     fill(edit, '上游模型名', 'deepseek-chat-v3');
     await pickOption(edit, '思考', '关闭');
+    await userEvent.click(within(edit).getByRole('switch', { name: '显示' }));
     fill(edit, '最大输出（token）', '8192');
     await userEvent.click(within(edit).getByRole('button', { name: '保存' }));
     await waitFor(() =>
@@ -122,6 +124,7 @@ describe('模型', () => {
         name: 'deepseek-chat-v3',
         input_price_per_mtok: 2,
         thinking: 'off',
+        show_thinking: false,
         max_output_tokens: 8192,
       }),
     );

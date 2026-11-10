@@ -28,6 +28,7 @@ import { mentionBlocks, mentionsOf } from './mentions.mjs'
 import { receiveTurnContext, turnContextOf } from './turn-context.mjs'
 import { BUILT_IN_MODES, MODE_PATTERN, answerModeSpecOf } from './answer-mode.mjs'
 import { deploymentTimeZone, userSource } from './message-source.mjs'
+import { createModelCatalog, MODEL_ID, modelListOf } from './model-catalog.mjs'
 
 // DSH 版本号随 /health 一起报给业务服务，系统信息页显示（所有 @deepseek-ai 包锁在同一版本）
 const DSH_VERSION = createRequire(import.meta.url)('@deepseek-ai/dsh/package.json').version
@@ -180,6 +181,12 @@ export function apply(ctx, config) {
     model: config.model ?? process.env.KNOWWORK_MODEL ?? 'default',
   }
   const modelTokenRef = config.modelTokenRef ?? process.env.KNOWWORK_MODEL_TOKEN_REF ?? 'KNOWWORK_MODEL_TOKEN'
+  // 可选的对话模型（model-catalog.mjs）：业务服务推清单，会话按官方 agent.model.select 选
+  const models = createModelCatalog(ctx, {
+    entryId: config.modelEntry ?? process.env.KNOWWORK_MODEL_ENTRY ?? 'llm-knowwork-gateway',
+    provider: agentOptions.provider,
+    defaultModel: agentOptions.model,
+  })
   // 消息没带用户时区时用它（见 message-source.mjs）
   const fallbackTimeZone = deploymentTimeZone()
 
@@ -201,7 +208,7 @@ export function apply(ctx, config) {
     publish(sessionId, 'agent/status', { status })
   })
   // 逐字输出：官方 dsh-agent-loop 的 agent/assistant-stream（官方会话接口 dsh-api-session-controller、
-  // 命令行运行 dsh-headless 都订阅它出字）。转正文片段，和模型开始写某个工具调用时的工具名，作为临时帧推给当前订阅方；
+  // 命令行运行 dsh-headless 都订阅它出字）。转正文与思考片段，和模型开始写某个工具调用时的工具名，作为临时帧推给当前订阅方；
   // 这一步的正式消息照常落成会话事件，业务服务拿它整段替换。子 Agent 的会话不是宿主打开的，查不到就丢。
   const announced = new Map() // 每次输出里已经报过名字的工具调用（attemptId → 序号）：参数片段很多，名字只报一次
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
@@ -289,6 +296,7 @@ export function apply(ctx, config) {
     } catch (error) {
       throw new HttpError(400, 'invalid_request', error.message)
     }
+    selectModel(agent, body.model)
     const state = getSession(sessionId)
     if (state !== undefined && language !== undefined) state.language = language
     if (state !== undefined && knowledge !== undefined) state.knowledgeCatalog = knowledge
@@ -302,6 +310,33 @@ export function apply(ctx, config) {
     if (mode === 'steer') agent.steer(message)
     else agent.followup(message)
     return { messageId: message.id, mode }
+  }
+
+  /**
+   * 用户在输入框选了模型：和这段对话当前的不一样就按官方的会话级选择换（存进会话，从下一步生效，重启恢复后照旧）。
+   * 宿主没收到过的模型直接拒（409 model_unknown），业务服务重推清单后再发，不让这一步跑到模型那里才以 UNKNOWN_MODEL 失败。
+   */
+  function selectModel(agent, model) {
+    if (model === undefined || model === null) return
+    if (typeof model !== 'string' || !MODEL_ID.test(model)) throw new HttpError(400, 'invalid_request', 'model 格式不对')
+    if (!models.knows(model)) throw new HttpError(409, 'model_unknown', `宿主还不认识模型：${model}`)
+    const current = agent.model.current()
+    if (current?.provider === agentOptions.provider && current.model === model) return
+    agent.model.select({ provider: agentOptions.provider, model })
+  }
+
+  async function syncModels(body) {
+    try {
+      modelListOf(body.models)
+    } catch (error) {
+      throw new HttpError(400, 'invalid_request', error.message)
+    }
+    try {
+      return await models.sync(body.models)
+    } catch (error) {
+      log.warn('syncing models failed: %s', error instanceof Error ? error.stack : String(error))
+      throw new HttpError(503, 'models_unavailable', '模型清单没能更新，详情见宿主日志')
+    }
   }
 
   async function cancel(sessionId) {
@@ -481,6 +516,7 @@ export function apply(ctx, config) {
 
     if (req.method === 'POST' && path === '/v1/sessions') return send(res, 201, await openSession(await readJson(req)))
     if (req.method === 'PUT' && path === '/v1/model-credential') return send(res, 200, await rotateModelCredential(await readJson(req)))
+    if (req.method === 'PUT' && path === '/v1/models') return send(res, 200, await syncModels(await readJson(req)))
     if (req.method === 'GET' && path === '/v1/skills/bundled') return send(res, 200, bundledSkills())
 
     const match = /^\/v1\/sessions\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?$/.exec(path)
@@ -588,9 +624,10 @@ export function apply(ctx, config) {
 }
 
 /**
- * 官方逐字帧 → 转给业务服务的样子：开始（带轮次、步）、正文片段、开始写某个工具调用（只报一次工具名）、结束。
- * 思考与工具参数的片段不转：模型把整个文件写进 write 的参数时要好十几秒，这期间页面只能写「思考中」、点开什么都没有，
- * 看着像卡住了；报一次工具名，页面就能写「正在写文件」。参数本身不转（量大，半截的参数也没法给人看）。
+ * 官方逐字帧 → 转给业务服务的样子：开始（带轮次、步）、正文片段、思考片段、开始写某个工具调用（只报一次工具名）、结束。
+ * 思考片段照官方聊天界面的做法边想边显示：开着思考的模型要先想几秒到几十秒才写正文，不转的话这段时间页面上一个字都没有。
+ * 工具参数的片段不转：模型把整个文件写进 write 的参数时要好十几秒，报一次工具名，页面就能写「正在写文件」，
+ * 参数本身不转（量大，半截的参数也没法给人看）。
  * @param {{ type: string, attemptId?: string, turn?: number, step?: number,
  *   chunk?: { type: string, text?: string, index?: number, name?: string } }} frame
  * @param {Map<string, Set<number>>} announced
@@ -604,6 +641,9 @@ export function liveFrame(frame, announced) {
   const chunk = frame.type === 'chunk' ? frame.chunk : undefined
   if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
     return { type: 'text', attemptId: frame.attemptId, text: chunk.text }
+  }
+  if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string' && chunk.text) {
+    return { type: 'reasoning', attemptId: frame.attemptId, text: chunk.text }
   }
   if (chunk?.type === 'tool-call-delta' && typeof chunk.name === 'string' && chunk.name) {
     const seen = announced.get(frame.attemptId) ?? new Set()

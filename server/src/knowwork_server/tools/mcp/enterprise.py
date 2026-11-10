@@ -12,8 +12,7 @@
 - 每人的连接按服务所在的空间（默认空间）存：一个人一份，换空间不用重连，被移出某个空间也不删（connections.forget_member）。
 """
 
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -30,7 +29,7 @@ from .models import McpWorkspaceSettingRow
 from .naming import ENTERPRISE_PREFIX, server_tool_pattern
 from .oauth_login import Probe
 from .schemas import McpServerCreate, McpServerPatch, McpToolPatch
-from .store import McpChanges, McpServerRecord, McpServerStore
+from .store import McpChanges, McpServerRecord, McpServerStore, list_servers_in
 
 SCOPE = "enterprise"
 ALL_WORKSPACES = "*"
@@ -50,6 +49,14 @@ class Setting:
 
 
 DEFAULT = Setting()
+
+
+async def _settings_in(session: AsyncSession, workspace_id: str) -> dict[str, Setting]:
+    """本空间对企业服务的设置（服务 id → 设置），没列出的都是默认；用调用方的事务（行级安全变量切到这个空间）。"""
+    await set_workspace(session, workspace_id)
+    rows = (await session.scalars(select(McpWorkspaceSettingRow).where(
+        McpWorkspaceSettingRow.workspace_id == workspace_id))).all()
+    return {row.server_id: Setting(off=row.off, narrowed=row.narrowed) for row in rows}
 
 
 def resource_of(server: McpServerRecord) -> str:
@@ -151,10 +158,15 @@ class McpReach:
         self._access = access
 
     async def servers(self, workspace_id: str, user_id: str) -> list[McpServerRecord]:
-        own = await self._store.list_servers(workspace_id)
-        settings = await self.settings(workspace_id)
+        # 每轮发消息编运行配置都要取一次：三样在一个事务里读（原来各开一个，2026-11-09 压测里每轮 3 个事务）
+        async with self._sessionmaker() as session, session.begin():
+            own = await list_servers_in(session, workspace_id)
+            settings = await _settings_in(session, workspace_id)
+            upper = await list_servers_in(session, PLATFORM_WORKSPACE_ID, SCOPE)
         arrived = []
-        for server in await self.arriving(workspace_id):
+        for server in upper:
+            if not reaches(server.audience, workspace_id):
+                continue
             setting = settings.get(server.id, DEFAULT)
             if setting.off:
                 continue
@@ -175,16 +187,8 @@ class McpReach:
                      if server.id == server_id), None)
 
     async def settings(self, workspace_id: str) -> dict[str, Setting]:
-        async with self._session(workspace_id) as session:
-            rows = (await session.scalars(select(McpWorkspaceSettingRow).where(
-                McpWorkspaceSettingRow.workspace_id == workspace_id))).all()
-        return {row.server_id: Setting(off=row.off, narrowed=row.narrowed) for row in rows}
-
-    @asynccontextmanager
-    async def _session(self, workspace_id: str) -> AsyncIterator[AsyncSession]:
         async with self._sessionmaker() as session, session.begin():
-            await set_workspace(session, workspace_id)
-            yield session
+            return await _settings_in(session, workspace_id)
 
 
 @dataclass(frozen=True)

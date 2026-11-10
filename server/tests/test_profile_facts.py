@@ -30,7 +30,7 @@ class Models:
     def __init__(self, capabilities=frozenset({"chat"})):
         self.capabilities = capabilities
 
-    async def default_capabilities(self, workspace_id):
+    async def capabilities_of(self, workspace_id, alias=None):
         return self.capabilities
 
 

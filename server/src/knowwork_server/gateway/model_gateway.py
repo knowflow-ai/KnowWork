@@ -28,6 +28,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ..config import Settings
 from ..kernel.tokens import TokenError, TokenSigner
 from ..models.errors import NotFound, Unavailable
 from ..models.schemas import Route
@@ -231,3 +232,21 @@ def build_router(signer: TokenSigner, upstream: httpx.AsyncClient, upstream_mode
         return await forwarder.send(built)
 
     return router
+
+
+def fixed_upstream(settings: Settings) -> httpx.AsyncClient:
+    """配置里的固定上游（回退用）：带 base_url 与厂商密钥头。业务服务与独立的模型网关进程各建一个。"""
+    key = settings.model_upstream_api_key.get_secret_value()
+    return httpx.AsyncClient(base_url=settings.model_upstream_base_url,
+                             headers={"authorization": f"Bearer {key}"} if key else {},
+                             timeout=httpx.Timeout(30.0, read=300.0))
+
+
+def router_from_settings(settings: Settings, signer: TokenSigner, resolver: RouteResolver, *,
+                         upstream: httpx.AsyncClient, http: httpx.AsyncClient) -> APIRouter:
+    """按配置装网关路由：业务服务的内部端口与独立的模型网关进程（ops/model_gateway.py）共用，回退与超时规则一致。"""
+    # 没配固定上游密钥时不回退：模型全部来自模型目录
+    fallback = settings.model_upstream_model if settings.model_upstream_api_key.get_secret_value() else ""
+    limits = GatewayLimits(total_timeout_seconds=settings.model_call_timeout_seconds,
+                           idle_timeout_seconds=settings.model_idle_timeout_seconds)
+    return build_router(signer, upstream, fallback, resolver=resolver, http=http, limits=limits)

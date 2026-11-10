@@ -102,10 +102,15 @@ def usage_from_event(kind: str, data: Any, context: UsageContext, occurred_at: d
 
 
 def model_from_header(kind: str, data: Any) -> str | None:
-    """从 request/header 事件取会话当前使用的模型名（即发给网关的别名）。"""
+    """从 request/header 事件取会话当前使用的模型名（即发给网关的别名）。
+
+    DSH 0.2.2 起的形状是 {"header": {"config": {"provider", "model"}, "tools"}, "reason": "initial" | "change"}，
+    只在会话第一次请求与换模型时记一条（2026-11-10 端到端测出来的：以前按 data.config 读，一直取不到，用量全记成 default）。
+    旧形状 {"config": {...}} 也认。"""
     if kind != REQUEST_HEADER or not isinstance(data, dict):
         return None
-    config = data.get("config")
+    header = data.get("header") if isinstance(data.get("header"), dict) else data
+    config = header.get("config")
     model = config.get("model") if isinstance(config, dict) else None
     return model if isinstance(model, str) and model else None
 

@@ -32,10 +32,8 @@ describe('官方工具的步骤说明', () => {
     expect(stepTarget(s)).toBe('报告.docx、明细.xlsx');
   });
 
-  it('展示图表显示卡片标题', () => {
-    const s = step('show_chart', { title: '销售额 · 按月', columns: [], rows: [], source: '附件' });
-    expect(stepLabel(s)).toBe('展示图表');
-    expect(stepTarget(s)).toBe('销售额 · 按月');
+  it('展示结果（查询结果和模型直接交的数据都走它）', () => {
+    expect(stepLabel(step('show_result', { query_ids: ['anql_1'] }))).toBe('展示结果');
   });
 
   it('记下知识库缺口显示缺什么', () => {

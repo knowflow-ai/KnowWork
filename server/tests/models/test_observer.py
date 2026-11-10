@@ -93,3 +93,28 @@ async def test_recorder_failure_is_logged_not_raised(caplog):
     observer("c1", "default", "session/event", message(1, 1))
     await observer.drain()
     assert any("usage" in r.message for r in caplog.records)
+
+
+async def test_unknown_model_after_restart_is_looked_up_once():
+    """request/header 只在第一次请求与换模型时有：业务服务重启后这段对话在用哪个模型，从库里补（只查一次）。"""
+    recorder, looked = Recorder(), []
+
+    async def cancel(cid):
+        pass
+
+    async def model_of(cid):
+        looked.append(cid)
+        return "pro"
+
+    observer = UsageObserver(recorder, owner_of, cancel, default_model="default", max_calls_per_turn=0,
+                             model_of=model_of)
+    observer("c1", "default", "session/event", message(1, 1))
+    await observer.drain()
+    observer("c1", "default", "session/event", message(1, 2))
+    await observer.drain()
+    assert [e.model_alias for e in recorder.entries] == ["pro", "pro"] and looked == ["c1"]
+    real = {"header": {"tools": [], "config": {"model": "fast", "provider": "gw"}}, "reason": "change"}
+    observer("c1", "default", "session/event", event("request/header", real))
+    observer("c1", "default", "session/event", message(2, 1))
+    await observer.drain()
+    assert recorder.entries[-1].model_alias == "fast", "换了模型按新的记"

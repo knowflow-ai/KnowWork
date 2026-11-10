@@ -17,6 +17,7 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ..kernel.contract import ANSWER_MODE_PATTERN
 from .service import ExecuteRequest, ToolAccessError, ToolService
 
 PREFIX = "/internal/extensions/tools"
@@ -37,6 +38,8 @@ class _ExecuteBody(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     agent_session_id: str = Field(alias="agentSessionId", pattern=r"^[A-Za-z0-9_.:-]{1,128}$")
     call_id: str = Field(alias="callId", min_length=1, max_length=200)
+    # 这一步的回答方式；老的宿主不带，按智能体算
+    answer_mode: str = Field(default="agent", alias="answerMode", pattern=ANSWER_MODE_PATTERN)
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
@@ -86,7 +89,7 @@ def build_internal_router(service: ToolService, grants: GrantCheck | None = None
                 raise ToolAccessError(400, "invalid_request", "Idempotency-Key 必须是「会话 ID:调用 ID」")
             result = await service.execute(claims, ExecuteRequest(
                 tool_name=body.tool_name, arguments=body.arguments, agent_session_id=body.agent_session_id,
-                call_key=idempotency_key))
+                call_key=idempotency_key, answer_mode=body.answer_mode))
         except ToolAccessError as error:
             return _error(error.status, error.code, str(error))
         return {"actionId": result.action_id, "status": result.status, "content": result.content,

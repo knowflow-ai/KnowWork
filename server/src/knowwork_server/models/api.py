@@ -9,7 +9,7 @@ access.deps.require_system_admin 判，服务里再判一次。
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Protocol
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
@@ -134,3 +134,40 @@ def _member_routes(router: APIRouter, catalog: ModelCatalog, recorder: UsageReco
             raise HTTPException(status_code=403, detail="无权限执行该操作")
         rows = await _call(recorder.summary(workspace_id, start, end, group_by, user_id=who.user_id))
         return [asdict(row) for row in rows]
+
+
+class _Caller(Protocol):
+    """会话一侧的调用者（conversations.api.Actor 满足它）：只用空间与人。"""
+
+    workspace_id: str
+    user_id: str
+
+
+def build_chat_models_router(catalog: ModelCatalog, recorder: UsageRecorder,
+                             current_actor: Callable[..., Awaitable[_Caller]]) -> APIRouter:
+    """输入框选模型用的清单：跟会话接口同一套身份（能聊天就能列），不要「管理模型」的权限。"""
+    router = APIRouter(prefix="/api/workspaces/{workspace_id}/chat-models")
+    Who = Annotated[_Caller, Depends(current_actor)]
+
+    @router.get("")
+    async def list_chat_models(who: Who, conversation_id: Annotated[str | None, Query(max_length=128)] = None):
+        """输入框能选的对话模型
+        selected 是默认选哪个：这段对话上次用的；新对话（或这段还没调过模型）用这个人上次用的；都没有用默认模型。"""
+        models = await _call(catalog.chat_models())
+        last = None
+        if conversation_id is not None:
+            last = await _call(recorder.last_model(who.workspace_id, who.user_id, conversation_id))
+        if last is None:
+            last = await _call(recorder.last_model(who.workspace_id, who.user_id))
+        return {"items": [asdict(m) for m in models], "selected": _selected(models, last)}
+
+    return router
+
+
+def _selected(models, last: str | None) -> str | None:
+    """上次用的还能选就选它（以前宿主一律请求 default，记的就是 default，算默认模型）；否则默认模型；都没有为 None。"""
+    aliases = {m.alias for m in models}
+    if last is not None and last in aliases:
+        return last
+    default = next((m.alias for m in models if m.default), None)
+    return default if default is not None else next(iter(m.alias for m in models), None)

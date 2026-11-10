@@ -83,6 +83,14 @@ def new_server_id() -> str:
     return "mcp_" + secrets.token_hex(8)
 
 
+async def list_servers_in(session: AsyncSession, workspace_id: str, scope: str = "workspace") -> list[McpServerRecord]:
+    """同 McpServerStore.list_servers，用调用方的事务（行级安全变量切到这个空间）。"""
+    await set_workspace(session, workspace_id)
+    rows = (await session.execute(select(McpServerRow).where(McpServerRow.scope == scope)
+                                  .order_by(McpServerRow.created_at))).scalars()
+    return [_record(row) for row in rows]
+
+
 def _record(row: McpServerRow) -> McpServerRecord:
     return McpServerRecord(id=row.id, workspace_id=row.workspace_id, name=row.name, title=row.title, url=row.url,
                            headers_ciphertext=row.headers_ciphertext, header_names=tuple(row.header_names or ()),
@@ -173,10 +181,8 @@ class McpServerStore:
             return _record(await self._row(session, server_id))
 
     async def list_servers(self, workspace_id: str, scope: str = "workspace") -> list[McpServerRecord]:
-        async with self._session(workspace_id) as session:
-            rows = (await session.execute(select(McpServerRow).where(McpServerRow.scope == scope)
-                                          .order_by(McpServerRow.created_at))).scalars()
-            return [_record(row) for row in rows]
+        async with self._sessionmaker() as session, session.begin():
+            return await list_servers_in(session, workspace_id, scope)
 
     def headers(self, record: McpServerRecord) -> dict[str, str]:
         if not record.headers_ciphertext:

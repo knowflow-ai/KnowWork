@@ -1,6 +1,6 @@
 [project]
 name = "knowwork-server"
-version = "0.0.8"
+version = "0.0.9"
 description = "KnowWork 业务服务"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -29,6 +29,8 @@ dependencies = [
   "wecom-aibot-python-sdk>=1.0.2",
   "lark-oapi>=1.7.5",
   "dingtalk-stream>=0.24.3",
+  # httpcore 每次建锁都 import sniffio 判断异步库；anyio 4.15 起不再带它，没装时每次 import 失败都要把 sys.path 扫一遍
+  "sniffio>=1.3",
 ]
 
 [dependency-groups]

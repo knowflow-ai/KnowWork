@@ -19,6 +19,7 @@ from .app import build_runtime, create_internal_app, create_public_app
 from .config import Settings, get_settings
 from .extensions.expiry import EXIT_LICENSE_ENDED, stop_when_license_ends
 from .ops import logredact
+from .ops.eventloop import loop_factory
 
 
 def _server(app, host: str, port: int) -> uvicorn.Server:
@@ -71,7 +72,7 @@ def main() -> None:
             loop.add_signal_handler(signum, stop.set)
         return await serve(get_settings(), stop)
 
-    if asyncio.run(run()):
+    if asyncio.run(run(), loop_factory=loop_factory()):
         sys.exit(EXIT_LICENSE_ENDED)
 
 

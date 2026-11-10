@@ -340,10 +340,12 @@ export interface LiveText {
   readonly text: string;
   /** 这一步模型开始写了哪些工具调用（工具名，按先后）：参数还没写完、工具还没开始跑 */
   readonly tools: readonly string[];
+  /** 这一步到目前为止的思考（照 ChatGPT 边想边显示，正文开始后收起） */
+  readonly reasoning: string;
 }
 
-/** 服务端推来的一个逐字片段：offset 为 0 表示从头替换（快照还带着报过的工具）；tool 是模型开始写某个工具调用；
- * done 表示这一步输出结束。 */
+/** 服务端推来的一个逐字片段：offset 为 0 表示从头替换（快照还带着报过的工具与思考全文）；reasoning 是思考片段，
+ * 按 reasoningOffset 接着拼；tool 是模型开始写某个工具调用；done 表示这一步输出结束。 */
 export type LivePiece =
   | {
       readonly runId: string;
@@ -351,6 +353,13 @@ export type LivePiece =
       readonly offset: number;
       readonly text: string;
       readonly tools?: readonly string[];
+      readonly reasoning?: string;
+    }
+  | {
+      readonly runId: string;
+      readonly step: number;
+      readonly reasoningOffset: number;
+      readonly reasoning: string;
     }
   | { readonly runId: string; readonly step: number; readonly tool: string }
   | { readonly runId: string; readonly step: number; readonly done: true };

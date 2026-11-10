@@ -1,10 +1,11 @@
 """UsageRecorder：写用量记录、同事务按日汇总，按用户与按模型查询（只读汇总表）。
 
 - 同一会话同一步（turn, step）只记一次：宿主重放事件不会重复计量，汇总也只在真正插入时累加；
-- 费用按记录时模型的单价估算（每百万 token），模型没配价格则为空；
+- 费用按记录时模型的单价估算（每百万 token），模型没配价格则为空；单价从模型目录的快照取（prices），没给时查库；
 - 「哪一天」按配置的时区切分，默认 Asia/Shanghai。
 """
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -25,6 +26,9 @@ from .usage import UsageEntry
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 MAX_RANGE_DAYS = 366
 _MILLION = Decimal(1_000_000)
+
+# 别名 → (模型 id, 输入单价, 输出单价)；别名对不上任何模型为 None。ModelCatalog.price_of 满足它
+PriceLookup = Callable[[str], Awaitable[tuple[str, Decimal | None, Decimal | None] | None]]
 
 
 class GroupBy(StrEnum):
@@ -75,9 +79,11 @@ class TurnUsage:
 
 
 class UsageRecorder:
-    def __init__(self, sessionmaker: async_sessionmaker, *, timezone: str = DEFAULT_TIMEZONE) -> None:
+    def __init__(self, sessionmaker: async_sessionmaker, *, timezone: str = DEFAULT_TIMEZONE,
+                 prices: PriceLookup | None = None) -> None:
         self._sessionmaker = sessionmaker
         self._tz = ZoneInfo(timezone)
+        self._prices = prices or self._price_from_db
 
     async def record(self, entry: UsageEntry) -> bool:
         """写一条用量；返回是否新插入（重复的 turn/step 返回 False）。"""
@@ -85,18 +91,23 @@ class UsageRecorder:
         if entry.occurred_at.tzinfo is None:
             raise Invalid("occurred_at 必须带时区")
         day = entry.occurred_at.astimezone(self._tz).date()
+        price = await self._prices(entry.model_alias)
+        model_id, cost = (None, None) if price is None else (price[0], estimate_cost(entry, price[1], price[2]))
         async with self._sessionmaker() as session, session.begin():
-            # 价格从平台配置取（模型全平台共用），用量记在调用者自己的空间：同一事务里先后切两次行级安全变量
-            await set_workspace(session, PLATFORM_WORKSPACE_ID)
-            model = (await session.execute(select(Model.id, Model.input_price_per_mtok, Model.output_price_per_mtok)
-                                           .where(Model.alias == entry.model_alias))).first()
-            model_id, cost = (None, None) if model is None else (model[0], estimate_cost(entry, model[1], model[2]))
             await set_workspace(session, entry.workspace_id)
             inserted = await session.scalar(self._insert_record(entry, model_id, cost, day))
             if inserted is None:
                 return False
             await session.execute(self._upsert_daily(entry, cost, day))
         return True
+
+    async def _price_from_db(self, alias: str) -> tuple[str, Decimal | None, Decimal | None] | None:
+        """价格在平台配置里（模型全平台共用），用量记在调用者自己的空间，所以单独一个事务读。"""
+        async with self._sessionmaker() as session, session.begin():
+            await set_workspace(session, PLATFORM_WORKSPACE_ID)
+            row = (await session.execute(select(Model.id, Model.input_price_per_mtok, Model.output_price_per_mtok)
+                                         .where(Model.alias == alias))).first()
+        return None if row is None else (row[0], row[1], row[2])
 
     @staticmethod
     def _insert_record(entry: UsageEntry, model_id: str | None, cost: Decimal | None, day: date):
@@ -143,6 +154,16 @@ class UsageRecorder:
             await set_workspace(session, workspace_id)
             rows = (await session.execute(stmt)).all()
         return tuple(_summary(row) for row in rows)
+
+    async def last_model(self, workspace_id: str, user_id: str, conversation_id: str | None = None) -> str | None:
+        """这个人最近一次调模型用的别名（给了对话就只看这段对话）；没调过为 None。输入框默认选「上次用的」据此定。"""
+        check_id(workspace_id, "workspace_id")
+        stmt = select(UsageRecord.model_alias).where(UsageRecord.user_id == user_id)
+        if conversation_id is not None:
+            stmt = stmt.where(UsageRecord.conversation_id == conversation_id)
+        async with self._sessionmaker() as session, session.begin():
+            await set_workspace(session, workspace_id)
+            return await session.scalar(stmt.order_by(UsageRecord.occurred_at.desc()).limit(1))
 
     async def steps(self, workspace_id: str, conversation_id: str) -> tuple[StepUsage, ...]:
         """一个会话里每一步模型调用的用量，按 turn、step 排序。"""

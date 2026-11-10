@@ -40,7 +40,7 @@ class Skills:
 
 
 class Models:
-    async def default_capabilities(self, workspace_id):
+    async def capabilities_of(self, workspace_id, alias=None):
         return frozenset({"chat", "vision"})  # 能看图：本文件只关心授权收窄，看图工具的收窄见 test_profile_facts
 
 

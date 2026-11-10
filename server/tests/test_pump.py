@@ -21,7 +21,7 @@ FAST = PumpTimings(idle_timeout=0.4, idle_grace=0.1, retry_delays=(0.01, 0.02))
 
 
 class Harness:
-    def __init__(self, kernel, sessionmaker, timings=FAST):
+    def __init__(self, kernel, sessionmaker, timings=FAST, thinking_visible=None):
         self.kernel = kernel
         self.sessionmaker = sessionmaker
         self.writer = BatchWriter(sessionmaker, retry_delays=(0.01,))
@@ -32,7 +32,7 @@ class Harness:
             self.restarts += 1
 
         self.pump = EventPump(kernel, sessionmaker, self.writer, self.broadcaster, on_host_restart=restarted,
-                              timings=timings)
+                              timings=timings, thinking_visible=thinking_visible)
 
     async def __aenter__(self):
         self.writer.start()
@@ -280,3 +280,69 @@ async def test_live_pieces_are_pushed_but_never_stored_or_numbered(sessionmaker,
                          and h.pump.produced_upto(conversation_id) >= 3)
         assert h.pump.live_snapshot(conversation_id) is None, "跑完了不再给新打开的页面补半截"
 
+
+
+def _thinking_turn() -> list:
+    message = {"message": {"content": [{"type": "reasoning", "text": "想一想"}, {"type": "text", "text": "你好"}]}}
+    return [session_event(1, "turn/start", {"turn": 1}), status(2, "running"),
+            session_event(3, "request/header", {"header": {"tools": [], "config": {"model": "qwen", "provider": "gw"}},
+                                                "reason": "initial"}),
+            live(3, {"type": "start", "attemptId": "a1", "turn": 1, "step": 1}),
+            live(3, {"type": "reasoning", "attemptId": "a1", "text": "想一想"}),
+            live(3, {"type": "text", "attemptId": "a1", "text": "你好"}),
+            session_event(4, "assistant/message", message), HOLD]
+
+
+@pytest.mark.parametrize("shown", [True, False])
+async def test_thinking_reaches_the_page_only_when_the_model_shows_it(sessionmaker, conversation_id, shown):
+    """模型的「显示思考过程」关着：这次请求的思考片段不推、思考记录不进投影，正文照常；原始帧照常落库。"""
+    asked: list[str | None] = []
+
+    async def visible(model):
+        asked.append(model)
+        return shown
+
+    async with Harness(FakeKernel([_thinking_turn()]), sessionmaker, thinking_visible=visible) as h:
+        async with h.broadcaster.listen(conversation_id) as listener:
+            h.pump.ensure(conversation_id, "default")
+            await wait_until(lambda: h.pump.produced_upto(conversation_id) == 4)
+            pushed = [e.payload for e in await listener.next_batch() if not hasattr(e, "seq")]
+        rows = await h.rows(conversation_id)
+    assert asked == ["qwen"]
+    assert any(p.get("reasoning") == "想一想" for p in pushed) is shown
+    assert any(p.get("text") == "你好" for p in pushed)
+    kinds = [u.get("kind") for r in rows for u in r.ui if u["type"] == "item.completed"]
+    assert kinds == (["thinking", "message"] if shown else ["message"])
+    assert rows[-1].data["data"]["message"]["content"][0]["text"] == "想一想", "原始帧照常落库"
+
+
+async def test_restarted_pump_recalls_the_model_from_stored_header(sessionmaker, conversation_id):
+    """request/header 只在第一次请求与换模型时有：泵重新拉起（业务服务重启）后按库里记下的模型判断，不退回显示。"""
+    async def hidden(model):
+        return False
+
+    async with Harness(FakeKernel([_thinking_turn()]), sessionmaker, thinking_visible=hidden) as h:
+        h.pump.ensure(conversation_id, "default")
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 4)
+        await h.writer.flush()
+
+    asked: list[str | None] = []
+
+    async def visible(model):
+        asked.append(model)
+        return model != "qwen"
+
+    second_turn = [session_event(5, "turn/start", {"turn": 2}),
+                   live(5, {"type": "start", "attemptId": "a2", "turn": 2, "step": 1}),
+                   live(5, {"type": "reasoning", "attemptId": "a2", "text": "再想想"}),
+                   live(5, {"type": "text", "attemptId": "a2", "text": "好的"}),
+                   session_event(6, "assistant/message", {"message": {"content": [{"type": "text", "text": "好的"}]}}),
+                   HOLD]
+    async with (Harness(FakeKernel([second_turn]), sessionmaker, thinking_visible=visible) as h,
+                h.broadcaster.listen(conversation_id) as listener):
+        h.pump.ensure(conversation_id, "default")
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 6)
+        pushed = [e.payload for e in await listener.next_batch() if not hasattr(e, "seq")]
+    assert asked == ["qwen"], "拉起时从库里取这段对话在用的模型"
+    assert not any(p.get("reasoning") for p in pushed), "关着显示的模型重启后照样不推思考"
+    assert any(p.get("text") == "好的" for p in pushed)

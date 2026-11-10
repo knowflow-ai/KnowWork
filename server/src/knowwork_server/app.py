@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -45,6 +46,7 @@ from .conversations.models import Conversation
 from .conversations.observers import fan_out
 from .conversations.pump import EventPump
 from .conversations.replay import EventFeed
+from .conversations.runlog import last_requested_model
 from .conversations.scopes import ConversationScopes
 from .conversations.service import ConversationService
 from .conversations.summaries import RunSummaries
@@ -62,8 +64,7 @@ from .documents import PreviewService
 from .documents import build_router as documents_router
 from .extensions import ApiContext, Extensions, installed_extensions
 from .gateway.credential_rotation import CredentialRotator
-from .gateway.model_gateway import MODEL_AUDIENCE, GatewayLimits
-from .gateway.model_gateway import build_router as gateway_router
+from .gateway.model_gateway import MODEL_AUDIENCE, fixed_upstream, router_from_settings
 from .identity.api import build_router as identity_router
 from .identity.config import IdentityConfig, OidcConfig
 from .identity.container import Identity, build_identity
@@ -74,9 +75,9 @@ from .insights import InsightsService, build_insights
 from .insights import build_router as insights_router
 from .jobs.admin import JobsAdmin
 from .jobs.api import build_router as jobs_router
-from .kernel.contract import KnowledgeCatalog
+from .kernel.contract import HostModel, KnowledgeCatalog
 from .kernel.host_client import HostKernel
-from .kernel.tokens import TokenSigner, derive_key
+from .kernel.tokens import TokenSigner, derive_key, host_callback_signer
 from .knowledge import KnowledgeModule, Pinned, TurnScope, build_knowledge
 from .knowledge.api import build_router as knowledge_router
 from .knowledge.catalog import turn_catalog
@@ -92,8 +93,11 @@ from .knowledge.reader import KnowledgeReader
 from .knowledge.reader_api import build_router as reader_router
 from .knowledge.service import KnowledgeService
 from .models import ModelClient, ModelsService, build_models_service
+from .models.api import build_chat_models_router as chat_models_router
 from .models.api import build_router as models_router
+from .models.host_sync import HostModelSync
 from .models.observer import UsageObserver
+from .models.schemas import ChatModel
 from .ops.health import build_router as health_router
 from .ops.health import database_check, host_check, host_dsh_version
 from .principals import (
@@ -139,8 +143,9 @@ from .tools.mcp.api import build_oauth_router as mcp_oauth_router
 from .tools.mcp.api import build_router as mcp_router
 from .tools.provided import ProvidedTools
 from .tools.registry import KW_NOW, CompositeToolRegistry, StaticToolRegistry, ToolContext
+from .tools.results import ResultSources
 from .tools.service import ToolService
-from .tools.show_chart import SHOW_CHART
+from .tools.show_result import build_show_result
 from .workflows import STALE_AFTER, Workflows, build_workflows
 from .workflows.api import build_router as workflows_router
 
@@ -157,6 +162,7 @@ class Runtime:
     pump: EventPump
     service: ConversationService
     rotator: CredentialRotator
+    host_models: HostModelSync
     tool_credentials: ToolCredentials
     skill_credentials: ToolCredentials
     skills: Skills
@@ -235,6 +241,7 @@ class Runtime:
         if self.sandbox is not None:
             self.sandbox.start()
         await self.rotator.start()
+        await self.host_models.push_quietly()  # 宿主的模型凭据就绪后推可选模型；宿主暂时连不上，等它重启或发消息时再推
         self.tool_credentials.start()
         self.skill_credentials.start()
         await self.channels.supervisor.start()  # 机器人长连接放最后：会话要用到的都已就绪
@@ -249,6 +256,7 @@ class Runtime:
         await self.tool_credentials.stop()
         await self.skill_credentials.stop()
         await self.rotator.stop()
+        await self.host_models.aclose()
         await self.pump.close()
         await self.usage.drain()
         await self.artifact_observer.drain()
@@ -323,11 +331,26 @@ async def _base_names(service: KnowledgeService, workspace_id: str, user_id: str
     return {base.id: base.info.name or base.id for base in listing.bases}
 
 
+OWNER_CACHE_SIZE = 10_000
+
+
 def _owner_lookup(scoped: async_sessionmaker):
+    """用量记录按对话找属主：每次模型调用都要查一次（压测里每轮 5 次、各开一个事务）。属主只在新建对话时写、之后不变，
+    查到的按对话记住（最近用过的 OWNER_CACHE_SIZE 个）；查不到的不记，对话随后建好照样查得到。"""
+    owners: OrderedDict[str, str] = OrderedDict()
+
     async def owner_of(conversation_id: str) -> str | None:
+        if (user_id := owners.get(conversation_id)) is not None:
+            owners.move_to_end(conversation_id)
+            return user_id
         async with scoped() as session:
             conversation = await session.get(Conversation, conversation_id)
-        return conversation.user_id if conversation is not None else None
+        if conversation is None:
+            return None
+        owners[conversation_id] = conversation.user_id
+        if len(owners) > OWNER_CACHE_SIZE:
+            owners.popitem(last=False)
+        return conversation.user_id
 
     return owner_of
 
@@ -340,7 +363,8 @@ def _usage_observer(kernel: HostKernel, scoped: async_sessionmaker, models: Mode
         await kernel.cancel(conversation_id)
 
     return UsageObserver(models.recorder, owner_of, cancel_turn, default_model=settings.host_model_alias,
-                         max_calls_per_turn=settings.model_max_calls_per_turn)
+                         max_calls_per_turn=settings.model_max_calls_per_turn,
+                         model_of=partial(last_requested_model, scoped))
 
 
 def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -> Runtime:
@@ -353,7 +377,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     # 对话、工具回执、产物、附件等的每个事务都声明当前空间（请求路径、回调令牌、会话所在的空间），行级安全据此放行
     scoped = make_workspace_sessionmaker(engine)
     kernel = HostKernel(settings.host_base_url, settings.host_token.get_secret_value())
-    signer = TokenSigner(derive_key(master_key, "host-callback"))
+    signer = host_callback_signer(master_key)
 
     def issue_model_token() -> str:
         # 宿主只有一份模型凭据，所有空间的会话共用；模型是平台级的，令牌就记平台配置所在的空间
@@ -386,7 +410,9 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     summaries.contribute("knowledge_cited", CitationNotifier(global_sessionmaker, knowledge.provided).turn_ended)
     # 内置工具（时间、图表、知识检索、沙箱）只要求是空间成员；MCP 工具要 tool:<名字> 授权（默认只有 owner、admin）。
     # 执行时注册表按当前授权再判一次，权限收回立即生效。内置工具排在前面，外部工具不能顶替同名的内置工具。
-    builtin_tools = (KW_NOW, SHOW_CHART, *knowledge.tools)
+    # 查询类工具的结果来源（扩展装配时登记，例如问数），show_result 按编号展示它们
+    results = ResultSources()
+    builtin_tools = (KW_NOW, build_show_result(results), *knowledge.tools)
     # 扩展提供的工具（例如记忆写入）在扩展装配时登记，排在内置工具之后、MCP 工具之前，同内置工具只要求是空间成员
     provided_tools = ProvidedTools()
     clearance = ToolClearance(access, builtin=frozenset(tool.spec.name for tool in builtin_tools),
@@ -407,6 +433,17 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     access.on_member_removed(skills.service.forget_member)  # 人走了，他在这个空间的个人技能一起删
     tool_credentials, skill_credentials = _session_credentials(kernel, tools, skills, access, settings)
     models = build_models_service(global_sessionmaker, access, master_key, timezone=settings.usage_timezone)
+
+    async def push_models(chats: tuple[ChatModel, ...]) -> None:
+        await kernel.sync_models(tuple(HostModel(id=c.alias, name=c.name, vision=c.vision) for c in chats))
+
+    # 输入框能选的对话模型推给宿主（models/host_sync.py）：启动、改了模型、宿主重启、宿主说不认识时
+    host_models = HostModelSync(models.catalog, push_models)
+    models.catalog.on_change(host_models.changed)
+
+    async def host_restarted() -> None:
+        await rotator.rotate_now()
+        await host_models.push_quietly()
     usage = _usage_observer(kernel, scoped, models, settings)
     stores = session_stores(settings)
     session_sandbox = sandbox.sandbox if sandbox else UnavailableSandbox()
@@ -424,9 +461,10 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     skill_runs = SkillRunProjector(LoggedTurns(scoped, models.recorder, artifacts.service), skills.runs,
                                    writer.pending, artifact_observer.settle)
     broadcaster = Broadcaster()
-    pump = EventPump(kernel, scoped, writer, broadcaster, on_host_restart=rotator.rotate_now,
+    pump = EventPump(kernel, scoped, writer, broadcaster, on_host_restart=host_restarted,
                      observer=fan_out(usage, artifact_observer, citation_observer, skill_runs,
-                                      knowledge.turns, summaries))
+                                      knowledge.turns, summaries),
+                     thinking_visible=models.catalog.shows_thinking)
     feed = EventFeed(scoped, writer, broadcaster, pump.produced_upto, live_snapshot=pump.live_snapshot)
     async def erase_knowledge(conversation: Conversation) -> None:
         await knowledge.citations.discard(conversation.workspace_id, conversation.id)
@@ -466,7 +504,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     turn_context = TurnContextHook()
     # 回答方式：内置智能体与快速问答，扩展装配时可以再登记
     answer_modes = AnswerModes()
-    service = ConversationService(kernel, scoped, pump, feed, on_host_restart=rotator.rotate_now,
+    service = ConversationService(kernel, scoped, pump, feed, on_host_restart=host_restarted, models=host_models,
                                   refresh_model_credential=rotator.ensure_fresh, profiles=profiles,
                                   grants=grants, attachments=TurnAttachments(attachments.service),
                                   knowledge_catalog=knowledge_catalog, turn_context=turn_context,
@@ -478,12 +516,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                   warmers=(sandbox.warmer(),) if sandbox else ())
     # 后台随时可能加上 OIDC、OAuth2 登录方式，客户端常备；不跟随重定向（httpx 默认），凭证不会被带到别的主机
     sso_http = httpx.AsyncClient(timeout=10.0)
-    upstream = httpx.AsyncClient(
-        base_url=settings.model_upstream_base_url,
-        headers=({"authorization": f"Bearer {upstream_key}"} if (upstream_key := settings.model_upstream_api_key
-                                                                   .get_secret_value()) else {}),
-        timeout=httpx.Timeout(30.0, read=300.0),
-    )
+    upstream = fixed_upstream(settings)
     routed_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=300.0))
     host_http = httpx.AsyncClient(base_url=settings.host_base_url, timeout=3.0)
     identity = build_identity(global_sessionmaker, config, sso_http=sso_http,
@@ -499,7 +532,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          models=ModelClient(models.catalog, routed_http),
                          stores_for=lambda namespace: namespaced_stores(settings, namespace),
                          knowledge_sources=knowledge.provided, tools=provided_tools, turn_context=turn_context,
-                         answer_modes=answer_modes, mentions=mention_kinds, conversation_scopes=scopes,
+                         answer_modes=answer_modes, results=results, mentions=mention_kinds, conversation_scopes=scopes,
                          links=links, profiles=identity.users.get_many, on_turn_ended=summaries.contribute,
                          platform_skills=skills.platform, enterprise_mcp=mcp.enterprise, accounts=identity.accounts,
                          login_methods=identity.methods, password_logins=identity.password_logins,
@@ -511,7 +544,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     extensions, extension_routers, extension_internal = _setup_extensions(extensions or installed_extensions(),
                                                                           context)
     return Runtime(settings=settings, kernel=kernel, signer=signer, writer=writer, broadcaster=broadcaster,
-                   pump=pump, service=service, rotator=rotator, tool_credentials=tool_credentials,
+                   pump=pump, service=service, rotator=rotator, host_models=host_models,
+                   tool_credentials=tool_credentials,
                    skill_credentials=skill_credentials, skills=skills, blobs=blobs, audit=audit, sandbox=sandbox, attachments=attachments,
                    artifacts=artifacts, previews=previews, artifact_observer=artifact_observer,
                    citation_observer=citation_observer, summaries=summaries, skill_runs=skill_runs,
@@ -593,6 +627,7 @@ def create_public_app(runtime: Runtime) -> FastAPI:
     app.include_router(mention_router(runtime.mention_sources, actor))  # 排在会话路由前，见 mention_api
     app.include_router(conversation_router(runtime.service, actor, runtime.feedback, runtime.scopes))
     app.include_router(build_answer_modes_router(runtime.answer_modes, actor))
+    app.include_router(chat_models_router(runtime.models.catalog, runtime.models.recorder, actor))
     app.include_router(citations_router(runtime.knowledge.citations, runtime.service, actor, runtime.links))
     app.include_router(debug_router(runtime.debug, runtime.service, actor))
     app.include_router(build_admin_router(runtime.runs, scoped_principal(identity, WORKSPACE_SCOPE)))
@@ -622,12 +657,9 @@ def create_public_app(runtime: Runtime) -> FastAPI:
 def create_internal_app(runtime: Runtime) -> FastAPI:
     app = FastAPI(title="KnowWork internal", docs_url=None, redoc_url=None, openapi_url=None)
     settings = runtime.settings
-    # 没配固定上游密钥时不回退：模型全部来自模型目录
-    fallback = settings.model_upstream_model if settings.model_upstream_api_key.get_secret_value() else ""
-    limits = GatewayLimits(total_timeout_seconds=settings.model_call_timeout_seconds,
-                           idle_timeout_seconds=settings.model_idle_timeout_seconds)
-    app.include_router(gateway_router(runtime.signer, runtime.upstream, fallback, resolver=runtime.models.catalog,
-                                      http=runtime.routed_http, limits=limits))
+    # 部署时宿主调模型走独立的模型网关进程（ops/model_gateway.py）；这里的同一个接口留给本机开发与单进程部署
+    app.include_router(router_from_settings(settings, runtime.signer, runtime.models.catalog,
+                                            upstream=runtime.upstream, http=runtime.routed_http))
     app.include_router(tools_router(runtime.tools, grants=runtime.grants.covers))
     app.include_router(skills_internal_router(runtime.skills.delivery))
     def member(user_id: str, workspace_id: str) -> bool:

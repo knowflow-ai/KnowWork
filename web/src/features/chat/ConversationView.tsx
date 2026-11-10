@@ -53,6 +53,8 @@ interface Props {
   readonly intro?: (ask: (text: string) => void) => ReactNode;
   /** 挂了范围的对话：@ 候选按它的范围取（服务端收窄） */
   readonly scoped?: boolean;
+  /** 输入框里显示对话模型下拉（聊天页给，嵌在别的页面里的会话不给） */
+  readonly chooseModel?: boolean;
 }
 
 function ConnectionNotice({ state, message }: { readonly state: string; readonly message?: string }) {
@@ -78,6 +80,7 @@ export function ConversationView({
   top,
   intro,
   scoped = false,
+  chooseModel = false,
 }: Props) {
   const feedback = useFeedback(conversationId);
   const client = useQueryClient();
@@ -208,6 +211,7 @@ export function ConversationView({
           conversationId={conversationId}
           mentionScope={scoped ? { conversationId } : undefined}
           onAttach={warm}
+          chooseModel={chooseModel}
         />
       </div>
     </div>

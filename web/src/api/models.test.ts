@@ -93,6 +93,7 @@ describe('模型与分组', () => {
       contextLength: 64000,
       maxOutputTokens: 8192,
       thinking: null,
+      showThinking: true,
     });
     const input = {
       providerId: 'p1',
@@ -102,6 +103,7 @@ describe('模型与分组', () => {
       contextLength: null,
       maxOutputTokens: 4096,
       thinking: 'off' as const,
+      showThinking: false,
       inputPrice: 1,
       outputPrice: null,
       enabled: true,
@@ -117,6 +119,7 @@ describe('模型与分组', () => {
       input_price_per_mtok: 1,
       max_output_tokens: 4096,
       thinking: 'off',
+      show_thinking: false,
     });
     expect(api.calls[2]?.body).not.toHaveProperty('provider_id');
     expect(m.capabilityLabel('vision')).toBe('看图');

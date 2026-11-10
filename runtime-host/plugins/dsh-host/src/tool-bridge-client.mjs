@@ -135,12 +135,12 @@ export function createBridgeClient({ baseUrl, executeTimeoutMs }) {
      * 执行一次调用。幂等键 = 实际发起调用的会话 ID + 调用 ID，业务服务再加上令牌里的根会话做前缀。
      * @returns {Promise<{ actionId: string, status: string, content: string, truncated: boolean, replayed: boolean, presentation?: object }>}
      */
-    async execute(token, { toolName, args, agentSessionId, callId, signal }) {
+    async execute(token, { toolName, args, agentSessionId, callId, answerMode = 'agent', signal }) {
       const combined = AbortSignal.any([signal, AbortSignal.timeout(executeTimeoutMs)])
       const body = await call('/execute', {
         token,
         method: 'POST',
-        body: { toolName, arguments: args ?? {}, agentSessionId, callId },
+        body: { toolName, arguments: args ?? {}, agentSessionId, callId, answerMode },
         headers: { 'idempotency-key': `${agentSessionId}:${callId}` },
         signal: combined,
       })

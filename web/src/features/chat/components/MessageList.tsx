@@ -49,7 +49,7 @@ export function MessageList({
   const timeline = selectTimeline(state);
   const lastRunId = state.runOrder[state.runOrder.length - 1];
 
-  const liveLength = state.live?.text.length ?? 0;
+  const liveLength = (state.live?.text.length ?? 0) + (state.live?.reasoning.length ?? 0);
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
   }, [state.lastId, state.sent.length, liveLength]);
@@ -99,6 +99,7 @@ export function MessageList({
             onAsk={onAsk}
             liveText={state.live?.runId === entry.runId ? state.live.text : undefined}
             liveTools={state.live?.runId === entry.runId ? state.live.tools : undefined}
+            liveReasoning={state.live?.runId === entry.runId ? state.live.reasoning : undefined}
             feedback={feedback?.byRun[entry.runId]?.rating ?? null}
             onFeedback={feedback ? (input) => feedback.submit(entry.runId, input) : undefined}
             onRetract={feedback ? () => feedback.retract(entry.runId) : undefined}

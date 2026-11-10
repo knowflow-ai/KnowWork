@@ -47,6 +47,23 @@ test('业务工具按会话注册：每个会话只看到自己令牌对应的�
   }
 })
 
+test('执行时带上这一步的回答方式：工具按它区分自己的行为（例如展示结果只在智能体里收模型直接交的数据）', async () => {
+  const env = await startBridgeHost(
+    { sequence: ['tool_call_success', 'success'], toolName: 'kw_biz_a', toolArguments: JSON.stringify({ q: '上月' }) },
+    { [TOKEN_A]: [{ ...bizTool('kw_biz_a'), answerModes: ['agent', 'custom'] }] },
+  )
+  try {
+    await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-mode', tools: { token: TOKEN_A } })
+    await env.host.call('POST', '/v1/sessions/tb-mode/messages',
+      { text: '查一下', answerMode: 'custom', answerModeSpec: { tools: [], prompt: '' } })
+    await collectEvents(env.host, 'tb-mode', isTurnEnd)
+    const [call] = env.stub.executions()
+    assert.equal(call?.body.answerMode, 'custom', JSON.stringify(call?.body))
+  } finally {
+    await env.stop()
+  }
+})
+
 test('执行回调业务服务：带令牌与幂等键，结果回到下一次模型请求', async () => {
   const env = await startBridgeHost(
     { sequence: ['tool_call_success', 'success'], toolName: 'kw_biz_a', toolArguments: JSON.stringify({ q: '采购合同' }) },
@@ -60,7 +77,7 @@ test('执行回调业务服务：带令牌与幂等键，结果回到下一次�
     const [call] = env.stub.executions()
     assert.ok(call, '业务服务没有收到执行回调')
     assert.equal(call.token, TOKEN_A)
-    assert.deepEqual(call.body, { toolName: 'kw_biz_a', arguments: { q: '采购合同' }, agentSessionId: 'tb-exec', callId: 'mock-call-1' })
+    assert.deepEqual(call.body, { toolName: 'kw_biz_a', arguments: { q: '采购合同' }, agentSessionId: 'tb-exec', callId: 'mock-call-1', answerMode: 'agent' })
     assert.equal(call.idempotencyKey, 'tb-exec:mock-call-1')
     assert.equal(env.host.llm.requests.length, 2)
     assert.ok(messagesText(env.host.llm.requests[1]).includes('kw_biz_a 结果：{\\"q\\":\\"采购合同\\"}'), '工具结果没有回到下一次模型请求')

@@ -45,6 +45,8 @@ interface Props {
   readonly liveText?: string;
   /** 模型正在写的工具调用（还没开始跑）：执行过程那一行据此说正在做什么 */
   readonly liveTools?: readonly string[];
+  /** 正在输出的那一步到目前为止的思考（events/live.ts），在执行过程那一行下面边想边显示 */
+  readonly liveReasoning?: string;
 }
 
 /** 回答引用了、引用目录里却没有的编号；目录没拉到或回答没结束时不判断。 */
@@ -71,6 +73,7 @@ export function AssistantTurn({
   onAsk,
   liveText,
   liveTools,
+  liveReasoning,
   feedback,
   onFeedback,
   onRetract,
@@ -84,7 +87,14 @@ export function AssistantTurn({
   const search = selectRunSearch(run);
   return (
     <article className="kw-assistant" aria-label="助手回答">
-      {hasProcess(run) ? <ProcessSummary run={run} preparing={liveTools} /> : null}
+      {hasProcess(run) ? (
+        <ProcessSummary
+          run={run}
+          preparing={liveTools}
+          thinking={liveReasoning || undefined}
+          answering={Boolean(liveText)}
+        />
+      ) : null}
       {run.todos ? <TodoList todos={run.todos} running={!ended} /> : null}
       {approvals.map((approval) => (
         <ApprovalCard

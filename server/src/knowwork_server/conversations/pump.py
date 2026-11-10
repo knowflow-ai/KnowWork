@@ -6,7 +6,9 @@
 - 空闲回收：收到 agent 空闲后再等一个短窗口，期间没有新帧也没有人再要求（ensure）就退出；
   agent 不在运行且长时间无帧时同样退出。下次发送或打开 SSE 时由服务层再 ensure；
 - 任何异常都不让泵静默死掉：记日志、退避、从当前位置重读；坏帧由宿主客户端换成占位帧，游标照常推进；
-- 浏览器断开不影响泵：任务的生命周期不绑在前端连接上。
+- 浏览器断开不影响泵：任务的生命周期不绑在前端连接上；
+- 思考给不给页面看按模型定（模型的「显示思考过程」，thinking_visible）：每次模型请求开始（request/header）按请求的模型问一次，
+  不显示时这一步的思考片段不推、思考记录不进投影（原始帧照常落库，调试视图里还能看）。
 
 限制：泵、广播与待写缓冲都在进程内，同一会话只能由一个业务服务进程承载（第一阶段单进程部署）。
 """
@@ -31,10 +33,12 @@ from ..kernel.contract import (
     KernelEvent,
     SessionNotFound,
 )
+from ..models.usage import model_from_header
 from .events_v1 import GAP_KIND, ProjectionState, project
 from .listeners import Broadcaster, StoredEvent
 from .live import LiveText, advance, snapshot
 from .models import RunEvent
+from .runlog import last_requested_model
 from .sanitize import clean_json
 from .writer import BatchWriter, PendingRow
 
@@ -45,6 +49,8 @@ HostRestartHook = Callable[[], Awaitable[None]]
 
 # 观察者：每条已落库的帧同步回调一次，必须立即返回（耗时操作自己放到后台），异常只记日志。
 FrameObserver = Callable[[str, str, str, object], None]
+# 模型别名 → 页面上要不要显示它的思考（models.ModelCatalog.shows_thinking）
+ThinkingVisible = Callable[[str | None], Awaitable[bool]]
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,7 @@ class _Stream:
     task: asyncio.Task | None = None
     projection: ProjectionState = field(default_factory=ProjectionState)
     live: LiveText | None = None  # 正在逐字输出的那一步（不落库，见 live.py）
+    shows_thinking: bool = True  # 当前这次模型请求的思考给不给页面看（按请求的模型，见 thinking_visible）
 
 
 class _Exit(Exception):
@@ -82,8 +89,10 @@ class _Exit(Exception):
 class EventPump:
     def __init__(self, kernel: AgentKernel, sessionmaker: async_sessionmaker, writer: BatchWriter,
                  broadcaster: Broadcaster, *, on_host_restart: HostRestartHook | None = None,
-                 timings: PumpTimings = DEFAULT_TIMINGS, observer: FrameObserver | None = None) -> None:
+                 timings: PumpTimings = DEFAULT_TIMINGS, observer: FrameObserver | None = None,
+                 thinking_visible: ThinkingVisible | None = None) -> None:
         self._kernel = kernel
+        self._thinking_visible = thinking_visible
         self._sessionmaker = sessionmaker
         self._writer = writer
         self._broadcaster = broadcaster
@@ -222,6 +231,8 @@ class EventPump:
 
     async def _accept(self, stream: _Stream, frame: KernelEvent) -> None:
         if frame.kind == LIVE_FRAME_KIND:  # 临时帧：不分配序号、不落库、不推进续读位置
+            if not stream.shows_thinking and isinstance(frame.data, dict) and frame.data.get("type") == "reasoning":
+                return
             stream.live, payload = advance(stream.live, frame.data)
             if payload is not None:
                 self._broadcaster.publish_live(stream.conversation_id, payload)
@@ -233,8 +244,11 @@ class EventPump:
             log.warning("event pump %s: host buffer dropped frames %s", stream.conversation_id, frame.data)
             kind = GAP_KIND
         data = clean_json(frame.data)
+        await self._follow_model(stream, kind, data)
         seq = stream.seq + 1
         projection, ui = project(stream.projection, kind, data, seq=seq, time=frame.time)
+        if not stream.shows_thinking:
+            ui = [event for event in ui if event.get("kind") != "thinking"]
         stored = StoredEvent(conversation_id=stream.conversation_id, seq=seq, kind=kind, data=data, ui=tuple(ui))
         await self._writer.put(PendingRow(event=stored, workspace_id=stream.workspace_id,
                                           host_epoch=frame.epoch, host_cursor=frame.cursor))
@@ -244,6 +258,21 @@ class EventPump:
         self._track_running(stream, kind, data)
         self._broadcaster.publish(stored)
         self._observe(stream, kind, data)
+
+    async def _follow_model(self, stream: _Stream, kind: str, data: object) -> None:
+        """每次模型请求开始时（request/header 带着请求的模型别名）问一次这个模型的思考给不给页面看。问不到按显示处理。"""
+        if self._thinking_visible is None or kind != "session/event" or not isinstance(data, dict):
+            return
+        model = model_from_header(str(data.get("type")), data.get("data"))
+        if model is not None:
+            await self._apply_model(stream, model)
+
+    async def _apply_model(self, stream: _Stream, model: str) -> None:
+        try:
+            stream.shows_thinking = await self._thinking_visible(model)
+        except Exception:
+            log.exception("thinking visibility lookup failed for %s; showing it", stream.conversation_id)
+            stream.shows_thinking = True
 
     def _observe(self, stream: _Stream, kind: str, data: object) -> None:
         if self._observer is None:
@@ -271,6 +300,11 @@ class EventPump:
             )).first()
         if row is not None:
             stream.seq, stream.epoch, stream.cursor = row.seq, row.host_epoch, row.host_cursor
+        if self._thinking_visible is not None:
+            # request/header 只在第一次请求与换模型时有：泵重新拉起（业务服务重启、空闲回收后）从库里补上这段对话在用的模型
+            model = await last_requested_model(self._sessionmaker, stream.conversation_id)
+            if model is not None:
+                await self._apply_model(stream, model)
         stream.loaded = True
 
     async def _host_restarted(self) -> None:

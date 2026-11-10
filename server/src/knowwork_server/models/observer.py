@@ -17,13 +17,16 @@ log = logging.getLogger(__name__)
 
 OwnerLookup = Callable[[str], Awaitable[str | None]]
 CancelTurn = Callable[[str], Awaitable[None]]
+# 对话 → 库里最近记下的请求模型（conversations.runlog.last_requested_model）
+ModelLookup = Callable[[str], Awaitable[str | None]]
 
 
 class UsageObserver:
     def __init__(self, recorder, owner_of: OwnerLookup, cancel_turn: CancelTurn, *, default_model: str,
-                 max_calls_per_turn: int) -> None:
+                 max_calls_per_turn: int, model_of: ModelLookup | None = None) -> None:
         self._recorder = recorder
         self._owner_of = owner_of
+        self._model_of = model_of
         self._cancel_turn = cancel_turn
         self._default_model = default_model
         self._limit = max_calls_per_turn
@@ -42,11 +45,12 @@ class UsageObserver:
         if model is not None:
             self._models = {**self._models, conversation_id: model}
         self._count_call(conversation_id, event_type, payload)
+        known = self._models.get(conversation_id)
         context = UsageContext(workspace_id=workspace_id, user_id="", conversation_id=conversation_id,
-                               model_alias=self._models.get(conversation_id, self._default_model))
+                               model_alias=known or self._default_model)
         entry = usage_from_event(event_type, payload, context, datetime.now(UTC))
         if entry is not None:
-            self._spawn(self._record(entry))
+            self._spawn(self._record(entry, guessed=known is None))
 
     def _count_call(self, conversation_id: str, event_type: str, payload: Any) -> None:
         budget = self._budgets.get(conversation_id, TurnCallBudget(self._limit)).after(event_type, payload)
@@ -57,8 +61,15 @@ class UsageObserver:
                         conversation_id, self._limit, budget.turn)
             self._spawn(self._cancel(conversation_id))
 
-    async def _record(self, entry: UsageEntry) -> None:
+    async def _record(self, entry: UsageEntry, *, guessed: bool = False) -> None:
         try:
+            if guessed and self._model_of is not None:
+                # 不知道这段对话在用哪个模型（request/header 只在第一次请求与换模型时有，业务服务重启后内存里没有）：从库里补
+                model = await self._model_of(entry.conversation_id)
+                if model is not None:
+                    if entry.conversation_id not in self._models:
+                        self._models = {**self._models, entry.conversation_id: model}
+                    entry = replace(entry, model_alias=model)
             user_id = await self._owner_of(entry.conversation_id)
             if user_id is None:
                 log.warning("usage for unknown conversation %s dropped", entry.conversation_id)

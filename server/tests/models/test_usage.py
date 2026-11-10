@@ -67,6 +67,8 @@ def test_stream_duration(stream, expected):
 
 def test_model_from_header():
     assert model_from_header("request/header", {"config": {"model": "qwen-max"}}) == "qwen-max"
+    real = {"header": {"tools": [], "config": {"model": "pro", "provider": "knowwork-gateway"}}, "reason": "change"}
+    assert model_from_header("request/header", real) == "pro", "DSH 0.2.2 的实际形状"
     assert model_from_header("request/header", {"config": {"model": ""}}) is None
     assert model_from_header("request/header", {"config": "x"}) is None
     assert model_from_header("step/start", {"config": {"model": "a"}}) is None

@@ -7,6 +7,7 @@ import type { Mention } from '../../api/mentions';
 import { readableError } from '../../api/http';
 import { getConversationScope, type AnswerMode, type ConversationScope } from '../../api/conversations';
 import { currentAnswerMode, effectiveAnswerMode, useAnswerMode } from '../../stores/answerMode';
+import { NEW_CHAT, useChatModel } from '../../stores/chatModel';
 import { slotItems } from '../../slots/registry';
 import { toast } from '../../ui/toastStore';
 import { CONVERSATIONS_KEY } from '../conversations/queries';
@@ -74,6 +75,8 @@ function NewChat() {
       });
       void client.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
       // 事件流从头回放，进入会话页后能看到回答；首条消息由本页带过去，回显之前先摆上。@ 也带过去，输入框接着用
+      // 新对话页上选的模型带到这段对话：首条消息就用它
+      useChatModel.getState().carry(NEW_CHAT, id);
       navigate(`/chat/${encodeURIComponent(id)}`, { state: { firstMessage } satisfies NavigationState });
     } catch (error) {
       setPending(null);
@@ -97,6 +100,7 @@ function NewChat() {
           {/* 换一次带进来的 @ 就重新摆一次（同在新对话页时再点「去问」也算） */}
           <Composer
             key={location.key}
+            chooseModel
             running={false}
             initialMentions={preset?.mentions}
             onSend={(text, _mode, attachments, mentions) => start(text, attachments, mentions)}
@@ -157,6 +161,7 @@ function ExistingChat({ conversationId }: { readonly conversationId: string }) {
   return (
     <ConversationView
       conversationId={conversationId}
+      chooseModel
       firstMessage={firstMessage}
       answerMode={scope?.answerMode ?? undefined}
       {...(scope ? scopeParts(conversationId, scope) : {})}

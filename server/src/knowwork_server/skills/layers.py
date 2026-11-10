@@ -72,19 +72,29 @@ def reaches(audience: list | None, workspace_id: str) -> bool:
 async def platform_rows(sessionmaker: async_sessionmaker, workspace_id: str) -> list[Skill]:
     """发到这个空间、已发布、已启用的企业技能（不管这个空间停没停用），按名字排。"""
     async with sessionmaker() as session, session.begin():
-        await set_workspace(session, PLATFORM_WORKSPACE_ID)
-        rows = (await session.scalars(select(Skill).where(
-            Skill.workspace_id == PLATFORM_WORKSPACE_ID, Skill.scope_key == "platform", Skill.enabled.is_(True),
-            Skill.status == "published").order_by(Skill.name))).all()
+        return await platform_rows_in(session, workspace_id)
+
+
+async def platform_rows_in(session: AsyncSession, workspace_id: str) -> list[Skill]:
+    """同 platform_rows，用调用方的事务（行级安全变量切到平台空间）。"""
+    await set_workspace(session, PLATFORM_WORKSPACE_ID)
+    rows = (await session.scalars(select(Skill).where(
+        Skill.workspace_id == PLATFORM_WORKSPACE_ID, Skill.scope_key == "platform", Skill.enabled.is_(True),
+        Skill.status == "published").order_by(Skill.name))).all()
     return [row for row in rows if reaches(row.audience, workspace_id)]
 
 
 async def settings_of(sessionmaker: async_sessionmaker, workspace_id: str) -> dict[str, Setting]:
     """本空间对上层技能的设置（键 → 设置），没列出的都是默认。"""
     async with sessionmaker() as session, session.begin():
-        await set_workspace(session, workspace_id)
-        rows = (await session.scalars(select(SkillWorkspaceSetting).where(
-            SkillWorkspaceSetting.workspace_id == workspace_id))).all()
+        return await settings_in(session, workspace_id)
+
+
+async def settings_in(session: AsyncSession, workspace_id: str) -> dict[str, Setting]:
+    """同 settings_of，用调用方的事务（行级安全变量切到这个空间）。"""
+    await set_workspace(session, workspace_id)
+    rows = (await session.scalars(select(SkillWorkspaceSetting).where(
+        SkillWorkspaceSetting.workspace_id == workspace_id))).all()
     return {row.skill_key: Setting(off=row.off, narrowed=row.narrowed) for row in rows}
 
 

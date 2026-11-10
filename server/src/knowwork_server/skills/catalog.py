@@ -18,7 +18,17 @@ from ..access.rls import set_workspace
 from ..access.workspaces import PLATFORM_WORKSPACE_ID
 from .blobstore import BlobStore
 from .errors import BlobIntegrityError, SkillNotFound
-from .layers import BUNDLED, DEFAULT, PLATFORM, platform_rows, settings_of, usable
+from .layers import (
+    BUNDLED,
+    DEFAULT,
+    PLATFORM,
+    Setting,
+    platform_rows,
+    platform_rows_in,
+    settings_in,
+    settings_of,
+    usable,
+)
 from .models import Skill, SkillRelease
 from .service import AccessChecker, StorageUnavailable, scope_key
 from .views import CatalogEntry, SkillContent, catalog_entry
@@ -65,30 +75,32 @@ class SkillCatalog:
     async def _compile(self, workspace_id: str, user_id: str) -> tuple[tuple[CatalogEntry, ...], Skipped]:
         if not self._access.check(user_id, workspace_id, "workspace", "use"):
             return (), {}
-        rows = await self._published(workspace_id, user_id)
+        # 每轮发消息都要编一次：三样在一个事务里读（原来各开一个，2026-11-09 压测里每轮 3 个事务）
+        async with self._sessionmaker() as session, session.begin():
+            rows = await _published_in(session, workspace_id, user_id)
+            settings = await settings_in(session, workspace_id)
+            upper = await platform_rows_in(session, workspace_id)
         visible = self._access.visible_resources(user_id, workspace_id, "skill", "use")
         allowed = [row for row in rows if row.scope == "personal" or visible.allows(row.id)]
-        return _deduplicate([*await self._platform(workspace_id, user_id), *allowed])
+        return _deduplicate([*self._kept(upper, settings, workspace_id, user_id), *allowed])
 
     async def _platform(self, workspace_id: str, user_id: str | None) -> list[Skill]:
         """本空间没停用的企业技能；给了人时再按收窄过滤（None 是不分人的管理视角）。"""
         settings = await settings_of(self._sessionmaker, workspace_id)
+        return self._kept(await platform_rows(self._sessionmaker, workspace_id), settings, workspace_id, user_id)
 
+    def _kept(self, rows: list[Skill], settings: dict[str, Setting], workspace_id: str,
+              user_id: str | None) -> list[Skill]:
         def keep(row: Skill) -> bool:
             key = f"{PLATFORM}{row.id}"
             setting = settings.get(key, DEFAULT)
             return not setting.off if user_id is None else usable(self._access, workspace_id, user_id, key, setting)
 
-        return [row for row in await platform_rows(self._sessionmaker, workspace_id) if keep(row)]
+        return [row for row in rows if keep(row)]
 
     async def _published(self, workspace_id: str, user_id: str) -> list[Skill]:
         async with self._sessionmaker() as session, session.begin():
-            await set_workspace(session, workspace_id)
-            rows = (await session.scalars(select(Skill).where(
-                Skill.workspace_id == workspace_id, Skill.enabled.is_(True), Skill.status == "published",
-                Skill.scope_key.in_(("workspace", scope_key("personal", user_id)))))).all()
-        # 空间技能优先，其次按名称，保证跳过规则确定
-        return sorted(rows, key=lambda row: (row.scope != "workspace", row.name))
+            return await _published_in(session, workspace_id, user_id)
 
     async def load(self, workspace_id: str, user_id: str, name: str, digest: str) -> SkillContent:
         entry = next((e for e in await self.for_session(workspace_id, user_id) if e.name == name), None)
@@ -117,6 +129,16 @@ class SkillCatalog:
             await set_workspace(session, workspace_id)
             return await session.scalar(select(SkillRelease).where(
                 SkillRelease.skill_id == skill_id, SkillRelease.archive_digest == digest).limit(1))
+
+
+async def _published_in(session, workspace_id: str, user_id: str) -> list[Skill]:
+    """本空间已发布、已启用的空间技能与这个人的个人技能（行级安全变量切到这个空间）。"""
+    await set_workspace(session, workspace_id)
+    rows = (await session.scalars(select(Skill).where(
+        Skill.workspace_id == workspace_id, Skill.enabled.is_(True), Skill.status == "published",
+        Skill.scope_key.in_(("workspace", scope_key("personal", user_id)))))).all()
+    # 空间技能优先，其次按名称，保证跳过规则确定
+    return sorted(rows, key=lambda row: (row.scope != "workspace", row.name))
 
 
 def _deduplicate(rows: list[Skill]) -> tuple[tuple[CatalogEntry, ...], Skipped]:

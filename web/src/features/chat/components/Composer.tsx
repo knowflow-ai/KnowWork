@@ -1,6 +1,7 @@
 /**
  * 底部输入框，照 ChatGPT：大圆角白框，上面是待发的附件和 @ 的小标签，中间是会随内容长高的输入区，
- * 底部一行左边是附件与 @，右边是停止与发送（深色圆形按钮）。附件可以点回形针选，也可以拖进来。
+ * 底部一行左边是附件与 @，右边是对话模型下拉（ModelSelect，聊天页才有）、停止与发送（深色圆形按钮）。附件可以点回形针选，
+ * 也可以拖进来。
  * 运行中可以插话：回车 = 完成后发送（followup），Ctrl/⌘ + 回车 = 补充到当前任务（steer）；显示停止按钮。
  * 打 @（或点 @ 按钮）弹出点名菜单（mentions/），选中的变成小标签；发出去以后小标签留着，这个对话后面每一问都带上，
  * 直到手动去掉。
@@ -34,6 +35,7 @@ import {
   type MentionScope,
 } from '../mentions/useMentionMenu';
 import { AnswerModeSelect } from './AnswerModeSelect';
+import { ModelSelect } from './ModelSelect';
 import { AttachmentChips } from './AttachmentChips';
 import { modeForKey } from './keys';
 
@@ -60,6 +62,8 @@ interface Props {
   readonly onAttach?: () => void;
   /** @ 候选按谁的范围取（见 MentionScope）：挂了范围的对话给对话 id，还没建对话的专家新对话页给收窄；不给按本人能用的全部 */
   readonly mentionScope?: MentionScope;
+  /** 在发送按钮左边显示对话模型下拉（ModelSelect）：聊天页给，嵌在别的页面里的会话不给（沿用默认模型） */
+  readonly chooseModel?: boolean;
 }
 
 const NO_SCOPE: MentionScope = {};
@@ -143,6 +147,7 @@ export function Composer({
   conversationId,
   onAttach,
   mentionScope = NO_SCOPE,
+  chooseModel = false,
 }: Props) {
   const [value, setValue] = useState('');
   const [caret, setCaret] = useState(0);
@@ -421,6 +426,7 @@ export function Composer({
                 </Button>
               </Tooltip>
               <span className="kw-composer-spacer" />
+              {chooseModel ? <ModelSelect conversationId={conversationId} disabled={disabled} /> : null}
               {running && onStop ? (
                 <Tooltip content="停止" compact>
                   <Button
