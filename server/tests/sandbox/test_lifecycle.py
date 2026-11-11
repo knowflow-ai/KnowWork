@@ -231,6 +231,26 @@ async def test_losing_the_create_race_to_another_process_uses_its_container(make
     assert created == [], "容器是另一个进程建的，附件重放由它那边做"
 
 
+@pytest.mark.parametrize("already_created", [True, False])
+async def test_peer_start_race_does_not_remove_running_same_session_container(make, monkeypatch, already_created):
+    """A second business process can start the container between our inspect/create and start."""
+    fake, module = make()
+    if already_created:
+        fake.add_container(KEY.name, {**KEY.labels(), LABEL_POSTURE: _digest()}, status="created")
+    api = module.engine._docker().api
+
+    def peer_started_it(_api, container_id):
+        fake.guard("start")
+        fake.by_ref(container_id)["Status"] = "running"
+        raise api_error(304)  # Docker already-started response after the peer won.
+
+    monkeypatch.setattr(type(api), "start", peer_started_it)
+    await _touch(module)
+    assert fake.containers[KEY.name]["Status"] == "running"
+    assert "remove" not in fake.calls, "the original creator must not delete a running peer-used sandbox"
+
+
+
 async def test_create_conflict_with_someone_elses_container_is_still_refused(make):
     fake, module = make()
     engine = module.containers._engine

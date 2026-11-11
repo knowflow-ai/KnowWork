@@ -190,6 +190,20 @@ class ContainerManager:
         await self._engine.remove_container(str(info["Id"]))
         return None
 
+    async def _start_or_confirm_running(self, container_id: str) -> None:
+        """A peer process may have started this exact container before our Docker start call.
+
+        Docker then returns an already-started error. Accept only a fresh running
+        state for the same ID; propagate real start failures unchanged.
+        """
+        try:
+            await self._engine.start_container(container_id)
+        except SandboxError:
+            current = await self._engine.inspect_container(container_id)
+            if current is None or _status(current) != "running":
+                raise
+
+
     async def _connect(self, info: dict[str, Any]) -> str:
         """停了的容器文件系统还在，拉起来接着用（Docker 里最接近「暂停后自动恢复」的做法）。"""
         container_id = str(info["Id"])
@@ -199,7 +213,7 @@ class ContainerManager:
         if status == "paused":
             await self._engine.unpause_container(container_id)
         elif status in ("exited", "created"):
-            await self._engine.start_container(container_id)
+            await self._start_or_confirm_running(container_id)
         await self._wait_running(container_id)
         return container_id
 
@@ -226,7 +240,7 @@ class ContainerManager:
         except DockerConflict:
             return None
         try:
-            await self._engine.start_container(container_id)
+            await self._start_or_confirm_running(container_id)
             await self._wait_running(container_id)
         except BaseException:
             # 起不来的容器没有用，留着只会等到很久以后的清扫才回收
