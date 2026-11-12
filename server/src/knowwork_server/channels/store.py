@@ -19,6 +19,7 @@ from .models import Channel, ChannelSession, ChannelStranger
 MAX_ERROR = 500
 MAX_NAME = 100
 MAX_SESSIONS = 200
+WEB = "web"  # 网页渠道的接入方式（channel.platform）
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,19 @@ class ChannelStore:
         async with self._sessionmaker() as session:
             return (await session.scalars(select(Channel).where(
                 Channel.workspace_id == workspace_id, Channel.id == channel_id))).first()
+
+    async def by_web_key(self, workspace_id: str, web_key: str) -> Channel | None:
+        """网页渠道按发布令牌找（令牌里带着空间，调用方先进到那个空间）。"""
+        async with self._sessionmaker() as session:
+            return (await session.scalars(select(Channel).where(
+                Channel.workspace_id == workspace_id, Channel.platform == WEB,
+                Channel.public_config["web_key"].astext == web_key))).first()
+
+    async def channel_of_conversation(self, workspace_id: str, conversation_id: str) -> str | None:
+        """这段会话是从哪个渠道来的；不是从渠道来的为空。"""
+        async with self._sessionmaker() as session:
+            return await session.scalar(select(Conversation.channel_id).where(
+                Conversation.workspace_id == workspace_id, Conversation.id == conversation_id))
 
     async def create(self, channel: Channel) -> Channel:
         channel.id = channel.id or f"ch_{uuid.uuid4().hex[:20]}"

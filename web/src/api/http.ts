@@ -1,7 +1,8 @@
 /**
- * 业务服务请求封装：浏览器用 Cookie 会话（kw_session，HttpOnly），前端不存令牌；
+ * 业务服务请求封装：浏览器用 Cookie 会话（kw_session，HttpOnly），前端不存令牌（网页嵌入页例外，见 embedAuth.ts）；
  * 把各种失败翻译成给用户看的话，不暴露错误码。会话过期（401）时通知登录状态。
  */
+import { credentialsFor } from './embedAuth';
 import { useSessionStore } from '../stores/session';
 
 export class ApiError extends Error {
@@ -103,11 +104,12 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (options.raw !== undefined) headers['Content-Type'] = options.contentType ?? 'application/octet-stream';
   let response: Response;
+  const auth = credentialsFor(headers);
   try {
     response = await fetch(withQuery(path, options.query), {
       method: options.method ?? 'GET',
-      headers,
-      credentials: 'same-origin',
+      headers: auth.headers,
+      credentials: auth.credentials,
       body:
         options.form ??
         options.raw ??
@@ -130,7 +132,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 export async function requestBytes(path: string, signal?: AbortSignal): Promise<ArrayBuffer> {
   let response: Response;
   try {
-    response = await fetch(path, { credentials: 'same-origin', signal });
+    const auth = credentialsFor();
+    response = await fetch(path, { headers: auth.headers, credentials: auth.credentials, signal });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiError(0, NETWORK_MESSAGE);
@@ -156,7 +159,12 @@ export async function requestFile(
 ): Promise<DownloadedFile> {
   let response: Response;
   try {
-    response = await fetch(path, { method: options.method ?? 'GET', credentials: 'same-origin' });
+    const auth = credentialsFor();
+    response = await fetch(path, {
+      method: options.method ?? 'GET',
+      headers: auth.headers,
+      credentials: auth.credentials,
+    });
   } catch {
     throw new ApiError(0, NETWORK_MESSAGE);
   }

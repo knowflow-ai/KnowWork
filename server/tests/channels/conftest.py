@@ -11,6 +11,7 @@ import pytest
 from knowwork_server.access.service import AccessService
 from knowwork_server.channels import build_channels
 from knowwork_server.channels.models import Channel
+from knowwork_server.channels.targets import ChannelTargets, Target
 from knowwork_server.conversations.answer_modes import (
     AnswerMode,
     AnswerModes,
@@ -27,6 +28,25 @@ from knowwork_server.identity.users import UserService
 from knowwork_server.kernel.contract import KernelError
 
 MASTER = "test-master-key-for-channels-0123456789"
+
+
+@dataclass
+class FakeTargets:
+    """扩展登记的可挂对象（例如专家）：测试里直接改 items，挂上的会话记在 attached。"""
+
+    kind: str = "expert"
+    label: str = "专家"
+    items: dict[str, Target] = field(default_factory=dict)
+    attached: list[tuple[str, str, str]] = field(default_factory=list)
+
+    async def list(self, workspace_id: str) -> list[Target]:
+        return list(self.items.values())
+
+    async def get(self, workspace_id: str, target_id: str) -> Target | None:
+        return self.items.get(target_id)
+
+    async def attach(self, workspace_id: str, conversation_id: str, target_id: str, user_id: str) -> None:
+        self.attached.append((conversation_id, target_id, user_id))
 BASE_URL = "https://kw.example.com"
 SEQ = itertools.count(1)
 
@@ -189,12 +209,14 @@ async def env(database_url):
     identities = ImIdentities()  # 测试里登记的组织来源（扩展登记的那种）
     sources: list[ImIdentitySource] = []
     identities.add(lambda: list(sources))
+    targets, experts = ChannelTargets(), FakeTargets()  # 扩展登记的可挂对象（例如专家）
+    targets.add(experts)
     channels = build_channels(MASTER, scoped, global_sessionmaker, None, access, conversations,
                               accounts=users, factories={"wecom": platform}, identities=identities,
-                              public_base_url=BASE_URL, answer_modes=modes)
+                              public_base_url=BASE_URL, answer_modes=modes, targets=targets)
     yield SimpleNamespace(ws=ws, access=access, conversations=conversations, platform=platform, users=users,
                           channels=channels, scoped=scoped, engine=engine, global_sessionmaker=global_sessionmaker,
-                          sources=sources)
+                          sources=sources, targets=targets, experts=experts)
     await channels.supervisor.stop()
     # 删掉这个测试建的渠道：supervisor 的测试会连上库里全部启用的渠道（每个占一条连接拿锁），留多了会把连接池耗尽
     from knowwork_server.db.base import in_workspace

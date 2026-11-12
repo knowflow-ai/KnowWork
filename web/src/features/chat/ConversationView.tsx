@@ -13,6 +13,7 @@ import {
 import type { SentAttachment } from '../../api/attachments';
 import type { Mention } from '../../api/mentions';
 import { ownRun, turnOfRun } from '../../api/debug';
+import { useEmbedMode } from '../embed/embedMode';
 import { toast } from '../../ui/toastStore';
 import { CONVERSATIONS_KEY } from '../conversations/queries';
 import { Composer } from './components/Composer';
@@ -105,6 +106,8 @@ export function ConversationView({
     void warmConversation(conversationId).catch(() => undefined);
   }, [conversationId]);
   const onInspect = useCallback((runId: string) => setInspecting(turnOfRun(runId)), []);
+  // 网页嵌入页不看运行详情（embedMode.ts）
+  const { inspect: canInspect } = useEmbedMode();
 
   const deliver = useCallback(
     async (text: string, mode: SendMode, extras: TurnExtras = {}) => {
@@ -183,7 +186,7 @@ export function ConversationView({
           onAnswer={onAnswer}
           onRegenerate={onRegenerate}
           onDropConditions={onDropConditions}
-          onInspect={onInspect}
+          onInspect={canInspect ? onInspect : undefined}
           feedback={feedback}
           onAsk={ask}
         />

@@ -197,7 +197,28 @@ const baseStyle = (tokens: ChartTokens) => {
   };
 };
 
-/** 环形饼图：中间写合计与指标名，右边一列图例写每块的数与占比 */
+/**
+ * 饼图右边图例写全（名字、数、占比）要的宽度：环心在 29%、外圈 76%，图例从 58% 起写三栏，比这窄环的左边就出了画布、
+ * 图例的数和占比也被截掉（网页嵌入的小窗、手机上的卡片只有 300 来宽）。再窄换紧凑排法，用 ECharts 自带的
+ * media（按图的宽度套用，跟着容器宽度变）。
+ */
+const PIE_FULL_WIDTH = 510;
+
+/** 图例里的名字按显示宽度截短（汉字算一格，字母数字算半格多），超了留几格加省略号；悬停图例看全名 */
+function clip(name: string, cells: number): string {
+  const width = (ch: string) => ((ch.codePointAt(0) ?? 0) <= 0xff ? 0.6 : 1);
+  if ([...name].reduce((sum, ch) => sum + width(ch), 0) <= cells) return name;
+  let used = 0;
+  let kept = '';
+  for (const ch of name) {
+    if (used + width(ch) > cells - 1) break;
+    used += width(ch);
+    kept += ch;
+  }
+  return `${kept}…`;
+}
+
+/** 环形饼图：中间写合计与指标名，右边一列图例写每块的数与占比；卡片窄时环小一点、图例只写名字和占比 */
 function pieOption(built: Built, measureLabel: string, tokens: ChartTokens): Record<string, unknown> {
   const base = baseStyle(tokens);
   const values = built.series[0]?.values ?? [];
@@ -205,6 +226,15 @@ function pieOption(built: Built, measureLabel: string, tokens: ChartTokens): Rec
   const total = data.reduce((sum, d) => sum + d.value, 0);
   const byName = new Map(data.map((d) => [d.name, d.value]));
   const percent = (value: number) => (total > 0 ? `${Math.round((value / total) * 100)}%` : '—');
+  const narrow = {
+    title: { left: '28%', textStyle: { fontSize: 18 } },
+    legend: {
+      left: '56%',
+      formatter: (name: string) => `{name|${clip(name, 4)}}{pct|${percent(byName.get(name) ?? 0)}}`,
+      textStyle: { rich: { name: { width: 56 }, pct: { width: 36 } } },
+    },
+    series: [{ center: ['28%', '50%'], radius: ['36%', '54%'] }],
+  };
   return {
     ...base,
     tooltip: { ...base.tooltip, trigger: 'item' },
@@ -226,9 +256,10 @@ function pieOption(built: Built, measureLabel: string, tokens: ChartTokens): Rec
       itemWidth: 10,
       itemHeight: 10,
       itemGap: 10,
+      tooltip: { show: true },
       formatter: (name: string) => {
         const value = byName.get(name) ?? 0;
-        return `{name|${name}}{value|${full(value)}}{pct|${percent(value)}}`;
+        return `{name|${clip(name, 7)}}{value|${full(value)}}{pct|${percent(value)}}`;
       },
       textStyle: {
         ...base.textStyle,
@@ -250,6 +281,7 @@ function pieOption(built: Built, measureLabel: string, tokens: ChartTokens): Rec
         data,
       },
     ],
+    media: [{ query: { maxWidth: PIE_FULL_WIDTH - 1 }, option: narrow }],
   };
 }
 

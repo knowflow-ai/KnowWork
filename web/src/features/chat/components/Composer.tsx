@@ -21,6 +21,7 @@ import { effectiveAnswerMode, useAnswerMode } from '../../../stores/answerMode';
 import { slotItems } from '../../../slots/registry';
 import { cx } from '../../../ui/cx';
 import { toast } from '../../../ui/toastStore';
+import { useEmbedMode } from '../../embed/embedMode';
 import { sendable, useDraftAttachments, type DraftAttachment } from '../hooks/useDraftAttachments';
 import { activeTrigger, withoutTrigger } from '../mentions/candidates';
 import { MentionChips } from '../mentions/MentionChips';
@@ -161,6 +162,8 @@ export function Composer({
   const [stopping, setStopping] = useState(false);
   const [dragging, setDragging] = useState(false);
   const draft = useDraftAttachments();
+  // 网页嵌入页的访客不能带附件（embedMode.ts）
+  const { attachments: canAttach } = useEmbedMode();
   const chosen = useAnswerMode((s) => s.mode);
   const modes = useAnswerMode((s) => s.options);
   const setMode = useAnswerMode((s) => s.setMode);
@@ -215,7 +218,7 @@ export function Composer({
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragging(false);
-    if (disabled) return;
+    if (disabled || !canAttach) return;
     if (quick) toast.warning(NO_FILES_IN_QUICK);
     else addFiles(Array.from(event.dataTransfer.files));
   };
@@ -327,7 +330,7 @@ export function Composer({
             className={cx('kw-composer-box', dragging && 'is-dragging', disabled && 'is-disabled')}
             onDragOver={(event) => {
               event.preventDefault();
-              setDragging(true);
+              if (canAttach) setDragging(true);
             }}
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
@@ -383,32 +386,36 @@ export function Composer({
               onKeyDown={onKeyDown}
             />
             <div className="kw-composer-bar">
-              {/* 快速问答没有读文件的工具，附件放进去也没人读 */}
-              <Tooltip content={quick ? '快速问答不能带附件' : '添加文件'} compact>
-                <span>
-                  <Button
-                    color="secondary"
-                    variant="ghost"
-                    uniform
-                    aria-label="添加文件"
-                    disabled={disabled || quick}
-                    onClick={() => picker.current?.click()}
-                  >
-                    <PlusComposer />
-                  </Button>
-                </span>
-              </Tooltip>
-              <input
-                ref={picker}
-                type="file"
-                multiple
-                hidden
-                aria-label="选择文件"
-                onChange={(event) => {
-                  addFiles(Array.from(event.target.files ?? []));
-                  event.target.value = '';
-                }}
-              />
+              {canAttach ? (
+                <>
+                  {/* 快速问答没有读文件的工具，附件放进去也没人读 */}
+                  <Tooltip content={quick ? '快速问答不能带附件' : '添加文件'} compact>
+                    <span>
+                      <Button
+                        color="secondary"
+                        variant="ghost"
+                        uniform
+                        aria-label="添加文件"
+                        disabled={disabled || quick}
+                        onClick={() => picker.current?.click()}
+                      >
+                        <PlusComposer />
+                      </Button>
+                    </span>
+                  </Tooltip>
+                  <input
+                    ref={picker}
+                    type="file"
+                    multiple
+                    hidden
+                    aria-label="选择文件"
+                    onChange={(event) => {
+                      addFiles(Array.from(event.target.files ?? []));
+                      event.target.value = '';
+                    }}
+                  />
+                </>
+              ) : null}
               <Tooltip
                 content={quick ? '@ 点名知识库、文件或标签' : '@ 点名知识库、文件、标签或技能'}
                 compact

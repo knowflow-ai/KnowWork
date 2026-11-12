@@ -4,17 +4,18 @@ Extension 对象。业务服务与 worker 启动时按授权加载；没有授�
 扩展只拿这里的上下文，不拿业务服务内部的装配对象：内部重构不牵动扩展。上下文以后按需加字段。
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from ..access.api import ProfileLookup
 from ..access.service import AccessService
 from ..attachments.mineru import MinerUProvider
+from ..channels.targets import ChannelTargets
 from ..config import Settings
 from ..conversations.answer_modes import AnswerModes
 from ..conversations.background import BackgroundTurns, LocalBackground
@@ -42,6 +43,12 @@ from ..tools.results import ResultSources
 
 ENTRY_GROUP = "knowwork.extensions"
 VERIFIER_GROUP = "knowwork.license"
+
+
+async def no_embed(principal: Any, request: Any, conversation_id: str) -> None:
+    """没接上网页渠道时的 embed_guard：嵌入身份一律不给用。"""
+    if getattr(principal, "is_embedded", False):
+        raise HTTPException(status_code=403, detail="网页嵌入里用不了这个功能")
 
 
 @dataclass(frozen=True)
@@ -102,6 +109,12 @@ class ApiContext:
     # 替用户建对话（conversations/background.py 的 LocalBackground，同 WorkerContext.turns 的判定，不走 HTTP）：
     # 可指定对话 id，扩展先拿它记下自己的东西再建
     background: LocalBackground | None = None
+    # 扩展里网页嵌入也能用的接口（路由用 principal("conversations:use") 让嵌入身份进来），碰某段对话前调
+    # embed_guard(调用者, 请求, 会话 id)：不是嵌入身份的直接过；嵌入身份要是自己从这个渠道开的会话，再按访客限次，
+    # 不满足时抛 HTTPException（404、429、403），实现见 principals.EmbedGuard
+    embed_guard: Callable[[Any, Any, str], Awaitable[None]] = no_embed
+    # 网页渠道能挂的对象（channels/targets.py）：扩展登记一类（例如专家），渠道挂上就照它答；对象改了、删了调 changed
+    channel_targets: ChannelTargets = field(default_factory=ChannelTargets)
 
 
 @dataclass(frozen=True)

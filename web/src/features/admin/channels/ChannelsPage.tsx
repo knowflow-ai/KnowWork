@@ -1,8 +1,9 @@
 /**
- * 渠道：企业微信、飞书、钉钉机器人。不认人的私聊、群聊都用渠道账号回答，只查选的资料（知识库，或回答方式要的那类资源），
+ * 渠道：企业微信、飞书、钉钉机器人与网页嵌入。不认人的私聊、群聊都用渠道账号回答，只查选的资料（知识库，或回答方式要的那类资源），
  * 问答记在渠道账号名下，
  * 运行记录里按它筛；认人的私聊按提问人本人回答、记在本人名下，「谁在问」里显示成员姓名，另列没认出的人。
- * 一律长连接，服务器主动连出去，不用开入站端口。连接状态与最近一次错误在表里看。
+ * 机器人一律长连接，服务器主动连出去，不用开入站端口。连接状态与最近一次错误在表里看。
+ * 网页嵌入不用连接：开着就能用，「嵌入代码」里复制悬浮窗、整页与分享链接（EmbedCodeSheet）。
  */
 import { useState } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
@@ -35,6 +36,7 @@ import { RowActions } from '../common';
 import { KEYS } from '../queries';
 import { useAction } from '../useAction';
 import { ChannelDialog } from './ChannelDialog';
+import { EmbedCodeSheet } from './EmbedCodeSheet';
 
 const STATUS: Readonly<Record<ChannelStatus, { readonly tone: Tone; readonly label: string }>> = {
   connected: { tone: 'success', label: '已连接' },
@@ -43,8 +45,12 @@ const STATUS: Readonly<Record<ChannelStatus, { readonly tone: Tone; readonly lab
   stopped: { tone: 'default', label: '已停用' },
 };
 
+const READY = { tone: 'success', label: '可用' } as const;
+
 function StatusCell({ channel }: { readonly channel: Channel }) {
-  const status = channel.enabled ? STATUS[channel.status] : STATUS.stopped;
+  // 网页嵌入不用连接：开着就能用
+  const live = channel.platform === 'web' ? READY : STATUS[channel.status];
+  const status = channel.enabled ? live : STATUS.stopped;
   return (
     <div className="kw-admin-status">
       <StatusDot tone={status.tone}>{status.label}</StatusDot>
@@ -98,7 +104,10 @@ function SessionsSheet({ channel, onClose }: { readonly channel: Channel; readon
   return (
     <Sheet title={`谁在问 · ${channel.name}`} width={760} onClose={onClose}>
       <p className="kw-secondary">
-        每个人在私聊、在每个群里各是一个对话，发「新会话」会另起一个。每一轮问答的详细过程在
+        {channel.platform === 'web'
+          ? '网页嵌入里每个访客一个对话，点「新对话」会另起一个。'
+          : '每个人在私聊、在每个群里各是一个对话，发「新会话」会另起一个。'}
+        每一轮问答的详细过程在
         <Link to={runsOf(channel)}>运行记录</Link>里看。
       </p>
       {sessions.isPending ? (
@@ -166,6 +175,7 @@ export default function ChannelsPage() {
     (modes.data ?? BUILT_IN_CHANNEL_MODES).find((m) => m.id === c.settings.answerMode);
   const [editing, setEditing] = useState<{ readonly item?: Channel } | null>(null);
   const [people, setPeople] = useState<Channel | null>(null);
+  const [code, setCode] = useState<Channel | null>(null);
   const toggle = useAction(
     ({ id, enabled }: { readonly id: string; readonly enabled: boolean }) => setChannelEnabled(id, enabled),
     { invalidate: [KEYS.channels], failure: '没有改成功，请稍后重试' },
@@ -183,12 +193,24 @@ export default function ChannelsPage() {
       width: 100,
       render: (c) => platformOf(c.platform).label,
     },
-    { key: 'bot', title: '机器人', ellipsis: true, render: (c) => c.botName || c.botId },
+    {
+      key: 'bot',
+      title: '机器人',
+      ellipsis: true,
+      render: (c) => (c.platform === 'web' ? c.web?.title || '—' : c.botName || c.botId),
+    },
     {
       key: 'audience',
       title: '提问的人',
       width: 110,
-      render: (c) => (c.audience === 'member' ? '认出是谁' : '不认人'),
+      render: (c) =>
+        c.platform === 'web'
+          ? c.audience === 'member'
+            ? '认证访问'
+            : '公开访问'
+          : c.audience === 'member'
+            ? '认出是谁'
+            : '不认人',
     },
     { key: 'status', title: '状态', width: 220, render: (c) => <StatusCell channel={c} /> },
     {
@@ -196,6 +218,8 @@ export default function ChannelsPage() {
       title: '回答方式',
       width: 150,
       render: (c) => {
+        // 挂了对象（例如专家）的网页嵌入：照它答，写它是谁
+        if (c.target) return `${c.target.label}：${c.target.name ?? '已删除'}`;
         const mode = modeOf(c);
         if (!mode) return c.settings.answerMode;
         const count =
@@ -212,11 +236,12 @@ export default function ChannelsPage() {
     {
       key: 'actions',
       title: '操作',
-      width: 230,
+      width: 300,
       render: (c) => (
         <RowActions
           actions={[
             { key: 'edit', label: '修改', onClick: () => setEditing({ item: c }) },
+            ...(c.platform === 'web' ? [{ key: 'code', label: '嵌入代码', onClick: () => setCode(c) }] : []),
             { key: 'people', label: '谁在问', onClick: () => setPeople(c) },
             {
               key: 'toggle',
@@ -227,7 +252,10 @@ export default function ChannelsPage() {
               key: 'delete',
               label: '删除',
               danger: true,
-              confirm: `删除渠道「${c.name}」？机器人会断开，授给它的知识库、数据这些权限一并收回；运行记录里的问答还留着。`,
+              confirm:
+                c.platform === 'web'
+                  ? `删除渠道「${c.name}」？嵌入代码和分享链接都会失效，授给它的知识库、数据这些权限一并收回；运行记录里的问答还留着。`
+                  : `删除渠道「${c.name}」？机器人会断开，授给它的知识库、数据这些权限一并收回；运行记录里的问答还留着。`,
               onClick: () => void remove.run(c.id),
             },
           ]}
@@ -238,13 +266,13 @@ export default function ChannelsPage() {
   return (
     <AdminPage
       title="渠道"
-      description="让员工在企业微信、飞书、钉钉里直接向智能助手提问，不用登录 KnowWork。机器人只查给它选的资料，谁能找到机器人由 IM 平台的可见范围决定。"
+      description="让员工在企业微信、飞书、钉钉里，或在你们自己的网站上直接向智能助手提问，不用登录 KnowWork。它只查给它选的资料；谁能找到机器人由 IM 平台的可见范围决定，网页嵌入只能嵌在允许的网站里。"
     >
       <Toolbar
         right={
           <Button color="primary" onClick={() => setEditing({})}>
             <Plus />
-            添加机器人
+            添加渠道
           </Button>
         }
       />
@@ -260,6 +288,7 @@ export default function ChannelsPage() {
       )}
       {editing ? <ChannelDialog channel={editing.item} onClose={() => setEditing(null)} /> : null}
       {people ? <SessionsSheet channel={people} onClose={() => setPeople(null)} /> : null}
+      {code ? <EmbedCodeSheet channel={code} onClose={() => setCode(null)} /> : null}
     </AdminPage>
   );
 }

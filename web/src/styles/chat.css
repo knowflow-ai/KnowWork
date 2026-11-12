@@ -1391,10 +1391,12 @@ a.kw-source-item:hover {
   gap: 8px 12px;
 }
 
+/* 出处一行先占住剩下的宽度、字在自己里面换行，操作留在右边同一行（网页嵌入的小窗里卡片只有 300 来宽，原来出处
+   一长就把「下载」挤到下一行左边，展开的箭头也单独掉一行）；操作多到放不下时才整排换到下一行，仍靠右 */
 .kw-provenance-line {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex: 1 1 160px;
+  align-items: flex-start;
   gap: 6px;
   min-width: 0;
   text-align: left;
@@ -1402,21 +1404,30 @@ a.kw-source-item:hover {
   font-size: var(--kw-font-xs);
 }
 
+/* 箭头对着第一行字的中间：行高 21、箭头 12（不用 lh 单位，接入方用户的浏览器内核可能较旧） */
 .kw-provenance-line svg {
   flex: none;
+  margin-top: 4px;
   color: var(--color-text-tertiary);
 }
 
 .kw-provenance-label {
+  flex: none;
   color: var(--color-text);
   font-weight: 600;
+}
+
+.kw-provenance-text {
+  min-width: 0;
 }
 
 /* 出处上的操作（扩展登记的，例如「存为可信查询」）：在出处行右边 */
 .kw-provenance-actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
+  margin-left: auto;
 }
 
 .kw-provenance-body {
@@ -1485,4 +1496,45 @@ a.kw-source-item:hover {
   margin: 0 auto 6px;
   color: var(--color-text-secondary);
   font-size: var(--font-text-xs-size);
+}
+
+/* 网页嵌入页（/embed/:key，在接入方网页的小窗里）与分享链接（/s/:key，整页）：顶上一条名字与操作，下面就是对话。
+   小窗里地方窄，对话占满宽度；分享链接整页打开时同对话页一样限宽居中 */
+.kw-embed {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  background: var(--kw-content-bg);
+  overflow: hidden;
+}
+
+.kw-embed > .kw-chat,
+.kw-embed > .kw-page-state,
+.kw-embed > .kw-empty {
+  flex: 1;
+  min-height: 0;
+}
+
+.kw-embed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 8px 16px;
+  border-bottom: 1px solid var(--kw-border-secondary);
+}
+
+.kw-embed-title {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--kw-font-base);
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kw-embed-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
 }

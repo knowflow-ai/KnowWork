@@ -115,6 +115,8 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost"
     # 会话 Cookie 只走 HTTPS；本机 http 调试时才关掉。
     cookie_secure: bool = True
+    # 网页嵌入的限次计数（channels/limits.py）用的 Redis，同 worker 的 KNOWWORK_REDIS_URL；为空时只在进程内计（本机开发）
+    redis_url: str = ""
     tool_token_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     # 工具令牌续期：单次签发 / 轮换的超时与一轮内的并发上限。
     tool_token_call_timeout_seconds: float = Field(default=10.0, gt=0, le=60)

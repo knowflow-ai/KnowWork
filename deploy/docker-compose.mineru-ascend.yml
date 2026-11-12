@@ -1,0 +1,105 @@
+# 昇腾 NPU 上的 MinerU 文档解析服务：ARM64（鲲鹏 + 昇腾）部署用它解析附件与知识库的文档。
+# 是 KnowWork 编排的叠加文件，不单独启动：install.sh --mineru-ascend 把它加进 .env 的 COMPOSE_FILE，之后 install.sh、
+# docker compose up -d 都会带上它。镜像照 MinerU 官方的昇腾适配构建（docker/mineru-ascend.Dockerfile），MinerU 3.4.5，
+# 模型在镜像里，不联网下载，只有 ARM64；下载约 11 GB、解开约 24 GB，磁盘留 30 GB 以上。
+#
+# 要求：鲲鹏（ARM64）CPU + Atlas A2（910B）NPU；宿主机装好 NPU 驱动与固件，npu-smi info 能看到卡。
+# 第一次启动要把模型加载到卡上，几分钟，docker compose ps 里 mineru-vlm、mineru-api 都 healthy 才能解析。
+#
+# 两个服务用同一个镜像：mineru-vlm 是 VLM 推理服务（vLLM），mineru-api 是 KnowWork 连的解析接口，版面、OCR 等模型在它自己
+# 进程里跑，要 VLM 时去调 mineru-vlm。默认两个都在 0 号卡上，VLM 只占卡上一半内存，另一半留给 mineru-api。
+#
+# 接线：两个服务只在内部网络 mineru 上（不映射到宿主机、不出公网），api、worker 也接进这个网络，文档解析的默认地址指向它们
+# （.env 里自己填了 KNOWWORK_MINERU_BASE_URL、KNOWWORK_MINERU_SERVER_URL 的以 .env 为准）。管理后台「模型 → 文档解析」里填过
+# 别的地址的以后台为准：要改用这一套，在那里把 MinerU 地址填成 http://mineru-api:8000、VLM 服务地址填成 http://mineru-vlm:30000。
+#
+# 可调的写进 .env（没有这一项就用默认值）：
+#   KNOWWORK_MINERU_NPU=0                  用第几张卡（npu-smi info 看哪张空闲，卡上跑着别的模型时一定要换）
+#   KNOWWORK_MINERU_VLM_NPU、KNOWWORK_MINERU_API_NPU   两个服务分开放时各自用哪张卡，默认都是 KNOWWORK_MINERU_NPU
+#   KNOWWORK_MINERU_VLM_MEMORY=0.5         VLM 占卡上内存的比例；VLM 单独占一张卡时可以调到 0.9
+#   KNOWWORK_MINERU_ASCEND_IMAGE=...       换镜像地址
+#
+# 安全：
+# - mineru-api 打开了 --allow-public-http-client：KnowWork 用 hybrid、VLM 模式时要让它去调 VLM 服务（请求里带 server_url），
+#   MinerU 监听 0.0.0.0 时默认拒绝这种请求。打开后谁连得上它就能让它去访问任意地址，所以它只在内部网络上，只有 api、worker 连得到；
+# - privileged：照 MinerU 官方的启动方式，NPU 设备节点（/dev/davinci*）、驱动的管理接口要进容器，卡的数量各台机器不一样，
+#   逐个写设备会在少卡的机器上起不来；用哪张卡由 ASCEND_RT_VISIBLE_DEVICES 定。
+
+x-ascend: &ascend
+  image: ${KNOWWORK_MINERU_ASCEND_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-mineru-ascend:3.4.5-a2}
+  restart: unless-stopped
+  privileged: true
+  ipc: host
+  ulimits:
+    memlock: -1
+    stack: 67108864
+  volumes:
+    # 驱动、npu-smi 和管理接口用宿主机的（版本要和卡上的固件配套），只读挂进来；日志写到宿主机的 /var/log/npu
+    - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+    - /usr/local/dcmi:/usr/local/dcmi:ro
+    - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro
+    - /var/log/npu:/usr/slog
+  networks: [mineru]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "5"}
+
+x-mineru-env: &mineru-env
+  KNOWWORK_MINERU_BASE_URL: ${KNOWWORK_MINERU_BASE_URL:-http://mineru-api:8000}
+  # VLM 服务地址是给 mineru-api 用的（它去调），所以写的是它在内部网络上看到的名字
+  KNOWWORK_MINERU_SERVER_URL: ${KNOWWORK_MINERU_SERVER_URL:-http://mineru-vlm:30000}
+
+services:
+  # 附件解析在 worker 里跑，管理后台的「测试连接」在 api 里
+  api:
+    environment: *mineru-env
+    networks:
+      mineru: {}
+  worker:
+    environment: *mineru-env
+    networks:
+      mineru: {}
+
+  mineru-vlm:
+    <<: *ascend
+    command:
+      - mineru-openai-server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "30000"
+      - --gpu-memory-utilization
+      - ${KNOWWORK_MINERU_VLM_MEMORY:-0.5}
+    environment:
+      ASCEND_RT_VISIBLE_DEVICES: ${KNOWWORK_MINERU_VLM_NPU:-${KNOWWORK_MINERU_NPU:-0}}
+      VLLM_NO_USAGE_STATS: "1"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:30000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # 加载模型、编译图要几分钟，这段时间里检查失败不算数
+      start_period: 15m
+
+  mineru-api:
+    <<: *ascend
+    command:
+      - mineru-api
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --allow-public-http-client
+    environment:
+      ASCEND_RT_VISIBLE_DEVICES: ${KNOWWORK_MINERU_API_NPU:-${KNOWWORK_MINERU_NPU:-0}}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10m
+
+networks:
+  # 模型在镜像里，不用出公网
+  mineru:
+    internal: true

@@ -288,6 +288,33 @@ describe('结果表画成图的配置', () => {
     expect(pie.legend?.formatter('华东')).toBe('{name|华东}{value|300}{pct|50%}');
   });
 
+  it('饼图在窄卡片里（网页嵌入的小窗、手机）换紧凑排法：环小一点、图例只写名字和占比，长名字截短', () => {
+    const long = {
+      ...regions,
+      rows: [
+        ['华东大区销售一部', 300],
+        ['华南', 200],
+        ['华北', 100],
+      ],
+    } as TableCard;
+    const pie = chartOption(long, regions.chart!, { kind: 'pie', measure: 'revenue', tokens: TOKENS }) as {
+      readonly legend: { readonly formatter: (name: string) => string };
+      readonly media: readonly {
+        readonly query: { readonly maxWidth: number };
+        readonly option: {
+          readonly legend: { readonly formatter: (name: string) => string };
+          readonly series: readonly { readonly radius: readonly string[] }[];
+        };
+      }[];
+    };
+    expect(pie.legend.formatter('华东大区销售一部')).toBe('{name|华东大区销售…}{value|300}{pct|50%}');
+    const narrow = pie.media[0];
+    expect(narrow?.query.maxWidth).toBeGreaterThan(400);
+    expect(narrow?.option.legend.formatter('华南')).toBe('{name|华南}{pct|33%}');
+    expect(narrow?.option.legend.formatter('华东大区销售一部')).toBe('{name|华东大…}{pct|50%}');
+    expect(narrow?.option.series[0]?.radius).toEqual(['36%', '54%']);
+  });
+
   it('刻度写短；色板用完再用两档灰，不用红', () => {
     expect([compact(950), compact(12_500), compact(310_000_000), compact(-20_000)]).toEqual([
       '950',

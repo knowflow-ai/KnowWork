@@ -1,14 +1,17 @@
 /**
- * 渠道：企业微信等机器人（server/src/knowwork_server/channels/api.py）。Secret 只能写不能读，接口只回末四位。
+ * 渠道：企业微信等机器人与网页嵌入（server/src/knowwork_server/channels/api.py）。Secret 只能写不能读，接口只回末四位。
+ * 网页嵌入（web）：没有机器人与 Secret，嵌进别的网站或用分享链接打开；发布令牌（嵌入代码里那串）本来就公开，接口照回。
+ * 网页嵌入的认证访问（audience 为 member）：接入方后端用认证密钥签 JWT 告诉我们来的是谁，密钥明文只在生成时回一次。
  * 回答方式：内置两种查知识库；扩展登记、写了查哪类资源的也能选（例如查数据源的），选的资料在 resources。
  * 不认人（public）：私聊、群聊都用渠道账号（和渠道同 id）回答，能查的就是选的资料。
  * 认人（member）：私聊按提问人本人的权限回答，用选的组织来源认人；选的资料只管群聊（群里仍用渠道账号）。
+ * 网页嵌入可以挂一个扩展登记的对象（settings.target，例如 expert:<id>）：照它答，回答方式与资料都跟着它，不在渠道上选。
  */
 import { request, seg } from './http';
 import { bool, isRecord, listOf, num, str, strings, text } from './parse';
 import { workspacePath } from './workspace';
 
-export type ChannelPlatform = 'wecom' | 'feishu' | 'dingtalk';
+export type ChannelPlatform = 'wecom' | 'feishu' | 'dingtalk' | 'web';
 /** 回答方式的 id：内置 agent、quick，扩展登记的另有名字 */
 export type AnswerMode = string;
 export type ChannelStatus = 'stopped' | 'connecting' | 'connected' | 'error';
@@ -50,7 +53,46 @@ export const PLATFORMS: readonly PlatformInfo[] = [
     guide:
       '钉钉开放平台 → 应用开发 → 企业内部应用：添加机器人能力，消息接收模式选 Stream 模式；开通互动卡片的写入与流式更新权限；发布。',
   },
+  {
+    value: 'web',
+    label: '网页嵌入',
+    idLabel: '',
+    secretLabel: '',
+    guide:
+      '把智能助手嵌进你们自己的网站（右下角小窗或整页），或者发分享链接；访客不用登录。保存后在「嵌入代码」里复制。',
+  },
 ];
+
+/** 网页嵌入的公开配置（嵌入页、嵌入脚本不登录就读得到，只放能公开的） */
+export interface WebOptions {
+  /** 允许嵌入的网站（https://bi.example.com，子域名可以写 https://*.example.com）；空着只能用分享链接 */
+  readonly origins: readonly string[];
+  readonly title: string;
+  readonly greeting: string;
+  readonly starters: readonly string[];
+  /** 悬浮按钮的颜色（#RRGGBB），空着用默认 */
+  readonly color: string;
+  readonly position: 'right' | 'left';
+  /** 每个访客每分钟、整个渠道每天最多问几次 */
+  readonly perMinute: number;
+  readonly perDay: number;
+}
+
+export interface WebChannel extends WebOptions {
+  /** 发布令牌：嵌入代码、分享链接里那串 */
+  readonly webKey: string;
+}
+
+export const DEFAULT_WEB_OPTIONS: WebOptions = {
+  origins: [],
+  title: '',
+  greeting: '',
+  starters: [],
+  color: '',
+  position: 'right',
+  perMinute: 10,
+  perDay: 1000,
+};
 
 export const platformOf = (value: ChannelPlatform): PlatformInfo =>
   PLATFORMS.find((p) => p.value === value) ?? PLATFORMS[0]!;
@@ -61,8 +103,29 @@ export interface ChannelSettings {
   readonly bases: readonly string[];
   /** 回答方式查的不是知识库时（例如数据源），选的那一类资源的 id，同样同步成授权 */
   readonly resources: readonly string[];
-  /** 认人用的组织来源 */
+  /** 认人用的组织来源（网页嵌入的认证访问可以不选：用接入方系统自己的用户编号） */
   readonly identitySource: string | null;
+  /** 网页嵌入的认证访问：对不上 KnowWork 账号的人自动建外部用户 */
+  readonly autoCreate: boolean;
+  /** 网页嵌入的认证访问：接入方的组 → 用户组 id（外部用户每次进来按它同步这几个组） */
+  readonly groupMap: Readonly<Record<string, string>>;
+  /** 网页嵌入挂的对象（例如 expert:<id>）；没挂为 null */
+  readonly target: string | null;
+}
+
+/** 渠道挂着的对象：哪一类（例如「专家」）、叫什么；对象删了 name 为 null */
+export interface ChannelTargetRef {
+  readonly ref: string;
+  readonly label: string;
+  readonly name: string | null;
+}
+
+/** 配网页嵌入时能挂的对象（扩展登记的，例如专家） */
+export interface ChannelTarget {
+  readonly ref: string;
+  readonly label: string;
+  readonly name: string;
+  readonly answerMode: string;
 }
 
 export interface Channel {
@@ -81,6 +144,10 @@ export interface Channel {
   /** 在用的对话位置数（私聊的人、群里的人） */
   readonly sessions: number;
   readonly audience: ChannelAudience;
+  /** 网页嵌入的发布令牌与公开配置；别的平台为 null */
+  readonly web: WebChannel | null;
+  /** 网页嵌入挂着的对象；没挂为 null */
+  readonly target: ChannelTargetRef | null;
 }
 
 export interface ChannelInput {
@@ -93,6 +160,8 @@ export interface ChannelInput {
   readonly secret: string;
   readonly settings: ChannelSettings;
   readonly audience: ChannelAudience;
+  /** 网页嵌入的公开配置（platform 是 web 时才发） */
+  readonly web: WebOptions;
 }
 
 /** 渠道里的一个对话位置：私聊的一个人，或某个群里的一个人。 */
@@ -167,6 +236,48 @@ function parseSettings(value: unknown): ChannelSettings {
     bases: strings(r.bases),
     resources: strings(r.resources),
     identitySource: text(r.identity_source) ?? null,
+    autoCreate: bool(r.auto_create, true),
+    groupMap: groupMapOf(r.group_map),
+    target: text(r.target) ?? null,
+  };
+}
+
+function parseTargetRef(value: unknown): ChannelTargetRef | null {
+  if (!isRecord(value)) return null;
+  const ref = text(value.ref);
+  if (!ref) return null;
+  return { ref, label: str(value.label) ?? '', name: text(value.name) ?? null };
+}
+
+function parseTarget(value: unknown): ChannelTarget | undefined {
+  if (!isRecord(value)) return undefined;
+  const ref = text(value.ref);
+  const name = text(value.name);
+  if (!ref || !name) return undefined;
+  return { ref, label: str(value.label) ?? '', name, answerMode: str(value.answer_mode) ?? '' };
+}
+
+function groupMapOf(value: unknown): Readonly<Record<string, string>> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([name, group]) => (typeof group === 'string' ? [[name, group]] : [])),
+  );
+}
+
+function parseWeb(value: unknown): WebChannel | null {
+  if (!isRecord(value)) return null;
+  const webKey = text(value.web_key);
+  if (!webKey) return null;
+  return {
+    webKey,
+    origins: strings(value.origins),
+    title: str(value.title) ?? '',
+    greeting: str(value.greeting) ?? '',
+    starters: strings(value.starters),
+    color: str(value.color) ?? '',
+    position: value.position === 'left' ? 'left' : 'right',
+    perMinute: num(value.per_minute) ?? DEFAULT_WEB_OPTIONS.perMinute,
+    perDay: num(value.per_day) ?? DEFAULT_WEB_OPTIONS.perDay,
   };
 }
 
@@ -191,6 +302,8 @@ function parseChannel(value: unknown): Channel | undefined {
     statusAt: text(value.status_at) ?? null,
     sessions: num(value.sessions) ?? 0,
     audience: value.audience === 'member' ? 'member' : 'public',
+    web: parseWeb(value.web),
+    target: parseTargetRef(value.target),
   };
 }
 
@@ -250,8 +363,22 @@ function parseIdentitySource(value: unknown): IdentitySource | undefined {
 
 const base = (path = '') => workspacePath(`/channels${path}`);
 
+function webBody(web: WebOptions) {
+  return {
+    origins: web.origins,
+    title: web.title.trim(),
+    greeting: web.greeting.trim(),
+    starters: web.starters,
+    color: web.color.trim(),
+    position: web.position,
+    per_minute: web.perMinute,
+    per_day: web.perDay,
+  };
+}
+
 function body(input: ChannelInput) {
   return {
+    ...(input.platform === 'web' ? { web: webBody(input.web) } : {}),
     name: input.name.trim(),
     platform: input.platform,
     enabled: input.enabled,
@@ -264,6 +391,10 @@ function body(input: ChannelInput) {
       bases: input.settings.bases,
       resources: input.settings.resources,
       identity_source: input.audience === 'member' ? input.settings.identitySource : null,
+      ...(input.platform === 'web' && input.audience === 'member'
+        ? { auto_create: input.settings.autoCreate, group_map: input.settings.groupMap }
+        : {}),
+      ...(input.platform === 'web' ? { target: input.settings.target } : {}),
     },
   };
 }
@@ -285,6 +416,22 @@ export async function setChannelEnabled(id: string, enabled: boolean): Promise<u
   return request(base(`/${seg(id)}/enabled`), { method: 'POST', body: { enabled } });
 }
 
+/** 生成或换一个认证密钥（网页嵌入的认证访问，接入方后端用它签 JWT）：明文只在这一次返回 */
+export async function resetWebSecret(
+  id: string,
+): Promise<{ readonly channel?: Channel; readonly secret: string }> {
+  const body = await request<unknown>(base(`/${seg(id)}/web-secret`), { method: 'POST' });
+  const record = isRecord(body) ? body : {};
+  const secret = text(record.secret);
+  if (!secret) throw new Error('服务返回的数据不完整，请稍后重试');
+  return { channel: parseChannel(record.channel), secret };
+}
+
+/** 换一个发布令牌：旧的嵌入代码、分享链接与已经打开的嵌入页一起失效 */
+export async function resetWebKey(id: string): Promise<Channel | undefined> {
+  return parseChannel(await request<unknown>(base(`/${seg(id)}/web-key`), { method: 'POST' }));
+}
+
 export async function deleteChannel(id: string): Promise<unknown> {
   return request(base(`/${seg(id)}`), { method: 'DELETE' });
 }
@@ -303,6 +450,12 @@ export async function listChannelStrangers(id: string): Promise<readonly Channel
 export async function listChannelAnswerModes(): Promise<readonly ChannelAnswerMode[]> {
   const page = await request<unknown>(base('/answer-modes'));
   return listOf(isRecord(page) ? page.items : [], parseAnswerMode);
+}
+
+/** 网页嵌入能挂的对象（扩展登记的，例如专家）；没有扩展登记时为空 */
+export async function listChannelTargets(): Promise<readonly ChannelTarget[]> {
+  const page = await request<unknown>(base('/targets'));
+  return listOf(isRecord(page) ? page.items : [], parseTarget);
 }
 
 /** 认人可选的组织来源（同平台）；没有能认人的组织来源时为空 */

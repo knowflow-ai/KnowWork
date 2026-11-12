@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .credentials import Clock, new_id, utcnow
 from .errors import EmailTaken, InvalidInput
-from .models import USER_ACTIVE, USER_CHANNEL, USER_DISABLED, USER_PERSON, AuthSession, User
+from .models import USER_ACTIVE, USER_CHANNEL, USER_DISABLED, USER_EXTERNAL, USER_PERSON, AuthSession, User
 from .passwords import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, hash_password, needs_rehash, verify_password
 
 _EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]+$")
@@ -148,6 +148,23 @@ class UserService:
                                       .where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))
                                       .values(revoked_at=now))
             return True
+
+    async def create_external_account(self, name: str) -> UserInfo:
+        """建一个外部用户（网页嵌入的认证访问，channels/web_identity.py）：没有邮箱、没有密码，单点登录也对不上它
+        （不按邮箱认），只能从建它的那个网页嵌入渠道进来。"""
+        async with self._sessionmaker() as session, session.begin():
+            user = User(id=new_id(), email=None, name=name.strip()[:200] or "外部用户", status=USER_ACTIVE,
+                        password_hash=None, kind=USER_EXTERNAL)
+            session.add(user)
+            await session.flush()
+            return to_info(user)
+
+    async def rename(self, user_id: str, name: str) -> None:
+        """外部用户的名字跟着接入方系统走：每次进来带的名字变了就改。"""
+        async with self._sessionmaker() as session, session.begin():
+            user = await session.get(User, user_id, with_for_update=True)
+            if user is not None and user.kind == USER_EXTERNAL and name.strip() and user.name != name.strip()[:200]:
+                user.name = name.strip()[:200]
 
     async def ensure_channel_account(self, user_id: str, name: str) -> UserInfo:
         """建或更新一个渠道账号：没有密码，邮箱用保留域名 .invalid（不会撞上真人，单点登录也不会给出这种邮箱）。

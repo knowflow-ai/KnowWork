@@ -4,7 +4,7 @@
 （空间 owner 与 admin），涉及所有者角色需要 workspace:owner。
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -85,6 +85,27 @@ class AccessService(EnterpriseMixin):
             if not existing:
                 raise NotFound("没有这条授权")
             await tx.remove_rules(*existing)
+
+    async def sync_subject_grants(self, workspace_id: str, subject: str, *, types: Collection[str],
+                                  wanted: Collection[str], action: str = Action.USE) -> None:
+        """系统操作（渠道账号的授权跟着渠道选的资料、挂的对象走，channels/admin.py）：这个主体在 types 这几类资源上的
+        显式授权同步成正好是 wanted（都是 action 这一档），别的类型一概不碰；同一个事务。挂的对象（例如专家）由维护人改，
+        改的人不一定是空间管理员，所以不按调用者判权限，由调用方保证该同步。"""
+        kinds = set(types)
+        sub = Subject.parse(subject)
+        act = parse_action(action)
+        objects = tuple(dict.fromkeys(grantable(Resource.parse(resource, types=self.resource_types), self.added_types)
+                                      for resource in wanted))
+        if any(obj.type not in kinds for obj in objects):
+            raise InvalidInput("要同步的授权超出了这几类资源")
+        defaults = set(R.default_role_policies(workspace_id))
+        targets = [R.permission(sub.key, workspace_id, obj.key, act) for obj in objects]
+        async with self._tx(workspace_id) as tx:
+            await self._require_subject(tx, sub)
+            held = [rule for rule in await store.permissions_of(tx.session, workspace_id, sub.key, None)
+                    if rule not in defaults and rule.values[2].partition(":")[0] in kinds]
+            await tx.remove_rules(*(rule for rule in held if rule not in targets))
+            await tx.add_rules(*(target for target in targets if target not in held and target not in defaults))
 
     async def list_grants(self, actor_id: str, workspace_id: str, *, subject: str | None = None,
                           resource: str | None = None) -> tuple[GrantView, ...]:

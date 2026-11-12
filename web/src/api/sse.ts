@@ -4,6 +4,7 @@
  * 用 fetch 读流而不是 EventSource：能区分 401/404 这类不该重连的失败、能控制退避，
  * 重连时手动带上 Last-Event-ID（与 EventSource 的语义一致，id 形如 `12` 或 `12.0`）。
  */
+import { credentialsFor } from './embedAuth';
 import { messageForStatus, NETWORK_MESSAGE } from './http';
 import { useSessionStore } from '../stores/session';
 import { compareCursor, parseCursor, parseV1Event } from '../features/chat/events/parse';
@@ -108,11 +109,12 @@ async function readOnce(
 ): Promise<void> {
   const headers: Record<string, string> = { Accept: 'text/event-stream' };
   if (position.id) headers['Last-Event-ID'] = position.id;
-  // 浏览器会话是 HttpOnly Cookie，同源请求自动带上
+  // 浏览器会话是 HttpOnly Cookie，同源请求自动带上；网页嵌入页带内存里的嵌入令牌（embedAuth.ts）
+  const auth = credentialsFor(headers);
   const response = await (options.fetchImpl ?? fetch)(options.url, {
-    headers,
+    headers: auth.headers,
     signal,
-    credentials: 'same-origin',
+    credentials: auth.credentials,
   });
   if (!response.ok) {
     const message = messageForStatus(response.status);

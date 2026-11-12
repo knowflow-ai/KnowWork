@@ -10,9 +10,11 @@ from ..db.base import Base
 
 USER_ACTIVE = "active"
 USER_DISABLED = "disabled"
-# 账号种类：person 是人；channel 是渠道账号（IM 机器人用它的身份回答，没有密码、不能登录、不在成员与选人列表里）
+# 账号种类：person 是人；channel 是渠道账号（IM 机器人用它的身份回答，没有密码、不能登录、不在成员与选人列表里）；
+# external 是网页嵌入的认证访问自动建的外部用户（接入方系统认出的人，没有邮箱与密码，只能从那个渠道进来，channels/web_identity.py）
 USER_PERSON = "person"
 USER_CHANNEL = "channel"
+USER_EXTERNAL = "external"
 
 
 class User(Base):
@@ -20,7 +22,7 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("email = lower(email)", name="ck_user_email_lower"),
         CheckConstraint("status in ('active', 'disabled')", name="ck_user_status"),
-        CheckConstraint("kind in ('person', 'channel')", name="ck_user_kind"),
+        CheckConstraint("kind in ('person', 'channel', 'external')", name="ck_user_kind"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)

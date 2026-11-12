@@ -18,6 +18,10 @@ name: release
 # （公开仓库的 ARM 构建机免费，不用 QEMU 模拟，沙箱镜像装 LibreOffice 模拟起来很慢），先推带架构后缀的标签 vX.Y.Z-amd64
 # （、vX.Y.Z-arm64），再合成标签 vX.Y.Z 与 latest：有几个架构，客户的机器都按自己的架构自动拉到对应的那个，部署文件不分两套。
 # 上一版的镜像缺这一版要的架构就不复用、照常重建；依赖镜像同样按这几个架构同步。
+#
+# 昇腾 NPU 上的 MinerU（knowwork-mineru-ascend，可选部署，deploy/docker-compose.mineru-ascend.yml）单独一个任务：只出 ARM64
+# （官方昇腾适配要求鲲鹏 CPU，和 release-arches 无关），有自己的版本号（写在那份编排里），这个版本推过就跳过。
+# 第一次推送后同样要在阿里云控制台把 knowwork-mineru-ascend 改成公开。
 
 on:
   push:
@@ -267,6 +271,91 @@ jobs:
           name: sbom-${{ matrix.name }}
           path: knowwork-${{ matrix.name }}-${{ env.TAG }}.spdx.json
 
+  mineru-ascend:
+    name: 昇腾 MinerU 镜像
+    needs: check
+    # 镜像解开约 24 GB、推送约 11 GB（底座是昇腾的 vLLM 镜像），在 ARM 构建机上原生构建；构建完先冒烟再推，冒烟不过不推
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: 取仓库主机名（ACR_REGISTRY 带命名空间，登录只要主机）
+        run: echo "REGISTRY_HOST=${ACR_REGISTRY%%/*}" >> "$GITHUB_ENV"
+        env:
+          ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+      - name: 登录阿里云容器镜像服务
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_HOST }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: 这个版本推过就跳过；Dockerfile 改了版本号没改就停下
+        id: prior
+        run: |
+          compose=deploy/docker-compose.mineru-ascend.yml
+          dockerfile=deploy/docker/mineru-ascend.Dockerfile
+          # 版本号只写在编排里一处：部署拉哪个版本，这里就构建哪个；它以 MinerU 的版本开头，免得两处对不上
+          version="$(grep -o 'knowwork-mineru-ascend:[0-9][0-9A-Za-z.-]*' "$compose" | head -1 | cut -d: -f2)"
+          [ -n "$version" ] || { echo "::error::$compose 里找不到 knowwork-mineru-ascend 的版本号"; exit 1; }
+          mineru="$(sed -n 's/^ARG MINERU_VERSION=//p' "$dockerfile")"
+          case "$version" in
+            "$mineru"-*) ;;
+            *) echo "::error::镜像版本 $version 要以 Dockerfile 里的 MinerU 版本 $mineru 开头"; exit 1 ;;
+          esac
+          inputs="$(git rev-parse "HEAD:$dockerfile" | cut -c1-16)"
+          image="${{ vars.ACR_REGISTRY }}/knowwork-mineru-ascend:$version"
+          { echo "image=$image"; echo "version=$version"; echo "inputs=$inputs"; } >> "$GITHUB_OUTPUT"
+          if config="$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' 2>/dev/null)"; then
+            # 单架构是一份配置，多架构是按平台的一组
+            theirs="$(printf '%s' "$config" \
+              | jq -r '[if has("config") then . else .[] end | .config.Labels["io.knowwork.inputs"] // empty] | first // empty')"
+            if [ "$theirs" = "$inputs" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "$image 已经是这份 Dockerfile 构建的，跳过"
+              exit 0
+            fi
+            # 同一个版本号不覆盖：已经部署的客户拉到的会悄悄变成另一份
+            echo "::error::$image 已经有了，但不是这份 Dockerfile 构建的（那份 ${theirs:-没有指纹}，这次 $inputs）：改了 Dockerfile 要在 $compose 里升版本号（例如 $version-r2）"
+            exit 1
+          fi
+      - name: 腾磁盘（底座解开十几 GB，构建机自带的工具链用不上）
+        if: steps.prior.outputs.skip != 'true'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache \
+            /usr/local/share/boost /usr/share/swift /usr/local/share/powershell || true
+          docker system prune -af > /dev/null
+          df -h /
+      - name: 构建
+        if: steps.prior.outputs.skip != 'true'
+        env:
+          IMAGE: ${{ steps.prior.outputs.image }}
+        run: |
+          docker build --file deploy/docker/mineru-ascend.Dockerfile \
+            --label "org.opencontainers.image.version=${{ steps.prior.outputs.version }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "io.knowwork.inputs=${{ steps.prior.outputs.inputs }}" \
+            --tag "$IMAGE" .
+          docker image inspect --format '{{.Size}}' "$IMAGE" | awk '{printf "镜像解开后 %.1f GB\n", $1 / 1e9}'
+          df -h /
+      - name: 冒烟（没有 NPU：模型在不在、接口起不起得来、CPU 上解析一页 PDF）
+        if: steps.prior.outputs.skip != 'true'
+        run: .github/scripts/mineru-ascend-smoke.sh "${{ steps.prior.outputs.image }}"
+      - name: 推送（断了重试，已经传上去的层不重传）
+        if: steps.prior.outputs.skip != 'true'
+        env:
+          IMAGE: ${{ steps.prior.outputs.image }}
+        run: |
+          for attempt in 1 2 3; do
+            docker push "$IMAGE" && exit 0
+            echo "第 $attempt 次推送失败，30 秒后重试"
+            sleep 30
+          done
+          exit 1
+
   mirrors:
     name: 同步依赖镜像
     needs: check
@@ -312,7 +401,7 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [check, images, manifests, reuse, mirrors]
+    needs: [check, images, manifests, reuse, mirrors, mineru-ascend]
     # images（连同 manifests）、reuse 有一个可能因为没有要做的而跳过，跳过不算失败；检查没过或任何一步失败都不建 Release
     if: >-
       always() && needs.check.result == 'success' && needs.mirrors.result == 'success'

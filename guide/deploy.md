@@ -2,7 +2,7 @@
 
 ## 环境要求
 
-- Linux，x86_64。ARM64（aarch64）不是每一版都发：更新日志里写了有 ARM64 的版本才有（v0.0.5 有），有的话同一个标签按机器架构
+- Linux，x86_64。ARM64（aarch64）不是每一版都发：更新日志里写了有 ARM64 的版本才有（v0.0.5、v0.1.0 有），有的话同一个标签按机器架构
   自动拉取；ARM 服务器安装、升级前先看一眼要装的那一版。ARM 服务器还要看 `getconf PAGESIZE`：已验证的是 4096（4K 内存页）；
   65536（64K 内存页，部分国产操作系统默认）还没验证过，上线前先在同款系统上把整套跑一遍；
 - Docker 24 以上，Docker Compose v2.24 以上；
@@ -77,10 +77,33 @@ deploy/install.sh --timeout 600
 
 对话附件里的 PDF、Word、PPT 在沙箱里直接提取文字，用不着 MinerU；扫描件和图片要识别文字，才用得上 MinerU（知识库的文档解析也用它）。部署后在「管理后台 → 模型 → 文档解析」里填 MinerU 地址，保存后几秒内生效，不用重启；也可以在 `.env` 里用 `KNOWWORK_MINERU_BASE_URL` 给个默认值，后台配了以后台为准。两边都没配时，扫描件附件会提示要配文档解析服务，原件照样交给模型。
 
+### 昇腾 NPU 上的 MinerU
+
+ARM64 部署（鲲鹏 CPU + Atlas A2 / 910B NPU）用昇腾版的 MinerU：安装时加 `--mineru-ascend`，在本机 NPU 上起 MinerU，附件与
+知识库的文档解析默认就走它，不用在管理后台另填。镜像照 MinerU 官方的昇腾适配构建（MinerU 3.4.5，模型在镜像里，运行时不联网），
+只有 ARM64；下载约 11 GB、解开约 24 GB，磁盘留 30 GB 以上。
+
+```sh
+npu-smi info                      # 先确认驱动装好、看哪张卡空闲
+deploy/install.sh --mineru-ascend # 装过以后再跑 install.sh 不用再带
+```
+
+- 默认用 0 号卡，两个服务（`mineru-vlm` 是 VLM 推理，`mineru-api` 是解析接口）在同一张卡上，VLM 占一半内存。卡上跑着别的模型时
+  一定要换：`.env` 里写 `KNOWWORK_MINERU_NPU=<空闲的卡号>`，再跑一次 `install.sh`；分卡、调比例的写法见
+  `deploy/docker-compose.mineru-ascend.yml` 开头；
+- 第一次要把模型加载到卡上，几分钟：`docker compose ps` 里 `mineru-vlm`、`mineru-api` 都是 healthy 才能解析；
+- 两个服务只在内部网络上，不映射到宿主机、不出公网，只有 api、worker 连得到；照官方的启动方式，容器是 privileged，宿主机的驱动、
+  `npu-smi` 只读挂进去；
+- 管理后台「模型 → 文档解析」里填过别的地址的，以后台为准：要改用这一套，把 MinerU 地址填成 `http://mineru-api:8000`、
+  VLM 服务地址填成 `http://mineru-vlm:30000`；
+- 不用了：把 `.env` 里 `COMPOSE_FILE` 的 `docker-compose.mineru-ascend.yml` 去掉，再跑一次 `install.sh`；
+- 只支持 Atlas A2；A3、300I Duo 要换底座重新构建（`deploy/docker/mineru-ascend.Dockerfile` 开头有写法）；
+- 这个镜像只在没有 NPU 的构建机上验证过（模型、接口、CPU 上解析一页），还没在昇腾机器上跑过：上线前先解析几份自己的文档看看。
+
 ## 升级
 
 1. 先备份数据（见下一节）；
-2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.0.9`（换成要升级到的版本）。编排文件
+2. 换上新版本的部署文件：在仓库目录执行 `git fetch --tags && git checkout v0.1.0`（换成要升级到的版本）。编排文件
    可能随版本变，只改版本号会用旧的编排文件跑新镜像。`deploy/.env` 不在仓库里，切换版本不会动它；
 3. 把 `deploy/.env` 的 `KNOWWORK_VERSION` 改成新版本；
 4. 重新执行 `deploy/install.sh`：它会拉新镜像（包括会话沙箱镜像）并重启服务。

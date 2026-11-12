@@ -1,11 +1,12 @@
 #!/bin/sh
 # KnowWork 一条命令启动：检查 Docker 环境 → 准备 .env → 拉镜像（失败最多重试 3 次）→ 启动 → 轮询 /ready。
 #
-# 用法：deploy/install.sh [--url 地址] [--no-pull] [--no-sandbox] [--timeout 秒]
-#   --url 地址    浏览器访问的外部地址，例如 http://公网IP:8080 或 https://域名（默认取本机网卡上的 IP）
-#   --no-pull     跳过拉取（离线部署或使用本地构建的镜像）
-#   --no-sandbox  不启用会话沙箱（不挂 docker.sock；模型不能执行命令，也生成不了 Word、Excel）
-#   --timeout N   等待就绪的最长秒数（默认取 .env 的 KNOWWORK_READY_TIMEOUT，否则 300）
+# 用法：deploy/install.sh [--url 地址] [--no-pull] [--no-sandbox] [--mineru-ascend] [--timeout 秒]
+#   --url 地址        浏览器访问的外部地址，例如 http://公网IP:8080 或 https://域名（默认取本机网卡上的 IP）
+#   --no-pull         跳过拉取（离线部署或使用本地构建的镜像）
+#   --no-sandbox      不启用会话沙箱（不挂 docker.sock；模型不能执行命令，也生成不了 Word、Excel）
+#   --mineru-ascend   在本机昇腾 NPU 上起 MinerU 解析文档（鲲鹏 ARM64 + Atlas A2）；装过以后再跑不用再带
+#   --timeout N       等待就绪的最长秒数（默认取 .env 的 KNOWWORK_READY_TIMEOUT，否则 300）
 set -eu
 
 MIN_DOCKER_VERSION="24.0.0"
@@ -17,13 +18,14 @@ PULL_RETRY_DELAY="${KNOWWORK_PULL_RETRY_DELAY:-5}"
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 SANDBOX_FILE="docker-compose.sandbox.yml"
+MINERU_ASCEND_FILE="docker-compose.mineru-ascend.yml"
 ENV_EXAMPLE="$SCRIPT_DIR/.env.example"
 
 log() { printf '[knowwork] %s\n' "$*"; }
 die() { printf '[knowwork] 错误：%s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # version_ge A B：A >= B（只比较数字段，忽略预发布后缀）
@@ -111,11 +113,38 @@ prepare_env() {
     set_env COMPOSE_FILE "${files:-docker-compose.yml}"
     log "不启用会话沙箱：模型不能执行命令，也生成不了 Word、Excel"
   fi
+  prepare_mineru_ascend
   case "$(env_value KNOWWORK_PUBLIC_BASE_URL)" in
     http://*) [ "$(env_value KNOWWORK_COOKIE_SECURE)" = "true" ] \
       && log "提醒：访问地址是 http，但 KNOWWORK_COOKIE_SECURE=true，浏览器不会保存登录 Cookie" ;;
   esac
   return 0
+}
+
+# 有昇腾 NPU 的鲲鹏机器：设备节点在、驱动装了
+ascend_host() {
+  case "$(uname -m)" in aarch64|arm64) ;; *) return 1 ;; esac
+  [ -e /dev/davinci_manager ] && [ -d /usr/local/Ascend/driver ]
+}
+
+# 昇腾上的 MinerU：带 --mineru-ascend 时把叠加文件加进 COMPOSE_FILE（之后一直带着）。不自动打开：昇腾机器上卡常被别的模型
+# 占着，自己起来会去抢 0 号卡的内存；有 NPU 而没打开时只提示
+prepare_mineru_ascend() {
+  if compose_files | grep -qx "$MINERU_ASCEND_FILE"; then
+    mineru_ascend=1
+    return 0
+  fi
+  if [ "$mineru_ascend" -eq 0 ]; then
+    ascend_host && log "提示：这台机器有昇腾 NPU，加 --mineru-ascend 可以在本机起 MinerU 解析文档（默认用 0 号卡，卡上跑着别的模型时先用 npu-smi info 看哪张空闲，写进 .env 的 KNOWWORK_MINERU_NPU）"
+    return 0
+  fi
+  case "$(uname -m)" in
+    aarch64|arm64) ;;
+    *) die "--mineru-ascend 只能在鲲鹏（ARM64）机器上用：昇腾版 MinerU 只有 ARM64 镜像" ;;
+  esac
+  ascend_host || die "--mineru-ascend 要本机有昇腾 NPU：没找到 /dev/davinci_manager 或 /usr/local/Ascend/driver，先装好 NPU 驱动，npu-smi info 能看到卡"
+  set_env COMPOSE_FILE "$(compose_files | paste -s -d: -):$MINERU_ASCEND_FILE"
+  log "启用昇腾 NPU 上的 MinerU（${MINERU_ASCEND_FILE}，用 $(env_value KNOWWORK_MINERU_NPU | grep . || echo 0) 号卡）：附件与知识库的文档解析默认走它"
 }
 
 # .env 里 COMPOSE_FILE 列出的编排文件（冒号分隔，相对 deploy/），转成 -f 参数
@@ -192,12 +221,14 @@ wait_ready() {
 main() {
   skip_pull=0
   no_sandbox=0
+  mineru_ascend=0
   public_url=""
   timeout=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-pull) skip_pull=1 ;;
       --no-sandbox) no_sandbox=1 ;;
+      --mineru-ascend) mineru_ascend=1 ;;
       --url)
         [ $# -ge 2 ] || die "--url 需要一个地址，例如 http://公网IP:8080"
         case "$2" in http://*|https://*) public_url="$2" ;; *) die "--url 要以 http:// 或 https:// 开头" ;; esac
@@ -222,6 +253,8 @@ main() {
   log "启动服务"
   compose up -d --remove-orphans
   wait_ready
+  [ "$mineru_ascend" -eq 0 ] \
+    || log "昇腾 MinerU 第一次要把模型加载到卡上，几分钟：cd $SCRIPT_DIR && docker compose ps，mineru-vlm、mineru-api 都 healthy 就能解析"
 }
 
 main "$@"

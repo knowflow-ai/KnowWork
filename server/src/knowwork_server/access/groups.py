@@ -1,6 +1,7 @@
 """用户组。成员写成 g 规则 user -> group:<组>。"""
 
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -79,6 +80,33 @@ class GroupsMixin(OrgMixin):
                 raise NotFound("该用户不在此用户组")
             await tx.session.delete(existing)
             await tx.remove_rules(R.group_member(user_id, group_id, workspace_id))
+
+    async def sync_managed_groups(self, workspace_id: str, user_id: str, *, managed: Collection[str],
+                                  wanted: Collection[str]) -> None:
+        """系统操作（网页嵌入的认证访问按接入方系统给的组，channels/web_identity.py）：把这个人在 managed 这几个用户组里的
+        成员身份同步成 wanted，别的组一概不碰。组已经删了的跳过；人不是空间成员时什么也不做。"""
+        validate_id(user_id, "user_id")
+        managed_ids = {validate_id(group_id, "用户组 id") for group_id in managed}
+        if not managed_ids:
+            return
+        targets = set(wanted) & managed_ids
+        async with self._tx(workspace_id) as tx:
+            try:
+                await self._require_member(tx, user_id)
+            except Conflict:
+                return
+            alive = set((await tx.session.scalars(select(UserGroup.id).where(
+                UserGroup.workspace_id == workspace_id, UserGroup.id.in_(managed_ids)))).all())
+            rows = (await tx.session.scalars(select(UserGroupMember).where(
+                UserGroupMember.workspace_id == workspace_id, UserGroupMember.user_id == user_id,
+                UserGroupMember.group_id.in_(managed_ids)))).all()
+            current = {row.group_id: row for row in rows}
+            for group_id in sorted((targets & alive) - set(current)):
+                tx.session.add(UserGroupMember(group_id=group_id, user_id=user_id, workspace_id=workspace_id))
+                await tx.add_rules(R.group_member(user_id, group_id, workspace_id))
+            for group_id in sorted(set(current) - targets):
+                await tx.session.delete(current[group_id])
+                await tx.remove_rules(R.group_member(user_id, group_id, workspace_id))
 
     async def list_groups(self, actor_id: str, workspace_id: str) -> tuple[GroupView, ...]:
         self._require(actor_id, workspace_id, Action.USE)

@@ -12,10 +12,10 @@ import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
@@ -31,6 +31,7 @@ from ..kernel.contract import (
     SessionNotFound,
     TurnInput,
 )
+from ..net import client_ip
 from ..profile.errors import ProfileUnavailable
 from ..profile.snapshot import MAX_DROPPED, MAX_SELECTED, NO_SELECTION, TurnSelection
 from .answer_modes import AnswerModes, AnswerModeUnavailable, ModeContext, UnknownAnswerMode
@@ -51,13 +52,40 @@ QUESTION_ID = Path(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
 
 
 class Actor(BaseModel):
-    """会话接口眼里的调用者：谁、在哪个工作空间。"""
+    """会话接口眼里的调用者：谁、在哪个工作空间。从网页嵌入进来的另带渠道，公开访问还有访客。"""
 
     user_id: str
     workspace_id: str
+    channel_id: str | None = None
+    visitor: str | None = None
 
 
 ActorDependency = Callable[..., Awaitable[Actor]]
+
+
+EMBED_SOURCE = "web"  # 网页嵌入开的会话记的来源（conversation.source，同 IM 渠道记平台）
+
+
+class Throttled(Exception):
+    """网页嵌入问得太勤（限次，channels/limits.py）；消息直接给用户看。"""
+
+
+class Embedded(Protocol):
+    """网页嵌入的会话（channels/web.py），实现在 channels/web.py。
+
+    带着渠道的调用者只能碰自己从这个渠道开的会话：公开访问时渠道账号是所有访客共用的，按访客分开（核对在调用者依赖里，
+    principals.conversation_actor，所有带会话 id 的接口一处管住）；这里管新建时记下会话位置、列表只列自己的、
+    新开对话与发消息前限次。"""
+
+    async def owns(self, actor: Actor, conversation_id: str) -> bool: ...
+
+    async def started(self, actor: Actor, conversation_id: str) -> None: ...
+
+    async def mine(self, actor: Actor) -> tuple[str, ...]: ...
+
+    async def admit(self, actor: Actor, client_ip: str) -> None: ...
+
+    async def admit_new(self, actor: Actor, client_ip: str) -> None: ...
 
 
 
@@ -233,7 +261,9 @@ def feedback_view(item: Feedback) -> dict:
 
 
 def build_router(service: ConversationService, current_actor: ActorDependency,
-                 feedback: FeedbackStore | None = None, scopes: ConversationScopes | None = None) -> APIRouter:
+                 feedback: FeedbackStore | None = None, scopes: ConversationScopes | None = None,
+                 embedded: Embedded | None = None) -> APIRouter:
+    """embedded：网页嵌入（channels/web.py）。没给时带着渠道的调用者新建对话一律 403。"""
     router = APIRouter(prefix="/api/workspaces/{workspace_id}/conversations")
     Who = Annotated[Actor, Depends(current_actor)]
 
@@ -243,24 +273,48 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         except ConversationNotFound as error:
             raise HTTPException(status_code=404, detail="会话不存在") from error
 
+    async def embedded_mine(who: Actor) -> list[Conversation]:
+        """从网页嵌入进来的人只看得到自己从这个渠道开的会话（公开访问时渠道账号是大家共用的）。"""
+        found: list[Conversation] = []
+        for conversation_id in await embedded.mine(who) if embedded is not None else ():
+            try:
+                found.append(await service.get(conversation_id=conversation_id, workspace_id=who.workspace_id,
+                                               user_id=who.user_id))
+            except ConversationNotFound:
+                continue
+        return found
+
     @router.post("", status_code=201)
-    async def create(body: CreateConversation, who: Who):
+    async def create(body: CreateConversation, who: Who, request: Request):
         """新建对话"""
+        if who.channel_id is not None:
+            if embedded is None:
+                raise HTTPException(status_code=403, detail="网页嵌入没有打开")
+            try:
+                await embedded.admit_new(who, client_ip(request))
+            except Throttled as error:
+                raise HTTPException(status_code=429, detail=str(error)) from error
         try:
             selection = body.first_turn.selection() if body.first_turn else NO_SELECTION
             conversation = await service.create(workspace_id=who.workspace_id, user_id=who.user_id, title=body.title,
                                                 selection=selection,
-                                                answer_mode=body.first_turn.answer_mode if body.first_turn else None)
+                                                answer_mode=body.first_turn.answer_mode if body.first_turn else None,
+                                                channel_id=who.channel_id,
+                                                source=EMBED_SOURCE if who.channel_id else "")
         except CREDENTIAL_ERRORS as error:
             raise credential_error(error) from error
         except HOST_ERRORS as error:
             raise upstream_error(error, "create conversation") from error
+        if who.channel_id is not None:
+            await embedded.started(who, conversation.id)
         return {"id": conversation.id, "title": conversation.title}
 
     @router.get("")
     async def list_conversations(who: Who, limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 30,
                                  before: datetime | None = None):
         """列出我的对话"""
+        if who.channel_id is not None:
+            return {"items": [conversation_view(c) for c in await embedded_mine(who)], "next": None}
         page = await service.list_page(workspace_id=who.workspace_id, user_id=who.user_id, limit=limit, before=before)
         return {"items": [conversation_view(c) for c in page.items],
                 "next": page.next.isoformat() if page.next else None}
@@ -268,6 +322,8 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
     @router.get("/search")
     async def search(who: Who, q: Annotated[str, Query(min_length=1, max_length=100)]):
         """侧栏的搜索：标题与每轮问的话里有 q 的对话，最近有动静的在前；snippet 是命中的那句问话的一段。"""
+        if who.channel_id is not None:
+            return {"items": []}  # 嵌入页没有侧栏，也不让从这里搜到别的会话
         hits = await service.search(workspace_id=who.workspace_id, user_id=who.user_id, query=q)
         return {"items": [{**conversation_view(h.conversation), "snippet": h.snippet} for h in hits]}
 
@@ -298,9 +354,14 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         return Response(status_code=204)
 
     @router.post("/{conversation_id}/messages", status_code=202)
-    async def send(conversation_id: str, body: SendMessage, who: Who):
+    async def send(conversation_id: str, body: SendMessage, who: Who, request: Request):
         """发消息（提问或插话）"""
         conversation = await owned(conversation_id, who)
+        if who.channel_id is not None and embedded is not None:
+            try:
+                await embedded.admit(who, client_ip(request))
+            except Throttled as error:
+                raise HTTPException(status_code=429, detail=str(error)) from error
         try:
             message_id = await service.send(conversation, body.turn(), body.selection(),
                                             tuple(body.attachments or ()))

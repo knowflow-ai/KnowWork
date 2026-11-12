@@ -15,6 +15,7 @@ const ChatPage = lazy(() => import('../features/chat/ChatPage'));
 const LoginPage = lazy(() => import('../features/auth/LoginPage'));
 const InvitePage = lazy(() => import('../features/auth/InvitePage'));
 const SetupPage = lazy(() => import('../features/auth/SetupPage'));
+const EmbedPage = lazy(() => import('../features/embed/EmbedPage'));
 const SettingsPage = lazy(() => import('../features/settings/SettingsPage'));
 const MySkillsPage = lazy(() => import('../features/skills/SkillsPage'));
 const SkillsPage = lazy(() => import('../features/admin/skills/SkillsPage'));
@@ -63,6 +64,9 @@ export const buildRoutes = (): RouteObject[] => [
   { path: '/login', element: page(<LoginPage />) },
   { path: '/invite', element: page(<InvitePage />) },
   { path: '/setup', element: page(<SetupPage />) },
+  // 网页嵌入（嵌在接入方网页里）与分享链接：不登录，凭发布令牌换会话（features/embed）
+  { path: '/embed/:key', element: page(<EmbedPage />) },
+  { path: '/s/:key', element: page(<EmbedPage standalone />) },
   // 企业微信等机器人发来的绑定链接：要登录，不进主界面（不带侧栏）
   {
     path: '/',

@@ -1,4 +1,4 @@
-import { loadEnv } from 'vite';
+import { build, loadEnv, type Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -8,9 +8,31 @@ const extensionEntry = (mode: string) => loadEnv(mode, '.', 'KNOWWORK_').KNOWWOR
 // 扩展包的根：入口文件往上两级（<包>/src/index.ts）
 const extensionRoot = (entry: string) => entry.replace(/[\\/][^\\/]+[\\/][^\\/]+$/, '');
 
+// 开发服务器上也给 /embed/v1/widget.js（网页嵌入脚本）：每次请求按 vite.widget.config.ts 在内存里打一份，
+// 本机就能把嵌入代码贴进别的页面试；线上由网关给构建好的文件（deploy/gateway/nginx.conf）
+const widgetInDev = (): Plugin => ({
+  name: 'knowwork-widget-dev',
+  apply: 'serve',
+  configureServer(server) {
+    server.middlewares.use('/embed/v1/widget.js', (_request, response) => {
+      build({ configFile: 'vite.widget.config.ts', logLevel: 'silent', build: { write: false } })
+        .then((result) => {
+          const outputs = Array.isArray(result) ? result : [result];
+          const chunk = outputs.flatMap((item) => ('output' in item ? item.output : []))[0];
+          response.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+          response.end(chunk && 'code' in chunk ? chunk.code : '');
+        })
+        .catch((error: unknown) => {
+          response.statusCode = 500;
+          response.end(String(error));
+        });
+    });
+  },
+});
+
 // 前端只连业务服务：开发时把 /api（含 SSE 事件流）代理到本机业务服务。
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), widgetInDev()],
   resolve: {
     alias: {
       // 扩展的前端入口：开源构建用空实现（以 / 开头是相对项目根）；构建带扩展的镜像时换成扩展包的入口

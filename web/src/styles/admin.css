@@ -435,3 +435,68 @@
   justify-content: space-between;
   gap: 12px;
 }
+
+/* 网页嵌入的「嵌入代码」（features/admin/channels/EmbedCodeSheet.tsx）：每段一个标题、一句说明、可以整段复制的代码 */
+.kw-embed-snippet {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.kw-embed-snippet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kw-embed-snippet h3 {
+  margin: 0;
+  font-size: var(--kw-font-base);
+  font-weight: 600;
+}
+
+.kw-embed-snippet p {
+  margin: 0;
+}
+
+.kw-embed-code {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--kw-border-secondary);
+  border-radius: var(--kw-radius-card);
+  background: var(--color-surface-secondary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.kw-embed-reset {
+  margin-top: 28px;
+}
+
+/* 认证访问的认证密钥（只显示一次）与组对照（一行：接入方的组、用户组、删掉） */
+.kw-embed-secret {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.kw-embed-secret .kw-embed-code {
+  flex: 1;
+}
+
+.kw-group-map {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kw-group-map-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}

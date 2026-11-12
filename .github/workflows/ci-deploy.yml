@@ -5,9 +5,9 @@ name: ci-deploy
 on:
   push:
     branches: [main]
-    paths: ["deploy/**", ".github/workflows/ci-deploy.yml"]
+    paths: ["deploy/**", ".github/scripts/**", ".github/workflows/ci-deploy.yml"]
   pull_request:
-    paths: ["deploy/**", ".github/workflows/ci-deploy.yml"]
+    paths: ["deploy/**", ".github/scripts/**", ".github/workflows/ci-deploy.yml"]
 
 concurrency:
   group: ci-deploy-${{ github.ref }}
@@ -30,8 +30,10 @@ jobs:
         run: |
           docker compose -f deploy/docker-compose.yml config --quiet
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.sandbox.yml config --quiet
+          # 昇腾 MinerU 是叠加文件，要和主编排一起校验
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.sandbox.yml -f deploy/docker-compose.mineru-ascend.yml config --quiet
       - name: shellcheck
-        run: shellcheck -s sh deploy/install.sh deploy/runtime-host/entrypoint.sh deploy/postgres/initdb/*.sh
+        run: shellcheck -s sh deploy/install.sh deploy/runtime-host/entrypoint.sh deploy/postgres/initdb/*.sh .github/scripts/*.sh
       - name: hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:

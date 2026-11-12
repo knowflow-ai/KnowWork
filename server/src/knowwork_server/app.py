@@ -31,6 +31,8 @@ from .audit import AUDIT_SCOPE, AuditModule, build_audit
 from .audit import build_router as audit_router
 from .channels import Channels, build_channels
 from .channels import build_router as channels_router
+from .channels import build_web_router as web_channel_router
+from .channels.targets import ChannelTargets
 from .config import Settings
 from .conversations.activation import build_activation_router
 from .conversations.answer_modes import AnswerModes
@@ -105,6 +107,7 @@ from .principals import (
     MODELS_SCOPE,
     TOOLS_SCOPE,
     WORKSPACE_SCOPE,
+    EmbedGuard,
     bound_principal,
     conversation_actor,
     knowledge_reader,
@@ -251,6 +254,7 @@ class Runtime:
         if self.policy_follower is not None:
             await self.policy_follower
         await self.channels.supervisor.stop()
+        await self.channels.aclose()
         await self.knowledge_mcp.stop()
         await self.workflows.engine.aclose()
         await self.tool_credentials.stop()
@@ -527,6 +531,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     knowledge_reader_ = KnowledgeReader(knowledge.service, links)
     knowledge_mcp = KnowledgeMcp(knowledge_reader_, knowledge_reader(identity, access))
     im_identities = ImIdentities()  # 扩展登记组织来源，渠道认人时用（同一个实例交给两边）
+    embed_guard = EmbedGuard(access)  # 扩展里嵌入也能用的接口碰会话前的核对；网页渠道建好后 bind
+    channel_targets = ChannelTargets()  # 网页渠道能挂的对象：扩展登记（例如专家），同一个实例交给渠道
     context = ApiContext(settings=settings, engine=engine, sessionmaker=scoped,
                          global_sessionmaker=global_sessionmaker, access=access,
                          models=ModelClient(models.catalog, routed_http),
@@ -540,9 +546,19 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          im_identities=im_identities,
                          background=LocalBackground(service, member=lambda user_id, workspace_id:
                                                     access.check(user_id, workspace_id, WORKSPACE_RESOURCE, Action.USE)),
+                         embed_guard=embed_guard.check, channel_targets=channel_targets,
                          principal=lambda scope: scoped_principal(identity, scope) if scope else bound_principal(identity))
     extensions, extension_routers, extension_internal = _setup_extensions(extensions or installed_extensions(),
                                                                           context)
+    channels = build_channels(master_key, scoped, global_sessionmaker, held_engine, access, service,
+                              accounts=identity.users, catalogs=knowledge.citations, sign=links.sign,
+                              identities=im_identities, public_base_url=settings.public_base_url,
+                              answer_modes=answer_modes, redis_url=settings.redis_url, targets=channel_targets)
+    # 网页嵌入（channels/web.py）：会话令牌由渠道模块认；网页渠道开的会话按渠道定回答方式与资料。
+    # 范围提供者排在扩展的后面：扩展认领了的会话（例如挂了专家的）按扩展的来
+    identity.embed.set(channels.web.resolve)
+    embed_guard.bind(channels.web)
+    scopes.add(channels.web.scope)
     return Runtime(settings=settings, kernel=kernel, signer=signer, writer=writer, broadcaster=broadcaster,
                    pump=pump, service=service, rotator=rotator, host_models=host_models,
                    tool_credentials=tool_credentials,
@@ -561,10 +577,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                           identity.users.get_many),
                    insights=build_insights(scoped, access, timezone=settings.usage_timezone,
                                            base_names=partial(_base_names, knowledge.service)),
-                   channels=build_channels(master_key, scoped, global_sessionmaker, held_engine, access, service,
-                                           accounts=identity.users, catalogs=knowledge.citations, sign=links.sign,
-                                           identities=im_identities, public_base_url=settings.public_base_url,
-                                           answer_modes=answer_modes),
+                   channels=channels,
                    jobs=JobsAdmin(global_sessionmaker), parsers=parsers,
                    global_sessionmaker=global_sessionmaker,
                    engine=engine, held_engine=held_engine, upstream=upstream, routed_http=routed_http,
@@ -623,17 +636,23 @@ def create_public_app(runtime: Runtime) -> FastAPI:
     app.include_router(mcp_here_router(runtime.mcp.here, scoped_principal(identity, TOOLS_SCOPE)))
     app.include_router(mcp_me_router(runtime.mcp.me, bound_principal(identity)))
     app.include_router(mcp_oauth_router(runtime.mcp.login, bound_principal(identity)))
-    actor = conversation_actor(identity, access)
+    # 网页嵌入（channels/web.py）也走这些对话接口：actor 认嵌入身份并按渠道、访客管住会话；
+    # 运行详情（每一步的输入输出）不给嵌入身份看；附件不给公开访问的访客（他们共用一个渠道账号）
+    web = runtime.channels.web
+    actor = conversation_actor(identity, access, web)
+    no_embed = conversation_actor(identity, access)
+    no_visitor = conversation_actor(identity, access, web, visitors=False)
     app.include_router(mention_router(runtime.mention_sources, actor))  # 排在会话路由前，见 mention_api
-    app.include_router(conversation_router(runtime.service, actor, runtime.feedback, runtime.scopes))
+    app.include_router(conversation_router(runtime.service, actor, runtime.feedback, runtime.scopes, embedded=web))
     app.include_router(build_answer_modes_router(runtime.answer_modes, actor))
     app.include_router(chat_models_router(runtime.models.catalog, runtime.models.recorder, actor))
     app.include_router(citations_router(runtime.knowledge.citations, runtime.service, actor, runtime.links))
-    app.include_router(debug_router(runtime.debug, runtime.service, actor))
+    app.include_router(debug_router(runtime.debug, runtime.service, no_embed))
     app.include_router(build_admin_router(runtime.runs, scoped_principal(identity, WORKSPACE_SCOPE)))
     app.include_router(insights_router(runtime.insights, scoped_principal(identity, WORKSPACE_SCOPE)))
     app.include_router(channels_router(runtime.channels.admin, scoped_principal(identity, WORKSPACE_SCOPE)))
-    app.include_router(attachments_router(runtime.attachments.service, runtime.service, actor))
+    app.include_router(web_channel_router(web))
+    app.include_router(attachments_router(runtime.attachments.service, runtime.service, no_visitor))
     app.include_router(artifacts_router(runtime.artifacts.service, runtime.service, actor,
                                         settle=runtime.artifact_observer.settle))
     app.include_router(documents_router(runtime.previews, runtime.service, actor))

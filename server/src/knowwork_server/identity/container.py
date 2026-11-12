@@ -1,7 +1,7 @@
 """身份模块的装配：各服务共用一个 sessionmaker 与时钟，对外暴露 get_principal 与 require_scopes 依赖。"""
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 from fastapi import HTTPException, Request
@@ -13,6 +13,7 @@ from .api_keys import ApiKeyService
 from .config import IdentityConfig
 from .credentials import Clock, utcnow
 from .directory_accounts import DirectoryAccounts
+from .embed import EMBED_PREFIX, EMBED_SCOPES, EmbedCredentials
 from .external import ExternalSignIn
 from .hooks import UserCreatedHook
 from .invitations import InvitationService
@@ -58,9 +59,16 @@ class Identity:
     redirect_logins: RedirectLogins
     # 域名根目录的校验文件（企业微信验证可信域名），扩展登记按文件名查内容的函数
     verify_files: VerifyFiles
+    # 网页嵌入的会话令牌：渠道模块登记解析函数（identity/embed.py）
+    embed: EmbedCredentials = field(default_factory=EmbedCredentials)
 
     async def get_principal(self, request: Request) -> Principal:
-        """先认 Cookie 会话，再认 `Authorization: Bearer ak_...`；都不成立统一 401，不区分原因。"""
+        """先认 Cookie 会话，再认 `Authorization: Bearer ak_...`；都不成立统一 401，不区分原因。
+
+        网页嵌入的令牌（emb_）只给声明了范围的接口用（require_scopes），这里一律 401。带着它的请求就算同时带着
+        登录 Cookie 也不退回 Cookie：显式给的凭证优先，免得嵌入页里混进浏览器里登录着的那个人。"""
+        if _bearer(request).startswith(EMBED_PREFIX):
+            raise unauthorized()
         token = request.cookies.get(self.config.session_cookie_name)
         if token:
             principal = await self.sessions.resolve(token)
@@ -76,16 +84,33 @@ class Identity:
         raise unauthorized()
 
     def require_scopes(self, *scopes: str) -> Callable[[Request], Awaitable[Principal]]:
-        """依赖工厂：API Key 必须带齐所需范围，否则 403；会话身份不受范围限制。"""
+        """依赖工厂：API Key 必须带齐所需范围，否则 403；会话身份不受范围限制。
+        网页嵌入的令牌只在所需范围都在嵌入身份能用的范围里时才认（不声明范围的也不认），否则 403。"""
         required = tuple(scopes)
+        embeddable = bool(required) and set(required) <= EMBED_SCOPES
 
         async def dependency(request: Request) -> Principal:
-            principal = await self.get_principal(request)
+            credential = _bearer(request)
+            if credential.startswith(EMBED_PREFIX):
+                if not embeddable:
+                    raise HTTPException(status_code=403, detail=FORBIDDEN_SCOPE)
+                principal = await self.embed.resolve(credential)
+                if principal is None:
+                    raise unauthorized()
+                note_principal(principal)
+            else:
+                principal = await self.get_principal(request)
             if not principal.allows(*required):
                 raise HTTPException(status_code=403, detail=FORBIDDEN_SCOPE)
             return principal
 
         return dependency
+
+
+def _bearer(request: Request) -> str:
+    """`Authorization: Bearer <凭证>` 里的凭证；没有或不是 Bearer 时为空串。"""
+    scheme, _, credential = (request.headers.get("authorization") or "").partition(" ")
+    return credential.strip() if scheme.lower() == "bearer" else ""
 
 
 def build_identity(sessionmaker: async_sessionmaker, config: IdentityConfig, *,

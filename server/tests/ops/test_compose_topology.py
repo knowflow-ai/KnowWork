@@ -16,6 +16,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 COMPOSE = REPO / "deploy" / "docker-compose.yml"
 SANDBOX = REPO / "deploy" / "docker-compose.sandbox.yml"
+MINERU_ASCEND = REPO / "deploy" / "docker-compose.mineru-ascend.yml"
 VERSION = (REPO / "VERSION").read_text().strip()
 ENV = {"KNOWWORK_RUSTFS_ACCESS_KEY": "ci-access", "KNOWWORK_RUSTFS_SECRET_KEY": "ci-secret", "PATH": "/usr/bin:/bin"}
 
@@ -46,9 +47,10 @@ def _members(network: str) -> set[str]:
     return {name for name in _services() if network in _networks(name)}
 
 
-def test_seven_long_running_containers():
+def test_eight_long_running_containers():
+    """v0.0.9 起宿主调模型走单独的模型网关进程（model-gateway，和 api 同一个镜像）。"""
     long_running = {name for name, svc in _services().items() if svc.get("restart") != "no"}
-    assert long_running == {"gateway", "api", "worker", "runtime-host", "postgres", "redis", "rustfs"}
+    assert long_running == {"gateway", "api", "worker", "model-gateway", "runtime-host", "postgres", "redis", "rustfs"}
 
 
 def test_one_shot_jobs():
@@ -128,12 +130,13 @@ def test_sandbox_image_is_build_only_behind_a_profile():
         assert needle in dockerfile, needle
 
 
-def test_host_link_has_only_api_host_and_worker():
+def test_host_link_has_only_api_host_worker_and_model_gateway():
     """worker 也在这张网上：扩展的后台对话要调 api 的内部端口（conversations/background.py）。它本来就拿着主密钥
-    （宿主令牌由主密钥派生），接进来没有多出权限；网关、数据库这些仍然连不到。"""
+    （宿主令牌由主密钥派生），接进来没有多出权限；模型网关在这张网上让宿主调模型，同样拿着主密钥（校验宿主令牌）。
+    网关、数据库这些仍然连不到。"""
     assert _networks("runtime-host") == {"host-link"}
     assert _config()["networks"]["host-link"]["internal"] is True
-    assert _members("host-link") == {"api", "runtime-host", "worker"}
+    assert _members("host-link") == {"api", "runtime-host", "worker", "model-gateway"}
 
 
 def test_worker_reaches_the_api_internal_port():
@@ -169,7 +172,7 @@ def _mounts(volume: str) -> dict[str, bool]:
 
 
 @pytest.mark.parametrize(("volume", "allowed"), [
-    ("secrets", {"bootstrap", "api", "worker"}),
+    ("secrets", {"bootstrap", "api", "worker", "model-gateway"}),
     ("host-secrets", {"bootstrap", "runtime-host"}),
     ("db-secrets", {"bootstrap", "postgres"}),
 ])
@@ -210,7 +213,8 @@ def test_host_and_api_agree_on_callback_and_model_alias():
     host = _services()["runtime-host"]["environment"]
     api = _services()["api"]["environment"]
     assert host["KNOWWORK_TOOLS_BASE_URL"] == "http://api:8001/internal/extensions/tools"
-    assert host["KNOWWORK_MODEL_BASE_URL"] == "http://api:8001/internal/model/v1"
+    # 调模型走模型网关（同一个接口，在它自己的进程里），不再经 api 的内部端口
+    assert host["KNOWWORK_MODEL_BASE_URL"] == "http://model-gateway:8002/internal/model/v1"
     assert host["KNOWWORK_MODEL"] == api["KNOWWORK_HOST_MODEL_ALIAS"]
 
 
@@ -225,3 +229,22 @@ def test_every_callback_the_host_reads_is_configured():
     host = _services()["runtime-host"]["environment"]
     missing = sorted(name for name in read if not host.get(name, "").startswith("http://api:8001/internal/"))
     assert missing == [], f"宿主读这些回调地址，编排里没配或没指向 api 的内部端口：{missing}"
+
+
+def test_ascend_mineru_overlay_stays_on_its_internal_network():
+    """昇腾上的 MinerU（install.sh --mineru-ascend）：mineru-api 开了 --allow-public-http-client，谁连得上它就能让它去访问任意地址，
+    所以两个服务只在内部网络 mineru 上、不映射端口；接进这张网的只有 api、worker，文档解析的默认地址指向它们。"""
+    config = _config(SANDBOX, MINERU_ASCEND)
+    services = config["services"]
+    assert config["networks"]["mineru"]["internal"] is True
+    assert {name for name, svc in services.items() if "mineru" in svc.get("networks", {})} == {
+        "api", "worker", "mineru-api", "mineru-vlm"}
+    for name in ("mineru-api", "mineru-vlm"):
+        assert set(services[name]["networks"]) == {"mineru"} and not services[name].get("ports"), name
+    assert "--allow-public-http-client" in services["mineru-api"]["command"]
+    for name in ("api", "worker"):
+        env = services[name]["environment"]
+        assert env["KNOWWORK_MINERU_BASE_URL"] == "http://mineru-api:8000", name
+        assert env["KNOWWORK_MINERU_SERVER_URL"] == "http://mineru-vlm:30000", name
+    # 其余服务原样：叠加文件只多出这两个服务和一张网
+    assert set(services) - set(_config(SANDBOX)["services"]) == {"mineru-api", "mineru-vlm"}

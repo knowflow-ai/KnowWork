@@ -1,11 +1,11 @@
 {
   "name": "@knowwork/web",
   "private": true,
-  "version": "0.0.9",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && vite build --config vite.widget.config.ts",
     "preview": "vite preview",
     "lint": "eslint . && prettier --check \"src/**/*.{ts,tsx}\"",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",

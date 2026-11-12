@@ -6,6 +6,7 @@ API Key 还要带齐所需范围；绑定了别的工作空间的 Key 不能用�
 """
 
 from collections.abc import Awaitable, Callable
+from typing import Protocol
 
 from fastapi import HTTPException, Request
 
@@ -13,10 +14,11 @@ from .access.members import DEFAULT_WORKSPACE_ID
 from .access.service import AccessService
 from .access.vocab import WORKSPACE_RESOURCE, Action, InvalidInput, validate_id
 from .auth.principal import Principal
-from .conversations.api import Actor
+from .conversations.api import Actor, Embedded, Throttled
 from .db.base import enter_workspace
 from .identity.container import Identity
 from .identity.hooks import Placement
+from .net import client_ip
 
 CONVERSATIONS_SCOPE = "conversations:use"
 WORKSPACE_SCOPE = "workspace:manage"
@@ -28,6 +30,7 @@ NOT_A_MEMBER = "你还不是本工作空间的成员，请联系管理员"
 WRONG_WORKSPACE = "该 API Key 绑定的不是这个工作空间"
 UNBOUND_KEY = "这个接口要用绑定了工作空间的 API Key"
 ACCESS_UNAVAILABLE = "权限服务暂时不可用，请稍后重试"
+EMBED_NOT_ALLOWED = "网页嵌入里用不了这个功能"
 
 PrincipalDependency = Callable[[Request], Awaitable[Principal]]
 
@@ -86,11 +89,17 @@ def _member_of(access: AccessService, principal: Principal, workspace_id: str) -
     if not access.check(principal.user_id, workspace_id, WORKSPACE_RESOURCE, Action.USE):
         raise HTTPException(status_code=403, detail=NOT_A_MEMBER)
     enter_workspace(workspace_id)  # MCP 不走 FastAPI 的全局依赖，这里也设一次
-    return Actor(user_id=principal.user_id, workspace_id=workspace_id)
+    return Actor(user_id=principal.user_id, workspace_id=workspace_id, channel_id=principal.channel_id,
+                 visitor=principal.visitor)
 
 
-def conversation_actor(identity: Identity, access: AccessService):
-    """对话接口的调用者：已登录（API Key 须带 conversations:use 范围），且是路径里那个空间的成员。"""
+def conversation_actor(identity: Identity, access: AccessService, embedded: Embedded | None = None, *,
+                       visitors: bool = True):
+    """对话接口的调用者：已登录（API Key 须带 conversations:use 范围），且是路径里那个空间的成员。
+
+    从网页嵌入进来的（channels/web.py）：路径里有会话 id 的，要是自己从这个渠道开的会话（公开访问按访客分：
+    渠道账号是所有访客共用的），这一处管住会话、引用、附件、产物、调试这些带会话 id 的接口。visitors=False 给不按会话分、
+    按人列的接口用（例如暂存附件）：公开访问的访客共用一个账号，放进来就能看到、删掉别人的。"""
     authenticate = identity.require_scopes(CONVERSATIONS_SCOPE)
 
     async def dependency(request: Request) -> Actor:
@@ -99,9 +108,54 @@ def conversation_actor(identity: Identity, access: AccessService):
             workspace_id = validate_id(request.path_params.get("workspace_id", ""), "workspace_id")
         except InvalidInput as error:
             raise HTTPException(status_code=404, detail="工作空间不存在") from error
-        return _member_of(access, principal, workspace_id)
+        actor = _member_of(access, principal, workspace_id)
+        if principal.is_embedded:
+            if embedded is None or (actor.visitor is not None and not visitors):
+                raise HTTPException(status_code=403, detail=EMBED_NOT_ALLOWED)
+            conversation_id = request.path_params.get("conversation_id")
+            if conversation_id is not None and not await embedded.owns(actor, conversation_id):
+                raise HTTPException(status_code=404, detail="会话不存在")
+        return actor
 
     return dependency
+
+
+class EmbeddedActions(Protocol):
+    """网页嵌入的会话（channels/web.py）里扩展的卡片操作要用的那两样。"""
+
+    async def owns(self, actor: Actor, conversation_id: str) -> bool: ...
+
+    async def act(self, actor: Actor, client_ip: str) -> None: ...
+
+
+class EmbedGuard:
+    """扩展里网页嵌入也能用的接口，碰某段对话前的核对（扩展上下文的 embed_guard）。
+
+    例如问数结果卡片上的下载、改条件、下钻：按查询编号来，路径里没有会话 id，conversation_actor 管不到；扩展用
+    principal(CONVERSATIONS_SCOPE) 让嵌入身份进来，查到这次查询属于哪段对话后调 check。不是嵌入身份的直接过（归属由扩展
+    自己判）；嵌入身份要是自己从这个渠道开的会话（公开访问时渠道账号是所有访客共用的，按访客分，不是的像不存在一样 404），
+    再按访客限次（429）。网页渠道是后建的（渠道模块装配在扩展之后），建好了 bind；没 bind 时嵌入身份一律 403。"""
+
+    def __init__(self, access: AccessService) -> None:
+        self._access = access
+        self._embedded: EmbeddedActions | None = None
+
+    def bind(self, embedded: EmbeddedActions) -> None:
+        self._embedded = embedded
+
+    async def check(self, principal: Principal, request: Request | None, conversation_id: str) -> None:
+        if not principal.is_embedded:
+            return
+        if self._embedded is None or request is None:
+            raise HTTPException(status_code=403, detail=EMBED_NOT_ALLOWED)
+        workspace_id = request.path_params.get("workspace_id", "")
+        actor = _member_of(self._access, principal, workspace_id)
+        if not await self._embedded.owns(actor, conversation_id):
+            raise HTTPException(status_code=404, detail="没有找到，或者不是这段对话里的")
+        try:
+            await self._embedded.act(actor, client_ip(request))
+        except Throttled as error:
+            raise HTTPException(status_code=429, detail=str(error)) from error
 
 
 def knowledge_reader(identity: Identity, access: AccessService):

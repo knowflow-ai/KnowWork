@@ -39,7 +39,7 @@ TAGS: tuple[tuple[str, str], ...] = (
     ("技能", "技能的新建、草稿、发布、启停与调用记录"),
     ("工作流", "运行工作流、审批步骤、事件流"),
     ("工具（MCP）", "接入的 MCP 服务与它们的工具"),
-    ("IM 渠道", "企业微信等机器人接入"),
+    ("渠道", "企业微信、飞书、钉钉机器人与网页嵌入"),
     ("成员与权限", "成员、部门、用户组、邀请、授权"),
     ("模型", "模型厂商、模型与文档解析服务（系统管理员）"),
     ("空间管理", "多个工作空间（系统管理员）"),
@@ -55,7 +55,7 @@ TAGS: tuple[tuple[str, str], ...] = (
 )
 
 _SEGMENTS = {
-    "conversations": "对话", "attachments": "对话", "answer-modes": "对话", "chat-models": "对话", "runs": "运行记录", "usage": "用量", "insights": "问答大盘", "channels": "IM 渠道",
+    "conversations": "对话", "attachments": "对话", "answer-modes": "对话", "chat-models": "对话", "runs": "运行记录", "usage": "用量", "insights": "问答大盘", "channels": "渠道",
     "knowledge-sources": "知识源", "knowledge-bases": "知识源", "mcp-servers": "工具（MCP）", "enterprise-mcp": "工具（MCP）", "skills": "技能",
     "skill-submissions": "技能", "platform-skills": "技能", "workflow-runs": "工作流", "jobs": "后台任务", "audit-logs": "审计", "members": "成员与权限",
     "departments": "成员与权限", "groups": "成员与权限", "grants": "成员与权限", "invitations": "成员与权限",
@@ -68,6 +68,8 @@ PUBLIC = frozenset({
     "/api/auth/methods", "/api/auth/sso/{provider_id}/login", "/api/auth/sso/{provider_id}/callback",
     "/api/auth/password/{method_id}", "/api/auth/verify-files/{name}",
     "/api/setup", "/api/brand", "/api/brand/logo", "/health", "/ready",
+    # 网页嵌入：嵌入页与嵌入脚本不登录就要读配置、换会话令牌（channels/web_api.py）；网关问允许嵌入的网站
+    "/api/embed/v1/channels/{web_key}", "/api/embed/v1/channels/{web_key}/sessions", "/api/embed/v1/frame-ancestors",
 })
 
 
@@ -81,6 +83,8 @@ def tag_of(path: str) -> str | None:
         return "账号与登录"
     if path.startswith("/api/mcp/"):
         return "工具（MCP）"
+    if path.startswith("/api/embed/"):
+        return "渠道"
     if path.startswith("/api/setup"):
         return "初始化"
     if path.startswith(("/api/brand", "/api/system/brand")) or path in ("/api/system/check", "/api/system/info"):
