@@ -130,3 +130,21 @@ def test_tool_cards_come_along_with_the_tool_result():
     assert call.presentation is not None and call.presentation["cards"][0]["row_count"] == 1
     plain = detail(slice_turns(LOG)[0], USAGE_MAP).steps[0].tool_calls[0]
     assert plain.presentation is None
+
+
+def test_side_events_read_questions_from_the_official_log():
+    """提问只认官方日志：ask_user_question 的调用、它的结果、迟到回答的 user-question-reply；别的工具碰巧返回 answers 不算。"""
+    import json
+
+    from knowwork_server.debugview.digest import _side_events
+    from knowwork_server.debugview.events import Event
+
+    def result(call_id, body):
+        return {"message": {"toolCallId": call_id, "content": [{"type": "text", "text": json.dumps(body)}]}}
+
+    ask = {"callId": "q1", "name": "ask_user_question", "arguments": json.dumps({"questions": [{"id": "a"}, {"id": "b"}]})}
+    events = [Event(1, "tool/call", None, ask), Event(2, "tool/result", None, result("q1", {"answers": []})),
+              Event(3, "tool/call", None, {"callId": "x", "name": "kw_survey"}),
+              Event(4, "tool/result", None, result("x", {"answers": [1]})),
+              Event(5, "user/message", None, {"source": {"kind": "user-question-reply", "callId": "q1"}})]
+    assert _side_events(events) == ("向用户提问 2 个问题", "用户回答了提问", "用户回答了提问（超时后才回答）")

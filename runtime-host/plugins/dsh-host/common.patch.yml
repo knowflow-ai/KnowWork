@@ -1,0 +1,80 @@
+# KnowWork 宿主插件里的通用那份：只认会话状态、和机器无关的插件，服务端宿主与用户设备上的本机宿主都挂这一份。
+# 两边的配置档都把本包（@knowwork/dsh-host）列在 dsh.profile.bundles 里，排在各自的环境那一层之前：
+# 服务端 runtime-host/profile（环境层 @knowwork/dsh-host-bundle），桌面端的本机宿主（环境层 @knowwork/desktop-host-bundle）。
+# 只在这里写一次：对话里新加的能力，会话级的编进业务服务的运行配置、每一轮的进「准备这一轮」，宿主这头的插件挂在这里，两端一起有；
+# 只因执行环境不同的（文件、命令、凭据，以及审批与提问的决定从哪来）留在各自的环境层。
+# 停用官方插件也照这条分：理由是产品上的（模型只经网关、不往 DeepSeek 发东西、标题由业务服务管）写在本文件末尾，两种宿主都停；
+# 只有某一种宿主的官方组合里才有的那几项，在那一种的环境层里停，注明理由。
+# 会话状态由收合同的逻辑按业务服务的合同建（intake.mjs）：服务端是 http-host，本机宿主是桌面端的收件入口。
+
+- insert:
+    # 每轮的语言规则写在提问之后（业务服务随消息下发语言）。服务端宿主还让官方工作目录那段变空（环境层改它的配置）
+    - id: knowwork-prompt-context
+      name: '@knowwork/dsh-host/prompt-context'
+
+    # 回答方式：每条消息带「智能体 / 快速问答」或扩展登记的，会话中途可切换；快速问答在提问后加一段指令，那一步只给模型看
+    # 声明了快速问答的业务工具（官方条件工具 + restrict，见 answer-mode.mjs）
+    - id: knowwork-answer-mode
+      name: '@knowwork/dsh-host/answer-mode'
+
+    # 知识库目录：照官方 dsh-tool-skill 的会话技能目录，只列名字与简介，字段与标签由 knowledge_bases 按需取
+    - id: knowwork-knowledge-catalog
+      name: '@knowwork/dsh-host/knowledge-catalog'
+
+    # 扩展补的每轮上下文（例如记忆、专家的身份）：常驻的一段照知识库目录的办法发，只这一轮的一段紧跟在提问后面
+    - id: knowwork-turn-context
+      name: '@knowwork/dsh-host/turn-context'
+
+    # 会话级工具策略：按业务服务下发的 deny 收窄本会话的工具
+    - id: knowwork-session-policy
+      name: '@knowwork/dsh-host/session-policy'
+
+    # 本会话技能清单、按需拉取技能内容、加载技能后解锁它认领的专业工具（要官方技能注册表与 skill 工具，环境层挂）
+    - id: knowwork-skill-provider
+      name: '@knowwork/dsh-host/skill-provider'
+
+    # KnowWork 自带的技能（Office 三件套照搬 KnowFlow、示意图），按会话注册；空间停用的、和会话清单同名的不注册。
+    # 不挂官方 dsh-skill-office（理由见 bundled-skills.mjs）。资源目录默认是插件包里的，服务端环境层改成沙箱镜像里的
+    - id: knowwork-bundled-skills
+      name: '@knowwork/dsh-host/bundled-skills'
+
+    # 子 Agent 按根会话继承工具收窄、审批与时区，事件归到根会话
+    - id: knowwork-subagent-policy
+      name: '@knowwork/dsh-host/subagent-policy'
+
+    # 业务工具经工具桥回调业务服务；地址与超时取环境变量（服务端是内部端口，本机宿主是公开入口）
+    - id: knowwork-tool-bridge
+      name: '@knowwork/dsh-host/tool-bridge'
+
+    - id: knowwork-skill-gate
+      name: '@knowwork/dsh-host/skill-gate'
+    # 审批与提问的应答者：两种宿主同一对（记下日志里的官方编号、查「本会话不再询问」的授权、挂起等用户答），决定从哪来
+    # 由各自的环境层接（服务端经 HTTP，业务服务代用户提交；本机宿主经主进程），收法共用 answers.mjs。
+    # 等待上限：审批到期按拒绝；提问与服务端 tool-ask-user 的计时期限一致（本机用官方预设的 legacy 模式，到期按超时关闭）
+    - id: knowwork-approval-broker
+      name: '@knowwork/dsh-host/approval-broker'
+      config:
+        timeoutMs: !!js Number(process.env.KNOWWORK_APPROVAL_TIMEOUT_MS ?? 1800000)
+    - id: knowwork-question-broker
+      name: '@knowwork/dsh-host/question-broker'
+      config:
+        timeoutMs: !!js Number(process.env.KNOWWORK_QUESTION_TIMEOUT_MS ?? 1800000)
+
+# 产品决定的停用（两种宿主的官方组合里都有这几项，理由和在哪执行无关，只写在这里一次）：
+# 模型一律经业务服务的模型网关（OpenAI 兼容），宿主不直连任何模型厂商
+- id: llm-deepseek
+  disabled: true
+# 只往发给 DeepSeek 官方 API 的请求里加字段的三个插件：字段注册表、会话日志上传（dsh_session_log）、插件包清单。
+# 直连已停，它们不起作用；一并停掉，也免得以后有人打开直连时把会话日志传给 DeepSeek
+- id: deepseek-llm-api-extensions
+  disabled: true
+- id: session-log-deepseek
+  disabled: true
+- id: plugin-package-inventory-deepseek
+  disabled: true
+# 官方 MCP 资源工具：挂了官方 MCP 客户端才有内容。我们的 MCP 走业务服务的工具桥，它一直是空的
+- id: mcp-resources
+  disabled: true
+# 官方会话标题服务：对话标题由业务服务管（本机宿主上它还会为每段会话多调一次模型起标题）
+- id: session-title
+  disabled: true

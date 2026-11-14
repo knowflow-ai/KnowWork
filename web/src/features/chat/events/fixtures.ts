@@ -143,8 +143,21 @@ export const ev = {
       kind: 'approval',
       data: { tool_name: toolName, call_id: callId ?? null, reason: '需要写入文件' },
     }),
-  approvalResolved: (id: number | string, approvalId: string, outcome: string, run: number | null = 1) =>
-    wire({ id: s(id), type: 'item.completed', run, item: approvalId, kind: 'approval', data: { outcome } }),
+  approvalResolved: (
+    id: number | string,
+    approvalId: string,
+    outcome: string,
+    run: number | null = 1,
+    auto = false,
+  ) =>
+    wire({
+      id: s(id),
+      type: 'item.completed',
+      run,
+      item: approvalId,
+      kind: 'approval',
+      data: { outcome, ...(auto ? { auto } : {}) },
+    }),
   subagent: (id: number | string, childId: string, done = false, status = 'completed', run = 1) =>
     wire({
       id: s(id),
@@ -200,4 +213,14 @@ export const ev = {
     wire({ id: s(id), type: 'item.failed', run, item: questionId, kind: 'input_request', data: { reason } }),
   todos: (id: number | string, items: readonly Record<string, unknown>[], run = 1) =>
     wire({ id: s(id), type: 'item.updated', run, item: `todo-${run}`, kind: 'todo', data: { items } }),
+  /** 官方 present 交付的文件（路径照宿主给的原样） */
+  delivered: (id: number | string, files: readonly { path: string; description?: string }[], run = 1) =>
+    wire({
+      id: s(id),
+      type: 'item.completed',
+      run,
+      item: `deliverable-${id}`,
+      kind: 'deliverable',
+      data: { files },
+    }),
 };

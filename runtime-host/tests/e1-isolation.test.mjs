@@ -4,7 +4,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startHost, collectEvents, isTurnEnd } from './support/harness.mjs'
+import { startHost, collectEvents, isTurnEnd, isApprovalAsked, approvalEvent, decidedOutcome, pendingApprovals } from './support/harness.mjs'
 
 const sessionEvents = frames => frames.filter(f => f.kind === 'session/event').map(f => f.data)
 const messagesText = request => JSON.stringify(request.body?.messages ?? [])
@@ -31,11 +31,11 @@ test('两个会话同时等待审批：各自只看得到、只能决定自己�
     await host.call('POST', '/v1/sessions/user-a/messages', { text: 'A 写入' })
     await host.call('POST', '/v1/sessions/user-b/messages', { text: 'B 写入' })
     await Promise.all([
-      collectEvents(host, 'user-a', f => f.kind === 'approval/requested'),
-      collectEvents(host, 'user-b', f => f.kind === 'approval/requested'),
+      collectEvents(host, 'user-a', isApprovalAsked),
+      collectEvents(host, 'user-b', isApprovalAsked),
     ])
-    const a = (await host.call('GET', '/v1/sessions/user-a/approvals')).body
-    const b = (await host.call('GET', '/v1/sessions/user-b/approvals')).body
+    const a = await pendingApprovals(host, 'user-a')
+    const b = await pendingApprovals(host, 'user-b')
     assert.equal(a.length, 1)
     assert.equal(b.length, 1)
     assert.notEqual(a[0].id, b[0].id)
@@ -45,8 +45,8 @@ test('两个会话同时等待审批：各自只看得到、只能决定自己�
     await host.call('POST', `/v1/sessions/user-a/approvals/${a[0].id}`, { outcome: 'allowed-once' })
     await host.call('POST', `/v1/sessions/user-b/approvals/${b[0].id}`, { outcome: 'rejected' })
     const [fa, fb] = await Promise.all([collectEvents(host, 'user-a', isTurnEnd), collectEvents(host, 'user-b', isTurnEnd)])
-    assert.equal(fa.find(f => f.kind === 'approval/resolved')?.data.outcome, 'allowed-once')
-    assert.equal(fb.find(f => f.kind === 'approval/resolved')?.data.outcome, 'rejected')
+    assert.equal(decidedOutcome(fa), 'allowed-once')
+    assert.equal(decidedOutcome(fb), 'rejected')
   } finally {
     await host.stop()
   }

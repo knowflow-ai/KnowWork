@@ -10,6 +10,7 @@ import {
   MAX_MESSAGE_LENGTH,
   renameConversation,
   sendMessage,
+  turnRequest,
   validateMessage,
   validateTitle,
 } from './conversations';
@@ -37,14 +38,17 @@ describe('conversations api', () => {
       'DELETE /api/workspaces/default/conversations/*': new Response(null, { status: 204 }),
     });
     await expect(createConversation('标'.repeat(300))).resolves.toEqual({ id: 'c1', title: 't' });
-    await sendMessage('a/b', 'hi', 'steer');
-    await sendMessage('c1', '再答', 'followup', {
-      answerMode: 'quick',
-      droppedConditions: ['部门 = 财务部'],
-      mentions: [
-        { type: 'document', id: 'kb1/d1', name: '差旅办法.pdf', base: 'builtin.kb1', baseName: '制度库' },
-      ],
-    });
+    await sendMessage('a/b', turnRequest('hi', 'steer'));
+    await sendMessage(
+      'c1',
+      turnRequest('再答', 'followup', {
+        answerMode: 'quick',
+        droppedConditions: ['部门 = 财务部'],
+        mentions: [
+          { type: 'document', id: 'kb1/d1', name: '差旅办法.pdf', base: 'builtin.kb1', baseName: '制度库' },
+        ],
+      }),
+    );
     await cancelRun('c1');
     await decideApproval('c1', 'ap 1', true);
     await renameConversation('c1', '  新名  ');
@@ -88,11 +92,11 @@ describe('conversations api', () => {
       .mockImplementation(
         () => ({ resolvedOptions: () => ({ timeZone: 'Asia/Shanghai' }) }) as Intl.DateTimeFormat,
       );
-    await sendMessage('c1', '合同到期了吗', 'followup');
+    await sendMessage('c1', turnRequest('合同到期了吗', 'followup'));
     zoned.mockImplementation(() => {
       throw new RangeError('no time zone');
     });
-    await sendMessage('c1', '再看看', 'followup');
+    await sendMessage('c1', turnRequest('再看看', 'followup'));
     zoned.mockRestore();
     expect(Intl.DateTimeFormat).toBe(real);
     const [withZone, withoutZone] = api.calls;

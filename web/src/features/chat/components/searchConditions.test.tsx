@@ -34,7 +34,6 @@ function show(run: RunView, onDropConditions?: (dropped: readonly string[]) => v
       run={run}
       approvals={[]}
       questions={[]}
-      artifacts={[]}
       onDecide={vi.fn()}
       onAnswer={vi.fn(async () => true)}
       onDropConditions={onDropConditions}

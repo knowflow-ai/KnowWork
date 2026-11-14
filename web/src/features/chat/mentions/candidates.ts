@@ -175,9 +175,19 @@ export interface Trigger {
 }
 
 const MAX_QUERY = 50;
+/** 带引号的（工作文件夹里带空格的路径）可以长一些 */
+const MAX_QUOTED = 200;
 
+/**
+ * 光标前正在打的 @：开头或空白后的 @，到光标之间没有空白；或照官方 @file 语法的 @"带空格的路径（引号还没合上），
+ * 查找词是引号后面那段（工作文件夹里选了带空格的文件夹会写成这样，接着往下列）。
+ */
 export function activeTrigger(value: string, caret: number): Trigger | null {
   const before = value.slice(0, caret);
+  const quoted = /(^|\s)@"([^"]*)$/.exec(before);
+  if (quoted && (quoted[2] ?? '').length <= MAX_QUOTED) {
+    return { start: before.length - (quoted[2] ?? '').length - 2, query: quoted[2] ?? '' };
+  }
   const at = before.lastIndexOf('@');
   if (at < 0 || (at > 0 && !/\s/.test(before[at - 1] ?? ''))) return null;
   const query = before.slice(at + 1);

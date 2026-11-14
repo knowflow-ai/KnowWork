@@ -35,6 +35,18 @@ class SandboxTooLarge(SandboxError):
     """文件超出上限。"""
 
 
+class SandboxNotStarted(SandboxError):
+    """会话没有在运行的沙箱：还没建过，或空闲后被回收了（回收后工作区是空的）。只读的操作不为它新建容器。"""
+
+
+class SandboxFileError(SandboxError):
+    """文件操作失败，code 说明是哪一种：not_found、is_directory、not_regular_file、permission_denied、io_error。"""
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class SandboxConversionFailed(SandboxError):
     """LibreOffice 打不开或转不出这份文件（多半是文件损坏、加了密码）：换个时间重试也一样。
     超时、内存不够、沙箱不可用仍报 SandboxError，那些可以重试。"""

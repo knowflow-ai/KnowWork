@@ -1,12 +1,14 @@
 /**
- * 测试用的业务服务工具接口桩：实现 `GET /list` 与 `POST /execute`，按令牌决定可用工具，记录每次请求。
+ * 测试用的业务服务工具接口桩：实现 `GET /list`、`POST /execute` 与审批前的授权查询 `POST /approval-grant`，按令牌决定可用工具，
+ * 记录每次请求。
  * 真实实现在 server/src/knowwork_server/tools/，端到端用例在 server/tests/test_tools_e2e.py。
  */
 
 import { createServer } from 'node:http'
 
 /**
- * @param {{ toolsByToken: Record<string, object[]>, notes?: string, execute?: (call: object) => ({ status?: number, body: object } | undefined | Promise<{ status?: number, body: object } | undefined>) }} options
+ * @param {{ toolsByToken: Record<string, object[]>, notes?: string, execute?: (call: object) => ({ status?: number, body: object } | undefined | Promise<{ status?: number, body: object } | undefined>),
+ *   granted?: (call: object) => boolean }} options granted：这个工具在本会话是否已有「不再询问」授权，不给就是没有
  */
 export async function startToolsStub(options) {
   const requests = []
@@ -22,6 +24,9 @@ export async function startToolsStub(options) {
     if (tools === undefined) return reply(401, { error: { code: 'unauthorized', message: '令牌无效' } })
     if (req.method === 'GET' && req.url.endsWith('/list')) {
       return reply(200, { tools, ...(options.notes === undefined ? {} : { notes: options.notes }) })
+    }
+    if (req.method === 'POST' && req.url.endsWith('/approval-grant')) {
+      return reply(200, { granted: options.granted?.(record) === true })
     }
     if (req.method === 'POST' && req.url.endsWith('/execute')) {
       const custom = await options.execute?.(record)

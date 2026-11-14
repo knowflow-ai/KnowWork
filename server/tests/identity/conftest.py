@@ -13,7 +13,8 @@ from knowwork_server.db.base import Base, make_engine, make_sessionmaker
 from knowwork_server.identity import IdentityConfig, build_identity
 from knowwork_server.identity.api import build_router
 
-IDENTITY_TABLES = '"user", auth_session, auth_invitation, api_key, login_state, external_identity, login_provider'
+IDENTITY_TABLES = ('"user", auth_session, auth_invitation, api_key, login_state, external_identity, login_provider, '
+                   'oauth_grant, oauth_code')
 BASE_URL = "https://kw.test"
 PASSWORD = "correct horse battery"
 
@@ -94,3 +95,11 @@ async def alice(identity):
 
 async def login(client, email="alice@example.com", password=PASSWORD) -> httpx.Response:
     return await client.post("/api/auth/login", json={"email": email, "password": password})
+
+
+@pytest.fixture
+def desktop(identity):
+    """登记一个原生应用（原生应用登录、令牌交换的测试共用）。"""
+    from knowwork_server.identity.oauth_clients import OAuthClient
+    identity.oauth_clients.register(OAuthClient(client_id="kw-desktop", name="KnowWork 桌面端", redirect_path="/callback"))
+

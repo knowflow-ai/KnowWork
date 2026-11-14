@@ -1,13 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { screen } from '@testing-library/react';
+import { useEffect, useState } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, screen } from '@testing-library/react';
 import { BookOpen } from '@openai/apps-sdk-ui/components/Icon';
 import { buildRoutes } from '../app/router';
 import { Composer } from '../features/chat/components/Composer';
 import ModelsPage from '../features/admin/models/ModelsPage';
+import UsagePage from '../features/admin/UsagePage';
 import SettingsPage from '../features/settings/SettingsPage';
 import { adminNav, ADMIN_NAV, SYSTEM_NAV, systemNav } from '../layout/nav';
 import { Sidebar } from '../layout/Sidebar';
 import { jsonResponse, ME, renderWithApp, routeFetch } from '../test/render';
+import userEvent from '../test/user';
 import { isExtensionEnabled, register, setEnabledExtensions, slotItems } from './registry';
 
 describe('前端插槽', () => {
@@ -173,5 +176,73 @@ describe('前端插槽', () => {
     unmount();
     renderWithApp(<Composer running={false} onSend={send} answerMode="analytics_model" />);
     expect(screen.queryByText(/范围条/)).toBeNull();
+  });
+
+  it('输入框上的扩展可以让它暂时发不出去：发送按钮不可点、回车只提示原因，字留着；放开了又能发', async () => {
+    routeFetch({
+      'GET /api/workspaces/default/conversations/mention-options': jsonResponse({
+        bases: [],
+        services: [],
+        skills: [],
+      }),
+    });
+    const gate = { reason: null as string | null };
+    register('chat.composer.top', {
+      Component: ({ conversationId, block, running }) => {
+        useEffect(() => {
+          if (conversationId === 'c-quota') block(gate.reason);
+        }, [conversationId, block, running]);
+        return null;
+      },
+    });
+    const send = vi.fn(async () => undefined);
+    function Harness() {
+      const [running, setRunning] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setRunning((was) => !was)}>
+            一轮开始
+          </button>
+          <Composer running={running} onSend={send} conversationId="c-quota" />
+        </>
+      );
+    }
+    gate.reason = '本月额度已用完，12 月 1 日恢复';
+    renderWithApp(<Harness />);
+    const box = screen.getByRole('textbox');
+    await userEvent.type(box, '汇总一下差旅费用');
+    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(send).not.toHaveBeenCalled();
+    expect(box).toHaveValue('汇总一下差旅费用');
+    gate.reason = null;
+    await userEvent.click(screen.getByRole('button', { name: '一轮开始' }));
+    expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
+  });
+
+  it('管理后台「用量」：扩展加了标签页才出标签栏，「统计」在最前；网址里的 tab 打开那一页', async () => {
+    routeFetch({
+      'GET /api/workspaces/default/usage': jsonResponse([]),
+      'GET /api/workspaces/default/members': jsonResponse([]),
+    });
+    const { unmount } = renderWithApp(<UsagePage />);
+    expect(await screen.findByRole('heading', { name: '用量' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).toBeNull();
+    unmount();
+    register('admin.usage.tabs', { key: 'quota', label: '额度', children: <p>本月额度概况</p> });
+    renderWithApp(<UsagePage />, { route: '/admin/usage?tab=quota' });
+    const tabs = await screen.findAllByRole('tab');
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['统计', '额度']);
+    expect(screen.getByText('本月额度概况')).toBeInTheDocument();
+  });
+
+  it('个人设置「我的用量」最上面放扩展的一块，下面照旧是用量明细', async () => {
+    routeFetch({
+      'GET /api/workspaces/default/usage/me': jsonResponse([]),
+      'GET /api/me/api-keys': jsonResponse([]),
+    });
+    register('settings.usage.top', { children: <p>本月额度还剩 1.4 万</p> });
+    renderWithApp(<SettingsPage />, { route: '/settings?tab=usage' });
+    expect(await screen.findByText('本月额度还剩 1.4 万')).toBeInTheDocument();
   });
 });

@@ -22,10 +22,13 @@ export function validateTitle(value: string): string | null {
   return null;
 }
 
+/** 对话的来源之一：智能体在用户设备上执行（原生应用的本机宿主）。这种对话只能在那台设备上继续，别处只读 */
+export const DEVICE_SOURCE = 'device';
+
 export interface ConversationSummary {
   readonly id: string;
   readonly title: string;
-  /** 从哪来：IM 机器人认人时私聊的会话为平台（wecom 等），侧栏打来源标记；网页上开的为空 */
+  /** 从哪来：IM 机器人认人时私聊的会话为平台（wecom 等）、在用户设备上执行的为 device，侧栏打来源标记；网页上开的为空 */
   readonly source: string;
   readonly createdAt: string | null;
   readonly updatedAt: string | null;
@@ -50,12 +53,26 @@ function parseSummary(value: unknown): ConversationSummary | undefined {
   };
 }
 
+/** 一段对话的基本信息（对话页按来源决定操作交给谁）。 */
+export async function getConversation(conversationId: string): Promise<ConversationSummary | null> {
+  return parseSummary(await request<unknown>(workspacePath(`/conversations/${seg(conversationId)}`))) ?? null;
+}
+
 export async function listConversations(before?: string | null): Promise<ConversationPage> {
   const body = await request<unknown>(workspacePath('/conversations'), {
     query: { limit: PAGE_SIZE, before: before ?? undefined },
   });
   const record = isRecord(body) ? body : {};
   return { items: listOf(record.items, parseSummary), next: text(record.next) ?? null };
+}
+
+/** 按编号一次取几段本人的对话（最多 50 个，最近有动静的在前；别人的、不存在的不回）：侧栏按别的东西分组时取列表里还没翻到的 */
+export async function listConversationsByIds(
+  ids: readonly string[],
+): Promise<readonly ConversationSummary[]> {
+  if (ids.length === 0) return [];
+  const body = await request<unknown>(workspacePath('/conversations'), { query: { ids: ids.join(',') } });
+  return listOf(isRecord(body) ? body.items : undefined, parseSummary);
 }
 
 /** 搜索命中的对话：snippet 是命中的那句问话的一段，只有标题命中时为空。 */
@@ -79,9 +96,19 @@ export interface FirstTurn {
   readonly mentions?: readonly Mention[];
 }
 
+/**
+ * 建对话时要挂的东西（服务端 conversations/scopes.py 的 ScopeClaim）：扩展登记的类型（例如 expert）与那一项的 id。
+ * 建出来就挂上，之后按它的范围与身份来；不管在哪执行都是这一个。
+ */
+export interface ScopeClaim {
+  readonly kind: string;
+  readonly id: string;
+}
+
 export async function createConversation(
   title: string,
   first: FirstTurn = {},
+  scope?: ScopeClaim,
 ): Promise<{ readonly id: string; readonly title: string }> {
   const { answerMode, mentions = [] } = first;
   // 第一轮的回答方式：服务端按它定进不进「最近」（只在扩展页面里用的方式，例如扩展页面右栏里的对话，不进）
@@ -94,6 +121,7 @@ export async function createConversation(
     body: {
       title: title.slice(0, MAX_TITLE_LENGTH),
       ...(Object.keys(firstTurn).length > 0 ? { first_turn: firstTurn } : {}),
+      ...(scope ? { scope: { kind: scope.kind, id: scope.id } } : {}),
     },
   });
   const id = isRecord(body) ? text(body.id) : undefined;
@@ -189,27 +217,42 @@ export function browserTimeZone(): string | undefined {
   }
 }
 
-export function sendMessage(
-  conversationId: string,
-  value: string,
-  mode: SendMode,
-  extras: SendExtras = {},
-): Promise<{ messageId: string }> {
+/**
+ * 发一句的请求（服务端 conversations/api.py 的 SendMessage）。云端发消息、在用户设备上执行的对话开始一轮收的是同一个：
+ * 只由 turnRequest 拼，来源原样交出去（不在业务服务上执行的，由那台设备交给业务服务准备这一轮）。
+ */
+export interface TurnRequest {
+  readonly text: string;
+  readonly mode: SendMode;
+  readonly language?: ReplyLanguage;
+  readonly time_zone?: string;
+  readonly answer_mode?: AnswerMode;
+  readonly attachments?: readonly string[];
+  readonly dropped_conditions?: readonly string[];
+  readonly mentions?: readonly Record<string, unknown>[];
+  readonly model?: string;
+}
+
+export function turnRequest(value: string, mode: SendMode, extras: SendExtras = {}): TurnRequest {
   const { language, answerMode, attachments = [], droppedConditions = [], mentions = [], model } = extras;
   const timeZone = browserTimeZone();
+  return {
+    text: value,
+    mode,
+    ...(language ? { language } : {}),
+    ...(timeZone ? { time_zone: timeZone } : {}),
+    ...(answerMode ? { answer_mode: answerMode } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+    ...(droppedConditions.length > 0 ? { dropped_conditions: droppedConditions } : {}),
+    ...(mentions.length > 0 ? { mentions: mentions.map(mentionBody) } : {}),
+    ...(model ? { model } : {}),
+  };
+}
+
+export function sendMessage(conversationId: string, turn: TurnRequest): Promise<{ messageId: string }> {
   return request(workspacePath(`/conversations/${seg(conversationId)}/messages`), {
     method: 'POST',
-    body: {
-      text: value,
-      mode,
-      ...(language ? { language } : {}),
-      ...(timeZone ? { time_zone: timeZone } : {}),
-      ...(answerMode ? { answer_mode: answerMode } : {}),
-      ...(attachments.length > 0 ? { attachments } : {}),
-      ...(droppedConditions.length > 0 ? { dropped_conditions: droppedConditions } : {}),
-      ...(mentions.length > 0 ? { mentions: mentions.map(mentionBody) } : {}),
-      ...(model ? { model } : {}),
-    },
+    body: turn,
   });
 }
 
@@ -260,7 +303,6 @@ export function cancelRun(conversationId: string): Promise<unknown> {
   return request(workspacePath(`/conversations/${seg(conversationId)}/cancel`), { method: 'POST' });
 }
 
-/** 审批只有批准与拒绝；「本会话内不再询问」后端暂不支持。 */
 /** remember：批准并勾了「本会话内同类操作不再询问」，服务端记会话授权，之后同一工具不再弹审批。 */
 export function decideApproval(
   conversationId: string,
@@ -297,4 +339,16 @@ export function answerQuestion(
 
 export function eventsUrl(conversationId: string): string {
   return workspacePath(`/conversations/${seg(conversationId)}/events`);
+}
+
+/**
+ * 对话里的文件按路径读（方案 7.7.3）：content 是原件，preview 是给 PDF 阅读器的 PDF（Word、PPT 转换后的，PDF 原样）。
+ * 路径照模型写的样子交出去，服务端换算与核对。
+ */
+export function conversationFileUrl(
+  conversationId: string,
+  path: string,
+  kind: 'content' | 'preview' = 'content',
+): string {
+  return `${workspacePath(`/conversations/${seg(conversationId)}/files/${kind}`)}?path=${encodeURIComponent(path)}`;
 }

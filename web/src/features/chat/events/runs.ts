@@ -381,7 +381,10 @@ export function onApprovalResolved(state: ChatState, event: V1Event, approvalId:
   const target = state.approvals.find((a) => a.id === approvalId);
   if (!target || target.status !== 'pending') return state;
   const status = approvalStatus(str(event.data.outcome));
-  const approvals = state.approvals.map((a) => (a.id === approvalId ? { ...a, status } : a));
+  const auto = event.data.auto === true;
+  const approvals = state.approvals.map((a) =>
+    a.id === approvalId ? { ...a, status, ...(auto ? { auto } : {}) } : a,
+  );
   const withStatus: ChatState = target.runId
     ? updateRun({ ...state, approvals }, target.runId, (r) =>
         r.status === 'waiting' ? { ...r, status: 'running' } : r,

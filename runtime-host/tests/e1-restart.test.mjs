@@ -5,7 +5,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startHost, collectEvents, isTurnEnd } from './support/harness.mjs'
+import { startHost, collectEvents, isTurnEnd, isApprovalAsked, approvalEvent, decidedOutcome, pendingApprovals } from './support/harness.mjs'
 
 const sessionEvents = frames => frames.filter(f => f.kind === 'session/event').map(f => f.data)
 
@@ -17,7 +17,7 @@ for (const signal of ['SIGTERM', 'SIGKILL']) {
     try {
       await first.call('POST', '/v1/sessions', { sessionId: 'restart-1' })
       await first.call('POST', '/v1/sessions/restart-1/messages', { text: '写入' })
-      await collectEvents(first, 'restart-1', f => f.kind === 'approval/requested')
+      await collectEvents(first, 'restart-1', isApprovalAsked)
       await first.stop({ keepHome: true, signal })
 
       second = await startHost({ sequence: ['success'], successText: '重启后的回答' }, {}, { home: first.home })

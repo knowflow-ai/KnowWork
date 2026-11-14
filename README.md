@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.1.0-2b7de9" alt="Version: v0.1.0"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.1.1-2b7de9" alt="Version: v0.1.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -83,13 +83,15 @@ https://github.com/user-attachments/assets/e4ac1c88-32c2-4976-8381-e954add99ef6
 
 The open source edition is this repository, under Apache 2.0. The commercial edition adds, as extensions on top of it, a
 built-in knowledge base, multiple workspaces, an enterprise layer for skills and MCP, directory sync, long-term memory and
-analytics, each enabled by the license file. Commercial images are built on the open source images, so everything in the
-open source edition is in the commercial edition too.
+analytics, each enabled by the license file, plus usage quotas and desktop apps for Windows and macOS. Commercial images
+are built on the open source images, so everything in the open source edition is in the commercial edition too.
 
 > **Illustrated guides to the two main commercial modules (in Chinese):** [Built-in knowledge base](https://www.knowflowchat.cn/work/docs/category/%E7%9F%A5%E8%AF%86%E5%BA%93) · [Analytics](https://www.knowflowchat.cn/work/docs/category/%E6%99%BA%E8%83%BD%E9%97%AE%E6%95%B0)
 
 | Area | Capability | Open source | Commercial |
 |---|---|:-:|:-:|
+| Clients | Web: open a browser and start, nothing to install on each computer | ✓ | ✓ |
+| | Desktop app (Windows, macOS): conversations can run on the employee's own computer, by default reading and writing files only in folders they choose and asking before each command; sign-in, permissions, models and audit stay on the server, and conversation history is kept on the server and visible on the web; downloaded and updated from your own server | — | ✓ |
 | Chat and delivery | Agent chat, quick answers, live view of every step, interject and cancel | ✓ | ✓ |
 | | Attachment parsing (MinerU), citations back to the source, mermaid diagrams in answers | ✓ | ✓ |
 | | Word, Excel, PPT and HTML produced in the session sandbox, with in-browser preview | ✓ | ✓ |
@@ -123,6 +125,7 @@ open source edition is in the commercial edition too.
 | | Membership rules (department members join a workspace automatically), auto-deactivation of leavers, deletion safeguards | — | ✓ |
 | Analytics | Query PostgreSQL and MySQL by the metric definitions in a semantic model, explain changes by attribution, and edit, drill into and pin result cards to dashboards (see the table below) | — | ✓ optional module |
 | Operations and audit | Q&A dashboard, run records, usage and cost, audit trail | ✓ | ✓ |
+| | Usage quotas: the system admin sets a monthly token total per workspace, workspace admins allocate it by department, group and person with temporary top-ups, reference usage and suggested values; enforced the same way on the web, desktop, IM, web embeds and scheduled tasks, either blocking or only warning when exceeded | — | ✓ |
 | Deployment | One-command Docker Compose install, images on Alibaba Cloud, automatic database upgrades on start | ✓ | ✓ |
 | License | | Apache 2.0 | Commercial license |
 
@@ -246,9 +249,11 @@ Browser ──> Gateway (nginx) ──> Business service (Python, FastAPI) ─�
 
 ## Design choices
 
-**Web only, no desktop app.** A self-hosted enterprise deployment is one server shared by many people, and
-permissions, models and audit are managed centrally by administrators. Employees open a browser and start working;
-nothing has to be installed on each computer.
+**Web first; the desktop app only does what has to happen locally.** A self-hosted enterprise deployment is one server
+shared by many people, and permissions, models and audit are managed centrally by administrators. Employees open a browser
+and start working; nothing has to be installed on each computer. To work with files on their own computer or run local
+commands, they use the desktop app (commercial, Windows and macOS): the same pages and the same conversation history as the
+web, with sign-in, permissions, models and audit still managed by the server; only that conversation runs locally.
 
 **Continuous compatibility with DSH.** KnowWork does not fork DSH. In practice:
 
@@ -257,11 +262,13 @@ nothing has to be installed on each computer.
   subagents, the tool bridge and more), and the version is switched only when they pass;
 - new DSH releases are followed, and capabilities that ship with DSH are picked up directly.
 
-**Every command runs in the sandbox.** A desktop agent can assume the machine belongs to one user. An enterprise server
-cannot: it holds database connections, keys and other people's data. So commands and file operations started by the
-model never run on the runtime host itself; they go through the business service into the session's own container. The
-cost is that a command's output comes back only once it has finished, and DSH features that need live two-way
-communication with the host are not available for now.
+**Every server-side command runs in the sandbox.** A desktop agent can assume the machine belongs to one user. An
+enterprise server cannot: it holds database connections, keys and other people's data. So on the server, commands and file
+operations started by the model never run on the runtime host itself; they go through the business service into the
+session's own container. The cost is that a command's output comes back only once it has finished, and DSH features that
+need live two-way communication with the host are not available for now. Local conversations in the desktop app run on
+the employee's own computer and never touch the server: by default they read and write only in folders the employee chose
+and ask before each command.
 
 ## Features
 
@@ -366,7 +373,7 @@ communication with the host are not available for now.
 
 ## Status and roadmap
 
-The current version is v0.1.0. APIs and data structures may still change before 1.0. Known
+The current version is v0.1.1. APIs and data structures may still change before 1.0. Known
 limitations are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Next up: a skill test bench (cases, structural assertions, draft versus published comparison), scenario packs, a UI for

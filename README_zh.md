@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.1.0-2b7de9" alt="Version: v0.1.0"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.1.1-2b7de9" alt="Version: v0.1.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -74,12 +74,15 @@ https://github.com/user-attachments/assets/e4ac1c88-32c2-4976-8381-e954add99ef6
 ## 开源版与商业版
 
 开源版就是这个仓库，Apache 2.0。商业版在开源版之上以扩展的形式加上内置知识库、多个工作空间、企业一层的技能与 MCP、
-组织同步、长期记忆和智能问数，按授权文件启用对应模块；商业版镜像以开源版镜像为底座构建，开源版里的能力商业版都有。
+组织同步、长期记忆和智能问数，按授权文件启用对应模块；另有用量配额，以及 Windows、mac 桌面端。商业版镜像以开源版镜像为底座
+构建，开源版里的能力商业版都有。
 
 > **商业版的两大模块，带截图的使用文档已经上线：** [内置知识库文档](https://www.knowflowchat.cn/work/docs/category/%E7%9F%A5%E8%AF%86%E5%BA%93) · [智能问数文档](https://www.knowflowchat.cn/work/docs/category/%E6%99%BA%E8%83%BD%E9%97%AE%E6%95%B0)
 
 | 类别 | 能力 | 开源版 | 商业版 |
 |---|---|:-:|:-:|
+| 客户端 | 网页端：浏览器打开就用，不用在每台电脑上装客户端 | ✓ | ✓ |
+| | 桌面端（Windows、mac）：对话可以在员工自己的电脑上执行，默认只在他选的文件夹里读写文件、运行命令前先问本人；登录、权限、模型、审计仍由服务端管，对话记录存在服务端、网页上也看得到；从自己的服务端下载与自动更新 | — | ✓ |
 | 对话与交付 | 智能体对话、快速问答、执行过程实时可见、插话与取消 | ✓ | ✓ |
 | | 附件解析（MinerU）、引用溯源、回答里画 mermaid 图 | ✓ | ✓ |
 | | 会话沙箱里生成 Word、Excel、PPT、HTML，在线预览 | ✓ | ✓ |
@@ -113,6 +116,7 @@ https://github.com/user-attachments/assets/e4ac1c88-32c2-4976-8381-e954add99ef6
 | | 成员规则（部门里的人自动进空间）、离职自动停用、误删保护 | — | ✓ |
 | 智能问数 | 接 PostgreSQL、MySQL 业务库，按语义模型里定好的指标口径查数、归因，结果卡片能改条件、下钻、钉到看板，功能点见下表 | — | ✓ 可选开通 |
 | 运营与审计 | 问答大盘、运行记录、用量与费用、审计 | ✓ | ✓ |
+| | 用量配额：系统管理员给各空间定每月 token 总额，空间管理员按部门、用户组、个人分配，可临时加额，给参考用量与建议值；网页、桌面端、IM、网页嵌入、定时任务统一生效，超了拦截或只提醒 | — | ✓ |
 | 部署 | Docker Compose 一条命令安装，镜像在阿里云，启动时自动升级数据库 | ✓ | ✓ |
 | 许可 | | Apache 2.0 | 商业授权 |
 
@@ -228,8 +232,9 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 
 ## 几个设计取舍
 
-**只做网页版，不做桌面版。** 企业私有化部署是多人共用一台服务器，权限、模型、审计都要由管理员集中管；
-员工打开浏览器就能用，不用在每台电脑上装客户端。
+**网页为主，桌面端只做必须在本机做的事。** 企业私有化部署是多人共用一台服务器，权限、模型、审计都要由管理员集中管；
+员工打开浏览器就能用，不用在每台电脑上装客户端。要处理员工自己电脑上的文件、跑本地命令时用桌面端（商业版，Windows、mac）：
+和网页是同一套页面、同一份对话记录，登录、权限、模型、审计照样由服务端管，只是这段对话在本机执行。
 
 **持续兼容 DSH。** KnowWork 不 fork DSH，具体做法有三条。
 
@@ -237,9 +242,10 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 - 升级前先跑预检和准入测试（建会话、执行、取消、恢复、技能加载、子 Agent、工具桥等），通过才换版本；
 - DSH 发新版本后跟进升级，DSH 自带的新能力直接用上。
 
-**命令一律落到沙箱。** 桌面端的 Agent 可以假定「这台机器归用户一个人」，企业服务器不行：上面有数据库连接、密钥和
-别人的数据。所以模型发起的命令和文件读写不在宿主本机执行，都经业务服务落到会话自己的容器里。代价是命令要等跑完
-才一次拿回输出，需要和宿主实时双向通信的 DSH 能力暂时用不了。
+**服务端的命令一律落到沙箱。** 桌面端的 Agent 可以假定「这台机器归用户一个人」，企业服务器不行：上面有数据库连接、
+密钥和别人的数据。所以服务端上模型发起的命令和文件读写不在宿主本机执行，都经业务服务落到会话自己的容器里。代价是命令要等
+跑完才一次拿回输出，需要和宿主实时双向通信的 DSH 能力暂时用不了。桌面端的本机会话跑在员工自己的电脑上，不碰服务器：
+默认只在他选的文件夹里读写，运行命令前先问本人。
 
 ## 功能清单
 
@@ -343,7 +349,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 
 ## 现状与路线图
 
-当前版本 v0.1.0，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 v0.1.1，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
 
 接下来要做：技能验证台（用例、结构断言、草稿版对比发布版）、场景包、固定工作流的界面、备份与恢复、修改密码与禁用账号。
 

@@ -1,4 +1,8 @@
-"""执行命令时要带上的技能环境变量（做法见 env.py）：宿主报上这个会话加载过的技能，按此刻的会话清单核对后取值。"""
+"""执行命令时要带上的技能环境变量（做法见 env.py）：宿主报上这个会话加载过的技能，按此刻的会话清单核对后取值。
+
+两处用：云端对话在沙箱执行接口里加进命令（for_exec，值不经过宿主）；用户电脑上的本机会话由本机宿主来取、加进本机命令
+（for_device）。本机只给个人技能的值：企业技能、空间技能的值是管理员填的（公司的凭据），下发到用户电脑上用户就能读到原文，
+所以不出服务器；这类技能在本机会话的技能清单里注明用不了（internal_api）。"""
 
 from sqlalchemy import select
 
@@ -8,6 +12,8 @@ from .catalog import SkillCatalog
 from .env import EnvBox
 from .manifest import ENV_NAME, RESERVED_ENV
 from .models import Skill
+
+PERSONAL = "personal"
 
 
 class SkillEnvironment:
@@ -19,9 +25,17 @@ class SkillEnvironment:
         self._box = box
 
     async def for_exec(self, workspace_id: str, user_id: str, loaded: list[str]) -> dict[str, str]:
+        return await self._values(workspace_id, user_id, loaded, personal_only=False)
+
+    async def for_device(self, workspace_id: str, user_id: str, loaded: list[str]) -> dict[str, str]:
+        """本机会话要的：只给个人技能的值（理由见模块说明）。"""
+        return await self._values(workspace_id, user_id, loaded, personal_only=True)
+
+    async def _values(self, workspace_id: str, user_id: str, loaded: list[str], *,
+                      personal_only: bool) -> dict[str, str]:
         wanted = set(loaded)
         entries = [e for e in await self._catalog.for_session(workspace_id, user_id)
-                   if e.name in wanted and e.env]
+                   if e.name in wanted and e.env and (not personal_only or e.scope == PERSONAL)]
         if not entries:
             return {}
         rows = {**await self._rows(PLATFORM_WORKSPACE_ID, [e.skill_id for e in entries if e.scope == "platform"]),

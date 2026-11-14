@@ -12,6 +12,11 @@
  *   拉到的正文按清单里的 contentDigest 校验；
  * - 本会话（清单与自带技能，见 bundled-skills）与全局都没有技能时，用官方 `restrict` 收掉 `skill` 工具，不给模型一个空工具。
  *
+ * 技能的环境变量：云端由业务服务在沙箱执行接口里加，宿主不经手。用户电脑上的本机宿主（配置 deliverEnv，桌面配置层打开）
+ * 命令在本机跑，要自己带上：加载技能拉正文时一并向业务服务要这个会话加载过的技能的环境变量（只给个人技能的），存进
+ * root.skillEnv，本机宿主的子进程据此加进命令（由挂这个插件的扩展提供）。在拉正文时要而不是加载之后，
+ * 是因为官方等正文拉完才把技能交给模型，之后模型跑的命令一定拿得到。
+ *
  * 专业工具的解锁：模型经 `skill` 工具成功加载技能（官方 `tools/result`），或用户 `/技能名` 显式调用
  * 之后，解锁该技能认领的专业工具（skill-unlock）。
  * 显式调用由官方 tool-skill 在 `agent/pre-step` 里注入正文，但这一步的工具清单在 pre-step 之前就已组装，
@@ -47,8 +52,8 @@ function candidateOf(skill) {
   }
 }
 
-/** 一个会话（agent）的技能提供方。令牌每次现取，续期后下一次加载即生效。 */
-function providerFor(root, catalog) {
+/** 一个会话（agent）的技能提供方。令牌每次现取，续期后下一次加载即生效。deliverEnv 见文件开头。 */
+function providerFor(root, catalog, deliverEnv) {
   const byName = new Map(catalog.map(skill => [skill.name, skill]))
   return {
     name: PROVIDER,
@@ -57,6 +62,10 @@ function providerFor(root, catalog) {
       const skill = byName.get(candidate?.locator?.name)
       if (skill === undefined || candidate.locator.digest !== skill.digest || root.skillAccess === undefined) return undefined
       const content = await skillClient().content(root.skillAccess.token, skill, options?.signal)
+      if (deliverEnv) {
+        const skills = [...new Set([...root.loadedSkills, skill.name])]
+        root.skillEnv = await skillClient().env(root.skillAccess.token, skills, options?.signal)
+      }
       return {
         name: skill.name,
         description: skill.description,
@@ -71,8 +80,12 @@ function providerFor(root, catalog) {
   }
 }
 
-/** @param {import('@deepseek-ai/cordis').Context} ctx */
-export function apply(ctx) {
+/**
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {{ deliverEnv?: boolean }} [config] deliverEnv：本机宿主取技能的环境变量（见文件开头），服务端宿主不开
+ */
+export function apply(ctx, config = {}) {
+  const deliverEnv = config.deliverEnv === true
   /** 宿主会话 id → 根 agent，用来把会话事件里的显式调用对应回 agent。 */
   const rootAgents = new Map()
   /** agent → 为它铸的作用域（释放时撤销提供方）。 */
@@ -82,7 +95,7 @@ export function apply(ctx) {
     const skill = root.skillCatalog?.find(s => s.name === skillName)
     if (skill === undefined) return
     unlockSkill(agent, skillName)
-    root.loadedSkills.add(skillName)  // 之后这个会话跑的命令带上它的环境变量（业务服务注入，宿主不经手值）
+    root.loadedSkills.add(skillName)  // 之后这个会话跑的命令带上它的环境变量（云端由业务服务注入、宿主不经手值；本机见 deliverEnv）
     const unlocked = [...skill.unlocks]
     const sessionId = String(agent.session.id)
     // 只有声明了完成判据的技能才进技能门；子 Agent 加载的不约束根会话的最终回答
@@ -104,7 +117,7 @@ export function apply(ctx) {
     lockTools(agent, lockedTools(catalog))
     const scope = createScope(ctx, agent)
     scopes.set(agent, scope)
-    scope.ctx.skills.registerProvider(() => providerFor(root, catalog))
+    scope.ctx.skills.registerProvider(() => providerFor(root, catalog, deliverEnv))
     if (root.id === String(agent.session.id)) rootAgents.set(root.id, agent)
   })
 

@@ -20,7 +20,14 @@ const described = (text: string) => <span className="kw-answer-mode-description"
 // 内置两种各有图标；扩展登记的用同一个插件图标
 const ICONS: Record<string, typeof Agent> = { agent: Agent, quick: Flash };
 
-export function AnswerModeSelect({ disabled }: { readonly disabled?: boolean }) {
+/** locked：固定为这个回答方式（例如在用户电脑上执行的对话只有智能体），照常显示、不可改。 */
+export function AnswerModeSelect({
+  disabled,
+  locked,
+}: {
+  readonly disabled?: boolean;
+  readonly locked?: string;
+}) {
   const mode = useAnswerMode((s) => s.mode);
   const options = useAnswerMode((s) => s.options);
   const setMode = useAnswerMode((s) => s.setMode);
@@ -34,7 +41,7 @@ export function AnswerModeSelect({ disabled }: { readonly disabled?: boolean }) 
   useEffect(() => {
     if (data) setOptions(data);
   }, [data, setOptions]);
-  const value = effectiveAnswerMode(mode, options);
+  const value = locked ?? effectiveAnswerMode(mode, options);
   const items: { readonly value: string; readonly label: string; readonly description: ReactNode }[] =
     options.map((option) => ({
       value: option.id,
@@ -51,7 +58,7 @@ export function AnswerModeSelect({ disabled }: { readonly disabled?: boolean }) 
         opticallyAlign="start"
         align="start"
         listWidth={280}
-        disabled={disabled}
+        disabled={disabled || locked !== undefined}
         TriggerStartIcon={ICONS[value] ?? PluginPuzzle}
         options={items}
         value={value}

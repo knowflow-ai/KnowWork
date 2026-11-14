@@ -345,19 +345,19 @@ async def test_office_toolchain_used_by_the_bundled_skills(factory):
     sandbox = module.sandbox
     office = "/opt/knowwork/office"
     steps = {
-        "docx-js": "cd /workspace/tmp && node -e \"const d=require('docx');const doc=new d.Document({sections:[{children:"
+        "docx-js": "cd /workspace && node -e \"const d=require('docx');const doc=new d.Document({sections:[{children:"
                    "[new d.Paragraph({children:[new d.TextRun('付款比例为 30%')]})]}]});"
                    "d.Packer.toBuffer(doc).then(b=>require('fs').writeFileSync('a.docx',b))\"",
-        "pptxgenjs": "cd /workspace/tmp && node -e \"const P=require('pptxgenjs');const p=new P();"
+        "pptxgenjs": "cd /workspace && node -e \"const P=require('pptxgenjs');const p=new P();"
                      "p.addSlide().addText('季度汇报',{x:1,y:1});p.writeFile({fileName:'a.pptx'})\"",
-        "修订": f"cd /workspace/tmp && echo '[{{\"find\":\"30%\",\"replace\":\"20%\"}}]' > e.json "
+        "修订": f"cd /workspace && echo '[{{\"find\":\"30%\",\"replace\":\"20%\"}}]' > e.json "
                 f"&& python3 {office}/docx_redline.py a.docx e.json b.docx && unzip -p b.docx word/document.xml | grep -c '<w:ins'",
-        "pandoc": "cd /workspace/tmp && pandoc -t markdown --track-changes=all b.docx | head -5",
-        "重算": f"cd /workspace/tmp && python3 -c \"from openpyxl import Workbook;w=Workbook();s=w.active;"
+        "pandoc": "cd /workspace && pandoc -t markdown --track-changes=all b.docx | head -5",
+        "重算": f"cd /workspace && python3 -c \"from openpyxl import Workbook;w=Workbook();s=w.active;"
                 f"s.append([1,2,'=A1+B1']);w.save('t.xlsx')\" && python3 {office}/recalc.py t.xlsx",
-        "转 PDF 出图": f"cd /workspace/tmp && python3 {office}/soffice.py --headless --convert-to pdf --outdir . a.pptx "
+        "转 PDF 出图": f"cd /workspace && python3 {office}/soffice.py --headless --convert-to pdf --outdir . a.pptx "
                      "&& pdftoppm -jpeg -r 50 a.pdf slide && ls slide-*.jpg",
-        "markitdown": "cd /workspace/tmp && markitdown a.pptx | head -3",
+        "markitdown": "cd /workspace && markitdown a.pptx | head -3",
     }
     for name, command in steps.items():
         result = await _sh(sandbox, ws, sid, command, timeout=240)

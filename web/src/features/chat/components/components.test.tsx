@@ -7,10 +7,10 @@ import { ApprovalCard } from './ApprovalCard';
 import { AnswerActions } from './AnswerActions';
 import { AssistantTurn } from './AssistantTurn';
 import { Composer } from './Composer';
-import { FileCard, FileCards } from './FileCard';
-import { Markdown } from './Markdown';
+import { DeliverableCards, FileCard } from './FileCard';
+import { FileLinks, Markdown } from './Markdown';
 import { ProcessSummary } from './ProcessSummary';
-import type { ApprovalView, ArtifactView, RunView } from '../events/types';
+import type { ApprovalView, RunView } from '../events/types';
 
 const endedTurn: RunView = {
   runId: 'run-1',
@@ -176,6 +176,14 @@ describe('ApprovalCard', () => {
     expect(onDecide).toHaveBeenLastCalledWith(false, false);
   });
 
+  it('执行的一方记不住授权时不给「不再询问」，批准只带一次性的', async () => {
+    const onDecide = vi.fn(async () => undefined);
+    renderWithApp(<ApprovalCard approval={approval} onDecide={onDecide} rememberable={false} />);
+    expect(screen.queryByRole('checkbox', { name: '本会话内同类操作不再询问' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '批准' }));
+    expect(onDecide).toHaveBeenCalledWith(true, false);
+  });
+
   it('扩展工具登记了审批明细的，参数摘要换成它画的明细（拿到解析后的参数）', () => {
     register('chat.tools', {
       name: 'model_change',
@@ -231,9 +239,36 @@ describe('ApprovalCard', () => {
     expect(screen.queryByRole('region', { name: '需要你批准的操作' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '批准' })).not.toBeInTheDocument();
   });
+
+  it('按本会话授权自动批准的写明是自动的', () => {
+    renderWithApp(
+      <ApprovalCard
+        approval={{ ...approval, toolName: 'bash', status: 'allowed', auto: true }}
+        onDecide={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('已按本会话授权自动批准 · 运行命令')).toBeInTheDocument();
+  });
 });
 
 describe('Composer', () => {
+  it('来源给了 dropFiles：拖进来的文件写成 @路径插在光标处，不当附件；写不成的提示', async () => {
+    const dropFiles = vi.fn(async () => ({
+      mentions: ['@数据/汇总.xlsx', '@"/data/共享/报 价.pdf"'],
+      skipped: ['/x/"q".txt'],
+    }));
+    const onSend = vi.fn(async () => undefined);
+    renderWithApp(<Composer running={false} onSend={onSend} dropFiles={dropFiles} />);
+    const input = screen.getByRole('textbox');
+    await userEvent.type(input, '对比');
+    const file = new File(['x'], '汇总.xlsx');
+    fireEvent.drop(input.closest('.kw-composer-box') as HTMLElement, { dataTransfer: { files: [file] } });
+    await waitFor(() => expect(input).toHaveValue('对比 @数据/汇总.xlsx @"/data/共享/报 价.pdf" '));
+    expect(dropFiles).toHaveBeenCalledWith([file]);
+    expect(screen.getByText('有 1 个没能写成路径（文件不在了，或路径里有引号）')).toBeInTheDocument();
+    expect(screen.queryByText('汇总.xlsx')).not.toBeInTheDocument();
+  });
+
   it('空内容不发送，回车发送后清空', async () => {
     const onSend = vi.fn(async () => undefined);
     renderWithApp(<Composer running={false} onSend={onSend} />);
@@ -360,7 +395,6 @@ describe('逐字输出', () => {
         run={running}
         approvals={[]}
         questions={[]}
-        artifacts={[]}
         onDecide={vi.fn()}
         onAnswer={vi.fn()}
         busy
@@ -537,7 +571,6 @@ describe('引用出处与无效编号', () => {
         run={run}
         approvals={[]}
         questions={[]}
-        artifacts={[]}
         sources={{ 1: { title: '采购合同.pdf' } }}
         onDecide={vi.fn()}
         onAnswer={vi.fn(async () => true)}
@@ -579,7 +612,6 @@ describe('引用出处与无效编号', () => {
         run={run}
         approvals={[]}
         questions={[]}
-        artifacts={[]}
         onDecide={vi.fn()}
         onAnswer={vi.fn(async () => true)}
         busy={false}
@@ -591,56 +623,115 @@ describe('引用出处与无效编号', () => {
 });
 
 describe('FileCard 与 AnswerActions', () => {
-  const file = (name: string, extra: Partial<ArtifactView> = {}): ArtifactView => ({
-    id: name,
-    name,
-    url: `/f/${name}`,
-    ...extra,
-  });
-
-  it('文件卡片：文件名，下面一行是说明（去掉末尾括号里的补充），没写说明就写类型与大小', () => {
-    renderWithApp(<FileCard name="周报.docx" url="/f/1" description="本周进展（初稿）" />);
+  it('文件卡片：文件名，下面一行是说明（去掉末尾括号里的补充），没写说明就写类型', async () => {
+    const onSave = vi.fn();
+    renderWithApp(<FileCard name="周报.docx" description="本周进展（初稿）" onSave={onSave} />);
     expect(screen.getByText('本周进展')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '下载 周报.docx' })).toHaveAttribute('href', '/f/1');
-    renderWithApp(<FileCard name="流程图.png" size={169832} url="/f/2" />);
-    expect(screen.getByText('图片 · 166 KB')).toBeInTheDocument();
-    renderWithApp(<FileCard name="页.html" url="/f/3" />);
+    await userEvent.click(screen.getByRole('button', { name: '下载 周报.docx' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    renderWithApp(<FileCard name="流程图.png" />);
+    expect(screen.getByText('图片')).toBeInTheDocument();
+    renderWithApp(<FileCard name="页.html" />);
     expect(screen.getByText('网页')).toBeInTheDocument();
   });
 
   it('点卡片本身打开预览，图片也是卡片、不直接显示图；不能预览的类型卡片点不了，只能下载', async () => {
     const onPreview = vi.fn();
-    renderWithApp(<FileCard name="流程图.png" url="/f/2" onPreview={onPreview} />);
+    renderWithApp(<FileCard name="流程图.png" onPreview={onPreview} onSave={() => undefined} />);
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.getByText('在右侧预览')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '预览 流程图.png' }));
     expect(onPreview).toHaveBeenCalledTimes(1);
-    renderWithApp(<FileCard name="包.zip" url="/f/4" onPreview={onPreview} />);
+    renderWithApp(<FileCard name="包.zip" onPreview={onPreview} onSave={() => undefined} />);
     expect(screen.queryByRole('button', { name: '预览 包.zip' })).toBeNull();
-    expect(screen.getByRole('link', { name: '下载 包.zip' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '下载 包.zip' })).toBeEnabled();
   });
 
-  it('没有地址时（还在生成）下载不可用、点不开', () => {
-    renderWithApp(<FileCard name="x.png" onPreview={() => undefined} />);
+  it('这里打不开（别的电脑上看本机会话）：卡片只展示，下载不可用', () => {
+    renderWithApp(<FileCard name="x.png" />);
     expect(screen.getByRole('button', { name: '下载 x.png' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: '预览 x.png' })).toBeNull();
   });
 
-  it('一个文件占满一行，多个排两列；超过四个先收起，「全部 N 个文件」展开、「收起」收回', async () => {
-    const { container } = renderWithApp(<FileCards files={[file('a.md')]} onPreview={() => undefined} />);
+  it('一个文件占满一行，多个排两列；超过四个先收起，「全部 N 个文件」展开、「收起」收回；点开交给这段对话的文件', async () => {
+    const opener = { open: vi.fn(), save: vi.fn() };
+    const { container } = renderWithApp(
+      <FileLinks opener={opener}>
+        <DeliverableCards files={[{ path: '/sessions/c1/a.md' }]} />
+      </FileLinks>,
+    );
     expect(container.querySelector('.kw-file-grid')).toHaveAttribute('data-single', 'true');
-    const many = ['1.md', '2.md', '3.md', '4.md', '5.md', '6.md'].map((name) => file(name));
-    const onPreview = vi.fn();
-    renderWithApp(<FileCards files={many} onPreview={onPreview} />);
+    const many = ['1.md', '2.md', '3.md', '4.md', '5.md', '6.md'].map((name) => ({
+      path: `/sessions/c1/${name}`,
+    }));
+    renderWithApp(
+      <FileLinks opener={opener}>
+        <DeliverableCards files={many} />
+      </FileLinks>,
+    );
     const list = screen.getAllByRole('list', { name: '交付的文件' }).at(-1) as HTMLElement;
     expect(within(list).getAllByRole('listitem')).toHaveLength(4);
     await userEvent.click(screen.getByRole('button', { name: '展开全部 6 个交付文件' }));
     expect(within(list).getAllByRole('listitem')).toHaveLength(6);
     await userEvent.click(within(list).getByRole('button', { name: '预览 6.md' }));
-    expect(onPreview).toHaveBeenCalledWith(many[5]);
+    expect(opener.open).toHaveBeenCalledWith({ path: '/sessions/c1/6.md' });
+    await userEvent.click(within(list).getByRole('button', { name: '下载 6.md' }));
+    expect(opener.save).toHaveBeenCalledWith('/sessions/c1/6.md');
     await userEvent.click(screen.getByRole('button', { name: '收起交付文件列表' }));
     expect(within(list).getAllByRole('listitem')).toHaveLength(4);
     expect(screen.getByText('全部 6 个文件')).toBeInTheDocument();
+  });
+
+  it('外壳给了原生拖出（桌面端）：移上去就准备（读出原件、按类型起名），起拖交给外壳；移开没拖就释放；没有外壳不能拖', async () => {
+    const read = vi.fn(async () => new TextEncoder().encode('pdf').buffer as ArrayBuffer);
+    const fileDrag = {
+      prepare: vi.fn(async () => 'handle-1'),
+      cancel: vi.fn(),
+      start: vi.fn(async () => true),
+      release: vi.fn(),
+    };
+    const opener = { open: vi.fn(), read };
+    const plain = renderWithApp(
+      <FileLinks opener={opener}>
+        <DeliverableCards files={[{ path: '/sessions/c1/季度报告.pdf' }]} />
+      </FileLinks>,
+    );
+    expect(plain.container.querySelector('.kw-file-card')).not.toHaveAttribute('draggable');
+    plain.unmount();
+
+    (window as { knowworkShell?: unknown }).knowworkShell = { fileDrag };
+    try {
+      const { container } = renderWithApp(
+        <FileLinks opener={opener}>
+          <DeliverableCards files={[{ path: '/sessions/c1/季度报告.pdf' }]} />
+        </FileLinks>,
+      );
+      const card = container.querySelector('.kw-file-card') as HTMLElement;
+      expect(card).toHaveAttribute('draggable', 'true');
+      fireEvent.pointerEnter(card);
+      await waitFor(() => expect(fileDrag.prepare).toHaveBeenCalled());
+      expect(read).toHaveBeenCalledWith('/sessions/c1/季度报告.pdf');
+      const [source, requestId] = fileDrag.prepare.mock.calls[0] as unknown as [
+        { bytes: Uint8Array; kind: string; mediaType: string; name: string },
+        string,
+      ];
+      expect(source).toMatchObject({ kind: 'bytes', mediaType: 'application/pdf', name: '季度报告.pdf' });
+      expect(new TextDecoder().decode(source.bytes)).toBe('pdf');
+      expect(typeof requestId).toBe('string');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      fireEvent.dragStart(card);
+      expect(fileDrag.start).toHaveBeenCalledWith('handle-1');
+      fireEvent.pointerLeave(card);
+      expect(fileDrag.release).not.toHaveBeenCalled();
+
+      fireEvent.pointerEnter(card);
+      await waitFor(() => expect(fileDrag.prepare).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      fireEvent.pointerLeave(card);
+      expect(fileDrag.release).toHaveBeenCalledWith('handle-1');
+    } finally {
+      delete (window as { knowworkShell?: unknown }).knowworkShell;
+    }
   });
 
   it('复制回答时去掉图片编号（复制出去换不成图）', async () => {
@@ -740,7 +831,6 @@ describe('回答下方的说明', () => {
         run={run}
         approvals={[]}
         questions={[]}
-        artifacts={[]}
         onDecide={vi.fn()}
         onAnswer={vi.fn(async () => true)}
         busy={false}

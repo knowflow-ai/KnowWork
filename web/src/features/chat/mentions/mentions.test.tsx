@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent, { pickOption } from '../../../test/user';
 import { jsonResponse, renderWithApp, routeFetch } from '../../../test/render';
-import { Composer } from '../components/Composer';
+import { Composer, type InputLimits } from '../components/Composer';
+import type { FileReference } from '../sources';
 import { BUILT_IN_ANSWER_MODES } from '../../../api/conversations';
 import { currentAnswerMode, useAnswerMode } from '../../../stores/answerMode';
 
@@ -24,7 +25,11 @@ const OPTIONS = {
   skills: [{ name: 'weekly-report', description: '写周报' }],
 };
 
-function setup(onSend = vi.fn(async () => undefined)) {
+function setup(
+  onSend = vi.fn(async () => undefined),
+  limits?: InputLimits,
+  fileReferences?: (query: string) => Promise<readonly FileReference[]>,
+) {
   const api = routeFetch({
     'GET /api/workspaces/default/conversations/mention-options': jsonResponse(OPTIONS),
     'GET /api/workspaces/default/conversations/mention-options/documents': jsonResponse({
@@ -36,7 +41,7 @@ function setup(onSend = vi.fn(async () => undefined)) {
       failures: [],
     }),
   });
-  renderWithApp(<Composer running={false} onSend={onSend} />);
+  renderWithApp(<Composer running={false} onSend={onSend} limits={limits} fileReferences={fileReferences} />);
   return { api, onSend, input: screen.getByRole('textbox', { name: '消息' }) };
 }
 
@@ -260,5 +265,41 @@ describe('回答方式', () => {
       ),
     );
     act(() => useAnswerMode.setState({ mode: 'agent', options: BUILT_IN_ANSWER_MODES }));
+  });
+});
+
+describe('@ 工作文件夹里的文件（本机对话，照官方 @file）', () => {
+  const FILES: readonly FileReference[] = [
+    { path: '资料 2026', kind: 'directory', insert: '@"资料 2026/' },
+    { path: 'brief.docx', kind: 'file', insert: '@brief.docx' },
+  ];
+  const INSIDE: readonly FileReference[] = [
+    { path: '资料 2026/合同.pdf', kind: 'file', insert: '@"资料 2026/合同.pdf"' },
+  ];
+
+  it('进「工作文件夹」列出文件；选文件写进 @路径 并结束，选文件夹接着往下列，都不变成小标签', async () => {
+    const list = vi.fn(async (query: string) => (query.startsWith('资料 2026/') ? INSIDE : FILES));
+    const { input } = setup(undefined, undefined, list);
+    await userEvent.type(input, '看看 @');
+    await userEvent.click(within(menu()).getByRole('option', { name: /工作文件夹/ }));
+    await userEvent.click(await within(menu()).findByRole('option', { name: '文件 brief.docx' }));
+    expect(input).toHaveValue('看看 @brief.docx ');
+    expect(screen.queryByRole('list', { name: '这一问 @ 点名的内容' })).not.toBeInTheDocument();
+
+    // 输入框在下一帧把光标放到插入的文字后面（浏览器里早就过了这一帧），等它一下再接着打字
+    await act(() => new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))));
+    await userEvent.type(input, '和 @');
+    await userEvent.click(within(menu()).getByRole('option', { name: /工作文件夹/ }));
+    await userEvent.click(await within(menu()).findByRole('option', { name: '文件夹 资料 2026' }));
+    expect(input).toHaveValue('看看 @brief.docx 和 @"资料 2026/');
+    await userEvent.click(await within(menu()).findByRole('option', { name: '文件 资料 2026/合同.pdf' }));
+    expect(input).toHaveValue('看看 @brief.docx 和 @"资料 2026/合同.pdf" ');
+    expect(list).toHaveBeenCalledWith('资料 2026/');
+  });
+
+  it('没给工作文件夹（云端对话）时菜单里没有这一组', async () => {
+    const { input } = setup();
+    await userEvent.type(input, '@');
+    expect(within(menu()).queryByRole('option', { name: /工作文件夹/ })).not.toBeInTheDocument();
   });
 });

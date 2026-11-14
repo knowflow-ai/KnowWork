@@ -5,6 +5,7 @@ import userEvent from '../../test/user';
 import { jsonResponse, renderWithApp, routeFetch } from '../../test/render';
 import { FileCard } from '../chat/components/FileCard';
 import { FilePreview } from './FilePreview';
+import { serverFile } from './serverFile';
 import { staticHtmlDocument } from './htmlDocument';
 import { pdfSource, previewKindOf } from './previewKind';
 import { parseSheets } from './sheets';
@@ -80,7 +81,9 @@ describe('文件预览', () => {
     // jsdom 没有 Blob 地址；本文件环境独立，补上即可（iframe 卸载在 afterEach 之后，不能用 stubGlobal）
     Object.assign(URL, { createObjectURL: () => 'blob:report', revokeObjectURL: () => undefined });
     routeFetch({ [`GET ${URL_DOCX}`]: new Response(REPORT) });
-    renderWithApp(<FilePreview file={{ name: '报告.html', url: URL_DOCX }} onClose={() => undefined} />);
+    renderWithApp(
+      <FilePreview file={serverFile({ name: '报告.html', url: URL_DOCX })} onClose={() => undefined} />,
+    );
     const frame = await screen.findByTitle('HTML 文档预览');
     expect(frame).toHaveAttribute('sandbox', '');
     expect(frame.getAttribute('srcdoc')).toContain('季度报告');
@@ -94,21 +97,23 @@ describe('文件预览', () => {
 
   it('Word 不转换：打开后取原件、在浏览器里直接渲染', async () => {
     const calls = routeFetch({ [`GET ${URL_DOCX}`]: new Response('word-bytes') });
-    renderWithApp(<FilePreview file={{ name: '简报.docx', url: URL_DOCX }} onClose={() => undefined} />);
+    renderWithApp(
+      <FilePreview file={serverFile({ name: '简报.docx', url: URL_DOCX })} onClose={() => undefined} />,
+    );
     expect(await screen.findByText('Word 原件：word-bytes')).toBeInTheDocument();
     expect(calls.find('GET', `${URL_DOCX}/preview`)).toHaveLength(0);
   });
 
-  it('给了 docxUrl（知识库把 .doc 转成了 docx）就按 Word 渲染它，下载仍是原件', async () => {
+  it('给了转好的 docx（知识库把 .doc 转成了 docx）就按 Word 渲染它，下载仍是原件', async () => {
     const calls = routeFetch({ 'GET /kb/d1/preview': new Response('converted-docx') });
     renderWithApp(
       <FilePreview
-        file={{
+        file={serverFile({
           name: '旧合同.doc',
           url: '/kb/d1/original',
           pdfUrl: '/kb/d1/preview',
           docxUrl: '/kb/d1/preview',
-        }}
+        })}
         onClose={() => undefined}
       />,
     );
@@ -123,10 +128,12 @@ describe('文件预览', () => {
   it('PPT 卡片有预览按钮，打开后取服务端转换的 PDF', async () => {
     const calls = routeFetch({ [`GET ${URL_DOCX}/preview`]: new Response('%PDF-fake') });
     const onPreview = vi.fn();
-    renderWithApp(<FileCard name="简报.pptx" url={URL_DOCX} onPreview={onPreview} />);
+    renderWithApp(<FileCard name="简报.pptx" onPreview={onPreview} />);
     await userEvent.click(screen.getByRole('button', { name: '预览 简报.pptx' }));
     expect(onPreview).toHaveBeenCalledOnce();
-    renderWithApp(<FilePreview file={{ name: '简报.pptx', url: URL_DOCX }} onClose={() => undefined} />);
+    renderWithApp(
+      <FilePreview file={serverFile({ name: '简报.pptx', url: URL_DOCX })} onClose={() => undefined} />,
+    );
     expect(await screen.findByText('PDF 阅读器：%PDF-fake')).toBeInTheDocument();
     expect(within(screen.getByRole('dialog')).getByRole('link', { name: /下载/ })).toHaveAttribute(
       'href',
@@ -139,7 +146,9 @@ describe('文件预览', () => {
     routeFetch({
       [`GET ${URL_DOCX}/preview`]: jsonResponse({ detail: '预览暂时不可用：文档转换超时' }, 503),
     });
-    renderWithApp(<FilePreview file={{ name: '简报.pptx', url: URL_DOCX }} onClose={() => undefined} />);
+    renderWithApp(
+      <FilePreview file={serverFile({ name: '简报.pptx', url: URL_DOCX })} onClose={() => undefined} />,
+    );
     expect(await screen.findByText('预览暂时不可用：文档转换超时')).toBeInTheDocument();
   });
 
@@ -155,15 +164,20 @@ describe('文件预览', () => {
     );
     const bytes = write(book, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
     routeFetch({ [`GET ${URL_DOCX}`]: new Response(bytes) });
-    renderWithApp(<FilePreview file={{ name: '表.xlsx', url: URL_DOCX }} onClose={() => undefined} />);
+    renderWithApp(
+      <FilePreview file={serverFile({ name: '表.xlsx', url: URL_DOCX })} onClose={() => undefined} />,
+    );
     expect(await screen.findByText('华南')).toBeInTheDocument();
     expect(screen.getByText('860')).toBeInTheDocument();
   });
 
-  it('不支持预览的类型不显示预览按钮，打开也只提示下载', () => {
-    renderWithApp(<FileCard name="包.zip" url={URL_DOCX} onPreview={() => undefined} />);
+  it('不支持预览的类型不显示预览按钮，打开后说明不能预览、给下载', () => {
+    renderWithApp(<FileCard name="包.zip" onPreview={() => undefined} />);
     expect(screen.queryByRole('button', { name: /预览/ })).not.toBeInTheDocument();
-    renderWithApp(<FilePreview file={{ name: '包.zip', url: URL_DOCX }} onClose={() => undefined} />);
-    expect(screen.getByText('这种文件不支持预览，请下载后查看')).toBeInTheDocument();
+    renderWithApp(
+      <FilePreview file={serverFile({ name: '包.zip', url: URL_DOCX })} onClose={() => undefined} />,
+    );
+    expect(screen.getByText('这种文件不能在这里预览')).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: /下载/ }).length).toBeGreaterThan(0);
   });
 });

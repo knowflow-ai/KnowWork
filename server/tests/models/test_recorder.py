@@ -52,6 +52,19 @@ async def test_record_dedupes_and_aggregates(models, sessionmaker):
     assert rows[0].cost == Decimal("0.006000") and rows[2].cost is None
 
 
+async def test_turns_count_each_turn_once(sessionmaker):
+    recorder = UsageRecorder(sessionmaker)
+    await recorder.record(entry(turn=1, step=0))
+    await recorder.record(entry(turn=1, step=1))  # 同一轮的第二步
+    await recorder.record(entry(turn=2))
+    await recorder.record(entry(conv="c2", turn=1))
+    await recorder.record(entry(conv="c3", at=datetime(2026, 9, 1, 4, tzinfo=UTC)))  # 范围外
+    await recorder.record(entry(ws="ws2", conv="c4"))  # 别的空间
+    assert await recorder.turns("ws1", date(2026, 10, 1), date(2026, 10, 31)) == 3
+    with pytest.raises(Invalid):
+        await recorder.turns("ws1", date(2026, 10, 31), date(2026, 10, 1))
+
+
 async def test_day_follows_timezone(sessionmaker):
     recorder = UsageRecorder(sessionmaker)  # 默认 Asia/Shanghai
     await recorder.record(entry(at=datetime(2026, 10, 17, 17, tzinfo=UTC)))  # 北京时间 18 日 01:00

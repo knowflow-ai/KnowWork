@@ -21,6 +21,7 @@ import {
   onToolStarted,
   runFor,
 } from './runs';
+import { onDeliverables } from './deliverables';
 import { onQuestion, onQuestionExpired, onTodos } from './questions';
 import { onLive, settleLive } from './live';
 
@@ -32,7 +33,6 @@ export const initialChatState: ChatState = {
   questions: [],
   internalCalls: [],
   expiredQuestions: [],
-  artifacts: [],
   sent: [],
 };
 
@@ -66,8 +66,10 @@ function applyItem(state: ChatState, event: V1Event): ChatState {
       return onProblem(state, event, runId);
     case 'todo':
       return event.type === 'item.updated' ? onTodos(state, event, runId) : state;
+    case 'deliverable':
+      return event.type === 'item.completed' ? onDeliverables(state, event, runId) : state;
     default:
-      return state; // 产物不走事件流（回合结束后由 /artifacts 拉取）；evidence 等后端还没有产出，界面先忽略
+      return state; // evidence 等后端还没有产出，界面先忽略
   }
 }
 
@@ -102,13 +104,12 @@ function indexOf(log: readonly WireEvent[], cursor: Cursor): { found: boolean; i
 }
 
 /** 本页自己维护、不来自事件流的字段：重算时原样保留。 */
-type Kept = Pick<ChatState, 'sent' | 'artifacts' | 'citations' | 'expiredQuestions'>;
+type Kept = Pick<ChatState, 'sent' | 'citations' | 'expiredQuestions'>;
 
 export function rebuild(log: readonly WireEvent[], kept: Kept): ChatState {
   const folded = log.reduce(applyEvent, {
     ...initialChatState,
     sent: kept.sent,
-    artifacts: kept.artifacts,
     citations: kept.citations,
     expiredQuestions: kept.expiredQuestions,
   });
@@ -159,8 +160,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, sent: state.sent.filter((m) => m.localId !== action.localId) };
     case 'local/question-expired':
       return onQuestionExpired(state, action.questionId);
-    case 'artifacts/loaded':
-      return { ...state, artifacts: action.artifacts };
     case 'citations/loaded':
       return { ...state, citations: action.citations };
     case 'reset':

@@ -1,12 +1,13 @@
 """把一轮的会话日志整理成步骤时间线（运行调试视图），纯函数：每步的思考、回答、工具调用与结果、
 没成功的模型调用与重试，再对上用量表里这一步的 token、费用与耗时。子 Agent 的步骤按子会话分组放在下面。"""
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from ..conversations.events_v1 import user_parts
+from ..conversations.events_v1 import ASK_USER, QUESTION_REPLY, user_parts
 from ..tools.presentation import normalize as normalize_presentation
 from .background import Background
 from .blocks import blocks_of, clip, source_of, text_of
@@ -244,6 +245,7 @@ def detail(turn: TurnSlice, usage: Mapping[UsageKey, Any]) -> TurnDetail:
 
 def _side_events(main: Sequence[Event]) -> tuple[str, ...]:
     asked: dict[str, str] = {}
+    questions: set[str] = set()  # 提问（ask_user_question）的工具调用 id
     notes: list[str] = []
     for event in main:
         payload = event.payload
@@ -254,8 +256,40 @@ def _side_events(main: Sequence[Event]) -> tuple[str, ...]:
         elif event.type == "approval/decided":
             outcome = str(payload.get("outcome"))
             notes.append(f"审批 {asked.get(str(payload.get('id')), '')}：{_OUTCOMES.get(outcome, outcome)}")
-        elif event.type == "question/requested":
-            notes.append(f"向用户提问 {len(payload.get('questions') or ())} 个问题")
-        elif event.type == "question/answered":
-            notes.append("用户回答了提问" + ("（超时后才回答）" if payload.get("late") else ""))
+        elif event.type == "tool/call" and payload.get("name") == ASK_USER:
+            questions.add(str(payload.get("callId")))
+            notes.append(f"向用户提问 {_question_count(payload.get('arguments'))} 个问题")
+        elif event.type == "tool/result" and _call_id(payload) in questions and _answered(payload):
+            notes.append("用户回答了提问")
+        elif event.type == "user/message" and (payload.get("source") or {}).get("kind") == QUESTION_REPLY:
+            notes.append("用户回答了提问（超时后才回答）")
     return tuple(notes)
+
+
+def _question_count(arguments) -> int:
+    try:
+        parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except ValueError:
+        return 0
+    questions = parsed.get("questions") if isinstance(parsed, dict) else None
+    return len(questions) if isinstance(questions, list) else 0
+
+
+def _call_id(payload: dict) -> str | None:
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    call_id = message.get("toolCallId")
+    return call_id if isinstance(call_id, str) else None
+
+
+def _answered(payload: dict) -> bool:
+    """提问的工具结果里带着回答（同官方：结果文字是 {"answers": [...]}）。"""
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    if message.get("isError") is True:
+        return False
+    text = next((block.get("text") for block in message.get("content") or []
+                 if isinstance(block, dict) and block.get("type") == "text"), None)
+    try:
+        parsed = json.loads(text) if isinstance(text, str) else None
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and isinstance(parsed.get("answers"), list)

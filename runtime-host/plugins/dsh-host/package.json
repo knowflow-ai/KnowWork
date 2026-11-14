@@ -3,9 +3,13 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "KnowWork 的 DeepSeek Harness 插件：HTTP 驱动、审批与提问转发、会话工具策略、技能门、技能提供方、工具桥、子 Agent 策略继承",
+  "description": "KnowWork 的 DeepSeek Harness 插件：HTTP 驱动、审批与提问转发、会话工具策略、技能门、技能提供方、工具桥、子 Agent 策略继承。本包也是一层配置（common.patch.yml）：两种宿主都挂的通用插件",
+  "dsh": { "bundle": { "patch": "./common.patch.yml" } },
   "exports": {
     "./http-host": "./src/http-host.mjs",
+    "./intake": "./src/intake.mjs",
+    "./answers": "./src/answers.mjs",
+    "./model-catalog": "./src/model-catalog.mjs",
     "./log-sink": "./src/log-sink.mjs",
     "./prompt-context": "./src/prompt-context.mjs",
     "./answer-mode": "./src/answer-mode.mjs",
@@ -23,6 +27,7 @@
     "./tool-bridge": "./src/tool-bridge.mjs",
     "./test-tools": "./src/test-tools.mjs",
     "./owners": "./src/multi-user/owners.mjs",
-    "./schedule": "./src/multi-user/schedule.mjs"
+    "./schedule": "./src/multi-user/schedule.mjs",
+    "./state": "./src/state.mjs"
   }
 }

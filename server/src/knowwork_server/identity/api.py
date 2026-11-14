@@ -1,4 +1,5 @@
-"""身份的公开接口：登录登出、当前用户、登录方式列表、邀请注册、API Key、单点登录（OIDC、OAuth2）。
+"""身份的公开接口：登录登出、当前用户、登录方式列表、邀请注册、API Key、单点登录（OIDC、OAuth2）、
+原生应用登录（桌面端等，oauth_routes.py）。
 
 邀请与查找账号按工作空间（/api/workspaces/{ws}/invitations、/api/workspaces/{ws}/users），
 「是不是这个空间的管理员」由调用方注入（身份模块不认识空间）；默认谁都不是。
@@ -17,6 +18,7 @@ from ..auth.principal import Principal
 from .container import Identity, unauthorized
 from .errors import EmailTaken, InvalidInput, InvalidInvitation, NotAllowed, SsoFailure
 from .hooks import Placement
+from .oauth_routes import add_oauth_routes
 from .schemas import AcceptInviteBody, CreateApiKeyBody, DirectoryLoginBody, InviteBody, LoginBody, api_key_view
 from .sessions import IssuedSession
 from .sso_routes import add_sso_routes
@@ -231,6 +233,7 @@ def build_router(identity: Identity, *, is_admin: WorkspaceCheck = _no_workspace
         return PlainTextResponse(content)
 
     add_sso_routes(router, identity, set_session_cookie)
+    add_oauth_routes(router, identity)
     combined = APIRouter()
     combined.include_router(router)
     combined.include_router(workspace)

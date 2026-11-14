@@ -4,8 +4,9 @@ import asyncio
 
 import pytest
 
+from knowwork_server.kernel.wire import models_body
 from knowwork_server.models.api import _selected
-from knowwork_server.models.host_sync import HostModelSync
+from knowwork_server.models.host_sync import HostModelSync, host_models_of
 from knowwork_server.models.schemas import (
     Capability,
     ChatModel,
@@ -73,6 +74,20 @@ async def test_pushes_the_whole_list_and_coalesces_background_changes():
         await asyncio.sleep(0)
     assert pushed == [("fast",), ("fast", "pro")]
     await sync.aclose()
+
+
+async def test_device_hosts_get_the_same_list_the_server_host_is_pushed():
+    """本机宿主推不过去，设备来取：取到的和推给我们宿主的是同一份、同一个请求体（kernel/wire.py）。"""
+    catalog, pushed = Catalog(), []
+    catalog.models = (*catalog.models, ChatModel("eye", "看图", True, False))
+
+    async def push(models):
+        pushed.append(models_body(host_models_of(models)))
+
+    sync = HostModelSync(catalog, push)
+    await sync.push()
+    assert models_body(await sync.host_models()) == pushed[0] == {
+        "models": [{"id": "fast", "name": "f", "vision": False}, {"id": "eye", "name": "看图", "vision": True}]}
 
 
 async def test_quiet_push_swallows_host_errors():

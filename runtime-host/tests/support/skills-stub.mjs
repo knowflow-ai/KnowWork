@@ -1,5 +1,5 @@
 /**
- * 测试用的业务服务技能接口桩：实现 `GET /catalog` 与 `GET /content`，按令牌决定清单，记录每次请求。
+ * 测试用的业务服务技能接口桩：实现 `GET /catalog`、`GET /content` 与给本机宿主的 `POST /env`，按令牌决定清单，记录每次请求。
  * 真实实现在 server/src/knowwork_server/skills/internal_api.py。
  */
 
@@ -32,15 +32,32 @@ export function publishedSkill(name, { body = `技能 ${name} 的正文`, unlock
 }
 
 /**
- * @param {{ skillsByToken: Record<string, Array<{ entry: object, body: string }>>, tamper?: boolean, bundledOff?: string[] }} options
- *   tamper 为真时内容接口返回与摘要不符的正文；bundledOff 是清单里带的「本空间停用的自带技能」。
+ * @param {{ skillsByToken: Record<string, Array<{ entry: object, body: string }>>, tamper?: boolean, bundledOff?: string[],
+ *   envBySkill?: Record<string, Record<string, string>> }} options
+ *   tamper 为真时内容接口返回与摘要不符的正文；bundledOff 是清单里带的「本空间停用的自带技能」；
+ *   envBySkill 是 /env 按技能名给的环境变量（真实接口只给个人技能的，这里不判）。
  */
 export async function startSkillsStub(options) {
   const requests = []
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://stub')
     const token = (req.headers.authorization ?? '').replace(/^Bearer /, '')
-    requests.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), token })
+    const record = { method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), token }
+    requests.push(record)
+    if (req.method === 'POST') {
+      let text = ''
+      req.on('data', chunk => { text += chunk })
+      req.on('end', () => {
+        const skills = options.skillsByToken[token]
+        const reply = (status, payload) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)) }
+        if (skills === undefined) return reply(401, { error: { code: 'unauthorized', message: '令牌无效' } })
+        if (!url.pathname.endsWith('/env')) return reply(404, { error: { code: 'not_found', message: 'not found' } })
+        const asked = JSON.parse(text).skills ?? []
+        record.body = { skills: asked }
+        return reply(200, { env: Object.assign({}, ...asked.map(name => options.envBySkill?.[name] ?? {})) })
+      })
+      return
+    }
     const reply = (status, payload) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)) }
     const skills = options.skillsByToken[token]
     if (skills === undefined) return reply(401, { error: { code: 'unauthorized', message: '令牌无效' } })
@@ -61,6 +78,7 @@ export async function startSkillsStub(options) {
     baseUrl: `http://127.0.0.1:${port}/internal/extensions/skills`,
     requests,
     contentLoads: () => requests.filter(r => r.path.endsWith('/content')),
+    envLoads: () => requests.filter(r => r.path.endsWith('/env')),
     close: () => new Promise(resolve => { server.closeAllConnections?.(); server.close(() => resolve(undefined)) }),
   }
 }

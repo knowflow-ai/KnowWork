@@ -1,4 +1,5 @@
-"""用 LibreOffice 重算 xlsx 里的全部公式，原地写回，并以 JSON 报告错误值。
+"""用 Office 引擎（soffice.py：云端是原生 LibreOffice，本机是官方 LibreOffice Kit）重算 xlsx 里的全部公式，原地写回，
+并以 JSON 报告错误值。
 
     python3 recalc.py 文件.xlsx [超时秒数]      默认 60 秒
     python3 recalc.py 文件.xlsx --force         有外部链接也照算（接受链接丢失）
@@ -20,6 +21,9 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import soffice  # noqa: E402
 
 ERRORS = ("#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!")
 MAX_LOCATIONS = 100
@@ -52,20 +56,17 @@ def main(argv=None):
             "#NAME? 并删掉链接。先把这些格子的值从原文件抄出来；确认可以丢掉链接再加 --force。"
         )
 
-    here = os.path.dirname(os.path.abspath(__file__))
     out_dir = tempfile.mkdtemp(prefix="recalc-")
     try:
-        try:
-            subprocess.run(
-                [sys.executable, os.path.join(here, "soffice.py"), "--headless",
-                 "--convert-to", "xlsx:Calc MS Excel 2007 XML", "--outdir", out_dir, path],
-                capture_output=True, text=True, timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return fail(f"LibreOffice {timeout} 秒内没有算完")
         produced = os.path.join(out_dir, os.path.basename(path))
+        try:
+            soffice.recalculate(path, produced, timeout)  # 云端是原生 LibreOffice，本机是官方 LibreOffice Kit
+        except subprocess.TimeoutExpired:
+            return fail(f"Office 引擎 {timeout} 秒内没有算完")
+        except soffice.OfficeError as error:
+            return fail(f"没能重算这个工作簿：{error}")
         if not os.path.exists(produced):
-            return fail("LibreOffice 没能打开这个工作簿")
+            return fail("Office 引擎没能打开这个工作簿")
 
         from openpyxl import load_workbook
 

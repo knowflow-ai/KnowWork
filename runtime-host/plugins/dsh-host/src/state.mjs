@@ -2,7 +2,8 @@
  * 宿主内各插件共享的会话状态。同一进程内由 Node 模块缓存保证单例。
  *
  * 规则：
- * - 只有 HTTP 驱动打开会话时能建状态（createSession）；其他插件只读（getSession）。
+ * - 只按业务服务的开会话合同建状态（intake.mjs 的 provision）：服务端宿主上是 HTTP 驱动打开会话前建；用户设备上的本机宿主
+ *   （会话由官方会话控制器建与恢复）由它的收件入口在官方 agent/created 时建。其他插件只读（getSession）。
  * - 删除按对象身份进行：只删调用方当时拿到的那份，避免旧会话的收尾删掉同 id 的新会话。
  * - 会话已删除后到达的事件直接丢弃，不重建状态。
  * - 只存运行期数据，持久事实在业务服务。
@@ -57,6 +58,8 @@ const BUFFER_BYTES = 8 * 1024 * 1024
  * @property {Promise<readonly object[]> | undefined} skillCatalogPromise 清单拉取（只拉一次）
  * @property {Set<string>} loadedSkills 本会话（含子 Agent）加载过的技能：执行命令时报给业务服务，由它加上这些技能的环境变量。
  *   只在内存里，宿主重启后会话恢复时为空，技能再加载一次才带上
+ * @property {Readonly<Record<string, string>>} skillEnv 本机执行时加进命令的技能环境变量：只有用户电脑上的本机宿主取
+ *   （技能提供方的 deliverEnv），只有个人技能的值；服务端宿主不取，值在业务服务的沙箱执行接口里加
  * @property {readonly string[] | undefined} bundledOff 本空间停用了的自带技能（随清单拿到）
  * @property {'zh' | 'en' | undefined} language 最近一轮的交互语言，由业务服务随消息下发
  * @property {{ bases: readonly object[], omitted: number } | undefined} knowledgeCatalog 最近一次下发的知识库目录
@@ -97,6 +100,7 @@ export function createSession(sessionId, policy) {
     skillCatalog: undefined,
     skillCatalogPromise: undefined,
     loadedSkills: new Set(),
+    skillEnv: Object.freeze({}),
     language: undefined,
     timeZone: undefined, // 最近一条用户消息上的时区，子 Agent 沿用（subagent-policy）
     knowledgeCatalog: undefined,

@@ -211,16 +211,23 @@ class _Forwarder:
                                  media_type=response.headers.get("content-type", "text/event-stream"))
 
 
+INTERNAL_PREFIX = "/internal/model/v1"
+# 原生应用（桌面端等）的本机宿主经公开端口调模型：同一个网关、同样的令牌，只在登记了原生应用时挂（app.py）
+PUBLIC_PREFIX = "/api/model/v1"
+
+
 def build_router(signer: TokenSigner, upstream: httpx.AsyncClient, upstream_model: str, *,
                  resolver: RouteResolver | None = None, http: httpx.AsyncClient | None = None,
-                 limits: GatewayLimits | None = None) -> APIRouter:
+                 limits: GatewayLimits | None = None, path_prefix: str = INTERNAL_PREFIX) -> APIRouter:
     """upstream：固定上游（带 base_url 与厂商密钥头），作回退用；upstream_model 为空表示不回退。
-    resolver：模型目录；给了就必须同时给 http（转发到各厂商用，不带 base_url 与默认鉴权头）。"""
+    resolver：模型目录；给了就必须同时给 http（转发到各厂商用，不带 base_url 与默认鉴权头）。
+    path_prefix：挂在哪个路径下；内部端口与独立网关进程用默认的，公开端口用 PUBLIC_PREFIX。不进接口文档（是给宿主的协议接口）。"""
     forwarder = _Forwarder(upstream, upstream_model, resolver, http, limits or GatewayLimits())
     router = APIRouter()
 
-    @router.post("/internal/model/v1" + CHAT_PATH)
+    @router.post(path_prefix + CHAT_PATH, include_in_schema=False)
     async def chat_completions(request: Request):
+        """宿主调模型（OpenAI 兼容）"""
         workspace_id = _verify(signer, request.headers.get("authorization", ""))
         try:
             body, alias = parse_request(await request.body())
@@ -243,10 +250,12 @@ def fixed_upstream(settings: Settings) -> httpx.AsyncClient:
 
 
 def router_from_settings(settings: Settings, signer: TokenSigner, resolver: RouteResolver, *,
-                         upstream: httpx.AsyncClient, http: httpx.AsyncClient) -> APIRouter:
+                         upstream: httpx.AsyncClient, http: httpx.AsyncClient,
+                         path_prefix: str = INTERNAL_PREFIX) -> APIRouter:
     """按配置装网关路由：业务服务的内部端口与独立的模型网关进程（ops/model_gateway.py）共用，回退与超时规则一致。"""
     # 没配固定上游密钥时不回退：模型全部来自模型目录
     fallback = settings.model_upstream_model if settings.model_upstream_api_key.get_secret_value() else ""
     limits = GatewayLimits(total_timeout_seconds=settings.model_call_timeout_seconds,
                            idle_timeout_seconds=settings.model_idle_timeout_seconds)
-    return build_router(signer, upstream, fallback, resolver=resolver, http=http, limits=limits)
+    return build_router(signer, upstream, fallback, resolver=resolver, http=http, limits=limits,
+                        path_prefix=path_prefix)

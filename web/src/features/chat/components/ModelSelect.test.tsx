@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import { pickOption } from '../../../test/user';
 import { jsonResponse, renderWithApp } from '../../../test/render';
-import { listChatModels, sendMessage } from '../../../api/conversations';
+import { listChatModels, sendMessage, turnRequest } from '../../../api/conversations';
 import { NEW_CHAT, currentChatModel, useChatModel } from '../../../stores/chatModel';
 import { ModelSelect } from './ModelSelect';
 
@@ -40,7 +40,7 @@ describe('对话模型下拉', () => {
     expect(currentChatModel('c1')).toBe('eye');
     expect(currentChatModel(NEW_CHAT)).toBeUndefined();
     expect(screen.getByRole('group', { name: '对话模型' })).toHaveTextContent('eye');
-    await sendMessage('c1', '你好', 'followup', { model: currentChatModel('c1') });
+    await sendMessage('c1', turnRequest('你好', 'followup', { model: currentChatModel('c1') }));
     expect(asked.at(-1)).toContain('"model":"eye"');
   });
 

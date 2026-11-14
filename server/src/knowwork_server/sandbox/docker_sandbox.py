@@ -16,7 +16,16 @@ import secrets
 from dataclasses import dataclass
 
 from .containers import ContainerManager, SandboxKey
-from .contract import INPUT_DIR, ExecResult, SandboxConversionFailed, SandboxError, SandboxFile, SandboxTooLarge
+from .contract import (
+    INPUT_DIR,
+    ExecResult,
+    SandboxConversionFailed,
+    SandboxError,
+    SandboxFile,
+    SandboxFileError,
+    SandboxNotStarted,
+    SandboxTooLarge,
+)
 from .docker_engine import DockerEngine
 from .execution import ExecRequest, RawExec, run
 from .paths import WORKSPACE_DIR, check_name, resolve, resolve_writable
@@ -103,12 +112,6 @@ FILE_ERROR_CODES = {3: "not_found", 4: "is_directory", 5: "not_regular_file", 6:
                     7: "permission_denied", 9: "too_large"}
 
 
-class SandboxFileError(SandboxError):
-    def __init__(self, message: str, code: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
 def _file_error(result: RawExec) -> SandboxError:
     if result.exit_code == 9:
         return SandboxTooLarge(FILE_ERRORS[9])
@@ -184,7 +187,7 @@ class DockerSessionSandbox:
         result = await self._script(workspace_id, session_id, READ_DELIVERED, [target, str(max_bytes)], create=False,
                                     cap=max_bytes)
         if result is None:
-            raise SandboxError(NOT_STARTED)
+            raise SandboxNotStarted(NOT_STARTED)
         if result.exit_code != 0:
             raise _file_error(result)
         if result.truncated:

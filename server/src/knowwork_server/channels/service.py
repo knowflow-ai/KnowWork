@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from ..conversations.answer_modes import KNOWLEDGE, AnswerModes, ChannelResource, ModeContext, UnknownAnswerMode
+from ..conversations.quota import QuotaExceeded
 from ..conversations.replay import LIVE_TYPE, Cursor, Outgoing
 from ..conversations.service import ConversationNotFound
 from ..db.base import in_workspace
@@ -219,6 +220,9 @@ class ChannelService:
                                                selection)
         except UnknownAnswerMode:  # 刚核对过能用，发的时候又不能用了（授权刚被收回）
             await stream.finish(NO_ACCESS.format(label=resource.label) if personal else NOT_READY)
+            return
+        except QuotaExceeded as error:  # 额度用完：说清楚为什么、哪天恢复（和网页上同一句）
+            await stream.finish(error.message)
             return
         except Exception:
             log.exception("channel %s could not start a turn", message.channel_id)

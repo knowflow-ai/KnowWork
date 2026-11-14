@@ -146,7 +146,9 @@ class ScriptedKernel:
         if reply is LOSE:
             raise SessionNotFound("session_not_found", "gone", 404)
         if reply is APPROVAL:
-            self._push(session_id, "approval/requested", {"id": "ap1", "toolName": "kw_write"})
+            # 同真实宿主：审批记在官方会话日志里（approval/asked），卡片与待审批都用它的官方编号
+            self._push(session_id, "session/event",
+                       {"type": "approval/asked", "seq": 1, "time": 1, "data": {"id": "ap1", "toolName": "kw_write"}})
             return f"m{n}"
         for kind, data in _frames(n, reply if isinstance(reply, str) else None):
             self._push(session_id, kind, data)

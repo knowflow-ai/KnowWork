@@ -3,10 +3,14 @@
 import io
 import zipfile
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from sqlalchemy import select, text
 
+from knowwork_server.skills import build_internal_router
 from knowwork_server.skills.errors import PackageInvalid, SkillForbidden, SkillNotFound
+from knowwork_server.skills.internal_api import DEVICE_NOTE, PUBLIC_PREFIX
 from knowwork_server.skills.models import Skill
 
 from .conftest import actor
@@ -100,3 +104,34 @@ async def test_upper_layer_wins_when_two_loaded_skills_declare_the_same_name(env
     mine = await svc.install(actor("carol"), "personal", env_zip(name="my-sync"))
     await svc.set_env(actor("carol"), mine.id, {"REPORT_API_KEY": "personal-key"}, scope="personal")
     assert await environment.for_exec("ws1", "carol", ["my-sync", "report-sync"]) == {"REPORT_API_KEY": "workspace-key"}
+
+
+async def test_device_gets_only_personal_values_and_admin_skills_say_so(env):
+    """本机会话（用户电脑上的宿主）只拿到个人技能的值；空间技能的值是管理员填的，不下发，清单里注明用不了。"""
+    svc, environment = env.skills.service, env.skills.environment
+    view = await shared(env)
+    await svc.set_env(actor("bob"), view.id, {"REPORT_API_KEY": "workspace-key"})
+    mine = await svc.install(actor("carol"), "personal", env_zip(name="my-sync", env="MY_TOKEN required 我的令牌"))
+    await svc.set_env(actor("carol"), mine.id, {"MY_TOKEN": "carol-token"}, scope="personal")
+    loaded = ["report-sync", "my-sync"]
+    assert await environment.for_exec("ws1", "carol", loaded) == {"REPORT_API_KEY": "workspace-key", "MY_TOKEN": "carol-token"}
+    assert await environment.for_device("ws1", "carol", loaded) == {"MY_TOKEN": "carol-token"}
+
+    app = FastAPI()
+    app.include_router(build_internal_router(env.skills.delivery, path_prefix=PUBLIC_PREFIX, device_environment=environment))
+    app.include_router(build_internal_router(env.skills.delivery))
+    token = env.skills.delivery.issue_session_token("ws1", "sess-1", "carol")
+    auth = {"authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as http:
+        catalog = {entry["name"]: entry for entry in (await http.get(f"{PUBLIC_PREFIX}/catalog", headers=auth)).json()["skills"]}
+        assert catalog["report-sync"]["description"].endswith(DEVICE_NOTE)
+        assert not catalog["my-sync"]["description"].endswith(DEVICE_NOTE), "个人技能的值会下发，照常能用"
+        values = await http.post(f"{PUBLIC_PREFIX}/env", json={"skills": loaded}, headers=auth)
+        assert values.status_code == 200 and values.json() == {"env": {"MY_TOKEN": "carol-token"}}
+        assert (await http.post(f"{PUBLIC_PREFIX}/env", json={"skills": loaded})).status_code == 401
+        assert (await http.post(f"{PUBLIC_PREFIX}/env", json={"skills": ["../x"]}, headers=auth)).status_code == 422
+        # 给服务端宿主的那一份没有这两处：云端的值在沙箱执行接口里加，不经宿主
+        internal = (await http.get("/internal/extensions/skills/catalog", headers=auth)).json()["skills"]
+        assert not any(entry["description"].endswith(DEVICE_NOTE) for entry in internal)
+        assert (await http.post("/internal/extensions/skills/env", json={"skills": loaded}, headers=auth)).status_code == 404
+

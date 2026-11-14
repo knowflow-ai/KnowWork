@@ -1,0 +1,776 @@
+[
+ {
+  "name": "一轮正常问答：开始、用户提问、思考与回答、结束",
+  "frames": [
+   {
+    "kind": "session/event",
+    "seq": 1,
+    "time": 1000,
+    "data": {
+     "type": "turn/start",
+     "seq": 1,
+     "time": 1000,
+     "data": {
+      "turn": 1
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 2,
+    "time": 1000,
+    "data": {
+     "type": "user/message",
+     "seq": 2,
+     "time": 1000,
+     "data": {
+      "id": "u1",
+      "source": {
+       "kind": "user"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "看看这个文件夹"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 3,
+    "time": 1000,
+    "data": {
+     "type": "assistant/message",
+     "seq": 3,
+     "time": 1000,
+     "data": {
+      "message": {
+       "id": "m1",
+       "content": [
+        {
+         "type": "thinking",
+         "text": "先列目录"
+        },
+        {
+         "type": "text",
+         "text": "好的，"
+        },
+        {
+         "type": "text",
+         "text": "我来看看。"
+        }
+       ]
+      }
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 4,
+    "time": 1000,
+    "data": {
+     "type": "turn/end",
+     "seq": 4,
+     "time": 1000,
+     "data": {
+      "turn": 1,
+      "reason": {
+       "kind": "completed"
+      }
+     }
+    }
+   }
+  ],
+  "expected": [
+   {
+    "schema_version": "events.v1",
+    "type": "run.started",
+    "seq": 1,
+    "run_id": "run-1",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.completed",
+    "seq": 2,
+    "run_id": "run-1",
+    "time": 1000,
+    "item_id": "u1",
+    "kind": "message",
+    "data": {
+     "role": "user",
+     "text": "看看这个文件夹"
+    }
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.completed",
+    "seq": 3,
+    "run_id": "run-1",
+    "time": 1000,
+    "item_id": "m1:thinking",
+    "kind": "thinking",
+    "data": {
+     "text": "先列目录"
+    }
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.completed",
+    "seq": 3,
+    "run_id": "run-1",
+    "time": 1000,
+    "item_id": "m1",
+    "kind": "message",
+    "data": {
+     "role": "assistant",
+     "text": "好的，我来看看。"
+    }
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "run.completed",
+    "seq": 4,
+    "run_id": "run-1",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   }
+  ]
+ },
+ {
+  "name": "工具调用与结果、失败的工具",
+  "frames": [
+   {
+    "kind": "session/event",
+    "seq": 1,
+    "time": 1000,
+    "data": {
+     "type": "turn/start",
+     "seq": 1,
+     "time": 1000,
+     "data": {
+      "turn": 2
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 2,
+    "time": 1000,
+    "data": {
+     "type": "tool/call",
+     "seq": 2,
+     "time": 1000,
+     "data": {
+      "callId": "c1",
+      "name": "bash",
+      "arguments": {
+       "command": "ls"
+      }
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 3,
+    "time": 1000,
+    "data": {
+     "type": "tool/result",
+     "seq": 3,
+     "time": 1000,
+     "data": {
+      "message": {
+       "toolCallId": "c1",
+       "content": [
+        {
+         "type": "text",
+         "text": "a.docx\nb.xlsx"
+        }
+       ]
+      }
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 4,
+    "time": 1000,
+    "data": {
+     "type": "tool/call",
+     "seq": 4,
+     "time": 1000,
+     "data": {
+      "callId": "c2",
+      "name": "read",
+      "arguments": {
+       "path": "x"
+      }
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 5,
+    "time": 1000,
+    "data": {
+     "type": "tool/result",
+     "seq": 5,
+     "time": 1000,
+     "data": {
+      "message": {
+       "toolCallId": "c2",
+       "isError": true,
+       "content": [
+        {
+         "type": "text",
+         "text": "不存在"
+        }
+       ]
+      },
+      "error": {
+       "code": "ENOENT"
+      }
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 6,
+    "time": 1000,
+    "data": {
+     "type": "turn/end",
+     "seq": 6,
+     "time": 1000,
+     "data": {
+      "turn": 2,
+      "reason": {
+       "kind": "max-tokens"
+      }
+     }
+    }
+   }
+  ],
+  "expected": [
+   {
+    "schema_version": "events.v1",
+    "type": "run.started",
+    "seq": 1,
+    "run_id": "run-2",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.started",
+    "seq": 2,
+    "run_id": "run-2",
+    "time": 1000,
+    "item_id": "c1",
+    "kind": "tool",
+    "data": {
+     "name": "bash",
+     "arguments": {
+      "command": "ls"
+     }
+    }
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.completed",
+    "seq": 3,
+    "run_id": "run-2",
+    "time": 1000,
+    "item_id": "c1",
+    "kind": "tool",
+    "data": {
+     "text": "a.docx\nb.xlsx"
+    }
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.started",
+    "seq": 4,
+    "run_id": "run-2",
+    "time": 1000,
+    "item_id": "c2",
+    "kind": "tool",
+    "data": {
+     "name": "read",
+     "arguments": {
+      "path": "x"
+     }
+    }
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.failed",
+    "seq": 5,
+    "run_id": "run-2",
+    "time": 1000,
+    "item_id": "c2",
+    "kind": "tool",
+    "data": {
+     "text": "不存在",
+     "code": "ENOENT"
+    }
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "run.completed",
+    "seq": 6,
+    "run_id": "run-2",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {
+     "reason": "max_tokens"
+    }
+   }
+  ]
+ },
+ {
+  "name": "结束原因：取消、出错、被拦截",
+  "frames": [
+   {
+    "kind": "session/event",
+    "seq": 1,
+    "time": 1000,
+    "data": {
+     "type": "turn/start",
+     "seq": 1,
+     "time": 1000,
+     "data": {
+      "turn": 3
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 2,
+    "time": 1000,
+    "data": {
+     "type": "turn/end",
+     "seq": 2,
+     "time": 1000,
+     "data": {
+      "turn": 3,
+      "reason": {
+       "kind": "aborted"
+      }
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 3,
+    "time": 1000,
+    "data": {
+     "type": "turn/start",
+     "seq": 3,
+     "time": 1000,
+     "data": {
+      "turn": 4
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 4,
+    "time": 1000,
+    "data": {
+     "type": "turn/end",
+     "seq": 4,
+     "time": 1000,
+     "data": {
+      "turn": 4,
+      "reason": {
+       "kind": "error",
+       "error": {
+        "code": "MODEL_UNAVAILABLE"
+       }
+      }
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 5,
+    "time": 1000,
+    "data": {
+     "type": "turn/start",
+     "seq": 5,
+     "time": 1000,
+     "data": {
+      "turn": 5
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 6,
+    "time": 1000,
+    "data": {
+     "type": "turn/end",
+     "seq": 6,
+     "time": 1000,
+     "data": {
+      "turn": 5,
+      "reason": {
+       "kind": "blocked"
+      }
+     }
+    }
+   }
+  ],
+  "expected": [
+   {
+    "schema_version": "events.v1",
+    "type": "run.started",
+    "seq": 1,
+    "run_id": "run-3",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "run.cancelled",
+    "seq": 2,
+    "run_id": "run-3",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "run.started",
+    "seq": 3,
+    "run_id": "run-4",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "run.failed",
+    "seq": 4,
+    "run_id": "run-4",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {
+     "code": "MODEL_UNAVAILABLE",
+     "message": "本轮执行失败"
+    }
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "run.started",
+    "seq": 5,
+    "run_id": "run-5",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "run.failed",
+    "seq": 6,
+    "run_id": "run-5",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {
+     "code": "blocked",
+     "message": "本轮被拦截"
+    }
+   }
+  ]
+ },
+ {
+  "name": "宿主注入的消息不展示，定时任务到点展示成触发",
+  "frames": [
+   {
+    "kind": "session/event",
+    "seq": 1,
+    "time": 1000,
+    "data": {
+     "type": "turn/start",
+     "seq": 1,
+     "time": 1000,
+     "data": {
+      "turn": 6
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 2,
+    "time": 1000,
+    "data": {
+     "type": "user/message",
+     "seq": 2,
+     "time": 1000,
+     "data": {
+      "id": "u2",
+      "source": {
+       "kind": "runtime"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "上下文"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 3,
+    "time": 1000,
+    "data": {
+     "type": "user/message",
+     "seq": 3,
+     "time": 1000,
+     "data": {
+      "id": "u3",
+      "source": {
+       "kind": "schedule",
+       "title": "日报"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "整理今天的进展"
+       }
+      ]
+     }
+    }
+   }
+  ],
+  "expected": [
+   {
+    "schema_version": "events.v1",
+    "type": "run.started",
+    "seq": 1,
+    "run_id": "run-6",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.completed",
+    "seq": 3,
+    "run_id": "run-6",
+    "time": 1000,
+    "item_id": "u3",
+    "kind": "message",
+    "data": {
+     "role": "trigger",
+     "source": "schedule",
+     "text": "整理今天的进展"
+    }
+   }
+  ]
+ },
+ {
+  "name": "待办：每轮一张表，后写的覆盖",
+  "frames": [
+   {
+    "kind": "session/event",
+    "seq": 1,
+    "time": 1000,
+    "data": {
+     "type": "turn/start",
+     "seq": 1,
+     "time": 1000,
+     "data": {
+      "turn": 7
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 2,
+    "time": 1000,
+    "data": {
+     "type": "todo/write",
+     "seq": 2,
+     "time": 1000,
+     "data": {
+      "todos": [
+       {
+        "content": "读文件",
+        "status": "completed"
+       },
+       {
+        "content": "写总结",
+        "status": "in_progress"
+       },
+       {
+        "content": "坏的",
+        "status": "unknown"
+       }
+      ]
+     }
+    }
+   }
+  ],
+  "expected": [
+   {
+    "schema_version": "events.v1",
+    "type": "run.started",
+    "seq": 1,
+    "run_id": "run-7",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.updated",
+    "seq": 2,
+    "run_id": "run-7",
+    "time": 1000,
+    "item_id": "todo-7",
+    "kind": "todo",
+    "data": {
+     "items": [
+      {
+       "content": "读文件",
+       "status": "completed"
+      },
+      {
+       "content": "写总结",
+       "status": "in_progress"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "附件说明块换成附件，不进文字",
+  "frames": [
+   {
+    "kind": "session/event",
+    "seq": 1,
+    "time": 1000,
+    "data": {
+     "type": "turn/start",
+     "seq": 1,
+     "time": 1000,
+     "data": {
+      "turn": 8
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 2,
+    "time": 1000,
+    "data": {
+     "type": "user/message",
+     "seq": 2,
+     "time": 1000,
+     "data": {
+      "id": "u4",
+      "source": {
+       "kind": "user"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "总结一下"
+       },
+       {
+        "type": "text",
+        "text": "[File \"报告.docx\" (2048 bytes, sha256:abcdef01): verbatim read-only copy saved at /w/报告.docx]"
+       }
+      ]
+     }
+    }
+   }
+  ],
+  "expected": [
+   {
+    "schema_version": "events.v1",
+    "type": "run.started",
+    "seq": 1,
+    "run_id": "run-8",
+    "time": 1000,
+    "item_id": null,
+    "kind": null,
+    "data": {}
+   },
+   {
+    "schema_version": "events.v1",
+    "type": "item.completed",
+    "seq": 2,
+    "run_id": "run-8",
+    "time": 1000,
+    "item_id": "u4",
+    "kind": "message",
+    "data": {
+     "role": "user",
+     "text": "总结一下",
+     "attachments": [
+      {
+       "name": "报告.docx",
+       "size": 2048
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "不认识的事件不推",
+  "frames": [
+   {
+    "kind": "session/event",
+    "seq": 1,
+    "time": 1000,
+    "data": {
+     "type": "step/start",
+     "seq": 1,
+     "time": 1000,
+     "data": {
+      "step": 1
+     }
+    }
+   },
+   {
+    "kind": "session/event",
+    "seq": 2,
+    "time": 1000,
+    "data": {
+     "type": "assistant/chunk",
+     "seq": 2,
+     "time": 1000,
+     "data": {
+      "text": "半句"
+     }
+    }
+   }
+  ],
+  "expected": []
+ }
+]

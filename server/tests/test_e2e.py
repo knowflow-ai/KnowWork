@@ -389,8 +389,9 @@ async def test_agent_keeps_todos_and_asks_the_user(app_db):
             replayed = await again.until(run_ended())
         assert [e["data"]["data"] for e in replayed if item("input_request", "item.completed")(e)] == [answered[0]["data"]]
         assert [e["data"]["data"] for e in replayed if item("todo")(e)] == [{"items": todos}]
-        kinds = [r.kind for r in await stored_rows(s["runtime"], cid)]
-        assert {"question/requested", "question/answered"} <= set(kinds)
+        rows = await stored_rows(s["runtime"], cid)
+        assert not any(r.kind.startswith("question/") for r in rows), "提问只认官方日志，宿主不另发帧"
+        assert any(r.kind == "session/event" and (r.data or {}).get("type") == "tool/call" for r in rows), "原始帧落了库"
 
 
 async def test_question_survives_host_crash(app_db):

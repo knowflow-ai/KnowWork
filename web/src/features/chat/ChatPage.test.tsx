@@ -516,44 +516,39 @@ describe('ChatPage', () => {
     );
   });
 
-  it('产物：进入会话时拉一次，每轮完成后再拉，文件卡片挂在对应那一轮下面，下载走鉴权接口', async () => {
-    let listed = 0;
+  it('交付的文件：按官方 present 的路径挂在交付的那一轮下面，点开按路径读业务服务', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
         calls.push({ url });
-        if (!url.endsWith('/artifacts')) return jsonResponse({}, 202);
-        listed += 1;
-        const items =
-          listed === 1
-            ? [{ id: 'art_old', filename: '上一轮.xlsx', size: 1024, runId: 'run-1' }]
-            : [
-                { id: 'art_old', filename: '上一轮.xlsx', size: 1024, runId: 'run-1' },
-                { id: 'art_new', filename: '2025年度团队工作总结.docx', size: 20480, runId: 'run-2' },
-              ];
-        return jsonResponse({ items });
+        return url.includes('/files/content') ? new Response('# 总结') : jsonResponse({}, 202);
       }),
     );
     renderWithApp(<ChatPage />, { route: '/chat/c5', path: '/chat/:conversationId' });
     push(ev.runStarted(1, 1));
     push(ev.message(2, '表格做好了', 1));
-    push(ev.runCompleted(3, 1));
-    expect(await screen.findByText('上一轮.xlsx')).toBeInTheDocument();
-    push(ev.runStarted(4, 2));
-    push(ev.message(5, '总结已生成，可在下方下载。', 2));
-    push(ev.runCompleted(6, 2));
-    expect(await screen.findByText('2025年度团队工作总结.docx')).toBeInTheDocument();
+    push(ev.delivered(3, [{ path: '/sessions/c5/上一轮.md' }], 1));
+    push(ev.runCompleted(4, 1));
+    push(ev.runStarted(5, 2));
+    push(ev.delivered(6, [{ path: '/sessions/c5/out/总结.md', description: '年度总结（按部门）' }], 2));
+    push(ev.message(7, '总结已生成，可在下方查看。', 2));
+    push(ev.runCompleted(8, 2));
+    expect(await screen.findByText('总结.md')).toBeInTheDocument();
     const turns = screen.getAllByRole('article', { name: '助手回答' });
     expect(turns).toHaveLength(2);
-    expect(turns[0]).toHaveTextContent('上一轮.xlsx');
-    expect(turns[0]).not.toHaveTextContent('工作总结');
-    expect(turns[1]).toHaveTextContent('2025年度团队工作总结.docx');
-    expect(turns[1]).toHaveTextContent('Word 文档 · 20 KB');
-    const download = screen.getByRole('link', { name: '下载 2025年度团队工作总结.docx' });
-    expect(download).toHaveAttribute('href', '/api/workspaces/default/conversations/c5/artifacts/art_new');
-    expect(
-      calls.filter((c) => c.url === '/api/workspaces/default/conversations/c5/artifacts').length,
-    ).toBeLessThanOrEqual(3);
+    expect(turns[0]).toHaveTextContent('上一轮.md');
+    expect(turns[0]).not.toHaveTextContent('总结.md');
+    // 说明末尾括号里的补充去掉（同官方交付卡片）
+    expect(turns[1]).toHaveTextContent('年度总结');
+    expect(turns[1]).not.toHaveTextContent('按部门');
+    // 确认了这段对话在哪执行（取对话信息回来）后卡片才点得开
+    await userEvent.click(await within(turns[1]!).findByRole('button', { name: '预览 总结.md' }));
+    const sheet = await screen.findByRole('dialog', { name: /总结\.md/ });
+    expect(await within(sheet).findByRole('heading', { name: '总结' })).toBeInTheDocument();
+    expect(calls.map((c) => c.url)).toContain(
+      `/api/workspaces/default/conversations/c5/files/content?path=${encodeURIComponent('/sessions/c5/out/总结.md')}`,
+    );
+    expect(calls.some((c) => c.url.endsWith('/artifacts'))).toBe(false);
   });
 
   it('提问：卡片作答后提交到提问接口；回答回来后显示回答，待办随轮次显示', async () => {

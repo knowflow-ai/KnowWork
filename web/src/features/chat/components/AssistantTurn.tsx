@@ -1,13 +1,12 @@
 /** 一轮助手回答：执行过程摘要、待办、审批与提问、正文（不套气泡）、文件、工具的说明（如已记住）、结束说明、操作图标。 */
-import { useState } from 'react';
 import type { QuestionAnswer } from '../../../api/conversations';
-import type { ApprovalView, ArtifactView, CitationSource, QuestionView, RunView } from '../events/types';
+import type { ApprovalView, CitationSource, QuestionView, RunView } from '../events/types';
 import { AnswerActions } from './AnswerActions';
 import { AnswerNotices } from './AnswerNotices';
 import { ApprovalCard } from './ApprovalCard';
 import { AnswerSources } from './AnswerSources';
 import { citedFiles, citedNumbers } from './citations';
-import { FileCards } from './FileCard';
+import { DeliverableCards } from './FileCard';
 import { Markdown } from './Markdown';
 import { ProcessSummary } from './ProcessSummary';
 import { QuestionCard } from './QuestionCard';
@@ -16,17 +15,17 @@ import { SearchConditions } from './SearchConditions';
 import { TodoList } from './TodoList';
 import { answerNotices } from '../events/notices';
 import { hasProcess, selectRunCards, selectRunSearch } from '../events/selectors';
-import { FilePreview, type PreviewFile } from '../../preview/FilePreview';
 import type { FeedbackInput, Rating } from '../../../api/feedback';
 
 interface Props {
   readonly run: RunView;
   readonly approvals: readonly ApprovalView[];
   readonly questions: readonly QuestionView[];
-  readonly artifacts: readonly ArtifactView[];
   /** 本会话引用目录；undefined 表示还没拉到。 */
   readonly sources?: Readonly<Record<number, CitationSource>>;
   readonly onDecide: (approvalId: string, allow: boolean, remember?: boolean) => Promise<void>;
+  /** 审批卡片上给不给「本会话内同类操作不再询问」 */
+  readonly rememberable?: boolean;
   /** 返回是否提交成功（失败已由页面提示）。 */
   readonly onAnswer: (questionId: string, answers: readonly QuestionAnswer[]) => Promise<boolean>;
   readonly onRegenerate?: () => void;
@@ -62,9 +61,9 @@ export function AssistantTurn({
   run,
   approvals,
   questions,
-  artifacts,
   sources,
   onDecide,
+  rememberable = true,
   onAnswer,
   onRegenerate,
   onDropConditions,
@@ -78,7 +77,6 @@ export function AssistantTurn({
   onFeedback,
   onRetract,
 }: Props) {
-  const [previewing, setPreviewing] = useState<PreviewFile | undefined>();
   // 和正式消息的拼法一致（onMessage 用空行分隔），正式消息到了整段替换时位置不跳
   const shown = liveText ? (run.answer ? `${run.answer}\n\n${liveText}` : liveText) : run.answer;
   const ended = run.endedAt !== undefined;
@@ -101,6 +99,7 @@ export function AssistantTurn({
           key={approval.id}
           approval={approval}
           step={run.steps.find((s) => s.callId === approval.callId)}
+          rememberable={rememberable}
           onDecide={(allow, remember) => onDecide(approval.id, allow, remember)}
         />
       ))}
@@ -136,11 +135,7 @@ export function AssistantTurn({
           onAsk={busy ? undefined : onAsk}
         />
       ) : null}
-      <FileCards
-        files={artifacts}
-        onPreview={(file) => (file.url ? setPreviewing({ name: file.name, url: file.url }) : undefined)}
-      />
-      <FilePreview file={previewing} onClose={() => setPreviewing(undefined)} />
+      <DeliverableCards files={run.deliverables ?? []} />
       <AnswerNotices notices={answerNotices(run.steps)} />
       {notice ? <div className="kw-end-notice">{notice}</div> : null}
       {ended ? (

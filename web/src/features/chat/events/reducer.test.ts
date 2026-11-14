@@ -227,9 +227,16 @@ describe('chatReducer 审批', () => {
   it('批准后步骤与轮次继续运行', () => {
     const state = fold([...asking(), ev.approvalResolved(4, 'ap1', 'allowed-once')]);
     expect(state.approvals[0]!.status).toBe('allowed');
+    expect(state.approvals[0]!.auto).toBeUndefined();
     expect(state.runs['run-1']!.steps[0]!.status).toBe('running');
     expect(state.runs['run-1']!.status).toBe('running');
     expect(selectRunState(state)).toBe('running');
+  });
+
+  it('按本会话授权自动批准的记下 auto，卡片据此写明', () => {
+    const state = fold([...asking(), ev.approvalResolved(4, 'ap1', 'allowed-once', 1, true)]);
+    expect(state.approvals[0]).toMatchObject({ status: 'allowed', auto: true });
+    expect(state.runs['run-1']!.status).toBe('running');
   });
 
   it('拒绝后步骤标为已拒绝，工具报错也不覆盖', () => {
@@ -318,16 +325,22 @@ describe('chatReducer 本地发送的消息', () => {
   });
 });
 
-describe('chatReducer 产物', () => {
-  const files = [{ id: 'art_1', name: '总结.docx', size: 10, runId: 'run-1', url: '/x' }];
-
-  it('整体替换产物列表；乱序帧触发重算时不丢；reset 清空', () => {
-    const loaded = chatReducer(fold(happyRun()), { type: 'artifacts/loaded', artifacts: files });
-    expect(loaded.artifacts).toEqual(files);
-    const reordered = reduceWire(loaded, ev.thinking('1.0', '插回来的思考'));
-    expect(reordered.artifacts).toEqual(files);
-    expect(chatReducer(reordered, { type: 'artifacts/loaded', artifacts: [] }).artifacts).toEqual([]);
-    expect(chatReducer(loaded, { type: 'reset' }).artifacts).toEqual([]);
+describe('chatReducer 交付的文件', () => {
+  it('官方 present 交付的文件挂在那一轮下；同一路径再交付用最近一次的说明、位置不变；坏条目略过', () => {
+    const state = [
+      ev.runStarted(1, 1),
+      ev.delivered(2, [
+        { path: '/sessions/c1/报告.docx', description: '初稿' },
+        { path: '/sessions/c1/a.csv' },
+      ]),
+      ev.delivered(3, [{ path: '/sessions/c1/报告.docx', description: '终稿' }]),
+      ev.delivered(4, [{ path: '' } as { path: string }, { path: '/sessions/c1/图.png' }]),
+    ].reduce(reduceWire, initialChatState);
+    expect(state.runs['run-1']?.deliverables).toEqual([
+      { path: '/sessions/c1/报告.docx', description: '终稿' },
+      { path: '/sessions/c1/a.csv' },
+      { path: '/sessions/c1/图.png' },
+    ]);
   });
 });
 

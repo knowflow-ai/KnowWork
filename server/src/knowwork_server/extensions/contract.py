@@ -4,7 +4,7 @@ Extension 对象。业务服务与 worker 启动时按授权加载；没有授�
 扩展只拿这里的上下文，不拿业务服务内部的装配对象：内部重构不牵动扩展。上下文以后按需加字段。
 """
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -19,13 +19,18 @@ from ..channels.targets import ChannelTargets
 from ..config import Settings
 from ..conversations.answer_modes import AnswerModes
 from ..conversations.background import BackgroundTurns, LocalBackground
+from ..conversations.device import DeviceConversations
 from ..conversations.mention_kinds import MentionKinds
+from ..conversations.quota import QuotaPolicies
 from ..conversations.scopes import ConversationScopes
 from ..conversations.summaries import Contributor
 from ..conversations.turn_context import TurnContextHook
 from ..identity.directory_accounts import DirectoryAccounts
 from ..identity.im_identities import ImIdentities
 from ..identity.methods import LoginMethods
+from ..identity.oauth import DeviceLogin
+from ..identity.oauth_clients import OAuthClients
+from ..identity.oauth_exchange import Exchanged, TokenExchangers
 from ..identity.password_logins import PasswordLogins
 from ..identity.sso import RedirectLogins
 from ..identity.verify_files import VerifyFiles
@@ -34,6 +39,7 @@ from ..jobs.gate import Gate, LocalGate
 from ..knowledge.links import LinkSigner
 from ..knowledge.provided import ProvidedSources
 from ..models.client import ModelClient
+from ..models.recorder import UsageReader
 from ..sandbox.contract import SessionSandbox
 from ..sessionfiles.storage import SessionStores
 from ..skills.platform import PlatformSkillAdmin
@@ -50,6 +56,9 @@ async def no_embed(principal: Any, request: Any, conversation_id: str) -> None:
     if getattr(principal, "is_embedded", False):
         raise HTTPException(status_code=403, detail="网页嵌入里用不了这个功能")
 
+
+# 给不在服务端跑的会话签一种回调令牌：(空间, 会话, 用户) → 短期令牌与有效期
+DeviceTokenIssuer = Callable[[str, str, str], Awaitable[Exchanged]]
 
 @dataclass(frozen=True)
 class ApiContext:
@@ -81,7 +90,8 @@ class ApiContext:
     # 这一轮开始前交给扩展
     mentions: MentionKinds = field(default_factory=MentionKinds)
     # 登记对话的范围（conversations/scopes.py，conversation_scopes.add）：给某段对话定顶部的名字、固定的回答方式，
-    # 知识库、技能、MCP 收窄到哪些（和本人的权限取交集）；每一轮的说明经 turn_context 给
+    # 知识库、技能、MCP 收窄到哪些（和本人的权限取交集）；每一轮的说明经 turn_context 给。
+    # 建对话时能挂的东西也登记在这里（conversation_scopes.add_claimer，例如专家）：不管在哪执行、从哪建都经它挂上
     conversation_scopes: ConversationScopes = field(default_factory=ConversationScopes)
     # 对外检索结果里的短期签名链接（图片等）：扩展的取文件接口用 links.verify 认签名，取时仍按签名里的用户判权
     links: LinkSigner | None = None
@@ -104,6 +114,23 @@ class ApiContext:
     password_logins: PasswordLogins | None = None
     redirect_logins: RedirectLogins | None = None
     verify_files: VerifyFiles | None = None
+    # 原生应用登录（OAuth 授权码 + PKCE，identity/oauth.py）的客户端登记表：扩展登记自己的应用（例如桌面端），
+    # 没有任何登记时授权与换令牌一律拒绝
+    oauth_clients: OAuthClients | None = None
+    # 原生应用的令牌交换（RFC 8693，identity/oauth_exchange.py）：扩展登记自己的受众，例如本机会话的工具令牌
+    oauth_exchangers: TokenExchangers | None = None
+    # 给不在服务端跑的会话（桌面端的本机会话）签回调业务服务的令牌：受众（tools 工具、skills 技能）→
+    # (空间, 会话, 用户) → 短期令牌与有效期。和服务端会话同一种令牌、同一套计算（工具：权限、MCP、扩展的工具，只去掉要用服务端
+    # 沙箱的；技能：此刻的会话技能清单），会话归谁、能不能换由扩展先判。本机宿主拿它从公开入口 /api/extensions/tools、
+    # /api/extensions/skills 回调（登记了原生应用才挂）。以后多一种回调，在这里多一个受众，扩展不用改
+    device_tokens: Mapping[str, DeviceTokenIssuer] | None = None
+    # 在用户设备上执行的对话（conversations/device.py）：建对话不开宿主会话、收设备送来的会话事件、查某人名下的这种对话。
+    # 谁能建、谁能送、设备是谁由扩展判断（例如只认桌面端登录）
+    device_conversations: DeviceConversations | None = None
+    # 原生应用那次登录报的设备号（identity/oauth.py 的 device_id）：登录编号（Principal.grant_id）→ 设备号，没报或已退出是 None
+    oauth_device_id: Callable[[str], Awaitable[str | None]] | None = None
+    # 这个人此刻登录着的原生应用设备（identity/oauth.py 的 list_devices：设备号、设备名、最近用的在前）：扩展据此说「在哪台设备上」
+    oauth_devices: Callable[[str], Awaitable[Sequence[DeviceLogin]]] | None = None
     # IM 机器人认人用的身份来源：扩展把组织来源登记进来（id、平台、身份域、免登入口），渠道选一个来认人
     im_identities: ImIdentities = field(default_factory=ImIdentities)
     # 替用户建对话（conversations/background.py 的 LocalBackground，同 WorkerContext.turns 的判定，不走 HTTP）：
@@ -115,6 +142,11 @@ class ApiContext:
     embed_guard: Callable[[Any, Any, str], Awaitable[None]] = no_embed
     # 网页渠道能挂的对象（channels/targets.py）：扩展登记一类（例如专家），渠道挂上就照它答；对象改了、删了调 changed
     channel_targets: ChannelTargets = field(default_factory=ChannelTargets)
+    # 登记用量配额的判定（conversations/quota.py，quota.set）：各端开始一轮、定时任务到点激活之前调，超了抛 QuotaExceeded。
+    # 只能登记一个；没登记时不限制
+    quota: QuotaPolicies = field(default_factory=QuotaPolicies)
+    # 只读的用量汇总（models/recorder.py 的 summary）：按人、按模型、按天，「哪一天」按 settings.usage_timezone 切
+    usage: UsageReader | None = None
 
 
 @dataclass(frozen=True)

@@ -2,7 +2,8 @@
 # 会话沙箱镜像：Python 3.12、Node.js 22、Bash、jq、/workspace。
 # Office 工具链照 KnowFlow 的沙箱镜像（docker/sandbox/Dockerfile）：原生 LibreOffice（无界面的 Writer、Calc、Impress）
 # 负责转 PDF、渲染、重算公式与文档预览，poppler 出页面图片，pandoc / markitdown 读文档，docx-js 与 pptxgenjs 生成
-# Word 与 PPT；KnowFlow 自己写的辅助脚本放 /opt/knowwork/office，Office 技能按这个绝对路径引用。
+# Word 与 PPT；KnowFlow 自己写的辅助脚本放 /opt/knowwork/office（源文件在自带技能的资源目录 runtime-host/plugins/dsh-host/skills/resources/office），
+# Office 技能在服务端的资源目录就是 /opt/knowwork，业务服务的格式转换与重算也按这个路径调。
 # 不用 DSH 官方的 LibreOffice Kit：它在 Linux 上只有 WASM 引擎，实测同一份文档每次约 17 秒、内存峰值约 1.4 GB；
 # 原生引擎 2–5 秒、约 190 MB（2026-10-20）。
 # 一会话一个长驻容器，api 用它按会话创建。
@@ -51,11 +52,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 # 产物需要的 Python 包（版本照 KnowFlow 沙箱镜像）：表格、Word、PPT、图表，以及 Office 脚本用的 lxml、defusedxml，
-# 读文档用的 markitdown。
+# 读文档用的 markitdown（pdf 扩展装 pdfminer.six，提取能直接取文字的 PDF；扫描件走业务服务的文档解析）。
 RUN pip install --no-cache-dir \
       pandas==2.2.3 numpy==2.1.3 openpyxl==3.1.5 XlsxWriter==3.2.0 matplotlib==3.9.2 \
       python-docx==1.2.0 python-pptx==1.0.2 Pillow==11.0.0 tabulate==0.9.0 lxml==5.3.0 defusedxml==0.7.1 \
-      "markitdown[docx,pptx,xlsx]==0.1.2" \
+      "markitdown[docx,pptx,xlsx,pdf]==0.1.2" \
  && rm -rf /root/.cache
 
 # 生成 Word 与 PPT 的 Node 库（版本照 KnowFlow）。装成全局包，NODE_PATH 让任何位置的脚本都能 require('docx')；
@@ -84,7 +85,7 @@ RUN npm init -y >/dev/null \
 COPY deploy/docker/sandbox-ssh/sshd_config /etc/ssh/sshd_config_kw
 
 # Office 辅助脚本（照搬 KnowFlow 的 docker/sandbox/office）：soffice 封装、公式重算、修订、批注、校验、缩略图等
-COPY deploy/docker/sandbox-office /opt/knowwork/office
+COPY runtime-host/plugins/dsh-host/skills/resources/office /opt/knowwork/office
 
 # 命令与文件操作默认以 root 运行：一个沙箱只属于一个会话，容器里的账号不是隔离边界，模型要装包、写到哪都行。
 # 仍保留 uid 1000 的 user 账号，供显式按账号执行。

@@ -70,3 +70,35 @@
   background: var(--color-border-subtle);
   content: '';
 }
+
+/* 应用登录确认页：设备、账号两行事实，下面「拒绝 / 允许」并排 */
+.kw-consent-facts {
+  margin: 0 0 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-consent-facts > div {
+  display: flex;
+  gap: 12px;
+}
+
+.kw-consent-facts dt {
+  flex: none;
+  width: 40px;
+  color: var(--color-text-secondary);
+}
+
+.kw-consent-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.kw-consent-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}

@@ -7,10 +7,11 @@ touch 一个容器里的文件，空闲清扫读它的 mtime。它放在 /worksp
 ACTIVITY_MARKER = "/var/lib/knowwork-sandbox-activity"
 
 # 容器的 PID 1（前面有 Docker 的 init，即 tini，负责收僵尸进程）：建好活动标记与工作区目录后一直睡着。
-# 工作区约定（Office 技能照此写）：input 是附件（只读）、tmp 放中间文件、output 放要交付的文件（交付靠 present）。
+# 工作区约定：input 是附件（只读）。成品、脚本直接放 /workspace，一次性的中间文件由技能自己建隐藏的临时目录、用完删掉
+# （照 DSH 官方 Office 技能），不预先建目录。
 # KW_SESSION_ROOT（/sessions/<会话 id>）链接到 /workspace：宿主按这个路径认会话，命令里的绝对路径也能用。
 _ENTRY = (f"touch {ACTIVITY_MARKER} 2>/dev/null; chmod 666 {ACTIVITY_MARKER} 2>/dev/null; "
-          "mkdir -p /workspace/input /workspace/tmp /workspace/output 2>/dev/null; "
+          "mkdir -p /workspace/input 2>/dev/null; "
           'if [ -n "$KW_SESSION_ROOT" ]; then mkdir -p "$(dirname "$KW_SESSION_ROOT")" && '
           'ln -sfn /workspace "$KW_SESSION_ROOT"; fi; exec sleep infinity')
 ENTRYPOINT = ["/bin/sh", "-c", _ENTRY]

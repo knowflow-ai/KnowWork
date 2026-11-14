@@ -190,6 +190,15 @@ function filenameOf(headers: Headers): string | null {
   return /filename="?([^";]+)"?/i.exec(value)?.[1] ?? null;
 }
 
+/**
+ * 下载服务端的一个文件（地址是站内的 /api/...）：在当前页面里触发下载，不开新窗口。文件名用服务端
+ * Content-Disposition 给的；filename 只在要换个名字时传。外壳（桌面端）照 DSH 官方桌面版不开站内新窗口，
+ * window.open 一个下载地址在那里点了没反应，所以下载一律走这里。
+ */
+export function downloadFrom(url: string, filename = ''): void {
+  Object.assign(document.createElement('a'), { href: url, download: filename }).click();
+}
+
 /** 把下载的文件存到本机（浏览器的下载）。 */
 export function saveFile(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);

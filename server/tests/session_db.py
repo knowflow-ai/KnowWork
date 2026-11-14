@@ -64,8 +64,10 @@ class FilesDb:
             await set_workspace(session, conversation.workspace_id)
             await session.execute(delete(Conversation).where(Conversation.id == conversation.id))
 
-    async def conversation(self, *, workspace_id: str = "ws1", user_id: str = "alice") -> Conversation:
-        row = Conversation(id=f"c_{uuid.uuid4().hex}", workspace_id=workspace_id, user_id=user_id, title="")
+    async def conversation(self, *, workspace_id: str = "ws1", user_id: str = "alice",
+                           source: str | None = None) -> Conversation:
+        extra = {} if source is None else {"source": source}
+        row = Conversation(id=f"c_{uuid.uuid4().hex}", workspace_id=workspace_id, user_id=user_id, title="", **extra)
         async with self.sessionmaker() as session, session.begin():
             await set_workspace(session, workspace_id)
             session.add(row)

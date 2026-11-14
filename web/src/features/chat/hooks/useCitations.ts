@@ -6,9 +6,15 @@
 import { useEffect, type Dispatch } from 'react';
 import { listCitations } from '../../../api/citations';
 import type { ChatAction, ChatState } from '../events/types';
-import { ARTIFACT_REFRESH_DELAY_MS } from './useArtifacts';
 
 const KNOWLEDGE_TOOLS = new Set(['knowledge_search', 'knowledge_read']);
+/** 进入会话时事件流会重放历史，计数短时间内连涨：用一个短延迟把这一串合成一次请求 */
+const REFRESH_DELAY_MS = 300;
+
+/** 正常完成了几轮 */
+export function completedRunCount(state: ChatState): number {
+  return state.runOrder.filter((runId) => state.runs[runId]?.status === 'completed').length;
+}
 
 /** 知识检索、阅读一共返回了几次 */
 export function knowledgeResults(state: ChatState): number {
@@ -35,7 +41,7 @@ export function useCitations(
       listCitations(conversationId, controller.signal)
         .then((citations) => dispatch({ type: 'citations/loaded', citations }))
         .catch(() => undefined);
-    }, ARTIFACT_REFRESH_DELAY_MS);
+    }, REFRESH_DELAY_MS);
     return () => {
       clearTimeout(timer);
       controller.abort();

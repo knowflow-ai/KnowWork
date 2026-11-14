@@ -51,7 +51,7 @@ env:
     server=.dockerignore deploy/docker/server.Dockerfile server/pyproject.toml server/uv.lock server/src
     runtime-host=.dockerignore deploy/docker/runtime-host.Dockerfile runtime-host/package.json runtime-host/package-lock.json runtime-host/profile runtime-host/plugins deploy/runtime-host
     gateway=.dockerignore deploy/docker/gateway.Dockerfile web deploy/gateway
-    sandbox=.dockerignore deploy/docker/sandbox.Dockerfile deploy/docker/sandbox-office
+    sandbox=.dockerignore deploy/docker/sandbox.Dockerfile runtime-host/plugins/dsh-host/skills/resources/office
 
 jobs:
   check:

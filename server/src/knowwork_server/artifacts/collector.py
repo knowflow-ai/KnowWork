@@ -166,11 +166,7 @@ class ArtifactCollector:
             return Notice(name, "unsupported_spreadsheet", "含宏或旧格式的表格无法做安全检查，请输出 xlsx 或 csv")
         return None
 
-    async def _read(self, workspace_id: str, session_id: str, path: str, name: str) -> bytes | Notice:
-        try:
-            container_path = from_session_path(path, session_id)
-        except InvalidPath:
-            return Notice(name, "outside_workspace", "只能交付会话工作目录里的文件")
+    async def _read(self, workspace_id: str, session_id: str, container_path: str, name: str) -> bytes | Notice:
         try:
             return await self._sandbox.read_delivered(workspace_id, session_id, container_path,
                                                       max_bytes=self._limits.max_file_bytes)
@@ -184,7 +180,11 @@ class ArtifactCollector:
         notice = self._precheck(name)
         if notice is not None:
             return notice
-        raw = await self._read(workspace_id, session_id, path, name)
+        try:
+            container_path = from_session_path(path, session_id)
+        except InvalidPath:
+            return Notice(name, "outside_workspace", "只能交付会话工作目录里的文件")
+        raw = await self._read(workspace_id, session_id, container_path, name)
         if isinstance(raw, Notice):
             return raw
         source = hashlib.sha256(raw).hexdigest()
@@ -197,7 +197,8 @@ class ArtifactCollector:
         quota = self._quota(name, len(content), budget)
         if quota is not None:
             return quota
-        row = await self._store(workspace_id, session_id, run_id, name, content, source, sanitized, description)
+        row = await self._store(workspace_id, session_id, run_id, name, content, source, sanitized, description,
+                                container_path)
         if isinstance(row, Notice):
             return row
         budget.collected += 1
@@ -215,7 +216,8 @@ class ArtifactCollector:
         return None
 
     async def _store(self, workspace_id: str, session_id: str, run_id: str | None, name: str, content: bytes,
-                     source: str, sanitized: bool, description: str | None) -> ArtifactView | Notice:
+                     source: str, sanitized: bool, description: str | None,
+                     source_path: str) -> ArtifactView | Notice:
         try:
             digest = await self._stores(workspace_id, session_id).put(content)
         except BlobIntegrityError:
@@ -223,7 +225,7 @@ class ArtifactCollector:
         row = Artifact(id=f"art_{uuid.uuid4().hex}", workspace_id=workspace_id, conversation_id=session_id,
                        run_id=run_id, filename=name, content_type=content_type_of(name), size=len(content),
                        digest=digest, source_sha256=source, sanitized=sanitized, description=description,
-                       created_at=datetime.now(UTC))
+                       source_path=source_path, created_at=datetime.now(UTC))
         async with self._sessionmaker() as session, session.begin():
             await set_workspace(session, workspace_id)
             session.add(row)

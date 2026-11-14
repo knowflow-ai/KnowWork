@@ -1,6 +1,6 @@
 /** 受保护页面：先取当前用户；未登录或会话过期跳登录页，取不到时给出可重试的说明；登录了再选定当前空间。
  * 当前用户信息里带着本部署启用了哪些扩展，进主界面之前设给插槽注册表：没启用的扩展不显示入口（slots/registry）。 */
-import { type ReactNode } from 'react';
+import { type ReactNode, useEffect } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { Warning } from '@openai/apps-sdk-ui/components/Icon';
 import { Navigate, useLocation } from 'react-router';
@@ -9,6 +9,7 @@ import { setEnabledExtensions } from '../../slots/registry';
 import { useSessionStore } from '../../stores/session';
 import { Empty } from '../../ui/Empty';
 import { Skeleton } from '../../ui/Skeleton';
+import { clearAfterLogin, peekAfterLogin } from './afterLogin';
 import { useMe } from './queries';
 import { RequireWorkspace } from './RequireWorkspace';
 
@@ -17,6 +18,13 @@ export function RequireAuth({ children }: { readonly children: ReactNode }) {
   const expired = useSessionStore((s) => s.expired);
   const location = useLocation();
   const toLogin = <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  // 单点登录回来落在首页：跳回登录前要去的页面（afterLogin.ts）。渲染里只读，清掉放在 effect 里
+  const here = location.pathname + location.search;
+  const pending = me.data ? peekAfterLogin() : null;
+  const resume = pending !== null && pending !== here ? pending : null;
+  useEffect(() => {
+    if (pending !== null) clearAfterLogin();
+  }, [pending]);
 
   if (expired) return toLogin;
   if (me.isPending) return <Skeleton rows={6} className="kw-page-state" />;
@@ -39,6 +47,7 @@ export function RequireAuth({ children }: { readonly children: ReactNode }) {
   // 登录后先写进缓存的那份没有扩展列表，正在重新取：等它回来再进主界面，菜单不先多后少
   if (me.data.extensions === undefined && me.isFetching)
     return <Skeleton rows={6} className="kw-page-state" />;
+  if (resume) return <Navigate to={resume} replace />;
   setEnabledExtensions(me.data.extensions);
   return <RequireWorkspace>{children}</RequireWorkspace>;
 }

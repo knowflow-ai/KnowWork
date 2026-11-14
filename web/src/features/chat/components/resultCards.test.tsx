@@ -346,7 +346,6 @@ describe('回答里的卡片', () => {
         run={run}
         approvals={[]}
         questions={[]}
-        artifacts={[]}
         onDecide={vi.fn()}
         onAnswer={vi.fn(async () => true)}
         busy={false}
@@ -386,7 +385,6 @@ describe('回答里的卡片', () => {
         run={run}
         approvals={[]}
         questions={[]}
-        artifacts={[]}
         onDecide={vi.fn()}
         onAnswer={vi.fn(async () => true)}
         busy={false}

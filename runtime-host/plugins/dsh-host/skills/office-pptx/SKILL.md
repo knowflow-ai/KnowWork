@@ -11,26 +11,30 @@ description: 只要涉及 .pptx / .potx 文件就用——不论它是输入、�
 |---|---|
 | **生成**新演示稿 | 写一个 `pptxgenjs` 脚本——坑点见下 |
 | **修改**已有演示稿，或基于模板制作 | 解压 → 改 `ppt/slides/slideN.xml` → 打包 |
-| **读取**内容 | `markitdown 文件.pptx`（每页一段，以 `<!-- Slide number: N -->` 分隔）；看版式：`python3 /opt/knowwork/office/thumbnail.py 文件.pptx 前缀` |
+| **读取**内容 | `markitdown 文件.pptx`（每页一段，以 `<!-- Slide number: N -->` 分隔）；看版式：`python3 office/thumbnail.py 文件.pptx 前缀` |
 
-> 用户给的原文件在 `/workspace/input`（只读），中间文件放 `/workspace/tmp`，要交给用户的
-> 放 `/workspace/output`，写好后调用 `present` 交付（例如 `present({"files":[{"path":"/workspace/output/演示稿.pptx"}]})`）。
+> 命令里的 `office/…` 是本技能资源目录（加载技能时给出的 Base directory）下的辅助脚本，运行时按资源目录写成完整路径；其余相对路径都相对当前工作目录。
+> **解释器与库：** 工具列表里有 `load_workspace_dependencies`（本机对话）就先调一次：Python 脚本（包括 `office/` 下的）都用它返回的 `python` 跑，`markitdown` 写成 `"<python>" -m markitdown`；Node 脚本用它返回的 `node` 跑，`NODE_PATH` 设成它返回的 `nodePackages`。没有这个工具（云端对话的沙箱）就直接用 `python3`、`node`、`markitdown`，下面的命令按这种写法写。用到的库都已带好，不要 `pip install`、`npm install`，也不要另找系统里的解释器。
+> **文件放哪：** 用户给的原文件只读、不要原地改（云端对话的附件在 `input/`；本机对话的原文件就在工作文件夹里，用用户说的路径）。成品存进当前工作目录（用户指定了位置就照用户说的），按内容起名、不和已有文件重名；生成用的脚本也放工作目录，按用途起名（如 `生成报告.js`；Python 脚本别叫 `docx.py`、`pptx.py` 这类会挡住库的名字）。
+> **中间文件：** 解压出来的部件、渲染的页面图这类一次性的东西，放进这次新建的隐藏临时目录：`mktemp -d ./.dsh-office.XXXXXXXX` 会打印出目录名（下文写作 `<临时目录>`），之后的命令都直接写这个名字（每条命令是新的 shell，变量留不下来）。用完——失败了也一样——只删这个目录（`rm -rf <临时目录>`）；不要用固定的目录名，不要删工作目录本身，回答里不要链接已经删掉的图片。
+> 写好后调用 `present` 交付成品（例如 `present({"files":[{"path":"演示稿.pptx"}]})`），中间文件不交付。
 
 ## 脚本
 
-都在 `/opt/knowwork/office/`，其余都是普通的 Python、`node` 或 shell。
+都在本技能资源目录的 `office/` 下，其余都是普通的 Python、`node` 或 shell。
 
 | 脚本 | 作用 |
 |---|---|
 | `thumbnail.py 文件.pptx 前缀` | 把每页渲染成带页码的缩略图网格，用来挑模板版式。只接受 `.pptx`。**一定要传前缀**，用文件名命名它——两份演示稿用同一个前缀，后一份的网格会覆盖前一份 |
 | `add_slide.py 目录/ slide2.xml [--after slideN.xml]` | 复制一页（或从 `slideLayoutN.xml` 新建一页），把包里要登记的地方都登记好。也能直接对文件：`-o 输出.pptx` |
 | `clean.py 目录/` | 删掉已经没人引用的幻灯片、图片、关系。**`<p:sldIdLst>` 定稿之后**再跑 |
-| `validate.py 文件.pptx [--render]` | 检查 XML、关系、内容类型、幻灯片列表；`--render` 再让 LibreOffice 打开一次。每个问题都附修法 |
-| `soffice.py --headless --convert-to pdf 文件.pptx` | LibreOffice 的封装——沙箱里直接跑 `soffice` 会卡住 |
+| `validate.py 文件.pptx [--render]` | 检查 XML、关系、内容类型、幻灯片列表；`--render` 再让 Office 引擎打开一次。每个问题都附修法 |
+| `render.py 文件.pptx 输出目录 [--pages 1,3]` | 每页渲染成一张 PNG，打印绝对路径；`render.py 文件.pptx --text` 按页打出文字 |
+| `soffice.py --headless --convert-to pdf 文件.pptx` | Office 引擎的封装（云端是原生 LibreOffice，本机是官方 LibreOffice Kit）——不要直接跑 `soffice` |
 
 ## 用 pptxgenjs 生成——坑点
 
-`pptxgenjs` 已经装好，直接 `require('pptxgenjs')`，不要 `npm install`——沙箱没有网络。
+`pptxgenjs` 已经带好，直接 `require('pptxgenjs')`（本机对话照开头的写法设 `NODE_PATH`）。
 API 你是知道的，要当心的是这些：
 
 - **先设 `pres.layout` 再加页。** 默认画布 `LAYOUT_16x9` 是 **10 × 5.625 英寸**，不是 13.3 英寸宽。
@@ -70,25 +74,26 @@ API 你是知道的，要当心的是这些：
   同一份文件就打不开了。
 - **图标：** 用 `react-icons` 渲染成 SVG（`ReactDOMServer.renderToStaticMarkup`），用 `sharp`
   栅格化到 ≥256px，再用 `addImage({ data: "image/png;base64," + buf.toString("base64") })` 插入——
-  `image/png;base64,` 前缀必须有（`react-icons`、`react`、`react-dom`、`sharp` 都已装好）。
+  `image/png;base64,` 前缀必须有（`react-icons`、`react`、`react-dom`、`sharp` 都已带好）。
 
 ## 修改已有演示稿与模板
 
-先挑版式：`python3 /opt/knowwork/office/thumbnail.py 模板.pptx /workspace/tmp/模板名-thumbs` 生成
+先挑版式：`python3 office/thumbnail.py 模板.pptx <临时目录>/模板名-thumbs` 生成
 一张带页码的网格图，并打印生成了哪些文件——超过 12 页时拆成 `…-thumbs-1.jpg`、`…-thumbs-2.jpg`。
 **第二个参数一定要给，用文件名命名。** 它只用于挑版式——检查成品要看"转成图片"一节的全尺寸渲染；
 它只接受 `.pptx`，`.potx` 先复制成 `.pptx` 的名字。配合 `markitdown` 把每部分内容对应到模板里的
 某一页，并且换着用不同版式——不要每一节都放在同一种"标题 + 要点"页上。
 
 ```bash
-cd /workspace/tmp
-python3 -c "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall('unpacked')" /workspace/input/原文件.pptx
-python3 /opt/knowwork/office/add_slide.py unpacked/ slide2.xml --after slide2.xml   # 复制一页；打印新页路径
+mktemp -d ./.dsh-office.XXXXXXXX                                          # 打印出 <临时目录> 的名字
+python3 -c "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" input/原文件.pptx <临时目录>/unpacked
+python3 office/add_slide.py <临时目录>/unpacked/ slide2.xml --after slide2.xml   # 复制一页；打印新页路径
 # 调整顺序 / 删页 = 改 ppt/presentation.xml 里的 <p:sldIdLst>
-python3 /opt/knowwork/office/clean.py unpacked/                                     # 删完之后：清掉孤立的页、图片、关系
+python3 office/clean.py <临时目录>/unpacked/                                     # 删完之后：清掉孤立的页、图片、关系
 # 改页面内容：ppt/slides/slideN.xml
-(cd unpacked && rm -f /workspace/output/原文件名.pptx && zip -Xr /workspace/output/原文件名.pptx .)   # 在目录里面打包；先 rm，不然删掉的部件还会留在包里
-python3 /opt/knowwork/office/validate.py /workspace/output/原文件名.pptx --render
+(cd <临时目录>/unpacked && rm -f ../../原文件名-修改版.pptx && zip -Xr ../../原文件名-修改版.pptx .)   # 在目录里面打包；先 rm，不然删掉的部件还会留在包里
+python3 office/validate.py 原文件名-修改版.pptx --render
+rm -rf <临时目录>
 ```
 
 - **所有结构性操作——加页、删页、调顺序——都在改内容之前做完。** `add_slide.py` 原样复制页面文件，
@@ -100,7 +105,7 @@ python3 /opt/knowwork/office/validate.py /workspace/output/原文件名.pptx --r
 - **如果用 `python-pptx`**，它有三件事做不到：复制一页（它唯一的入口是 `add_slide(layout)`）；通过
   `text_frame.text = "..."` 保留格式（那会把整段压成一个没有样式的片段——要给 `run.text` 赋值）；
   读取模板里常见的 SVG/EMF 图（`add_picture` 会抛 `UnidentifiedImageError`）。
-- 老的 `.ppt` 要先转：`python3 /opt/knowwork/office/soffice.py --headless --convert-to pptx --outdir /workspace/tmp 文件.ppt`。
+- 老的 `.ppt` 要先转：`python3 office/soffice.py --headless --convert-to pptx --outdir tmp 文件.ppt`。
   `.potx` 模板解压、打包的方式完全一样——输出保持 `.potx` 扩展名。
 - 要复用模板里的图标或图片，复制一页或一个已经含有它的版式。
 
@@ -224,7 +229,7 @@ python3 /opt/knowwork/office/validate.py /workspace/output/原文件名.pptx --r
 ### 内容质检
 
 ```bash
-markitdown /workspace/output/文件.pptx
+markitdown 文件.pptx
 ```
 
 检查缺内容、错别字、顺序错误。
@@ -232,7 +237,7 @@ markitdown /workspace/output/文件.pptx
 **用了模板时，检查有没有残留的占位文字：**
 
 ```bash
-markitdown /workspace/output/文件.pptx | grep -iE "\bx{3,}\b|lorem|ipsum|\bTODO|\[insert|单击此处|点击添加|此处输入"
+markitdown 文件.pptx | grep -iE "\bx{3,}\b|lorem|ipsum|\bTODO|\[insert|单击此处|点击添加|此处输入"
 ```
 
 有输出就先修掉，再宣布完成。
@@ -240,7 +245,7 @@ markitdown /workspace/output/文件.pptx | grep -iE "\bx{3,}\b|lorem|ipsum|\bTOD
 ### 文件质检（必做）
 
 ```bash
-python3 /opt/knowwork/office/validate.py /workspace/output/文件.pptx --render
+python3 office/validate.py 文件.pptx --render
 ```
 
 每个问题都附了修法。在生成脚本里修好再重新生成。它不查图表 XML——图表对照上面 pptxgenjs 坑点里的图表规则。
@@ -268,35 +273,26 @@ python3 /opt/knowwork/office/validate.py /workspace/output/文件.pptx --render
 
 **先看你的工具列表里有没有 `read_image`。** 有它才能看图，上面那些版式问题只能看图发现。
 
-先转成 PDF：
-
-```bash
-cd /workspace/tmp
-python3 /opt/knowwork/office/soffice.py --headless --convert-to pdf --outdir /workspace/tmp /workspace/output/文件.pptx
-```
-
-- **有 `read_image`**：逐页转成图片，把打印出的绝对路径交给 `read_image` 查看。
+- **有 `read_image`**：逐页渲染成图片，把打印出的绝对路径交给 `read_image` 查看。输出目录用 `<临时目录>` 下一个还不存在的
+  子目录，每次换个新名字（已有东西的目录不渲，免得看到上一次的旧图）：
 
   ```bash
-  rm -f slide-*.jpg
-  pdftoppm -jpeg -r 150 /workspace/tmp/文件.pdf slide
-  ls -1 "$PWD"/slide-*.jpg
+  python3 office/render.py 文件.pptx <临时目录>/第1版
   ```
 
-  `rm` 用来清掉上一次的旧图。`pdftoppm` 按页数补零：不到 10 页是 `slide-1.jpg`，10–99 页是 `slide-01.jpg`，
-  100 页以上是 `slide-001.jpg`。
-- **没有 `read_image`**：不要转图片，用 `pdftotext -layout /workspace/tmp/文件.pdf -` 核对每页的文字、顺序和
+  只看几页加 `--pages 1,3`。
+- **没有 `read_image`**：不要渲染图片，用 `python3 office/render.py 文件.pptx --text` 核对每页的文字、顺序和
   有没有残留占位内容。重叠、对齐、对比度这类版式问题看文字发现不了，回答里如实说明只核对了文字。
 
-**修完之后从改过的 `.pptx` 重新生成 PDF 再核对**，否则看到的还是旧版。
+**修完之后从改过的 `.pptx` 重新渲染再核对**，否则看到的还是旧版。都看完了删掉 `<临时目录>`。
 
 ## 回答里说什么
 
-说清楚做了几页、每页讲什么，或者改了哪几页、改了什么。不要写 `/workspace` 路径，用 `present` 交付的文件
-会作为附件随回答交给用户。
+说清楚做了几页、每页讲什么，或者改了哪几页、改了什么。用 `present` 交付的文件
+会以文件卡片随回答交给用户，回答里不用再写文件路径。
 
 ## 依赖
 
-`pptxgenjs`、`react-icons`、`react`、`react-dom`、`sharp`（npm，已装）· `markitdown[pptx]`、`Pillow`、
-`defusedxml`、`lxml`、`python-pptx`（Python，已装——读取、缩略图、清理、校验）· LibreOffice（通过
-`/opt/knowwork/office/soffice.py` 调用）· `pdftoppm`（Poppler）
+`pptxgenjs`、`react-icons`、`react`、`react-dom`、`sharp`（npm）· `markitdown[pptx]`、`Pillow`、
+`defusedxml`、`lxml`、`python-pptx`（Python——读取、缩略图、清理、校验）· Office 引擎（经 `office/soffice.py`、
+`office/render.py` 调用：云端是沙箱里的原生 LibreOffice，本机是随桌面端带的官方 LibreOffice Kit）；云端对话的沙箱与本机对话的随包运行时都已带好

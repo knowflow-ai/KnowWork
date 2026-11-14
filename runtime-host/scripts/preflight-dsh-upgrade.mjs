@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const REGISTRY = 'https://registry.npmjs.org'
-const PATCH_FILES = ['profile/cordis.patch.yml', 'plugins/host-bundle/cordis.patch.yml']
+const PATCH_FILES = ['profile/cordis.patch.yml', 'plugins/dsh-host/common.patch.yml', 'plugins/host-bundle/cordis.patch.yml']
 const LOCKSTEP = /^@deepseek-ai\/dsh(-[a-z0-9-]+)?$/
 const VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
 const PARALLEL = 8

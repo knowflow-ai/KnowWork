@@ -6,6 +6,7 @@
 import asyncio
 import logging
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -29,6 +30,7 @@ from .attachments.api import build_router as attachments_router
 from .attachments.turns import TurnAttachments
 from .audit import AUDIT_SCOPE, AuditModule, build_audit
 from .audit import build_router as audit_router
+from .auth.principal import Principal
 from .channels import Channels, build_channels
 from .channels import build_router as channels_router
 from .channels import build_web_router as web_channel_router
@@ -39,6 +41,7 @@ from .conversations.answer_modes import AnswerModes
 from .conversations.api import build_answer_modes_router
 from .conversations.api import build_router as conversation_router
 from .conversations.background import LocalBackground, background_signer, build_background_router
+from .conversations.device import DeviceConversations
 from .conversations.feedback import FeedbackStore
 from .conversations.listeners import Broadcaster
 from .conversations.mention_api import MentionSources
@@ -47,6 +50,7 @@ from .conversations.mention_kinds import MentionKinds
 from .conversations.models import Conversation
 from .conversations.observers import fan_out
 from .conversations.pump import EventPump
+from .conversations.quota import QuotaPolicies
 from .conversations.replay import EventFeed
 from .conversations.runlog import last_requested_model
 from .conversations.scopes import ConversationScopes
@@ -62,24 +66,26 @@ from .debugview import DebugService, RunRecords, build_admin_router, build_debug
 from .debugview import build_router as debug_router
 from .docparse import DocumentParsers
 from .docparse import build_router as docparse_router
-from .documents import PreviewService
+from .documents import ConversationFiles, PreviewService
 from .documents import build_router as documents_router
 from .extensions import ApiContext, Extensions, installed_extensions
+from .extensions.contract import DeviceTokenIssuer
 from .gateway.credential_rotation import CredentialRotator
-from .gateway.model_gateway import MODEL_AUDIENCE, fixed_upstream, router_from_settings
+from .gateway.model_gateway import MODEL_AUDIENCE, PUBLIC_PREFIX, fixed_upstream, router_from_settings
 from .identity.api import build_router as identity_router
 from .identity.config import IdentityConfig, OidcConfig
 from .identity.container import Identity, build_identity
 from .identity.im_identities import ImIdentities
+from .identity.oauth_exchange import Exchanged
 from .identity.providers import SECRET_PURPOSE as LOGIN_SECRET_PURPOSE
 from .identity.providers_api import build_router as login_providers_router
 from .insights import InsightsService, build_insights
 from .insights import build_router as insights_router
 from .jobs.admin import JobsAdmin
 from .jobs.api import build_router as jobs_router
-from .kernel.contract import HostModel, KnowledgeCatalog
+from .kernel.contract import KnowledgeCatalog
 from .kernel.host_client import HostKernel
-from .kernel.tokens import TokenSigner, derive_key, host_callback_signer
+from .kernel.tokens import TOOLS_AUDIENCE, TokenSigner, derive_key, host_callback_signer
 from .knowledge import KnowledgeModule, Pinned, TurnScope, build_knowledge
 from .knowledge.api import build_router as knowledge_router
 from .knowledge.catalog import turn_catalog
@@ -97,7 +103,7 @@ from .knowledge.service import KnowledgeService
 from .models import ModelClient, ModelsService, build_models_service
 from .models.api import build_chat_models_router as chat_models_router
 from .models.api import build_router as models_router
-from .models.host_sync import HostModelSync
+from .models.host_sync import HostModelSync, host_models_of
 from .models.observer import UsageObserver
 from .models.schemas import ChatModel
 from .ops.health import build_router as health_router
@@ -132,12 +138,16 @@ from .skills import build_submissions_router as skill_submissions_router
 from .skills.api import build_router as skills_router
 from .skills.blobstore import BlobStore
 from .skills.claims import DEFAULT_BASIC_TOOLS
+from .skills.internal_api import PUBLIC_PREFIX as PUBLIC_SKILLS_PREFIX
+from .skills.internal_api import SkillDelivery
 from .skills.internal_api import build_internal_router as skills_internal_router
 from .skills.projector import LoggedTurns, SkillRunProjector
+from .skills.tokens import SKILLS_AUDIENCE
 from .storage import blob_store, namespaced_stores, session_stores
 from .system import BrandService, SystemInfoService
 from .system import build_router as system_router
 from .tools import build_tool_service
+from .tools.api import PUBLIC_PREFIX as PUBLIC_TOOLS_PREFIX
 from .tools.api import build_internal_router as tools_router
 from .tools.mcp import McpModule, build_mcp
 from .tools.mcp.api import build_enterprise_here_router as mcp_here_router
@@ -175,6 +185,7 @@ class Runtime:
     attachments: Attachments
     artifacts: Artifacts
     previews: PreviewService
+    conversation_files: ConversationFiles
     artifact_observer: ArtifactObserver
     citation_observer: CitationObserver
     summaries: RunSummaries  # 每轮汇总（运行记录的列表读它）
@@ -439,7 +450,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     models = build_models_service(global_sessionmaker, access, master_key, timezone=settings.usage_timezone)
 
     async def push_models(chats: tuple[ChatModel, ...]) -> None:
-        await kernel.sync_models(tuple(HostModel(id=c.alias, name=c.name, vision=c.vision) for c in chats))
+        await kernel.sync_models(host_models_of(chats))
 
     # 输入框能选的对话模型推给宿主（models/host_sync.py）：启动、改了模型、宿主重启、宿主说不认识时
     host_models = HostModelSync(models.catalog, push_models)
@@ -458,6 +469,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
         sandbox.on_created(attachments.service.restage)
     artifacts = build_artifacts(scoped, stores, session_sandbox)
     previews = PreviewService(artifacts.service, session_sandbox)
+    conversation_files = ConversationFiles(artifacts.service, session_sandbox, previews)
     artifact_observer = ArtifactObserver(artifacts.collector)
     citation_observer = CitationObserver(knowledge.citations)
     writer = BatchWriter(scoped)
@@ -508,12 +520,14 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     turn_context = TurnContextHook()
     # 回答方式：内置智能体与快速问答，扩展装配时可以再登记
     answer_modes = AnswerModes()
+    # 用量配额：扩展装配时登记判定，没登记时不限制
+    quota = QuotaPolicies()
     service = ConversationService(kernel, scoped, pump, feed, on_host_restart=host_restarted, models=host_models,
                                   refresh_model_credential=rotator.ensure_fresh, profiles=profiles,
                                   grants=grants, attachments=TurnAttachments(attachments.service),
                                   knowledge_catalog=knowledge_catalog, turn_context=turn_context,
                                   answer_modes=answer_modes, mention_kinds=mention_kinds, scopes=scopes,
-                                  tool_credentials=tool_credentials, skill_credentials=skill_credentials,
+                                  quota=quota, tool_credentials=tool_credentials, skill_credentials=skill_credentials,
                                   erasers=(erase_knowledge, erase_receipts,
                                            attachments.service.erase, artifacts.service.erase,
                                            *((sandbox.eraser(),) if sandbox else ())),
@@ -543,13 +557,27 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          platform_skills=skills.platform, enterprise_mcp=mcp.enterprise, accounts=identity.accounts,
                          login_methods=identity.methods, password_logins=identity.password_logins,
                          redirect_logins=identity.redirect_logins, verify_files=identity.verify_files,
+                         oauth_clients=identity.oauth_clients, oauth_exchangers=identity.oauth_exchangers,
+                         device_tokens=_device_tokens(tools, skills.delivery),
+                         device_conversations=DeviceConversations(service, pump, models=host_models.host_models,
+                                                                  grants=grants),
+                         oauth_device_id=identity.oauth.device_id,
+                         oauth_devices=identity.oauth.list_devices,
                          im_identities=im_identities,
                          background=LocalBackground(service, member=lambda user_id, workspace_id:
                                                     access.check(user_id, workspace_id, WORKSPACE_RESOURCE, Action.USE)),
                          embed_guard=embed_guard.check, channel_targets=channel_targets,
+                         quota=quota, usage=models.recorder,
                          principal=lambda scope: scoped_principal(identity, scope) if scope else bound_principal(identity))
     extensions, extension_routers, extension_internal = _setup_extensions(extensions or installed_extensions(),
                                                                           context)
+    if identity.oauth_clients.registered():
+        # 扩展登记了原生应用（桌面端等）：它的本机宿主经令牌交换拿模型令牌，和服务端宿主同一种（平台级、受众 model）。
+        # 没登记时不登记这个受众，换令牌接口也认不出任何客户端
+        async def model_audience(principal: Principal, params: Mapping[str, str]) -> Exchanged:
+            return Exchanged(token=issue_model_token(), expires_in=settings.model_token_ttl_seconds)
+
+        identity.oauth_exchangers.register(MODEL_AUDIENCE, model_audience)
     channels = build_channels(master_key, scoped, global_sessionmaker, held_engine, access, service,
                               accounts=identity.users, catalogs=knowledge.citations, sign=links.sign,
                               identities=im_identities, public_base_url=settings.public_base_url,
@@ -563,7 +591,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                    pump=pump, service=service, rotator=rotator, host_models=host_models,
                    tool_credentials=tool_credentials,
                    skill_credentials=skill_credentials, skills=skills, blobs=blobs, audit=audit, sandbox=sandbox, attachments=attachments,
-                   artifacts=artifacts, previews=previews, artifact_observer=artifact_observer,
+                   artifacts=artifacts, previews=previews, conversation_files=conversation_files,
+                   artifact_observer=artifact_observer,
                    citation_observer=citation_observer, summaries=summaries, skill_runs=skill_runs,
                    workflows=workflows,
                    grants=grants, tools=tools,
@@ -587,6 +616,20 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
 
 
 Routers = tuple[APIRouter, ...]
+
+
+def _device_tokens(tools: ToolService, skills: SkillDelivery) -> dict[str, DeviceTokenIssuer]:
+    """不在服务端跑的会话（本机会话）的回调令牌（ApiContext.device_tokens）：和服务端会话同一种令牌、同一套计算；
+    工作区在用户电脑上，工具里去掉要用服务端沙箱的。"""
+    async def issue_tools(workspace_id: str, session_id: str, user_id: str) -> Exchanged:
+        token = await tools.issue_session_token(workspace_id, session_id, user_id=user_id, sandbox=False)
+        return Exchanged(token=token, expires_in=tools.token_ttl_seconds)
+
+    async def issue_skills(workspace_id: str, session_id: str, user_id: str) -> Exchanged:
+        token = skills.issue_session_token(workspace_id, session_id, user_id)
+        return Exchanged(token=token, expires_in=skills.token_ttl_seconds)
+
+    return {TOOLS_AUDIENCE: issue_tools, SKILLS_AUDIENCE: issue_skills}
 
 
 def _setup_extensions(extensions: Extensions, context: ApiContext) -> tuple[Extensions, Routers, Routers]:
@@ -617,6 +660,16 @@ def create_public_app(runtime: Runtime) -> FastAPI:
                                        can_bind_workspace=workspace_member(access),
                                        extensions=tuple(e.name for e in runtime.extensions.active)))
     app.include_router(login_providers_router(identity.providers, require_system_admin(access, identity.get_principal)))
+    if identity.oauth_clients.registered():
+        # 原生应用的本机宿主调模型的公开入口：同一个网关、同样的短期令牌（换令牌见 build_runtime）；没登记原生应用时不挂
+        settings = runtime.settings
+        app.include_router(router_from_settings(settings, runtime.signer, runtime.models.catalog,
+                                                upstream=runtime.upstream, http=runtime.routed_http,
+                                                path_prefix=PUBLIC_PREFIX))
+        # 本机宿主回调工具、取技能的公开入口：同一套接口与令牌（扩展经令牌交换签给本机会话，见 ApiContext.device_tokens）
+        app.include_router(tools_router(runtime.tools, grants=runtime.grants.covers, path_prefix=PUBLIC_TOOLS_PREFIX))
+        app.include_router(skills_internal_router(runtime.skills.delivery, path_prefix=PUBLIC_SKILLS_PREFIX,
+                                                  device_environment=runtime.skills.environment))
     app.include_router(access_router(access, scoped_principal(identity, WORKSPACE_SCOPE),
                                      profiles=identity.users.get_many))
     app.include_router(models_router(runtime.models.catalog, runtime.models.recorder, access,
@@ -655,7 +708,7 @@ def create_public_app(runtime: Runtime) -> FastAPI:
     app.include_router(attachments_router(runtime.attachments.service, runtime.service, no_visitor))
     app.include_router(artifacts_router(runtime.artifacts.service, runtime.service, actor,
                                         settle=runtime.artifact_observer.settle))
-    app.include_router(documents_router(runtime.previews, runtime.service, actor))
+    app.include_router(documents_router(runtime.previews, runtime.service, actor, files=runtime.conversation_files))
     setup = build_setup_service(runtime.global_sessionmaker, access)
     app.include_router(setup_router(setup))
     brand = BrandService(runtime.global_sessionmaker, setup.is_system_admin)

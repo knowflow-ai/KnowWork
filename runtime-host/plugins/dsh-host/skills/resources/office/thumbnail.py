@@ -4,10 +4,9 @@
 
 输出 前缀.jpg；超过 12 页时拆成 前缀-1.jpg、前缀-2.jpg……，并打印生成了哪些。
 **一定要给前缀并用文件名命名它**：两份演示稿用同一个前缀，后一份会覆盖前一份。
-这只用于挑版式；检查成品要看全尺寸渲染（soffice 转 PDF 再 pdftoppm）。
+这只用于挑版式；检查成品要看全尺寸渲染（render.py）。
 """
 
-import glob
 import os
 import shutil
 import subprocess
@@ -16,18 +15,24 @@ import tempfile
 
 from PIL import Image, ImageDraw, ImageFont
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import soffice  # noqa: E402
+
 PER_GRID = 12
 COLUMNS = 3
 WIDTH = 400
-CJK_FONT = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+# 默认字体画不出中文，标注会变成方块：云端沙箱里是思源黑体，本机用系统自带的中文字体
+CJK_FONTS = ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/System/Library/Fonts/PingFang.ttc",
+             "/System/Library/Fonts/Hiragino Sans GB.ttc", "C:\\Windows\\Fonts\\msyh.ttc")
 
 
 def label_font():
-    # 默认字体画不出中文，标注会变成方块。
-    try:
-        return ImageFont.truetype(CJK_FONT, 16)
-    except OSError:
-        return ImageFont.load_default()
+    for path in CJK_FONTS:
+        try:
+            return ImageFont.truetype(path, 16)
+        except OSError:
+            continue
+    return ImageFont.load_default()
 
 
 def main(argv=None):
@@ -39,21 +44,16 @@ def main(argv=None):
     if not path.lower().endswith(".pptx"):
         print("只接受 .pptx；.potx 先复制成 .pptx 的名字。", file=sys.stderr)
         return 2
-    here = os.path.dirname(os.path.abspath(__file__))
     work = tempfile.mkdtemp(prefix="thumbs-")
     try:
-        subprocess.run(
-            [sys.executable, os.path.join(here, "soffice.py"), "--headless",
-             "--convert-to", "pdf", "--outdir", work, path],
-            check=True, capture_output=True, timeout=240,
-        )
-        pdf = glob.glob(os.path.join(work, "*.pdf"))
-        if not pdf:
-            print("LibreOffice 没能渲染这份演示稿", file=sys.stderr)
+        try:
+            pages = soffice.render_pages(path, os.path.join(work, "pages"), dpi=50, timeout=240)
+        except (soffice.OfficeError, subprocess.SubprocessError) as error:
+            print(f"Office 引擎没能渲染这份演示稿：{error}", file=sys.stderr)
             return 1
-        subprocess.run(["pdftoppm", "-jpeg", "-r", "50", pdf[0], os.path.join(work, "p")],
-                       check=True, timeout=240)
-        pages = sorted(glob.glob(os.path.join(work, "p-*.jpg")))
+        if not pages:
+            print("Office 引擎没能渲染这份演示稿", file=sys.stderr)
+            return 1
         written = []
         for start in range(0, len(pages), PER_GRID):
             chunk = pages[start:start + PER_GRID]

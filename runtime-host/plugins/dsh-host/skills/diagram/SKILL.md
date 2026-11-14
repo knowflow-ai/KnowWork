@@ -24,4 +24,4 @@ description: 画流程图、时序图、组织结构图、架构图、甘特图�
 ## 不用它的时候
 
 - 带数的图（趋势、对比、占比、分布）：有 show_chart 就用它展示；不要拿 mermaid 的 xychart、pie 画数。
-- 用户明确要图片文件，或要把图放进 Word、PPT、PDF：照常在沙箱里生成文件，按对应的 Office 技能交付。
+- 用户明确要图片文件，或要把图放进 Word、PPT、PDF：照常生成文件，按对应的 Office 技能交付。

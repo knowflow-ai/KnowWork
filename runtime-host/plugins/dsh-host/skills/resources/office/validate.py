@@ -30,6 +30,7 @@ from lxml import etree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ooxml import NS, q  # noqa: E402
+import soffice  # noqa: E402
 
 RELS_NS = NS["rel"]
 
@@ -195,16 +196,12 @@ def check_tracked(trees, original_path, author, problems):
 
 
 def check_render(path, problems):
+    """让 Office 引擎打开一次（soffice.py：云端是原生 LibreOffice，本机是官方 LibreOffice Kit）。"""
     out = tempfile.mkdtemp(prefix="validate-")
-    here = os.path.dirname(os.path.abspath(__file__))
     try:
-        result = subprocess.run(
-            [sys.executable, os.path.join(here, "soffice.py"), "--headless",
-             "--convert-to", "pdf", "--outdir", out, path],
-            capture_output=True, text=True, timeout=240,
-        )
-        if not any(name.endswith(".pdf") for name in os.listdir(out)):
-            problems.append(f"LibreOffice 打不开这个文件：{(result.stdout + result.stderr).strip()[:300]}")
+        soffice.convert(path, "pdf", out, timeout=240)
+    except (soffice.OfficeError, subprocess.SubprocessError) as error:
+        problems.append(f"Office 引擎打不开这个文件：{str(error)[:300]}")
     finally:
         shutil.rmtree(out, ignore_errors=True)
 

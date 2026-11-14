@@ -279,6 +279,24 @@
   color: var(--kw-link);
 }
 
+/* 回答里的文件链接（照 DSH 官方）：和链接同色，平时不带下划线，悬停、键盘聚焦时虚线下划线；是按钮，点了在右侧预览 */
+.kw-markdown .kw-file-link {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--kw-link);
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.kw-markdown .kw-file-link:hover,
+.kw-markdown .kw-file-link:focus-visible {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
 .kw-markdown img {
   display: inline-block;
 }
@@ -707,6 +725,8 @@ a.kw-source-item:hover {
 .kw-approval-actions {
   display: flex;
   gap: 8px;
+  /* 没有「不再询问」时也靠右 */
+  margin-left: auto;
 }
 
 .kw-approval-title {
@@ -1136,6 +1156,37 @@ a.kw-source-item:hover {
   font-weight: var(--font-weight-normal);
 }
 
+/* 输入框正下方的一排（新对话页的「在哪执行」与工作文件夹；在别处执行的对话写明在哪）：照 ChatGPT、Claude 桌面端靠左 */
+.kw-composer-below {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 20px 0;
+}
+
+.kw-place-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  font-size: var(--font-text-sm-size);
+  color: var(--kw-text-secondary);
+}
+
+.kw-place-label svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 会话页「在哪执行」与来源给的控件（例如本机对话的访问模式）排一行 */
+.kw-place-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .kw-composer-hint {
   margin-top: 8px;
   text-align: center;
@@ -1537,4 +1588,20 @@ a.kw-source-item:hover {
   display: flex;
   flex-shrink: 0;
   gap: 4px;
+}
+
+/* 分体按钮（照 DSH 官方文档预览顶部的「打开」）：主按钮与旁边的箭头贴成一个，箭头里是其他打开方式 */
+.kw-split-button {
+  display: inline-flex;
+}
+
+.kw-split-button > :first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.kw-split-button > :last-child {
+  margin-left: -1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }

@@ -36,6 +36,7 @@ from .answer_modes import AnswerModeUnavailable, UnknownAnswerMode
 from .events_v1 import assistant_text
 from .mention_kinds import MentionRejected
 from .models import RunEvent, RunSummary
+from .quota import QuotaExceeded
 from .service import ConversationExists, ConversationNotFound, ConversationService
 
 AUDIENCE = "background"
@@ -127,6 +128,8 @@ def build_background_router(service: ConversationService, signer: TokenSigner, s
                 raise HTTPException(status_code=422, detail="不认识这个回答方式，或这个人现在不能用") from error
             except AnswerModeUnavailable as error:
                 raise HTTPException(status_code=503, detail="这个回答方式暂时不可用") from error
+            except QuotaExceeded as error:
+                raise HTTPException(status_code=429, detail=error.detail()) from error
         return {"message_id": message_id}
 
     @router.get("/{conversation_id}")
@@ -246,7 +249,11 @@ class BackgroundTurns:
 
 
 def _detail(response: httpx.Response) -> str:
+    """detail 是字符串或 {code, message}（例如额度用完）：取给人看的那句。"""
     try:
-        return str(response.json().get("detail", ""))[:200]
+        detail = response.json().get("detail", "")
     except ValueError:
         return response.text[:200]
+    if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+        return detail["message"][:200]
+    return str(detail)[:200]

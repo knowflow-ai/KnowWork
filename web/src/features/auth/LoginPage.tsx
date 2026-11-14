@@ -12,6 +12,7 @@ import { fetchLoginMethods, fetchSetupStatus, type CurrentUser } from '../../api
 import { useSessionStore } from '../../stores/session';
 import { Skeleton } from '../../ui/Skeleton';
 import { useBrand } from '../brand/queries';
+import { rememberAfterLogin } from './afterLogin';
 import { AuthCard } from './AuthCard';
 import { inClientTarget, navigation } from './inClient';
 import { DirectoryLoginForm, EmailLoginForm } from './LoginForms';
@@ -95,6 +96,7 @@ export default function LoginPage() {
                 key={method.id}
                 as="a"
                 href={method.url}
+                onClick={() => rememberAfterLogin(from)}
                 color="secondary"
                 variant="outline"
                 size="lg"

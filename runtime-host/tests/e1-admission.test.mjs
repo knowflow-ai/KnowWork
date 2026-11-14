@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startHost, collectEvents, isTurnEnd } from './support/harness.mjs'
+import { startHost, collectEvents, isTurnEnd, isApprovalAsked, approvalEvent, decidedOutcome, pendingApprovals } from './support/harness.mjs'
 
 const sessionEvents = frames => frames.filter(f => f.kind === 'session/event').map(f => f.data)
 const toolNamesOf = request => (request.body?.tools ?? []).map(t => t.name)
@@ -84,13 +84,15 @@ test('审批由外部决定：批准后工具执行；拒绝后工具不执行�
     try {
       await host.call('POST', '/v1/sessions', { sessionId: 'appr' })
       await host.call('POST', '/v1/sessions/appr/messages', { text: '写入台账' })
-      const asked = await collectEvents(host, 'appr', f => f.kind === 'approval/requested')
-      const pending = await host.call('GET', '/v1/sessions/appr/approvals')
-      assert.equal(pending.body.length, 1)
-      assert.equal(pending.body[0].toolName, 'kw_write')
-      assert.equal((await host.call('POST', `/v1/sessions/appr/approvals/${pending.body[0].id}`, { outcome })).status, 200)
+      const asked = await collectEvents(host, 'appr', isApprovalAsked)
+      const pending = await pendingApprovals(host, 'appr')
+      assert.equal(pending.length, 1)
+      assert.equal(pending[0].toolName, 'kw_write')
+      assert.equal(pending[0].id, approvalEvent(asked.at(-1), 'approval/asked').id, '待答项用官方日志里的编号')
+      assert.equal((await host.call('POST', `/v1/sessions/appr/approvals/${pending[0].id}`, { outcome })).status, 200)
       const rest = await collectEvents(host, 'appr', isTurnEnd, { after: lastCursor(asked) })
-      assert.equal(rest.find(f => f.kind === 'approval/resolved')?.data.outcome, outcome)
+      assert.equal(decidedOutcome(rest), outcome)
+      assert.ok(![...asked, ...rest].some(f => f.kind.startsWith('approval/')), '不另发审批帧，只认官方日志')
       assert.equal(host.llm.requests.length, 2, '工具结果之后应该还有一次模型请求')
       const followup = messagesText(host.llm.requests[1])
       if (outcome === 'allowed-once') assert.ok(followup.includes('written: 合同台账'), '批准后工具没有执行')
@@ -107,7 +109,8 @@ test('释放会话时，待决审批结算为取消，释放不被审批卡住',
   try {
     await host.call('POST', '/v1/sessions', { sessionId: 'appr-drop' })
     await host.call('POST', '/v1/sessions/appr-drop/messages', { text: '写入' })
-    await collectEvents(host, 'appr-drop', f => f.kind === 'approval/requested')
+    await collectEvents(host, 'appr-drop', isApprovalAsked)
+    await pendingApprovals(host, 'appr-drop')
     const started = Date.now()
     const disposed = await host.call('DELETE', '/v1/sessions/appr-drop')
     assert.equal(disposed.status, 200)

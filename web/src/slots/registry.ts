@@ -19,6 +19,7 @@ import type { PreviewFile } from '../features/preview/FilePreview';
 import type { NavItem } from '../layout/nav';
 import type { TabItem } from '../ui/Tabs';
 import type { Mention } from '../api/mentions';
+import type { ConversationSource } from '../features/chat/sources';
 
 export interface AdminNavEntry {
   /** 插进哪个分组（管理后台侧栏的分组名，如「能力接入」）；没有这个分组就新起一组，排在系统设置之前 */
@@ -106,6 +107,15 @@ export interface CardDrillItem {
 /** 输入框左上角回答方式后面的一小段（例如问数的范围条「问数范围：销售库 · 第 3 版」）。conversationId 没有时是新对话；
  * running 是这一轮在不在跑（一轮开始、结束时组件可以重取自己的状态，例如 @ 改了范围）。组件自己按回答方式决定显示不显示，
  * 自己调扩展的接口。嵌在别的页面里、固定了回答方式的输入框不显示这一行。 */
+/**
+ * 使用端侧栏「最近会话」上面由扩展画的分组（例如桌面端按这台电脑上的工作区分组本机对话）。收起侧栏时不画。
+ * useGrouped 给出已经画在这些分组里的对话：「最近会话」不再重复列它们（相当于剩下的「未分组」）。
+ */
+export interface SidebarGroupsItem {
+  readonly Section: ComponentType;
+  readonly useGrouped?: () => ReadonlySet<string>;
+}
+
 /** 新对话页输入框下面的一块（例如按当前回答方式给几个能直接问的问题）；ask 等同在输入框里打了这句、带着这些 @ 发出去 */
 export interface ChatWelcomeItem {
   readonly Component: ComponentType<{
@@ -118,6 +128,14 @@ export interface ChatWelcomeItem {
  * 挂了范围的对话（例如专家对话）由扩展画的几块。组件自己判断这段对话归不归它管（调扩展自己的接口），不管就什么都不画；
  * 没注册顶部那块时，顶部只写范围的名字。
  */
+/**
+ * 在用户设备上执行的对话在哪台设备上（例如「李雷的 MacBook Pro」）：别处（网页、手机、另一台电脑）只能看、不能接着做时，
+ * 提示里写出具体是哪台。说不出来（那台设备已经退出登录、没装扩展）时返回 null，提示照旧写「创建它的电脑」。
+ */
+export interface ChatPlaceItem {
+  readonly describe: (conversationId: string) => Promise<string | null>;
+}
+
 export interface ChatScopeItem {
   /** 对话最上面一行（例如专家的头像、名字、详情），一直在 */
   readonly Bar?: ComponentType<{ readonly conversationId: string; readonly label: string }>;
@@ -132,6 +150,11 @@ export interface ComposerTopItem {
     readonly conversationId?: string;
     readonly answerMode: string;
     readonly running: boolean;
+    /**
+     * 让这个输入框暂时发不出去（例如本月额度用完了）：给一句原因，发送按钮不可点、悬停与按回车时说这句；null 是又能发了。
+     * 只是界面上提前说，后端照样会拒；输入框里的字留着。
+     */
+    readonly block: (reason: string | null) => void;
   }>;
 }
 
@@ -170,6 +193,8 @@ export interface ToolNotice {
 export interface ExtensionSlots {
   /** 使用端侧栏「新对话」下面的入口（例如知识库），按注册顺序排 */
   'app.nav': NavItem;
+  /** 使用端侧栏「最近会话」上面的分组（见 SidebarGroupsItem） */
+  'app.sidebar.groups': SidebarGroupsItem;
   /** 管理后台侧栏的菜单项 */
   'admin.nav': AdminNavEntry;
   /** 管理后台「系统」分组的菜单项（只有系统管理员看得到，例如空间管理），排在「模型」后面 */
@@ -180,8 +205,12 @@ export interface ExtensionSlots {
   'app.routes': RouteObject;
   /** 个人设置页的标签页，排在内置标签页之后 */
   'settings.tabs': TabItem;
+  /** 个人设置「我的用量」最上面的一块（例如本月额度）；没注册时只有用量明细 */
+  'settings.usage.top': PanelItem;
   /** 管理后台「模型」页的标签页（例如扩展自己的服务配置），排在内置标签页之后 */
   'admin.models.tabs': TabItem;
+  /** 管理后台「用量」页的标签页（例如额度），排在「统计」之后；没注册时用量页没有标签栏 */
+  'admin.usage.tabs': TabItem;
   /** 对话里点引用时打开原文预览（按定位高亮）；没有注册的知识源仍跳它给的原文链接 */
   'citation.preview': CitationPreviewer;
   /** 授权页里某个知识源下的层级树（例如目录 → 知识库，可以按目录授权）；没注册的知识源平铺知识库 */
@@ -198,10 +227,14 @@ export interface ExtensionSlots {
   'chat.tools': ToolPresentation;
   /** 输入框左上角回答方式后面的一小段；没注册时只有回答方式 */
   'chat.composer.top': ComposerTopItem;
+  /** 对话的数据来源（features/chat/sources.ts）：同一个对话页按来源换数据，例如在用户自己电脑上跑的会话 */
+  'chat.sources': ConversationSource;
   /** 新对话页输入框下面的一块（建议问题这类）；没注册时什么都没有 */
   'chat.welcome': ChatWelcomeItem;
   /** 挂了范围的对话：顶部、还没问过时的开场、输入框下面那行字（例如专家对话）；没注册时顶部只显示范围的名字 */
   'chat.scope': ChatScopeItem;
+  /** 在用户设备上执行的对话在哪台设备上（别处只读时的提示用）；没注册时提示写「创建它的电脑」 */
+  'chat.place': ChatPlaceItem;
   /** 技能页「企业」页签里系统管理员看到的内容（管理企业技能本身，连同本空间的设置）；没注册时只有本空间的设置 */
   'admin.skills.enterprise': PanelItem;
   /** 「工具与 MCP」页的「企业」页签：注册了才有这个页签；系统管理员看到这里给的内容（管理企业 MCP 本身，连同本空间的设置），

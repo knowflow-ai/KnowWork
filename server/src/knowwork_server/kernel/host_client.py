@@ -32,10 +32,9 @@ from .contract import (
     SessionBusy,
     SessionNotFound,
     SessionSpec,
-    TurnAttachment,
     TurnInput,
 )
-from .locale import resolve_turn_language
+from .wire import models_body, session_body, turn_body
 
 log = logging.getLogger(__name__)
 
@@ -121,48 +120,12 @@ class HostKernel:
         await self._stream_client.aclose()
 
     async def open_session(self, spec: SessionSpec) -> str:
-        policy: dict = {"deny": list(spec.policy.deny)} if spec.policy.deny else {}
-        if spec.policy.gate is not None:
-            gate = {} if spec.policy.gate.required_tool is None else {"requiredTool": spec.policy.gate.required_tool}
-            if spec.policy.gate.max_nudges is not None:
-                gate["maxNudges"] = spec.policy.gate.max_nudges
-            policy["gate"] = gate
-        body: dict = {"sessionId": spec.session_id, "policy": policy, "resume": spec.resume}
-        if spec.tools_token is not None:
-            body["tools"] = {"token": spec.tools_token}
-        if spec.skills_token is not None:
-            body["skills"] = {"token": spec.skills_token}
-        if spec.owner is not None:
-            body["owner"] = {"workspaceId": spec.owner.workspace_id, "userId": spec.owner.user_id}
-        response = await self._client.post("/v1/sessions", json=body)
+        response = await self._client.post("/v1/sessions", json=session_body(spec))
         _raise_for(response)
         return str(response.json()["epoch"])
 
     async def send(self, session_id: str, turn: TurnInput) -> str:
-        body = {"text": turn.text, "mode": turn.mode, "language": resolve_turn_language(turn.text, turn.language),
-                "answerMode": turn.answer_mode}
-        if turn.answer_mode_spec is not None:
-            body["answerModeSpec"] = {"tools": list(turn.answer_mode_spec.tools), "prompt": turn.answer_mode_spec.prompt}
-        if turn.time_zone is not None:
-            body["timeZone"] = turn.time_zone
-        if turn.model is not None:
-            body["model"] = turn.model
-        if turn.attachments:
-            body["attachments"] = [_attachment(a) for a in turn.attachments]
-        if turn.knowledge is not None:
-            body["knowledge"] = {"bases": [{"id": e.id, "name": e.name, "description": e.description,
-                                            **({"fields": list(e.fields)} if e.fields else {}),
-                                            **({"routes": list(e.routes)} if e.routes else {})}
-                                           for e in turn.knowledge.bases], "omitted": turn.knowledge.omitted}
-        if turn.context is not None:
-            body["context"] = {"standing": turn.context.standing, "turn": turn.context.turn,
-                               "persona": turn.context.persona}
-        if turn.mentions:
-            body["mentions"] = [{"type": m.type, "id": m.id, "name": m.name,
-                                 **({"base": m.base, "baseName": m.base_name or m.base} if m.base else {}),
-                                 **({"kind": m.kind, "label": m.label or m.kind} if m.kind else {})}
-                                for m in turn.mentions]
-        response = await self._client.post(f"/v1/sessions/{_segment(session_id)}/messages", json=body)
+        response = await self._client.post(f"/v1/sessions/{_segment(session_id)}/messages", json=turn_body(turn))
         _raise_for(response)
         return str(response.json()["messageId"])
 
@@ -213,8 +176,7 @@ class HostKernel:
                      for s in response.json()["skills"])
 
     async def sync_models(self, models: tuple[HostModel, ...]) -> None:
-        body = {"models": [{"id": m.id, "name": m.name, "vision": m.vision} for m in models]}
-        _raise_for(await self._client.put("/v1/models", json=body))
+        _raise_for(await self._client.put("/v1/models", json=models_body(models)))
 
     async def subscribe(self, session_id: str, *, after: int = 0, epoch: str | None = None) -> AsyncIterator[KernelEvent]:
         params: dict[str, str | int] = {"after": after}
@@ -230,17 +192,3 @@ class HostKernel:
                 if frame is not None:
                     yield frame
 
-
-def _attachment(item: TurnAttachment) -> dict:
-    body = {"name": item.name, "path": item.path, "bytes": item.bytes, "sha256": item.sha256}
-    if item.extracted_path is not None:
-        body = {**body, "extractedPath": item.extracted_path,
-                **({"extractionPending": True} if item.extraction_pending else {})}
-    if item.digest_path is not None:
-        body = {**body, "digestPath": item.digest_path, **({"digestPending": True} if item.digest_pending else {})}
-    if item.text_chars is None:
-        return body
-    reading = {"textChars": item.text_chars, **({"text": item.text} if item.text is not None else {}),
-               **({"textPages": item.text_pages} if item.text_pages else {}),
-               **({"outline": [{"line": e.line, "text": e.text} for e in item.outline]} if item.outline else {})}
-    return {**body, **reading}

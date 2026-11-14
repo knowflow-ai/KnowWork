@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, messageForStatus, readableError, request, withQuery } from './http';
+import { ApiError, downloadFrom, messageForStatus, readableError, request, withQuery } from './http';
 import { useSessionStore } from '../stores/session';
 import { jsonResponse } from '../test/render';
 
@@ -105,5 +105,23 @@ describe('readableError', () => {
   it('只透出 ApiError 的说明', () => {
     expect(readableError(new ApiError(500, '服务忙'))).toBe('服务忙');
     expect(readableError(new Error('stack trace'), '兜底')).toBe('兜底');
+  });
+});
+
+describe('downloadFrom', () => {
+  it('在当前页面里下载，不开新窗口；文件名默认用服务端给的', () => {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      expect(this.getAttribute('href')).toBe('/api/workspaces/default/library/documents/d1/original');
+      expect(this.hasAttribute('download')).toBe(true);
+      expect(this.target).toBe('');
+    });
+    const open = vi.spyOn(window, 'open');
+    downloadFrom('/api/workspaces/default/library/documents/d1/original');
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(open).not.toHaveBeenCalled();
+    click.mockRestore();
+    open.mockRestore();
   });
 });

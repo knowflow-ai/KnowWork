@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..db.base import in_workspace
 from ..kernel.contract import KernelError
+from .quota import QuotaExceeded
 from .service import ConversationNotFound, ConversationService
 
 log = logging.getLogger(__name__)
@@ -68,6 +69,11 @@ def build_activation_router(service: ConversationService, host_token: str, *, me
                 raise HTTPException(status_code=404, detail="没有这个对话，或它不归这个人") from error
             try:
                 await service.activate(conversation)
+            except QuotaExceeded as error:
+                # 额度用完：这次到点不执行（宿主记日志），下次到点再判
+                log.info("not activating conversation %s for host plugin %s: quota exceeded (%s)",
+                         conversation.id, body.kind, error.scope)
+                raise HTTPException(status_code=429, detail=error.detail()) from error
             except KernelError as error:
                 raise HTTPException(status_code=503, detail=f"宿主没能打开这段对话：{error.code}") from error
         log.info("activated conversation %s for host plugin %s", conversation.id, body.kind)

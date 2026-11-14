@@ -90,7 +90,7 @@ test('自带技能按会话给：本空间停用的、和清单里同名的不�
 
 test('本空间把自带技能全停用、清单里也没有技能时，收掉 skill 工具', async () => {
   const env = await startSkillHost([{ text: '好的' }],
-    { skills: [], bundledOff: ['diagram', 'office-docx', 'office-pptx', 'office-xlsx'] })
+    { skills: [], bundledOff: ['diagram', 'office-docx', 'office-pptx', 'office-xlsx', 'read-document'] })
   try {
     await env.open('sk-none-left')
     await env.host.call('POST', '/v1/sessions/sk-none-left/messages', { text: '随便问问' })
@@ -138,6 +138,7 @@ test('专业工具加载技能前不可见；加载后解锁、正文校验通�
     assert.ok(toolNamesOf(afterLoad).includes('extract_records'), '加载技能之后专业工具仍不可见')
     assert.ok(messagesText(afterLoad).includes('先调用 extract_records'), '技能正文没有交给模型')
     assert.deepEqual(env.skillsStub.contentLoads().map(r => r.query), [{ name: 'contract-extract', digest: EXTRACT.entry.digest }])
+    assert.equal(env.skillsStub.envLoads().length, 0, '服务端宿主不取技能的环境变量：值由业务服务在沙箱执行接口里加')
     assert.equal(env.skillsStub.contentLoads()[0].token, SKILLS_TOKEN)
     assert.equal(env.tools.executions().length, 1)
     const loaded = frames.find(f => f.kind === 'skill/loaded')

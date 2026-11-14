@@ -45,8 +45,12 @@ export function kindOf(mention: Mention, extensions: readonly MentionExtension[]
   return { label, icon: EXTENSION_ICON, effect: found?.effect || `点名了这个${label}` };
 }
 
-/** 菜单里的分组：目录并在知识库里；扩展登记的每种一组，写成 ext:类型。 */
-export type MentionGroup = 'bases' | 'documents' | 'tags' | 'services' | 'skills' | `ext:${string}`;
+/**
+ * 菜单里的分组：目录并在知识库里；扩展登记的每种一组，写成 ext:类型。workspace 是这段对话的工作文件夹（只有执行的一方
+ * 看得到文件夹时有，例如本机对话），选中的不是小标签，是写进这一问的 @路径（官方 @file 语法）。
+ */
+export type MentionGroup =
+  'workspace' | 'bases' | 'documents' | 'tags' | 'services' | 'skills' | `ext:${string}`;
 
 export const MENTION_GROUPS: readonly {
   readonly group: MentionGroup;
@@ -54,6 +58,7 @@ export const MENTION_GROUPS: readonly {
   readonly icon: ReactNode;
   readonly effect: string;
 }[] = [
+  { group: 'workspace', label: '工作文件夹', icon: <Folder />, effect: '把文件写进这一问，Agent 自己去读' },
   { group: 'bases', label: '知识库', icon: <BookClosed />, effect: '只在选中的知识库或目录里找' },
   { group: 'documents', label: '文件', icon: <FileDocument />, effect: '只在选中的文件里找' },
   { group: 'tags', label: '标签', icon: <Tag />, effect: '只在带这个标签的文件里找' },

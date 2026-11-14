@@ -54,6 +54,9 @@ describe('光标前的 @', () => {
     ['a@b.com', 7, null],
     ['@报 销', 4, null],
     ['@报销 后面', 2, { start: 0, query: '报' }],
+    // 官方 @file 语法：带空格的路径加引号，引号没合上时查找词是引号后面那段
+    ['看 @"资料 2026/', 13, { start: 2, query: '资料 2026/' }],
+    ['@"资料 2026/合同.pdf" 后面', 20, null],
   ])('%s（光标 %i）', (value, caret, expected) => expect(activeTrigger(value, caret)).toEqual(expected));
 
   it('选中后去掉打出来的 @查找词，后面的字留着', () => {

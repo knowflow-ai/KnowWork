@@ -2,7 +2,7 @@
  * @ 菜单：浮在输入框上方。分组标题写「类型 · 选了会怎样」，每一项左边是类型图标、下面一行小字写在哪里，
  * 让用户一眼分清是知识库、目录、文件、标签还是技能。焦点留在输入框里，点选时不抢焦点。
  */
-import { ChevronLeft, ChevronRight } from '@openai/apps-sdk-ui/components/Icon';
+import { ChevronLeft, ChevronRight, FileDocument, Folder } from '@openai/apps-sdk-ui/components/Icon';
 import { cx } from '../../../ui/cx';
 import { groupMeta, kindOf, type MentionGroup } from './kinds';
 import { MENTION_MENU_ID, optionId, type MentionMenu as Menu, type Row } from './useMentionMenu';
@@ -40,6 +40,23 @@ function RowView({ row, index, menu }: { readonly row: Row; readonly index: numb
       <div {...common}>
         <span className="kw-mention-more">查看全部 {row.total} 项</span>
         <ChevronRight className="kw-mention-arrow" />
+      </div>
+    );
+  }
+  if (row.kind === 'file') {
+    // 工作文件夹里的一项：名字是最后一段，下面一行小字是它在哪个文件夹里
+    const parts = row.file.path.split('/').filter(Boolean);
+    const name = parts.at(-1) ?? row.file.path;
+    const where = parts.slice(0, -1).join('/');
+    const folder = row.file.kind === 'directory';
+    return (
+      <div {...common} aria-label={`${folder ? '文件夹' : '文件'} ${row.file.path}`}>
+        <span className="kw-mention-icon">{folder ? <Folder /> : <FileDocument />}</span>
+        <span className="kw-mention-text">
+          <span className="kw-mention-name">{folder ? `${name}/` : name}</span>
+          {where ? <span className="kw-mention-detail">{where}</span> : null}
+        </span>
+        <span className="kw-mention-kind">{folder ? '文件夹' : '文件'}</span>
       </div>
     );
   }

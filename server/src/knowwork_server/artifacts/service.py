@@ -1,6 +1,7 @@
 """产物的读取与清理。下载每次都由 API 层按当前登录用户确认会话归属，这里只按会话取产物。"""
 
 import logging
+import posixpath
 from dataclasses import dataclass
 
 from sqlalchemy import delete, select, update
@@ -44,6 +45,15 @@ class ArtifactService:
 
     async def list(self, conversation: Conversation) -> tuple[ArtifactView, ...]:
         return tuple(artifact_view(row) for row in await self._rows(conversation))
+
+    async def delivered_at(self, conversation: Conversation, source_path: str) -> ArtifactView | None:
+        """这个路径（/workspace/...）最近一次交付收下的产物；没交付过是 None。
+        早先收的产物没记路径（source_path 为空）：按文件名认，旧对话的交付卡片在沙箱回收后照样打得开。"""
+        rows = await self._rows(conversation, Artifact.source_path == source_path)
+        if not rows:
+            rows = await self._rows(conversation, Artifact.source_path.is_(None),
+                                    Artifact.filename == posixpath.basename(source_path))
+        return artifact_view(rows[-1]) if rows else None
 
     async def open(self, conversation: Conversation, artifact_id: str) -> ArtifactContent:
         rows = await self._rows(conversation, Artifact.id == artifact_id)

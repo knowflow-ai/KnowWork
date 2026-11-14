@@ -5,7 +5,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startHost, collectEvents, isTurnEnd } from './support/harness.mjs'
+import { startHost, collectEvents, isTurnEnd, isApprovalAsked, pendingApprovals } from './support/harness.mjs'
 import { bizTool, startToolsStub } from './support/tools-stub.mjs'
 import { startOpenAiStub } from './support/openai-stub.mjs'
 
@@ -18,11 +18,31 @@ const turnEndReason = frames => sessionEvents(frames).find(e => e.type === 'turn
 const lastCursor = frames => frames.at(-1)?.cursor ?? 0
 const systemOf = request => String(request.body?.system ?? '')
 
-async function startBridgeHost(mock, toolsByToken, execute, notes) {
-  const stub = await startToolsStub({ toolsByToken, execute, notes })
+async function startBridgeHost(mock, toolsByToken, execute, notes, granted) {
+  const stub = await startToolsStub({ toolsByToken, execute, notes, granted })
   const host = await startHost(mock, { KNOWWORK_TOOLS_BASE_URL: stub.baseUrl })
   return { host, stub, stop: async () => { await host.stop(); await stub.close() } }
 }
+
+test('本会话已授权「不再询问」：在官方发起审批之前就放行，日志里没有这一问，这一轮也不进等待', async () => {
+  const env = await startBridgeHost(
+    { sequence: ['tool_call_success', 'success'], toolName: 'kw_biz_write', toolArguments: JSON.stringify({ q: '台账' }) },
+    { [TOKEN_A]: [bizTool('kw_biz_write', 'write')] },
+    undefined, undefined, call => call.body?.toolName === 'kw_biz_write',
+  )
+  try {
+    await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-auto', tools: { token: TOKEN_A } })
+    await env.host.call('POST', '/v1/sessions/tb-auto/messages', { text: '写台账' })
+    const frames = await collectEvents(env.host, 'tb-auto', isTurnEnd)
+    assert.ok(!frames.some(isApprovalAsked), '有授权就不该发起审批')
+    assert.ok(!frames.some(f => f.kind.startsWith('approval/')), '也不另发任何审批帧')
+    assert.equal(turnEndReason(frames), 'completed')
+    assert.equal(env.stub.executions().length, 1)
+    assert.equal(env.stub.requests.filter(r => r.path.endsWith('/approval-grant')).length, 1, '只查一次授权')
+  } finally {
+    await env.stop()
+  }
+})
 
 test('业务工具按会话注册：每个会话只看到自己令牌对应的工具', async () => {
   const env = await startBridgeHost({ sequence: ['success'] }, { [TOKEN_A]: [bizTool('kw_biz_a')], [TOKEN_B]: [bizTool('kw_biz_b')] })
@@ -118,9 +138,9 @@ test('写入工具执行前经官方审批：批准才回调业务服务，拒�
     try {
       await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-appr', tools: { token: TOKEN_A } })
       await env.host.call('POST', '/v1/sessions/tb-appr/messages', { text: '写台账' })
-      const asked = await collectEvents(env.host, 'tb-appr', f => f.kind === 'approval/requested')
+      const asked = await collectEvents(env.host, 'tb-appr', isApprovalAsked)
       assert.equal(env.stub.executions().length, 0, '审批之前就执行了')
-      const pending = (await env.host.call('GET', '/v1/sessions/tb-appr/approvals')).body
+      const pending = await pendingApprovals(env.host, 'tb-appr')
       assert.equal(pending.length, 1)
       assert.equal(pending[0].toolName, 'kw_biz_write')
       assert.equal(pending[0].sessionId, 'tb-appr')
@@ -198,8 +218,8 @@ test('审批按工具声明的 approval 决定：never 不问直接执行（风�
     try {
       await env.host.call('POST', '/v1/sessions', { sessionId: 'tb-mode', tools: { token: TOKEN_A } })
       await env.host.call('POST', '/v1/sessions/tb-mode/messages', { text: '跑一下' })
-      const frames = await collectEvents(env.host, 'tb-mode', f => isTurnEnd(f) || f.kind === 'approval/requested')
-      assert.equal(frames.some(f => f.kind === 'approval/requested'), asks, `${tool.name} 的审批行为不对`)
+      const frames = await collectEvents(env.host, 'tb-mode', f => isTurnEnd(f) || isApprovalAsked(f))
+      assert.equal(frames.some(isApprovalAsked), asks, `${tool.name} 的审批行为不对`)
       if (!asks) {
         assert.equal(turnEndReason(frames), 'completed')
         assert.equal(env.stub.executions().length, 1)

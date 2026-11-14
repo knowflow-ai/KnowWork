@@ -12,7 +12,7 @@ const CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'SETGID', 'SETUID', '
 // 与业务服务 scripts.ENTRYPOINT_SSH 一致
 const ENTRY = 'if command -v ssh-keygen >/dev/null 2>&1 && [ ! -s /etc/ssh/ssh_host_ed25519_key ]; then '
   + 'ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/ssh_host_ed25519_key >/dev/null 2>&1; fi; '
-  + 'mkdir -p /workspace/input /workspace/tmp /workspace/output 2>/dev/null; '
+  + 'mkdir -p /workspace/input 2>/dev/null; '
   + 'mkdir -p "$(dirname "$KW_SESSION_ROOT")" && ln -sfn /workspace "$KW_SESSION_ROOT"; exec sleep infinity'
 
 export const run = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()

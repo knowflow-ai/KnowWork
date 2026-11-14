@@ -144,3 +144,27 @@ export async function collectEvents(host, sessionId, predicate, { after = 0, tim
 }
 
 export const isTurnEnd = frame => frame.kind === 'session/event' && frame.data?.type === 'turn/end'
+
+/** 官方日志里的审批事件：根会话的 session/event，或子 Agent 转发上来的 subagent/event；type 不对就是 undefined。 */
+export function approvalEvent(frame, type) {
+  const event = frame.kind === 'session/event' ? frame.data : frame.kind === 'subagent/event' ? frame.data?.event : undefined
+  return event?.type === type ? event.data : undefined
+}
+
+export const isApprovalAsked = frame => approvalEvent(frame, 'approval/asked') !== undefined
+
+/** 这些帧里第一条 approval/decided 的结果 */
+export const decidedOutcome = frames => frames.map(frame => approvalEvent(frame, 'approval/decided')).find(Boolean)?.outcome
+
+/**
+ * 等这个会话的待答审批有 count 条：日志里的 approval/asked 比应答者登记待答项早一点（中间隔着「本会话授权」那次查询），
+ * 看到 asked 马上查列表可能还是空的。
+ */
+export async function pendingApprovals(host, sessionId, count = 1, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const listed = await host.call('GET', `/v1/sessions/${encodeURIComponent(sessionId)}/approvals`)
+    if (listed.status !== 200 || listed.body.length >= count || Date.now() > deadline) return listed.body
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+}

@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { useQueryClient } from '@tanstack/react-query';
+import { publicOrigin } from '../../../utils/publicOrigin';
 import type { Channel } from '../../../api/channels';
 import { resetWebKey, resetWebSecret } from '../../../api/channels';
 import { readableError } from '../../../api/http';
@@ -125,7 +126,7 @@ function SecretSection({ channel }: { readonly channel: Channel }) {
 }
 
 function PublicCode({ webKey }: { readonly webKey: string }) {
-  const snippets = embedSnippets(window.location.origin, webKey);
+  const snippets = embedSnippets(publicOrigin(), webKey);
   return (
     <>
       <Snippet
@@ -140,7 +141,7 @@ function PublicCode({ webKey }: { readonly webKey: string }) {
 }
 
 function IdentifiedCode({ channel, webKey }: { readonly channel: Channel; readonly webKey: string }) {
-  const snippets = identifiedSnippets(window.location.origin, webKey);
+  const snippets = identifiedSnippets(publicOrigin(), webKey);
   return (
     <>
       <SecretSection channel={channel} />

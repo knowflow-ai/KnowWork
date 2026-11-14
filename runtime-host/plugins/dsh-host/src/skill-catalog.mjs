@@ -109,11 +109,12 @@ async function readBody(response) {
 export function createSkillClient({ baseUrl }) {
   const root = baseUrl.replace(/\/+$/, '')
 
-  async function get(path, token, signal) {
+  async function get(path, token, signal, payload) {
     let response
     try {
       response = await fetch(`${root}${path}`, {
-        headers: { authorization: `Bearer ${token}` },
+        ...(payload === undefined ? {} : { method: 'POST', body: JSON.stringify(payload) }),
+        headers: { authorization: `Bearer ${token}`, ...(payload === undefined ? {} : { 'content-type': 'application/json' }) },
         signal: signal === undefined ? AbortSignal.timeout(TIMEOUT_MS) : AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
       })
     } catch (error) {
@@ -144,6 +145,16 @@ export function createSkillClient({ baseUrl }) {
       }
       if (sha256(body.content) !== skill.contentDigest) throw new SkillCatalogError(`技能 ${skill.name} 的内容校验失败`)
       return body.content
+    },
+
+    /** 这些技能跑命令时要带的环境变量（只有给本机宿主的公开入口有这个接口，只给个人技能的值）。 */
+    async env(token, skills, signal) {
+      const body = await get('/env', token, signal, { skills })
+      const env = body?.env
+      if (env === null || typeof env !== 'object' || Array.isArray(env) || Object.values(env).some(value => typeof value !== 'string')) {
+        throw new SkillCatalogError('技能的环境变量格式不对')
+      }
+      return Object.freeze({ ...env })
     },
   }
 }

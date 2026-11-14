@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from enum import StrEnum
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -45,6 +46,15 @@ class UsageSummary:
     output_tokens: int
     total_tokens: int
     cost: Decimal
+
+
+class UsageReader(Protocol):
+    """只读的用量汇总（扩展用，例如配额按人、按空间求本月用了多少、每轮平均用多少）：UsageRecorder 的 summary 与 turns。"""
+
+    async def summary(self, workspace_id: str, start: date, end: date, group_by: GroupBy, *,
+                      user_id: str | None = None) -> tuple[UsageSummary, ...]: ...
+
+    async def turns(self, workspace_id: str, start: date, end: date) -> int: ...
 
 
 def estimate_cost(entry: UsageEntry, input_price: Decimal | None, output_price: Decimal | None) -> Decimal | None:
@@ -154,6 +164,17 @@ class UsageRecorder:
             await set_workspace(session, workspace_id)
             rows = (await session.execute(stmt)).all()
         return tuple(_summary(row) for row in rows)
+
+    async def turns(self, workspace_id: str, start: date, end: date) -> int:
+        """[start, end] 闭区间内有多少轮调过模型（按对话与轮次去重）。和 summary 同一个时区、同样的范围限制。"""
+        check_id(workspace_id, "workspace_id")
+        if end < start or (end - start).days >= MAX_RANGE_DAYS:
+            raise Invalid(f"时间范围须为 1 到 {MAX_RANGE_DAYS} 天")
+        distinct = (select(UsageRecord.conversation_id, UsageRecord.turn)
+                    .where(UsageRecord.day >= start, UsageRecord.day <= end).distinct().subquery())
+        async with self._sessionmaker() as session, session.begin():
+            await set_workspace(session, workspace_id)
+            return int(await session.scalar(select(func.count()).select_from(distinct)) or 0)
 
     async def last_model(self, workspace_id: str, user_id: str, conversation_id: str | None = None) -> str | None:
         """这个人最近一次调模型用的别名（给了对话就只看这段对话）；没调过为 None。输入框默认选「上次用的」据此定。"""

@@ -9,10 +9,18 @@ import pytest
 from fastapi import FastAPI
 
 from knowwork_server.conversations.api import build_router
+from knowwork_server.conversations.device import DeviceConversations
 from knowwork_server.conversations.listeners import Broadcaster
+from knowwork_server.conversations.models import Conversation
 from knowwork_server.conversations.pump import EventPump
 from knowwork_server.conversations.replay import EventFeed
-from knowwork_server.conversations.scopes import ConversationScope, ConversationScopes, ScopeUnavailable
+from knowwork_server.conversations.scopes import (
+    ConversationScope,
+    ConversationScopes,
+    ScopeClaim,
+    ScopeRejected,
+    ScopeUnavailable,
+)
 from knowwork_server.conversations.service import ConversationService
 from knowwork_server.conversations.writer import BatchWriter
 from knowwork_server.profile.errors import ProfileUnavailable
@@ -90,6 +98,100 @@ async def test_fixed_answer_mode_wins_and_the_ui_can_read_the_scope(sessionmaker
         assert failed.status_code == 503 and "设置暂时取不到" in failed.json()["detail"]
         assert (await http.get(f"{CONV}/{bound}/scope", headers=AUTH)).status_code == 503
     assert [turn.answer_mode for turn in kernel.sent] == ["quick", "agent"], "范围里固定的方式每一轮都按它"
+    await pump.close()
+
+
+class Claimer:
+    """扩展登记的认领：认得的 id 挂上（provider 从此管这段对话），别的拒绝；记下挂上时对话已经在不在、撤掉了哪些。"""
+
+    def __init__(self, provider: Provider, sessionmaker):
+        self.provider, self.sessionmaker, self.claimed, self.released = provider, sessionmaker, [], []
+
+    async def claim(self, workspace_id, conversation_id, user_id, item_id):
+        if item_id != "ex_1":
+            raise ScopeRejected("没有这个专家")
+        async with self.sessionmaker() as session:
+            exists = await session.get(Conversation, conversation_id) is not None
+        self.claimed.append((workspace_id, conversation_id, user_id, item_id, exists))
+        self.provider.bound.add(conversation_id)
+
+    async def release(self, workspace_id, conversation_id):
+        self.released.append(conversation_id)
+        self.provider.bound.discard(conversation_id)
+
+
+class Nothing:
+    async def claim(self, *args):
+        return None
+
+    async def release(self, *args):
+        return None
+
+
+async def test_claim_registry_rejects_unknown_kinds():
+    scopes = ConversationScopes()
+    with pytest.raises(ScopeRejected):
+        await scopes.claim("ws", "c1", "u1", ScopeClaim("expert", "ex_1"))
+
+    scopes.add_claimer("expert", Nothing())
+    with pytest.raises(ValueError):
+        scopes.add_claimer("expert", Nothing())
+    with pytest.raises(ValueError):
+        scopes.add_claimer("Bad-Kind", Nothing())
+
+
+async def test_a_conversation_is_created_with_its_scope_claimed_before_the_profile_compiles(sessionmaker):
+    """建对话时带上要挂的东西：对话先建出来再挂，挂上了才编译运行配置、打开宿主会话（第一轮就按专家的范围）；
+    挂不上不建、对话收回。"""
+    scopes = ConversationScopes()
+    provider = Provider(ConversationScope("经营分析", answer_mode="quick"))
+    scopes.add(provider)
+    claimer = Claimer(provider, sessionmaker)
+    scopes.add_claimer("expert", claimer)
+    http, pump, kernel = client(sessionmaker, scopes)
+    async with http:
+        made = await http.post(CONV, json={"title": "问经营", "scope": {"kind": "expert", "id": "ex_1"}}, headers=AUTH)
+        assert made.status_code == 201
+        cid = made.json()["id"]
+        assert claimer.claimed == [(WS, cid, "dev-user", "ex_1", True)], "对话建出来再挂，挂的是建它的人"
+        assert (await http.get(f"{CONV}/{cid}/scope", headers=AUTH)).json() == {"label": "经营分析", "answerMode": "quick"}
+        before = {c["id"] for c in (await http.get(CONV, headers=AUTH)).json()["items"]}
+        refused = await http.post(CONV, json={"scope": {"kind": "expert", "id": "ex_nope"}}, headers=AUTH)
+        assert refused.status_code == 404 and refused.json()["detail"] == "没有这个专家"
+        unknown = await http.post(CONV, json={"scope": {"kind": "persona", "id": "x"}}, headers=AUTH)
+        assert unknown.status_code == 404
+        after = {c["id"] for c in (await http.get(CONV, headers=AUTH)).json()["items"]}
+        assert cid in before and after == before, "挂不上的不留对话"
+        assert (await http.delete(f"{CONV}/{cid}", headers=AUTH)).status_code == 204
+        assert cid in claimer.released and await scopes.of(WS, cid) is None, "删了对话，挂着的一起撤掉"
+    assert len(kernel.opened) == 1, "挂不上的不开宿主会话"
+    await pump.close()
+
+
+async def test_a_device_conversation_claims_its_scope_the_same_way(sessionmaker):
+    scopes = ConversationScopes()
+    provider = Provider(ConversationScope("经营分析"))
+    scopes.add(provider)
+    claimer = Claimer(provider, sessionmaker)
+    scopes.add_claimer("expert", claimer)
+    kernel = FakeKernel()
+    writer, broadcaster = BatchWriter(sessionmaker), Broadcaster()
+    pump = EventPump(kernel, sessionmaker, writer, broadcaster)
+    service = ConversationService(kernel, sessionmaker, pump, EventFeed(sessionmaker, writer, broadcaster,
+                                                                        pump.produced_upto), scopes=scopes)
+    device = DeviceConversations(service, pump)
+    made = await device.create(workspace_id=WS, user_id="u1", scope=ScopeClaim("expert", "ex_1"))
+    assert claimer.claimed == [(WS, made.id, "u1", "ex_1", True)]
+    assert (await scopes.of(WS, made.id)).label == "经营分析"
+    async def count() -> int:
+        async with sessionmaker() as session:
+            return len((await session.execute(Conversation.__table__.select())).all())
+
+    before = await count()
+    with pytest.raises(ScopeRejected):
+        await device.create(workspace_id=WS, user_id="u1", scope=ScopeClaim("expert", "ex_nope"))
+    assert await count() == before, "挂不上的对话收回"
+    assert len(claimer.released) == 1, "没挂上的也撤一次，不留半截"
     await pump.close()
 
 

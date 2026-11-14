@@ -2,6 +2,10 @@
  * OAuth 授权的两头：跳去对方页面授权（useMcpLogin），授权完回到站内页面时读网址上的结果给提示（useMcpLoginResult）。
  * 回调由业务服务处理，成功带 mcpConnected=服务 id、失败带 mcpError=原因跳回发起的页面；提示完把这两个参数从网址上去掉，
  * 刷新页面不会再提示一次。
+ *
+ * 外壳（桌面端）里页面不会跳走：照 DSH 官方桌面版，外站地址交给系统浏览器打开，授权在那边做完、结果页也在那边。
+ * 所以跳过去之后，窗口再次拿到焦点（用户从浏览器回来）时清掉「跳转中」，并把当前页面的数据整体刷新一次，
+ * 连接状态就是最新的；普通浏览器里页面已经跳走，不会走到这一步。授权很少发生，整体刷新最简单。
  */
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient, type QueryKey } from '@tanstack/react-query';
@@ -19,10 +23,17 @@ export function useMcpLogin(): readonly [
   (serverId: string, returnTo: string) => Promise<void>,
 ] {
   const [going, setGoing] = useState<string>();
+  const client = useQueryClient();
   const go = async (serverId: string, returnTo: string) => {
     setGoing(serverId);
     try {
-      browser.go(await startMcpLogin(serverId, returnTo));
+      const url = await startMcpLogin(serverId, returnTo);
+      const back = () => {
+        setGoing(undefined);
+        void client.invalidateQueries();
+      };
+      window.addEventListener('focus', back, { once: true });
+      browser.go(url);
     } catch (error) {
       toast.error(readableError(error, '没能打开授权页，请稍后重试'));
       setGoing(undefined);

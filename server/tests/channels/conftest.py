@@ -80,6 +80,7 @@ class FakeConversations:
     approvals_waiting: list = field(default_factory=list)  # 等着批准的操作
     asks: dict = field(default_factory=dict)  # 事件流走到这个 id 的 run.waiting 时，这次提问开始等回答
     answered: list = field(default_factory=list)
+    send_error: Exception | None = None
 
     async def create(self, *, workspace_id, user_id, title="", selection=None, channel_id=None, source=""):
         conversation = SimpleNamespace(id=f"c_{uuid.uuid4().hex}", workspace_id=workspace_id, user_id=user_id,
@@ -96,6 +97,8 @@ class FakeConversations:
         return SimpleNamespace(id=conversation_id, workspace_id=workspace_id, user_id=user_id)
 
     async def send(self, conversation, turn, selection=None):
+        if self.send_error is not None:  # 准备这一轮时被拒（例如额度用完）
+            raise self.send_error
         # 同 ConversationService：这个人此刻用不了这种回答方式就发不出去
         offered = await self.modes.for_user(ModeContext(conversation.workspace_id, conversation.user_id))
         if turn.answer_mode not in {mode.id for mode in offered}:

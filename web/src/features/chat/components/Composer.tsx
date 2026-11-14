@@ -10,7 +10,15 @@
  * 附件一加进来就传上去、开始解析（useDraftAttachments），打字的工夫多半就好了；点发送时还没好的先等着（卡片上显示
  * 上传中、解析中），好了自动发出去，这一轮模型就拿得到解析出的全文。等不及解析可以点「直接发送」。
  */
-import { useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { ArrowUp, AtSign, PlusComposer, StopSm } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
@@ -26,6 +34,7 @@ import { sendable, useDraftAttachments, type DraftAttachment } from '../hooks/us
 import { activeTrigger, withoutTrigger } from '../mentions/candidates';
 import { MentionChips } from '../mentions/MentionChips';
 import { MentionMenu } from '../mentions/MentionMenu';
+import type { FileReference } from '../sources';
 import { suggestMode } from '../mentions/suggest';
 import {
   activeOption,
@@ -65,9 +74,34 @@ interface Props {
   readonly mentionScope?: MentionScope;
   /** 在发送按钮左边显示对话模型下拉（ModelSelect）：聊天页给，嵌在别的页面里的会话不给（沿用默认模型） */
   readonly chooseModel?: boolean;
+  /** 这里用不了的输入能力（在哪执行决定的，见 sources.ts）：按钮照常摆着、置灰，悬停写原因 */
+  readonly limits?: InputLimits;
+  /** 输入框正下方、那行小字之上的一排（例如新对话页的「在哪执行」） */
+  readonly below?: ReactNode;
+  /** @ 点名工作文件夹里的文件（见 sources.ts 的 ConversationFiles.references）：给了 @ 菜单多一组「工作文件夹」 */
+  readonly fileReferences?: (query: string) => Promise<readonly FileReference[]>;
+  /** 拖进来的文件写成 @路径插进光标处（见 sources.ts 的 dropFiles）；给了就不当附件 */
+  readonly dropFiles?: (
+    files: readonly File[],
+  ) => Promise<{ readonly mentions: readonly string[]; readonly skipped: readonly string[] }>;
+}
+
+/**
+ * 输入框里这里用不了的东西（例如在用户电脑上执行的对话没有服务端的附件、@、回答方式、对话模型）。
+ * 不藏起来：切换执行位置时按钮位置不跳，用户也看得出这里能做什么、不能做什么——和快速问答不能带附件同一种做法。
+ */
+export interface InputLimits {
+  /** 回答方式固定为这个：下拉照常显示、不可改 */
+  readonly answerMode?: { readonly value: AnswerMode; readonly reason: string };
+  /** 附件：tip 是「+」悬停的说明，blocked 是已经加了附件时发送前的提示 */
+  readonly attachments?: { readonly tip: string; readonly blocked: string };
+  /** @ 整个用不了：@ 按钮置灰，悬停说明原因 */
+  readonly mentions?: string;
+  readonly model?: string;
 }
 
 const NO_SCOPE: MentionScope = {};
+const noBlock = () => undefined;
 export const DEFAULT_FOOTNOTE = '回答可能有误，重要结论请点开出处核对';
 const NO_FILES_IN_QUICK = '快速问答不能带附件，去掉附件或切换到智能体再发';
 const UNPARSED = '有文件没能解析，已按原文件交给模型';
@@ -149,13 +183,34 @@ export function Composer({
   onAttach,
   mentionScope = NO_SCOPE,
   chooseModel = false,
+  limits,
+  below,
+  fileReferences,
+  dropFiles,
 }: Props) {
+  const canMention = limits?.mentions === undefined;
   const [value, setValue] = useState('');
   const [caret, setCaret] = useState(0);
   const [mentions, setMentions] = useState<readonly Mention[]>(initialMentions);
   // Esc 关掉菜单后，同一个 @ 不再弹出，直到打下一个
   const [dismissed, setDismissed] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
+  // 扩展让输入框暂时发不出去的原因（插槽 chat.composer.top 的 block），按登记顺序各占一格；取第一个说
+  const tops = slotItems('chat.composer.top');
+  const [blocks, setBlocks] = useState<Readonly<Record<number, string>>>({});
+  const blockers = useMemo(
+    () =>
+      tops.map(
+        (_, index) => (reason: string | null) =>
+          setBlocks((current) => {
+            if ((current[index] ?? null) === reason) return current;
+            const rest = Object.fromEntries(Object.entries(current).filter(([key]) => key !== String(index)));
+            return reason === null ? rest : { ...rest, [index]: reason };
+          }),
+      ),
+    [tops],
+  );
+  const blocked = Object.values(blocks)[0] ?? null;
   // 点了发送、正等附件传完解析完时，点「直接发送」就不等解析了
   const skipWaiting = useRef<AbortController | null>(null);
   const [skipped, setSkipped] = useState(false);
@@ -169,16 +224,20 @@ export function Composer({
   const setMode = useAnswerMode((s) => s.setMode);
   const scope = mentionScope;
   const { options: offered } = useMentionOptions(scope);
-  const quick = (answerMode ?? chosen) === 'quick';
+  const quick = (answerMode ?? limits?.answerMode?.value ?? chosen) === 'quick';
+  // 附件这里用不了：快速问答没有读文件的工具；别处执行的对话由来源说明原因
+  const noFiles =
+    limits?.attachments ?? (quick ? { tip: '快速问答不能带附件', blocked: NO_FILES_IN_QUICK } : null);
   // 这一问算数的 @：快速问答用不了技能
-  const scoped = quick ? mentions.filter((m) => m.type !== 'skill') : mentions;
+  const scoped = !canMention ? [] : quick ? mentions.filter((m) => m.type !== 'skill') : mentions;
   // @ 了在别的回答方式里效果更好的东西（例如数据源）：提示切过去；固定了回答方式的不提示
-  const suggestion = answerMode
-    ? null
-    : suggestMode(scoped, offered.extensions, effectiveAnswerMode(chosen, modes), modes);
+  const suggestion =
+    answerMode || limits?.answerMode
+      ? null
+      : suggestMode(scoped, offered.extensions, effectiveAnswerMode(chosen, modes), modes);
   const picker = useRef<HTMLInputElement>(null);
   const input = useAutoHeight(value);
-  const found = activeTrigger(value, caret);
+  const found = canMention ? activeTrigger(value, caret) : null;
   const trigger = found && found.start !== dismissed ? found : null;
   const placeCaret = (position: number) => {
     setCaret(position);
@@ -200,6 +259,16 @@ export function Composer({
     () => setDismissed(found?.start ?? null),
     !quick,
     scope,
+    fileReferences && {
+      list: fileReferences,
+      // 照官方 @file：选中的 @路径作为文字留在消息里（模型自己去读）；文件补一个空格结束，文件夹不结束、接着往下列
+      insert: (file) => {
+        if (!trigger) return;
+        const text = file.kind === 'directory' ? file.insert : `${file.insert} `;
+        setValue(value.slice(0, trigger.start) + text + value.slice(caret));
+        placeCaret(trigger.start + text.length);
+      },
+    },
   );
   const openMention = () => {
     // 点 @ 按钮：在光标处补一个 @（前面不是空白就先空一格），菜单随之弹出
@@ -215,22 +284,50 @@ export function Composer({
     if (problem) toast.warning(problem);
     if (incoming.length > 0) onAttach?.();
   };
+  // 拖进来的文件写成 @路径插在光标处（前面不是空白就先空一格，每个后面跟一个空格），模型自己去读
+  const mentionDropped = async (drop: NonNullable<Props['dropFiles']>, files: readonly File[]) => {
+    try {
+      const { mentions: written, skipped } = await drop(files);
+      if (skipped.length > 0)
+        toast.warning(`有 ${skipped.length} 个没能写成路径（文件不在了，或路径里有引号）`);
+      if (written.length === 0) return;
+      // 等桌面端回话的这一会儿用户可能又打了字：按输入框此刻的内容插
+      const current = input.current?.value ?? value;
+      const at = input.current?.selectionStart ?? current.length;
+      const gap = at > 0 && !/\s/.test(current[at - 1] ?? '') ? ' ' : '';
+      const text = `${gap}${written.join(' ')} `;
+      setValue(`${current.slice(0, at)}${text}${current.slice(at)}`);
+      placeCaret(at + text.length);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '没能读出拖进来的文件');
+    }
+  };
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragging(false);
-    if (disabled || !canAttach) return;
-    if (quick) toast.warning(NO_FILES_IN_QUICK);
-    else addFiles(Array.from(event.dataTransfer.files));
+    if (disabled) return;
+    const files = Array.from(event.dataTransfer.files);
+    if (dropFiles) {
+      if (files.length > 0) void mentionDropped(dropFiles, files);
+      return;
+    }
+    if (!canAttach) return;
+    if (noFiles) toast.warning(noFiles.blocked);
+    else addFiles(files);
   };
 
   const submit = async (mode: SendMode) => {
+    if (blocked) {
+      toast.warning(blocked);
+      return;
+    }
     const problem = validateMessage(value);
     if (problem) {
       toast.warning(problem);
       return;
     }
-    if (quick && draft.items.length > 0) {
-      toast.warning(NO_FILES_IN_QUICK);
+    if (noFiles && draft.items.length > 0) {
+      toast.warning(noFiles.blocked);
       return;
     }
     setSending(true);
@@ -296,13 +393,22 @@ export function Composer({
       <div className="kw-composer">
         {answerMode ? null : (
           <div className="kw-composer-top">
-            <AnswerModeSelect disabled={disabled} />
-            {slotItems('chat.composer.top').map(({ Component }, index) => (
+            {limits?.answerMode ? (
+              <Tooltip content={limits.answerMode.reason} compact>
+                <span>
+                  <AnswerModeSelect locked={limits.answerMode.value} />
+                </span>
+              </Tooltip>
+            ) : (
+              <AnswerModeSelect disabled={disabled} />
+            )}
+            {tops.map(({ Component }, index) => (
               <Component
                 key={index}
                 conversationId={conversationId}
-                answerMode={effectiveAnswerMode(chosen, modes)}
+                answerMode={limits?.answerMode?.value ?? effectiveAnswerMode(chosen, modes)}
                 running={running}
+                block={blockers[index] ?? noBlock}
               />
             ))}
           </div>
@@ -330,7 +436,7 @@ export function Composer({
             className={cx('kw-composer-box', dragging && 'is-dragging', disabled && 'is-disabled')}
             onDragOver={(event) => {
               event.preventDefault();
-              if (canAttach) setDragging(true);
+              if (canAttach || dropFiles) setDragging(true);
             }}
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
@@ -358,7 +464,7 @@ export function Composer({
               </div>
             ) : null}
             <MentionChips
-              items={scoped}
+              items={canMention ? scoped : []}
               label="这一问 @ 点名的内容"
               onRemove={(mention) =>
                 setMentions((current) => current.filter((m) => mentionKey(m) !== mentionKey(mention)))
@@ -388,15 +494,15 @@ export function Composer({
             <div className="kw-composer-bar">
               {canAttach ? (
                 <>
-                  {/* 快速问答没有读文件的工具，附件放进去也没人读 */}
-                  <Tooltip content={quick ? '快速问答不能带附件' : '添加文件'} compact>
+                  {/* 快速问答没有读文件的工具，附件放进去也没人读；别处执行的对话由来源说明 */}
+                  <Tooltip content={noFiles ? noFiles.tip : '添加文件'} compact>
                     <span>
                       <Button
                         color="secondary"
                         variant="ghost"
                         uniform
                         aria-label="添加文件"
-                        disabled={disabled || quick}
+                        disabled={disabled || noFiles !== null}
                         onClick={() => picker.current?.click()}
                       >
                         <PlusComposer />
@@ -417,23 +523,37 @@ export function Composer({
                 </>
               ) : null}
               <Tooltip
-                content={quick ? '@ 点名知识库、文件或标签' : '@ 点名知识库、文件、标签或技能'}
+                content={
+                  limits?.mentions ?? (quick ? '@ 点名知识库、文件或标签' : '@ 点名知识库、文件、标签或技能')
+                }
                 compact
               >
-                <Button
-                  color="secondary"
-                  variant="ghost"
-                  uniform
-                  aria-label="@ 点名"
-                  disabled={disabled}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={openMention}
-                >
-                  <AtSign />
-                </Button>
+                <span>
+                  <Button
+                    color="secondary"
+                    variant="ghost"
+                    uniform
+                    aria-label="@ 点名"
+                    disabled={disabled || !canMention}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={openMention}
+                  >
+                    <AtSign />
+                  </Button>
+                </span>
               </Tooltip>
               <span className="kw-composer-spacer" />
-              {chooseModel ? <ModelSelect conversationId={conversationId} disabled={disabled} /> : null}
+              {limits?.model ? (
+                <Tooltip content={limits.model} compact>
+                  <span>
+                    <Button color="secondary" variant="ghost" size="sm" disabled>
+                      默认模型
+                    </Button>
+                  </span>
+                </Tooltip>
+              ) : chooseModel ? (
+                <ModelSelect conversationId={conversationId} disabled={disabled} />
+              ) : null}
               {running && onStop ? (
                 <Tooltip content="停止" compact>
                   <Button
@@ -448,13 +568,13 @@ export function Composer({
                   </Button>
                 </Tooltip>
               ) : null}
-              <Tooltip content={running ? '完成后发送' : '发送'} compact>
+              <Tooltip content={blocked ?? (running ? '完成后发送' : '发送')} compact>
                 <Button
                   color="primary"
                   uniform
                   aria-label="发送"
                   loading={sending}
-                  disabled={!value.trim() || disabled}
+                  disabled={!value.trim() || disabled || blocked !== null}
                   onClick={() => void submit('followup')}
                 >
                   <ArrowUp />
@@ -463,6 +583,7 @@ export function Composer({
             </div>
           </div>
         </div>
+        {below ? <div className="kw-composer-below">{below}</div> : null}
         <div className="kw-composer-hint">
           {running ? '回车：完成后发送 · Ctrl/⌘ + 回车：补充到当前任务 · ' : ''}
           {footnote}

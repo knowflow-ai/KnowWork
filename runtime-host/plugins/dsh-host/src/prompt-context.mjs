@@ -1,9 +1,9 @@
 /**
- * 发给模型的运行时上下文（排在提问之后的那条消息）：去掉工作目录，写本轮的语言规则。
+ * 发给模型的运行时上下文（排在提问之后的那条消息）：写本轮的语言规则；服务端宿主上还去掉工作目录。
  *
- * 工作目录：官方工作目录服务每轮追加「Current working directory: <宿主机路径>」。宿主没有文件与命令工具，
- * 工作目录对模型无用，还泄露服务器路径；服务本身不能停用（技能目录、子 Agent 都依赖它），只能让这段变空，
- * 空的上下文渲染时被丢掉。
+ * 工作目录（只在配置了 hideWorkingDirectory 时）：官方工作目录服务每轮追加「Current working directory: <宿主机路径>」。
+ * 服务端宿主上那是宿主机的路径，对模型无用，还泄露服务器路径；服务本身不能停用（技能目录、子 Agent 都依赖它），只能让这段变空，
+ * 空的上下文渲染时被丢掉。用户设备上的本机宿主照官方留着：那就是用户选的工作文件夹。
  *
  * 语言：语言由业务服务判定并随消息下发，宿主不猜；规则只写在这一处，
  * 管的是给用户看的文字（调工具前的说明、提问、回答），不管模型思考——思考原文不展示给用户。
@@ -38,13 +38,17 @@ const LANGUAGE_RULES = {
     + 'Follow an explicit request for another language. Tool arguments, code and file names stay as they are.',
 }
 
-/** @param {import('@deepseek-ai/cordis').Context} ctx */
-export function apply(ctx) {
+/**
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {{ hideWorkingDirectory?: boolean }} [config]
+ */
+export function apply(ctx, config = {}) {
+  const hide = config?.hideWorkingDirectory === true
   ctx.on('agent/created', ({ agent }) => {
     const prompt = agent.ctx.systemPrompt
     if (prompt === undefined) return
     const order = prompt.getContextOrder('WORKING_DIRECTORY')
-    prompt.context({ name: SILENCED, order, required: true, interpolate: false, text: () => '' })
+    if (hide) prompt.context({ name: SILENCED, order, required: true, interpolate: false, text: () => '' })
     prompt.context({
       name: LANGUAGE,
       order,
@@ -54,6 +58,7 @@ export function apply(ctx) {
     })
   })
 
+  if (!hide) return
   ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     const assembly = await next()
     return {

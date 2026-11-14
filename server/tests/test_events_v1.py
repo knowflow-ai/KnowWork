@@ -26,12 +26,47 @@ def test_every_event_has_the_envelope():
 
 def test_turn_start_remembers_turn_for_plugin_frames():
     state, _ = one(S0, "session/event", session("turn/start", {"turn": 2}))
-    _, events = one(state, "approval/requested", {"id": "a1", "toolName": "kw_write", "callId": "c1", "reason": "写入"})
-    assert [e["type"] for e in events] == ["item.started", "run.waiting"]
-    assert all(e["run_id"] == "run-2" for e in events)
-    assert events[0]["kind"] == "approval" and events[0]["item_id"] == "a1"
-    assert events[0]["data"] == {"tool_name": "kw_write", "call_id": "c1", "reason": "写入"}
-    assert events[1]["data"] == {"reason": "approval"}
+    _, events = one(state, "subagent/started", {"parentSessionId": "p", "childSessionId": "child"})
+    assert events[0]["run_id"] == "run-2", "插件帧不带轮次，用最近一次 turn/start 的"
+
+
+def test_approvals_come_from_the_official_log_with_the_official_id():
+    """审批只认官方日志一个来源：官方审批服务记的 approval/asked、approval/decided，卡片编号就是官方编号；
+    服务端执行和本机执行的对话一样，不再有应答者另发的审批帧。"""
+    state, _ = one(S0, "session/event", session("turn/start", {"turn": 2}))
+    asked = session("approval/asked", {"id": "ap1", "toolName": "kw_write", "callId": "c1", "reason": "写入"})
+    _, started = one(state, "session/event", asked)
+    assert [(e["type"], e["kind"], e["item_id"], e["run_id"]) for e in started] == [
+        ("item.started", "approval", "ap1", "run-2"), ("run.waiting", None, "ap1", "run-2")]
+    assert started[0]["data"] == {"tool_name": "kw_write", "call_id": "c1", "reason": "写入"}
+    assert started[1]["data"] == {"reason": "approval"}
+    _, done = one(state, "session/event", session("approval/decided", {"id": "ap1", "outcome": "rejected"}))
+    assert [(e["type"], e["kind"], e["data"]) for e in done] == [("item.completed", "approval", {"outcome": "rejected"})]
+    for old in ("approval/requested", "approval/resolved", "approval/granted"):
+        assert one(state, old, {"id": "x", "toolName": "kw_write", "outcome": "rejected"})[1] == [], f"{old} 不再认"
+
+
+def test_auto_approval_marker_labels_the_decided_card():
+    """「本会话不再询问」自动批准：日志里照样一问一答，应答者在中间另发只带官方编号的 approval/auto，卡片据此标 auto。"""
+    state, _ = one(S0, "session/event", session("approval/asked", {"id": "ap1", "toolName": "kw_write"}))
+    state, marked = one(state, "approval/auto", {"id": "ap1", "sessionId": "s"})
+    assert marked == [] and "ap1" in state.auto_approved
+    state, done = one(state, "session/event", session("approval/decided", {"id": "ap1", "outcome": "allowed-once"}))
+    assert done[0]["data"] == {"outcome": "allowed-once", "auto": True}
+    assert state.auto_approved == frozenset(), "答完就忘掉"
+    _, other = one(state, "session/event", session("approval/decided", {"id": "ap2", "outcome": "allowed-once"}))
+    assert other[0]["data"] == {"outcome": "allowed-once"}, "人批的不标"
+
+
+def test_subagent_approvals_show_up_on_the_root_conversation():
+    """子 Agent 的审批记在它自己的会话日志里，宿主（或设备）转成 subagent/event 送来：卡片出在根会话上，编号同样是官方的。"""
+    asked = {"sessionId": "child", "event": session("approval/asked", {"id": "ap9", "toolName": "bash", "callId": "c9"}, time=42)}
+    _, started = one(S0, "subagent/event", asked)
+    assert [(e["type"], e["item_id"], e["time"]) for e in started] == [("item.started", "ap9", 42), ("run.waiting", "ap9", 42)]
+    decided = {"sessionId": "child", "event": session("approval/decided", {"id": "ap9", "outcome": "allowed-once"})}
+    assert one(S0, "subagent/event", decided)[1][0]["data"] == {"outcome": "allowed-once"}
+    other = {"sessionId": "child", "event": session("tool/call", {"callId": "c9"})}
+    assert one(S0, "subagent/event", other)[1] == [], "子 Agent 的其他事件照旧不转"
 
 
 @pytest.mark.parametrize(("reason", "expected", "data"), [
@@ -132,10 +167,7 @@ def test_grouped_search_results_are_summarised_and_listed_documents_are_not():
                          None, {"documents": [], "conditions": [], "removed": []}]
 
 
-def test_approval_resolved_and_subagent():
-    _, resolved = one(S0, "approval/resolved", {"id": "a1", "outcome": "rejected"})
-    assert (resolved[0]["type"], resolved[0]["kind"], resolved[0]["data"]) == ("item.completed", "approval",
-                                                                               {"outcome": "rejected"})
+def test_subagent_started_and_finished():
     _, started = one(S0, "subagent/started", {"parentSessionId": "p", "childSessionId": "child"})
     _, finished = one(S0, "subagent/finished", {"childSessionId": "child", "status": "completed"})
     assert (started[0]["type"], started[0]["kind"], started[0]["item_id"]) == ("item.started", "subagent", "child")
@@ -157,7 +189,8 @@ def test_gap_is_reported_as_error_item():
     ("skill-gate/passed", {"turn": 1}),
     ("kernel.invalid", {"reason": "invalid_frame"}),
     ("something/unknown", None),
-    ("approval/requested", {"no": "id"}),
+    ("session/event", session("approval/asked", {"no": "id"})),
+    ("subagent/event", {"sessionId": "child", "event": "not-a-dict"}),
     ("session/event", session("tool/call", {"callId": 5})),
 ])
 def test_unknown_or_malformed_frames_are_not_pushed(kind, data):
@@ -235,43 +268,122 @@ def test_finished_background_work_that_opens_a_turn_is_a_trigger_with_the_offici
     assert notice("tool-jobs", "只有全文")["text"] == "只有全文"
 
 
-def test_question_frames_become_one_input_request_item():
+TIMED_HEADER = session("request/header", {"header": {"tools": [
+    {"name": "ask_user_question", "parameters": {"properties": {"questions": {}, "timeout": {}}}}]}})
+QUESTIONS = [{"id": "fmt", "question": "导出成什么格式？", "header": "格式", "multiSelect": False,
+              "options": [{"label": "Excel (Recommended)", "description": "表格"}, {"label": "PDF"}]}]
+
+
+def ask(call_id="call_1", questions=QUESTIONS):
+    return session("tool/call", {"callId": call_id, "name": "ask_user_question",
+                                 "arguments": json.dumps({"questions": questions, "timeout": 60})})
+
+
+def ask_result(call_id, body, *, is_error=False, error=None):
+    text = body if isinstance(body, str) else json.dumps(body)
+    return session("tool/result", {"message": {"toolCallId": call_id, "isError": is_error,
+                                               "content": [{"type": "text", "text": text}]},
+                                   **({"error": error} if error else {})})
+
+
+def test_questions_come_from_the_official_log():
+    """向用户提问只认官方日志（同官方 userQuestions 投影）：ask_user_question 的调用出卡片，结果里有回答就是答了，
+    item_id 是工具调用 id；服务端执行与本机执行的对话一样，不认应答者另发的帧。"""
     state, _ = one(S0, "session/event", session("turn/start", {"turn": 2}))
-    questions = [{"id": "fmt", "question": "导出成什么格式？", "header": "格式", "multiSelect": False,
-                  "options": [{"label": "Excel (Recommended)", "description": "表格"}, {"label": "PDF"}]}]
-    _, asked = one(state, "question/requested", {"id": "call_1", "sessionId": "c1", "questions": questions, "timed": True})
-    assert [(e["type"], e["kind"], e["item_id"], e["run_id"]) for e in asked] == [
+    state, _ = one(state, "session/event", TIMED_HEADER)
+    asked_state, asked = one(state, "session/event", ask())
+    questions = [e for e in asked if e["kind"] == "input_request" or e["type"] == "run.waiting"]
+    assert [(e["type"], e["kind"], e["item_id"], e["run_id"]) for e in questions] == [
         ("item.started", "input_request", "call_1", "run-2"), ("run.waiting", None, "call_1", "run-2")]
-    assert asked[0]["data"] == {"timed": True, "questions": [{
+    assert questions[0]["data"] == {"timed": True, "questions": [{
         "id": "fmt", "question": "导出成什么格式？", "header": "格式", "detail": None, "multi_select": False,
         "options": [{"label": "Excel (Recommended)", "description": "表格"}, {"label": "PDF"}]}]}
-    assert asked[1]["data"] == {"reason": "input"}
+    assert any(e["kind"] == "tool" for e in asked), "工具调用本身照旧是一个步骤"
+    done_state, answered = one(asked_state, "session/event", ask_result("call_1", {"answers": [{"id": "fmt", "selected": ["PDF"]}]}))
+    [card] = [e for e in answered if e["kind"] == "input_request"]
+    assert (card["type"], card["data"]) == ("item.completed", {"answers": [{"id": "fmt", "selected": ["PDF"]}], "late": False})
+    assert done_state.questions == frozenset()
+    for old in ("question/requested", "question/answered", "question/continued", "question/closed"):
+        assert one(state, old, {"id": "call_1", "questions": QUESTIONS})[1] == [], f"{old} 不再认"
 
-    _, answered = one(state, "question/answered", {"id": "call_1", "answers": [{"id": "fmt", "selected": ["PDF"]}],
-                                                   "late": True})
-    assert (answered[0]["type"], answered[0]["kind"], answered[0]["item_id"]) == ("item.completed", "input_request", "call_1")
-    assert answered[0]["data"] == {"answers": [{"id": "fmt", "selected": ["PDF"]}], "late": True}
 
-    _, continued = one(state, "question/continued", {"id": "call_1"})
-    assert (continued[0]["type"], continued[0]["data"]) == ("item.updated", {"state": "continued"})
-    for reason, expected in (("timeout", "timeout"), ("cancelled", "cancelled"), ("interrupted", "interrupted"),
-                             ("weird", "cancelled")):
-        _, closed = one(state, "question/closed", {"id": "call_1", "reason": reason})
-        assert (closed[0]["type"], closed[0]["data"]) == ("item.failed", {"reason": expected})
+def test_pending_questions_continue_and_late_replies_settle_them():
+    state, _ = one(S0, "session/event", TIMED_HEADER)
+    state, _ = one(state, "session/event", ask())
+    state, pending = one(state, "session/event", ask_result("call_1", {"pending": True, "callId": "call_1", "message": "…"}))
+    assert [(e["type"], e["data"]) for e in pending if e["kind"] == "input_request"] == [("item.updated", {"state": "continued"})]
+    assert "call_1" in state.questions, "转入稍后再答的仍能答"
+    reply = session("user/message", {"source": {"kind": "user-question-reply", "callId": "call_1", "outcome": "answered"},
+                                     "content": [{"type": "text", "text": json.dumps({
+                                         "kind": "answer_to_pending_question", "callId": "call_1",
+                                         "answers": [{"id": "fmt", "selected": ["PDF"]}]})}]})
+    state, late = one(state, "session/event", reply)
+    assert [(e["type"], e["item_id"], e["data"]) for e in late] == [
+        ("item.completed", "call_1", {"answers": [{"id": "fmt", "selected": ["PDF"]}], "late": True})]
+    assert state.questions == frozenset()
+    crashed, _ = one(S0, "session/event", ask("call_2"))
+    _, unknown = one(crashed, "session/event", ask_result("call_2", "outcome unknown", is_error=True,
+                                                           error={"code": "TOOL_OUTCOME_UNKNOWN"}))
+    assert [e["data"] for e in unknown if e["kind"] == "input_request"] == [{"state": "continued"}], "宿主崩溃后补的结果：仍可答"
+
+
+# 工具结果照本机宿主上实测的样子：文字是错误说明，官方的码在 error.code 里（不靠文字判断）
+@pytest.mark.parametrize(("text", "error", "reason"), [
+    ("Error: ask_user_question timed out before the user answered", {"name": "UserQuestionError", "code": "ASK_TIMED_OUT"},
+     "timeout"),
+    ("Error: ask_user_question was aborted before the user answered", {"name": "UserQuestionError", "code": "ASK_ABORTED"},
+     "cancelled"),
+    ("Error: timed out somewhere else", None, "cancelled"),
+])
+def test_failed_questions_close_the_card(text, error, reason):
+    state, _ = one(S0, "session/event", ask())
+    state, closed = one(state, "session/event", ask_result("call_1", text, is_error=True, error=error))
+    assert [(e["type"], e["data"]) for e in closed if e["kind"] == "input_request"] == [("item.failed", {"reason": reason})]
+    assert state.questions == frozenset()
+
+
+def test_questions_asked_inside_ptc_wait_to_be_answered_later():
+    """PTC 里发起的提问（官方 tool/ptc-dispatch，同官方投影）：只认已转入稍后再答的，出一张能稍后再答的卡片，迟到回答按 subCallId 收。"""
+    pending = [{"type": "text", "text": json.dumps({"pending": True, "callId": "sub_1"})}]
+    dispatched = session("tool/ptc-dispatch", {"name": "ask_user_question", "subCallId": "sub_1", "isError": False,
+                                               "arguments": {"questions": QUESTIONS}, "content": pending})
+    state, events = one(S0, "session/event", dispatched)
+    assert [(e["type"], e["item_id"]) for e in events] == [("item.started", "sub_1"), ("item.updated", "sub_1")]
+    assert events[1]["data"] == {"state": "continued"}
+    assert "sub_1" in state.questions
+    reply = session("user/message", {"source": {"kind": "user-question-reply", "callId": "sub_1", "outcome": "answered"},
+                                     "content": [{"type": "text", "text": json.dumps({"answers": [{"id": "fmt", "selected": ["PDF"]}]})}]})
+    state, late = one(state, "session/event", reply)
+    assert [(e["type"], e["data"]) for e in late if e["kind"] == "input_request"] == [
+        ("item.completed", {"answers": [{"id": "fmt", "selected": ["PDF"]}], "late": True})]
+    for ignored in ({"name": "bash", "subCallId": "sub_2", "arguments": {}, "content": pending},
+                    {"name": "ask_user_question", "subCallId": "sub_3", "isError": True, "arguments": {"questions": QUESTIONS},
+                     "content": pending},
+                    {"name": "ask_user_question", "subCallId": "sub_4", "arguments": {"questions": QUESTIONS},
+                     "content": [{"type": "text", "text": json.dumps({"answers": []})}]}):
+        assert one(S0, "session/event", session("tool/ptc-dispatch", ignored))[1] == [], ignored
 
 
 def test_question_content_is_bounded_but_labels_are_kept_verbatim():
     long_label = "选" * 1001
     questions = [{"id": "q", "question": "问" * 3000, "options": [{"label": "甲"}, {"label": long_label}, {"x": 1}, "坏"]},
                  {"id": 5, "question": "id 不是字符串"}, {"id": "empty", "question": ""}, "坏"]
-    _, events = one(S0, "question/requested", {"id": "call_9", "questions": questions})
-    [question] = events[0]["data"]["questions"]
+    state, events = one(S0, "session/event", ask("call_9", questions))
+    [question] = next(e for e in events if e["kind"] == "input_request")["data"]["questions"]
     assert len(question["question"]) == 2000
     assert question["options"] == [{"label": "甲"}], "过长的选项整项丢掉，不截断标签"
     answers = [{"id": "q", "selected": ["甲", 3, long_label], "custom": "补" * 5000}, {"selected": []}]
-    _, answered = one(S0, "question/answered", {"id": "call_9", "answers": answers})
-    assert answered[0]["data"]["answers"] == [{"id": "q", "selected": ["甲"], "custom": "补" * 4000}]
-    assert answered[0]["data"]["late"] is False
+    _, answered = one(state, "session/event", ask_result("call_9", {"answers": answers}))
+    card = next(e for e in answered if e["kind"] == "input_request")
+    assert card["data"]["answers"] == [{"id": "q", "selected": ["甲"], "custom": "补" * 4000}]
+    assert card["data"]["late"] is False
+
+
+def test_other_tool_results_and_unknown_calls_do_not_touch_questions():
+    _, events = one(S0, "session/event", session("tool/call", {"callId": "c", "name": "ask_user_question", "arguments": "坏"}))
+    assert all(e["kind"] != "input_request" for e in events), "读不出问题的调用不出卡片"
+    _, events = one(S0, "session/event", ask_result("nobody", {"answers": []}))
+    assert all(e["kind"] != "input_request" for e in events)
 
 
 def test_todo_write_snapshots_one_item_per_run():
@@ -289,9 +401,20 @@ def test_todo_write_snapshots_one_item_per_run():
     assert "todo" in ITEM_KINDS
 
 
-@pytest.mark.parametrize("kind", ["question/requested", "question/answered", "question/continued", "question/closed"])
-def test_question_frames_without_id_are_dropped(kind):
-    assert one(S0, kind, {"questions": []})[1] == []
+def test_presented_deliverables_become_one_item_per_present():
+    """官方 present 交付的文件（deliverables/presented）：网页与桌面都按它出交付卡片、按路径读（方案 7.7.3）。"""
+    state, _ = one(S0, "session/event", session("turn/start", {"turn": 2}))
+    files = [{"path": "/sessions/c1/out/报告.docx", "description": "季度报告"}, {"path": "/sessions/c1/a.csv"},
+             {"description": "没有路径"}, {"path": ""}, "坏"]
+    _, events = one(state, "session/event", session("deliverables/presented", {"files": files}), seq=11)
+    [event] = events
+    assert (event["type"], event["kind"], event["item_id"], event["run_id"]) == (
+        "item.completed", "deliverable", "deliverable-11", "run-2")
+    assert event["data"] == {"files": [{"path": "/sessions/c1/out/报告.docx", "description": "季度报告"},
+                                       {"path": "/sessions/c1/a.csv"}]}
+    assert one(state, "session/event", session("deliverables/presented", {"files": []}))[1] == []
+    assert one(state, "session/event", session("deliverables/presented", {"files": "坏"}))[1] == []
+    assert "deliverable" in ITEM_KINDS
 
 
 @pytest.mark.parametrize("extracted", [

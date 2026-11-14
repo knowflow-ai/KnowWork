@@ -18,6 +18,8 @@ interface Props {
   readonly step?: StepView;
   /** remember：批准时勾了「本会话内同类操作不再询问」。 */
   readonly onDecide: (allow: boolean, remember?: boolean) => Promise<void>;
+  /** 给不给「本会话内同类操作不再询问」：执行的一方记不住授权时不给（见 sources.ts 的 remembersApprovals） */
+  readonly rememberable?: boolean;
 }
 
 const RESOLVED_TEXT: Record<Exclude<ApprovalView['status'], 'pending'>, string> = {
@@ -40,14 +42,14 @@ function ResolvedLine({
     <div className="kw-approval-resolved" aria-label="已处理的审批">
       <ShieldCheck aria-hidden />
       <span>
-        {RESOLVED_TEXT[approval.status]} · {label}
+        {approval.auto ? '已按本会话授权自动批准' : RESOLVED_TEXT[approval.status]} · {label}
         {target ? ` · ${target}` : ''}
       </span>
     </div>
   );
 }
 
-export function ApprovalCard({ approval, step, onDecide }: Props) {
+export function ApprovalCard({ approval, step, onDecide, rememberable = true }: Props) {
   const [busy, setBusy] = useState<'allow' | 'reject' | null>(null);
   const [remember, setRemember] = useState(false);
   const target = step ? describeArguments(step.arguments, 120) : '';
@@ -62,7 +64,7 @@ export function ApprovalCard({ approval, step, onDecide }: Props) {
   const decide = async (allow: boolean) => {
     setBusy(allow ? 'allow' : 'reject');
     try {
-      await onDecide(allow, allow && remember);
+      await onDecide(allow, rememberable && allow && remember);
     } finally {
       setBusy(null);
     }
@@ -89,12 +91,14 @@ export function ApprovalCard({ approval, step, onDecide }: Props) {
         </div>
       ) : null}
       <div className="kw-approval-foot">
-        <Checkbox
-          checked={remember}
-          onCheckedChange={setRemember}
-          disabled={busy !== null}
-          label="本会话内同类操作不再询问"
-        />
+        {rememberable ? (
+          <Checkbox
+            checked={remember}
+            onCheckedChange={setRemember}
+            disabled={busy !== null}
+            label="本会话内同类操作不再询问"
+          />
+        ) : null}
         <div className="kw-approval-actions">
           <Button
             color="secondary"

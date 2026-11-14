@@ -2,7 +2,13 @@
 
 from dataclasses import dataclass, field
 
-from knowwork_server.sandbox.contract import ExecResult, SandboxError, SandboxFile, SandboxTooLarge
+from knowwork_server.sandbox.contract import (
+    ExecResult,
+    SandboxFile,
+    SandboxFileError,
+    SandboxNotStarted,
+    SandboxTooLarge,
+)
 
 
 @dataclass
@@ -20,6 +26,7 @@ class FakeSandbox:
     extractions: list[tuple[str, str]] = field(default_factory=list)  # (会话, 扩展名)
     extracted: bytes | None = None
     fail_extract: Exception | None = None
+    recycled: set[tuple[str, str]] = field(default_factory=set)  # 空闲回收了的会话：工作区是空的，读不为它新建容器
 
     async def put_input(self, workspace_id, session_id, name, data):
         if name in self.fail_put:
@@ -35,12 +42,14 @@ class FakeSandbox:
             raise self.fail_list
         name = path.removeprefix("/workspace/")
         self.reads.append(name)
+        if (workspace_id, session_id) in self.recycled:
+            raise SandboxNotStarted("这个会话还没有沙箱")
         if name in self.fail_read:
             raise self.fail_read[name]
         try:
             data = self.outputs[(workspace_id, session_id)][name]
         except KeyError as error:
-            raise SandboxError("文件不存在") from error
+            raise SandboxFileError("文件不存在", "not_found") from error
         if len(data) > max_bytes:
             raise SandboxTooLarge("文件超过上限")
         return data
@@ -81,6 +90,10 @@ class FakeSandbox:
     def write_output(self, workspace_id, session_id, name, data: bytes) -> None:
         """name 是 /workspace 下的相对路径。"""
         self.outputs.setdefault((workspace_id, session_id), {})[name] = data
+
+    def recycle(self, workspace_id, session_id) -> None:
+        """空闲回收：容器没了，工作区随之清空。"""
+        self.recycled.add((workspace_id, session_id))
 
     def delivered(self, workspace_id, session_id) -> list[str]:
         """这个会话写过的全部文件的宿主路径（扮演模型 present 了它们）。"""

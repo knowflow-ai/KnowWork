@@ -115,3 +115,16 @@ async def test_context_overflow_is_passed_on_in_words_the_harness_recognizes(bod
     async with gateway(httpx.MockTransport(Recorder(status=413, body=b"too big"))) as client:
         too_large = await client.post("/internal/model/v1/chat/completions", json={"messages": MESSAGES}, headers=GOOD)
     assert (too_large.status_code, too_large.json()["error"]["message"]) == (413, message)
+
+
+async def test_the_same_gateway_can_be_mounted_under_another_path():
+    """原生应用的本机宿主经公开入口调模型：同一个网关、同样的令牌校验，只是路径不同。"""
+    upstream = httpx.AsyncClient(base_url="http://upstream/v1", transport=_NeverUpstream())
+    app = FastAPI()
+    app.include_router(build_router(SIGNER, upstream, "real-model", path_prefix="/api/model/v1"))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gw") as client:
+        no_token = await client.post("/api/model/v1/chat/completions", json={"messages": MESSAGES})
+        assert no_token.status_code == 401
+        old = await client.post("/internal/model/v1/chat/completions", json={"messages": MESSAGES}, headers=GOOD)
+        assert old.status_code == 404
+

@@ -1,6 +1,6 @@
 /**
- * 使用端左侧浅灰侧栏：新对话、技能、扩展注册的入口（app.nav，入口下面可以挂子项）、最近会话（分页）；底部是用户菜单
- * （管理员从这里进管理后台）。
+ * 使用端左侧浅灰侧栏：新对话、技能、扩展注册的入口（app.nav，入口下面可以挂子项）、扩展画的分组（app.sidebar.groups，
+ * 例如桌面端的本机工作区）、最近会话（分页，分组里已经有的不再列）；底部是用户菜单（管理员从这里进管理后台）。
  * 顶上一行右边是「搜索对话」（放大镜，或 Ctrl/⌘ + K）和「收起侧栏」，照 ChatGPT；收起时放大镜在「新对话」下面。
  * 照 ChatGPT 可以收起：右上角的按钮（或 Ctrl/⌘ + Shift + S）收成一条只有图标的窄栏，最近会话不显示，
  * 入口的名字悬停时显示；窄栏顶上是产品图标，悬停变成「展开侧栏」。收起与否只记在本浏览器里。
@@ -26,9 +26,14 @@ const MAC = navigator.platform.toLowerCase().includes('mac');
 const SHORTCUT = MAC ? '⌘ ⇧ S' : 'Ctrl Shift S';
 const SEARCH_SHORTCUT = MAC ? '⌘ K' : 'Ctrl K';
 
+const NONE: ReadonlySet<string> = new Set();
+const noGroups = () => NONE;
+
 function RecentConversations() {
   const list = useConversationList();
-  const items = flattenPages(list.data?.pages);
+  // 分组在装配时就登记好了、之后不变，每个分组的 hook 都调（顺序稳定，同新对话页 useStartPlace 调各来源的 useBlocker）
+  const grouped = slotItems('app.sidebar.groups').map((group) => (group.useGrouped ?? noGroups)());
+  const items = flattenPages(list.data?.pages).filter((item) => !grouped.some((ids) => ids.has(item.id)));
   return (
     <div className="kw-sidebar-section">
       <div className="kw-sidebar-label">最近会话</div>
@@ -169,6 +174,9 @@ export function Sidebar() {
         <div className="kw-sidebar-spacer" />
       ) : (
         <div className="kw-sidebar-scroll">
+          {slotItems('app.sidebar.groups').map(({ Section }, index) => (
+            <Section key={index} />
+          ))}
           <RecentConversations />
         </div>
       )}

@@ -70,6 +70,22 @@ async def test_list_rename_and_isolation(sessionmaker):
     await writer.close()
 
 
+async def test_listing_by_ids_fetches_only_my_own_in_one_request(sessionmaker):
+    """侧栏按本机工作区分组时，列表里还没翻到的对话按编号一次取齐：只有本人的，最近有动静的在前，不分页；太多拒绝。"""
+    kernel, erased = FakeKernel(), []
+    alice, bob, pump, writer = stack(kernel, sessionmaker, erased)
+    async with alice, bob:
+        first = (await alice.post(CONV, json={"title": "第一个"})).json()["id"]
+        second = (await alice.post(CONV, json={"title": "第二个"})).json()["id"]
+        others = (await bob.post(CONV, json={"title": "别人的"})).json()["id"]
+        await alice.post(f"{CONV}/{first}/messages", json={"text": "hi"})
+        got = (await alice.get(CONV, params={"ids": f"{second},{others},c_missing,{first},{first}"})).json()
+        assert [c["id"] for c in got["items"]] == [first, second] and got["next"] is None
+        assert (await alice.get(CONV, params={"ids": ",".join(f"c_{n}" for n in range(51))})).status_code == 422
+    await pump.close()
+    await writer.close()
+
+
 async def test_delete_releases_host_session_and_erases_everything(sessionmaker):
     kernel, erased = FakeKernel([[session_event(1, "turn/start", {"turn": 1})]]), []
     alice, bob, pump, writer = stack(kernel, sessionmaker, erased)

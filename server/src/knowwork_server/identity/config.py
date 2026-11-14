@@ -45,3 +45,7 @@ class IdentityConfig:
     login_max_failures_per_ip: int = 30
     # API Key 的最后使用时间最多每隔这么久写一次库，避免每个请求都写。
     api_key_touch_interval: timedelta = timedelta(seconds=60)
+    # 原生应用登录（桌面端等）：授权码一分钟内换掉；访问令牌一小时；刷新令牌闲置 30 天作废，每次刷新往后顺延
+    oauth_code_ttl: timedelta = timedelta(minutes=1)
+    oauth_access_ttl: timedelta = timedelta(hours=1)
+    oauth_refresh_ttl: timedelta = timedelta(days=30)

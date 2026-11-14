@@ -119,6 +119,22 @@ describe('LoginPage', () => {
     expect(screen.queryByRole('link', { name: '使用域账号登录' })).not.toBeInTheDocument();
   });
 
+  it('点单点登录前记下登录后要回的页面', async () => {
+    routeFetch({
+      ...initialized,
+      'GET /api/auth/methods': jsonResponse({ password: true, methods: [OIDC_METHOD] }),
+    });
+    renderWithApp(<LoginPage />, {
+      route: '/login',
+      path: '/login',
+      state: { from: '/oauth/authorize?client_id=kw-desktop' },
+    });
+    const link = await screen.findByRole('link', { name: '使用企业账号登录' });
+    link.addEventListener('click', (event) => event.preventDefault());
+    await userEvent.click(link);
+    expect(window.sessionStorage.getItem('kw-after-login')).toBe('/oauth/authorize?client_id=kw-desktop');
+  });
+
   it('在企业微信里打开：直接走企业微信的免登', async () => {
     const wecom = {
       ...OIDC_METHOD,
@@ -338,6 +354,22 @@ describe('SetupPage', () => {
 });
 
 describe('RequireAuth 与 RequireAdmin', () => {
+  it('单点登录回来后回到登录前要去的页面（例如桌面端的登录确认页）', async () => {
+    window.sessionStorage.setItem('kw-after-login', '/oauth/authorize?client_id=kw-desktop');
+    routeFetch({
+      'GET /api/auth/me': jsonResponse({ ...ME, extensions: [] }),
+      'GET /api/workspaces': jsonResponse([DEFAULT_WS]),
+    });
+    renderWithApp(<RequireAuth>主界面</RequireAuth>, {
+      route: '/x',
+      path: '/x',
+      extraRoutes: { '/oauth/authorize': <div>确认页</div> },
+    });
+    expect(await screen.findByText('确认页')).toBeInTheDocument();
+    expect(window.sessionStorage.getItem('kw-after-login')).toBeNull();
+    setEnabledExtensions(undefined);
+  });
+
   it('当前用户信息带着启用了的扩展：只显示这些扩展的入口', async () => {
     routeFetch({
       'GET /api/auth/me': jsonResponse({ ...ME, extensions: ['demo-on'] }),

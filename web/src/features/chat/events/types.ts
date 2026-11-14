@@ -164,6 +164,8 @@ export interface RunView {
   readonly trail: readonly TrailEntry[];
   /** 这一轮 Agent 维护的待办（官方 todo_write 的最新整表）；没写过时为 undefined。 */
   readonly todos?: readonly TodoView[];
+  /** 这一轮交付的文件（官方 present），同一路径用最近一次的说明；没交付过时为 undefined。 */
+  readonly deliverables?: readonly DeliverableView[];
   /** 不是人发起的一轮由什么发起；人发起的没有。 */
   readonly trigger?: RunTrigger;
 }
@@ -208,6 +210,8 @@ export interface ApprovalView {
   readonly reason?: string;
   readonly runId?: string;
   readonly status: ApprovalStatus;
+  /** 按「本会话内同类操作不再询问」的授权自动批准的（官方工具自己发起、事先拦不到的那类，见宿主 approval-broker） */
+  readonly auto?: boolean;
 }
 
 export interface QuestionOptionView {
@@ -250,14 +254,12 @@ export interface QuestionView {
   readonly closedReason?: QuestionClosedReason;
 }
 
-/** 会话产物（回合结束时从沙箱 /workspace/output 收取），runId 与 events.v1 的 run_id 一致。 */
-export interface ArtifactView {
-  readonly id: string;
-  readonly name: string;
-  readonly mimeType?: string;
-  readonly size?: number;
-  readonly url?: string;
-  readonly runId?: string;
+/**
+ * 官方 present 交付的一个文件（方案 7.7.3：网页与桌面同一套）：路径照宿主给的原样（服务端会话是 /sessions/<会话>/...，
+ * 本机会话是用户电脑上的路径），按路径经对话的来源读。
+ */
+export interface DeliverableView {
+  readonly path: string;
   /** 模型交付时写的说明，卡片上显示；没写时显示文件类型 */
   readonly description?: string;
 }
@@ -324,7 +326,6 @@ export interface ChatState {
   readonly internalCalls: readonly string[];
   /** 本页提交回答时后端说已结束的提问；不来自事件流，重算时保留。 */
   readonly expiredQuestions: readonly string[];
-  readonly artifacts: readonly ArtifactView[];
   /** 本会话引用目录，按编号查出处；undefined 表示还没拉到（拉到之前不判断编号是否有效）。 */
   readonly citations?: Readonly<Record<number, CitationSource>>;
   /** 当前未结束的轮次。 */
@@ -379,8 +380,6 @@ export type ChatAction =
   | { readonly type: 'local/failed'; readonly localId: string }
   /** 提交回答时后端说问题已结束（宿主重启过等），把卡片标成失效。 */
   | { readonly type: 'local/question-expired'; readonly questionId: string }
-  /** 从 /artifacts 拉到的本会话产物，整体替换。 */
-  | { readonly type: 'artifacts/loaded'; readonly artifacts: readonly ArtifactView[] }
   /** 从 /citations 拉到的本会话引用目录，整体替换。 */
   | { readonly type: 'citations/loaded'; readonly citations: Readonly<Record<number, CitationSource>> }
   /** 逐字片段（不来自事件日志）。 */

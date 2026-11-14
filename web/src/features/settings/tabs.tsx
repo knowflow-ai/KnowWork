@@ -1,5 +1,5 @@
-/** 个人设置的各个标签页：账号、API Key、我的用量。 */
-import { useState } from 'react';
+/** 个人设置的各个标签页：账号（含已登录的设备）、API Key、我的用量。 */
+import { Fragment, useState } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { Plus } from '@openai/apps-sdk-ui/components/Icon';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -15,6 +15,9 @@ import { Skeleton } from '../../ui/Skeleton';
 import { Table, type Column } from '../../ui/Table';
 import { UsageView } from '../usage/UsageView';
 import { CreateApiKeyDialog } from './ApiKeyDialogs';
+import { DevicesSection } from './DevicesSection';
+import { newWindowUrl } from '../../utils/publicOrigin';
+import { slotItems } from '../../slots/registry';
 
 const API_KEYS = ['me', 'api-keys'] as const;
 const scopeLabel = (scope: string) => API_KEY_SCOPES.find((s) => s.value === scope)?.label ?? scope;
@@ -22,14 +25,17 @@ const scopeLabel = (scope: string) => API_KEY_SCOPES.find((s) => s.value === sco
 export function AccountTab() {
   const me = useMe();
   return (
-    <DescriptionList
-      className="kw-settings-account"
-      items={[
-        { label: '姓名', value: me.data?.name ?? '—' },
-        { label: '邮箱', value: me.data?.email ?? '—' },
-        { label: '工作空间', value: '默认空间' },
-      ]}
-    />
+    <>
+      <DescriptionList
+        className="kw-settings-account"
+        items={[
+          { label: '姓名', value: me.data?.name ?? '—' },
+          { label: '邮箱', value: me.data?.email ?? '—' },
+          { label: '工作空间', value: '默认空间' },
+        ]}
+      />
+      <DevicesSection />
+    </>
   );
 }
 
@@ -93,7 +99,7 @@ export function ApiKeysTab() {
         left={
           <span className="kw-secondary">
             给脚本或其他系统调用 KnowWork 接口用。Key 的身份就是你本人。各接口的参数见
-            <a className="kw-link" href="/api/docs" target="_blank" rel="noreferrer">
+            <a className="kw-link" href={newWindowUrl('/api/docs')} target="_blank" rel="noreferrer">
               接口文档
             </a>
             。
@@ -133,5 +139,14 @@ const MY_GROUPINGS = [
 ] as const;
 
 export function MyUsageTab() {
-  return <UsageView queryKey={['me', 'usage']} fetcher={fetchMyUsage} groupings={MY_GROUPINGS} />;
+  // 扩展在用量明细上面放的一块（例如本月额度，插槽 settings.usage.top）
+  const tops = slotItems('settings.usage.top');
+  return (
+    <>
+      {tops.map((top, index) => (
+        <Fragment key={index}>{top.children}</Fragment>
+      ))}
+      <UsageView queryKey={['me', 'usage']} fetcher={fetchMyUsage} groupings={MY_GROUPINGS} />
+    </>
+  );
 }

@@ -5,6 +5,7 @@
 import pytest
 
 from knowwork_server.channels.types import IncomingMessage
+from knowwork_server.conversations.quota import QuotaExceeded
 from knowwork_server.conversations.replay import Outgoing
 from knowwork_server.db.base import in_workspace
 
@@ -110,6 +111,15 @@ async def test_without_bases_or_membership_the_bot_says_why(env):
     await env.channels.service.handle(message(channel, "第二问"), connection)
     assert connection.replies[-1] == "这个机器人的配置不完整，请联系管理员在渠道里重新保存一次。"
     assert env.conversations.created == []
+
+
+async def test_a_used_up_quota_is_told_in_the_same_words_as_the_web(env):
+    channel = await make_channel(env)
+    words = "本空间本月的额度已用完，12 月 1 日恢复。请联系系统管理员。"
+    env.conversations.send_error = QuotaExceeded(words, scope="workspace")
+    connection = FakeConnection()
+    await env.channels.service.handle(message(channel), connection)
+    assert connection.streams[0].final == words
 
 
 async def test_failed_runs_are_reported(env):

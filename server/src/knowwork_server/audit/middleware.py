@@ -97,7 +97,7 @@ class AuditMiddleware:
         principal = note.principal
         actor_id = principal.user_id if principal is not None else note.actor_id
         credential_type = principal.auth_method if principal is not None else None
-        credential_id = (principal.api_key_id or principal.session_id) if principal is not None else None
+        credential_id = (principal.api_key_id or principal.session_id or principal.grant_id) if principal is not None else None
         detail = {"method": method, "route": route, **_query_detail(scope, spec.query_detail), **note.detail}
         client = scope.get("client")
         return AuditEvent(

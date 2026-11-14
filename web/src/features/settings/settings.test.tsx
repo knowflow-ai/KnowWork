@@ -22,6 +22,7 @@ const KEY = {
 function api(extra = {}) {
   return routeFetch({
     'GET /api/auth/me': jsonResponse(ME),
+    'GET /api/auth/devices': jsonResponse([]),
     'GET /api/auth/api-keys': jsonResponse([KEY, { ...KEY, id: 'k2', name: '旧 Key', revoked: true }]),
     'POST /api/auth/api-keys': jsonResponse(
       { ...KEY, id: 'k3', name: '新脚本', key: 'ak_new_secret_value' },
@@ -68,6 +69,37 @@ describe('SettingsPage', () => {
     const pop = await screen.findByRole('alertdialog', { name: /吊销「报表脚本」/ });
     await userEvent.click(within(pop).getByRole('button', { name: '吊销' }));
     await waitFor(() => expect(calls.find('DELETE', '/api/auth/api-keys/k1')).toHaveLength(1));
+  });
+
+  it('账号页列出已登录的设备，可以让它退出登录', async () => {
+    const calls = api({
+      'GET /api/auth/devices': jsonResponse([
+        {
+          id: 'g1',
+          clientId: 'kw-desktop',
+          clientName: 'KnowWork 桌面端',
+          deviceName: 'Alice 的 MacBook',
+          createdAt: '2026-11-12T01:00:00+00:00',
+          lastUsedAt: '2026-11-12T02:00:00+00:00',
+        },
+      ]),
+      'DELETE /api/auth/devices/*': new Response(null, { status: 204 }),
+    });
+    renderWithApp(<SettingsPage />);
+    expect(await screen.findByRole('heading', { name: '已登录的设备' })).toBeInTheDocument();
+    const row = screen.getByRole('row', { name: /Alice 的 MacBook/ });
+    expect(within(row).getByText('KnowWork 桌面端')).toBeInTheDocument();
+    await userEvent.click(within(row).getByRole('button', { name: '退出登录' }));
+    const pop = await screen.findByRole('alertdialog', { name: /Alice 的 MacBook/ });
+    await userEvent.click(within(pop).getByRole('button', { name: '退出登录' }));
+    await waitFor(() => expect(calls.find('DELETE', '/api/auth/devices/g1')).toHaveLength(1));
+  });
+
+  it('没有在别的设备登录过时，账号页不显示设备一栏', async () => {
+    api({ 'GET /api/auth/devices': jsonResponse([]) });
+    renderWithApp(<SettingsPage />);
+    expect(await screen.findByText('li@corp.cn')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '已登录的设备' })).not.toBeInTheDocument();
   });
 
   it('个人 Key 方式去掉后不再有知识源 Key 标签', async () => {

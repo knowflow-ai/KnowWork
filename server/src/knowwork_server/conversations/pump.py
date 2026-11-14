@@ -16,11 +16,11 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from ..db.base import enter_workspace
@@ -80,6 +80,11 @@ class _Stream:
     projection: ProjectionState = field(default_factory=ProjectionState)
     live: LiveText | None = None  # 正在逐字输出的那一步（不落库，见 live.py）
     shows_thinking: bool = True  # 当前这次模型请求的思考给不给页面看（按请求的模型，见 thinking_visible）
+    # 帧由外面送进来（会话在用户设备上执行，device.py）：不去宿主拉，送帧的请求按顺序一个一个处理
+    pushed: bool = False
+    push_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # 各来源已收到的最后一个游标（根会话、各个子 Agent 的会话各有各的序号）
+    pushed_cursors: dict[str, int] = field(default_factory=dict)
 
 
 class _Exit(Exception):
@@ -103,6 +108,8 @@ class EventPump:
 
     def ensure(self, conversation_id: str, workspace_id: str) -> None:
         stream = self._streams.setdefault(conversation_id, _Stream(conversation_id, workspace_id))
+        if stream.pushed:
+            return  # 宿主上没有这段对话，拉不到东西
         stream.demand += 1
         if stream.active:
             return
@@ -123,6 +130,60 @@ class EventPump:
         """本进程已分配的最大序号；泵还没从库里恢复位置时返回 None。"""
         stream = self._streams.get(conversation_id)
         return stream.seq if stream is not None and stream.loaded else None
+
+    async def push(self, conversation_id: str, workspace_id: str, frames: Sequence[KernelEvent]) -> int | None:
+        """收下外面送来的帧（会话不在我们的宿主上跑，例如在用户设备上执行）：和拉来的帧走同一段——编号、投影、
+        待写、推送、观察者（用量、引用这些照记）。帧的 epoch 是它的来源（根会话、某个子 Agent 的会话），各来源各有各的游标：
+        同一来源里游标不大于已收到的跳过，所以重传不会存两份。返回这批帧的来源已收到的最后一个游标（没有帧时 None），
+        送帧的一方从它之后接着送。"""
+        async with self._pushed_stream(conversation_id, workspace_id) as stream:
+            last = None
+            for frame in frames:
+                if frame.cursor > stream.pushed_cursors.get(frame.epoch, -1):
+                    await self._accept(stream, frame)
+                    stream.pushed_cursors[frame.epoch] = frame.cursor
+                last = stream.pushed_cursors[frame.epoch]
+            return last
+
+    async def push_live(self, conversation_id: str, workspace_id: str, frames: Sequence[object]) -> None:
+        """收下外面送来的逐字片段（和宿主发的临时帧同一种）：只推给正在看的页面，不落库、不占序号。"""
+        async with self._pushed_stream(conversation_id, workspace_id) as stream:
+            for data in frames:
+                await self._accept(stream, KernelEvent(epoch=stream.epoch or "live", cursor=0, kind=LIVE_FRAME_KIND,
+                                                       data=data))
+
+    async def pushed_upto(self, conversation_id: str, workspace_id: str) -> dict[str, int]:
+        """外面送帧的会话各来源已收到哪（业务服务重启过就从库里恢复）；没收到过的来源不在里面。"""
+        async with self._pushed_stream(conversation_id, workspace_id) as stream:
+            return dict(stream.pushed_cursors)
+
+    @contextlib.asynccontextmanager
+    async def _pushed_stream(self, conversation_id: str, workspace_id: str):
+        """取这段对话的流并拿着它的锁：送帧的请求一个一个处理；第一次用先从库里恢复位置。"""
+        stream = await self._pushed(conversation_id, workspace_id)
+        async with stream.push_lock:
+            enter_workspace(workspace_id)
+            if not stream.loaded:
+                await self._load(stream)
+                await self._load_pushed(stream)
+            yield stream
+
+    async def _load_pushed(self, stream: _Stream) -> None:
+        async with self._sessionmaker() as session:
+            rows = (await session.execute(
+                select(RunEvent.host_epoch, func.max(RunEvent.host_cursor))
+                .where(RunEvent.conversation_id == stream.conversation_id).group_by(RunEvent.host_epoch))).all()
+        stream.pushed_cursors = {epoch: cursor for epoch, cursor in rows}
+
+    async def _pushed(self, conversation_id: str, workspace_id: str) -> _Stream:
+        stream = self._streams.get(conversation_id)
+        if stream is not None and stream.pushed:
+            return stream
+        if stream is not None:
+            await self.stop(conversation_id)  # 先前有人当它在宿主上、拉过（不该发生）：停掉，别和送进来的帧抢序号
+        stream = _Stream(conversation_id, workspace_id, pushed=True)
+        self._streams[conversation_id] = stream
+        return stream
 
     async def stop(self, conversation_id: str) -> None:
         """停掉一个会话的泵并忘掉它（删除会话时用）。之后再 ensure 会从库里重新恢复位置。"""
@@ -237,7 +298,7 @@ class EventPump:
             if payload is not None:
                 self._broadcaster.publish_live(stream.conversation_id, payload)
             return
-        if stream.epoch is not None and frame.epoch != stream.epoch:
+        if stream.epoch is not None and frame.epoch != stream.epoch and not stream.pushed:
             await self._host_restarted()
         kind = frame.kind
         if kind == GAP_FRAME_KIND:
@@ -290,6 +351,9 @@ class EventPump:
                 stream.live = None  # 跑完了还没收到结束帧（取消、出错）：不再给新打开的页面补半截
         elif kind == "session/event" and isinstance(data, dict) and data.get("type") == "turn/start":
             stream.running = True
+        elif stream.pushed and kind == "session/event" and isinstance(data, dict) and data.get("type") == "turn/end":
+            # 外面送帧的会话没有宿主的状态帧：一轮结束就算停了，没收尾的半截逐字输出不再补给新打开的页面
+            stream.running, stream.live = False, None
 
     async def _load(self, stream: _Stream) -> None:
         async with self._sessionmaker() as session:

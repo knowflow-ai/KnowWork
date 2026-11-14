@@ -500,3 +500,17 @@
   gap: 8px;
   align-items: center;
 }
+
+/* 账号页「已登录的设备」：在账号信息下面隔开一段 */
+.kw-settings-devices {
+  margin-top: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kw-settings-devices h2 {
+  margin: 0;
+  font-size: var(--font-text-md-size);
+  font-weight: 600;
+}

@@ -92,6 +92,13 @@ async def test_no_sandbox_means_no_fetch_tool(env):
     assert "knowledge_fetch" in tools(env, Sandbox())
 
 
+async def test_fetch_tool_says_it_needs_the_server_sandbox(env):
+    """不在服务端跑的会话（桌面端的本机会话）没有服务端沙箱，签令牌时据此去掉它。"""
+    fetch = tools(env, Sandbox())["knowledge_fetch"]
+    assert fetch.spec.needs_sandbox
+    assert "needsSandbox" not in fetch.spec.describe(), "宿主不需要知道，签令牌时就去掉了"
+
+
 async def test_an_image_from_the_results_goes_into_the_workspace(env, library):
     sandbox = Sandbox()
     found = tools(env, sandbox)

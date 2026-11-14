@@ -381,3 +381,8 @@
   outline: 2px solid color-mix(in srgb, var(--kw-link) 55%, transparent);
   outline-offset: 2px;
 }
+
+/* 调用方读的文件（本机文件）读不出来时，说明下面摆它的操作（「打开」） */
+.kw-preview-problem-actions {
+  padding: 0 20px 20px;
+}

@@ -13,6 +13,7 @@ from knowwork_server.access.service import AccessService
 from knowwork_server.auth.principal import Principal
 from knowwork_server.conversations.models import AnswerFeedback, Conversation, RunSummary
 from knowwork_server.insights import build_insights, build_router
+from knowwork_server.insights import service as insights_service
 from knowwork_server.models.tables import UsageRecord
 
 pytestmark = pytest.mark.anyio
@@ -100,7 +101,11 @@ async def test_the_overview_counts_turns_problems_tools_and_knowledge_bases(env)
         ("builtin.kb1", "制度库", 2, 1, 1, 1), ("kf.ds9", "kf.ds9", 1, 0, 1, 1)], "名字取不到的显示全局 id"
 
 
-async def test_only_owners_and_admins_see_it(env):
+async def test_only_owners_and_admins_see_it(env, monkeypatch):
+    # 测试数据是 10 月下旬的，接口按「今天」往前取：把今天定在 TODAY，结果不随跑测试的日子变（日子一过早的几轮就掉出窗口）
+    real_window = insights_service.window
+    monkeypatch.setattr(insights_service, "window",
+                        lambda days, timezone, today=None: real_window(days, timezone, today or TODAY))
     http, ws = env["http"], env["ws"]
     for user in ("boss", "lead"):
         response = await http.get(f"/api/workspaces/{ws}/insights", params={"days": 30}, headers={"x-user": user})

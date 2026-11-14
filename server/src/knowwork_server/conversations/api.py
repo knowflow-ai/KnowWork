@@ -39,12 +39,23 @@ from .feedback import MAX_NOTE, RUN_ID, Feedback, FeedbackStore
 from .mention_kinds import MentionRejected
 from .mentions import MAX_MENTIONS, Mention, mentioned, turn_mentions
 from .models import Conversation
+from .quota import QuotaExceeded
 from .replay import Outgoing, parse_cursor
-from .scopes import ConversationScopes, ScopeUnavailable
-from .service import MAX_PAGE, AttachmentUnavailable, ConversationNotFound, ConversationService, UnknownModel
+from .scopes import ConversationScopes, ScopeClaim, ScopeRejected, ScopeUnavailable
+from .service import (
+    MAX_PAGE,
+    AttachmentUnavailable,
+    ConversationNotFound,
+    ConversationService,
+    RunsOnDevice,
+    UnknownModel,
+)
 from .tool_credentials import ToolAccessRevoked, ToolCredentialUnavailable
 
 log = logging.getLogger(__name__)
+
+# 按编号一次取多少段对话（list_conversations 的 ids）
+MAX_LOOKUP = 50
 
 APPROVAL_ID = Path(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
 # 提问以工具调用 id 为身份，各家模型的调用 id 都在这个字符集里
@@ -150,10 +161,28 @@ class TurnChoice(BaseModel):
         return mentioned(chosen, mentions)
 
 
+class ScopeClaimBody(BaseModel):
+    """建对话时要挂的东西（scopes.py 的 ScopeClaim）：扩展登记的类型（例如 expert）与那一项的 id。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    id: str = Field(min_length=1, max_length=128)
+
+    def claim(self) -> ScopeClaim:
+        return ScopeClaim(kind=self.kind, id=self.id)
+
+
 class CreateConversation(BaseModel):
     title: str = Field(default="", max_length=200)
     # 第一条消息的选择（可选）：带了就按它绑定运行配置
     first_turn: TurnChoice | None = None
+    # 要挂的东西（可选，例如专家）：建出来就挂上，之后按它的范围与身份来；挂不上不建
+    scope: ScopeClaimBody | None = None
+
+
+def scope_rejected(error: ScopeRejected) -> HTTPException:
+    return HTTPException(status_code=404, detail=str(error) or "要挂的东西不存在或你用不了")
 
 
 class SendMessage(TurnChoice):
@@ -222,6 +251,12 @@ def bearer_matches(authorization: str | None, expected: str) -> bool:
     return hmac.compare_digest(presented, expected.encode("utf-8"))
 
 
+def runs_on_device() -> HTTPException:
+    """在用户设备上执行的对话（device.py）：业务服务不接发消息、停止、审批、回答，页面在那台设备上直接交给它。"""
+    return HTTPException(status_code=409, detail={"code": "runs_on_device",
+                                                  "message": "这段对话在创建它的电脑上执行，请到那台电脑上继续"})
+
+
 def upstream_error(error: Exception, action: str) -> HTTPException:
     if isinstance(error, SessionBusy):
         return HTTPException(status_code=409, detail={"code": "session_busy", "message": "会话正忙，请稍后重试"})
@@ -244,6 +279,27 @@ def credential_error(error: Exception) -> HTTPException:
                                                       "message": "运行配置暂时不可用，请稍后重试"})
     return HTTPException(status_code=503, detail={"code": "tool_credentials_unavailable",
                                                   "message": "工具服务暂时不可用，请稍后重试"})
+
+
+# 准备这一轮时会拒的：云端发消息与设备上执行的对话开始一轮（扩展的路由）是同一套准备，错误也同一套说法
+TURN_REJECTIONS = (UnknownAnswerMode, MentionRejected, AnswerModeUnavailable, ScopeUnavailable, AttachmentUnavailable,
+                   UnknownModel, ProfileUnavailable, QuotaExceeded)
+
+
+def turn_rejected(error: Exception) -> HTTPException:
+    if isinstance(error, QuotaExceeded):
+        return HTTPException(status_code=429, detail=error.detail())
+    if isinstance(error, UnknownAnswerMode):
+        return HTTPException(status_code=422, detail="不认识这个回答方式，或现在不能用")
+    if isinstance(error, MentionRejected | AttachmentUnavailable):
+        return HTTPException(status_code=422 if isinstance(error, MentionRejected) else 409, detail=str(error))
+    if isinstance(error, AnswerModeUnavailable):
+        return HTTPException(status_code=503, detail="这个回答方式暂时不可用，换一种试试")
+    if isinstance(error, ScopeUnavailable):
+        return HTTPException(status_code=503, detail="这段对话的设置暂时取不到，请稍后再试")
+    if isinstance(error, UnknownModel):
+        return HTTPException(status_code=422, detail="这个模型不存在或已停用，换一个试试")
+    return credential_error(error)
 
 
 class FeedbackBody(BaseModel):
@@ -290,6 +346,8 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         if who.channel_id is not None:
             if embedded is None:
                 raise HTTPException(status_code=403, detail="网页嵌入没有打开")
+            if body.scope is not None:  # 嵌入页的范围由渠道定，访客不能自己挂
+                raise HTTPException(status_code=403, detail="网页嵌入不能另挂范围")
             try:
                 await embedded.admit_new(who, client_ip(request))
             except Throttled as error:
@@ -300,7 +358,10 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
                                                 selection=selection,
                                                 answer_mode=body.first_turn.answer_mode if body.first_turn else None,
                                                 channel_id=who.channel_id,
-                                                source=EMBED_SOURCE if who.channel_id else "")
+                                                source=EMBED_SOURCE if who.channel_id else "",
+                                                scope=body.scope.claim() if body.scope else None)
+        except ScopeRejected as error:
+            raise scope_rejected(error) from error
         except CREDENTIAL_ERRORS as error:
             raise credential_error(error) from error
         except HOST_ERRORS as error:
@@ -311,10 +372,18 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
 
     @router.get("")
     async def list_conversations(who: Who, limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 30,
-                                 before: datetime | None = None):
-        """列出我的对话"""
+                                 before: datetime | None = None,
+                                 ids: Annotated[str | None, Query(max_length=MAX_LOOKUP * 64)] = None):
+        """列出我的对话
+        ids（逗号分隔，最多 50 个）：只要这几段，一次取齐（侧栏按本机工作区分组时，列表里还没翻到的那些），这时不分页。"""
         if who.channel_id is not None:
             return {"items": [conversation_view(c) for c in await embedded_mine(who)], "next": None}
+        if ids is not None:
+            wanted = tuple(dict.fromkeys(item for item in ids.split(",") if item))
+            if len(wanted) > MAX_LOOKUP:
+                raise HTTPException(status_code=422, detail=f"一次最多取 {MAX_LOOKUP} 段对话")
+            found = await service.list_by_ids(workspace_id=who.workspace_id, user_id=who.user_id, ids=wanted)
+            return {"items": [conversation_view(c) for c in found], "next": None}
         page = await service.list_page(workspace_id=who.workspace_id, user_id=who.user_id, limit=limit, before=before)
         return {"items": [conversation_view(c) for c in page.items],
                 "next": page.next.isoformat() if page.next else None}
@@ -332,6 +401,12 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         """对话改名"""
         conversation = await owned(conversation_id, who)
         return conversation_view(await service.rename(conversation, body.title))
+
+    @router.get("/{conversation_id}")
+    async def get(conversation_id: str, who: Who):
+        """一段对话的基本信息
+        标题与来源。对话页按来源决定操作交给谁：在用户设备上执行的对话（来源 device）只能在那台设备上继续。"""
+        return conversation_view(await owned(conversation_id, who))
 
     @router.get("/{conversation_id}/scope")
     async def scope(conversation_id: str, who: Who):
@@ -365,18 +440,10 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         try:
             message_id = await service.send(conversation, body.turn(), body.selection(),
                                             tuple(body.attachments or ()))
-        except UnknownAnswerMode as error:
-            raise HTTPException(status_code=422, detail="不认识这个回答方式，或现在不能用") from error
-        except MentionRejected as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-        except AnswerModeUnavailable as error:
-            raise HTTPException(status_code=503, detail="这个回答方式暂时不可用，换一种试试") from error
-        except ScopeUnavailable as error:
-            raise HTTPException(status_code=503, detail="这段对话的设置暂时取不到，请稍后再试") from error
-        except AttachmentUnavailable as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        except UnknownModel as error:
-            raise HTTPException(status_code=422, detail="这个模型不存在或已停用，换一个试试") from error
+        except RunsOnDevice as error:
+            raise runs_on_device() from error
+        except TURN_REJECTIONS as error:
+            raise turn_rejected(error) from error
         except ModelUnknown as error:
             raise HTTPException(status_code=503, detail="这个模型暂时用不了，请稍后再试或换一个") from error
         except CREDENTIAL_ERRORS as error:
@@ -421,6 +488,8 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         conversation = await owned(conversation_id, who)
         try:
             result = await service.cancel(conversation)
+        except RunsOnDevice as error:
+            raise runs_on_device() from error
         except HOST_ERRORS as error:
             raise upstream_error(error, "cancel") from error
         return {"settled": result.settled, "status": result.status}
@@ -442,6 +511,8 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         annotate(allow=body.allow, scope=body.scope)
         try:
             await service.decide(conversation, approval_id, body.allow, remember=body.allow and body.scope == "session")
+        except RunsOnDevice as error:
+            raise runs_on_device() from error
         except KernelError as error:
             if error.status == 404:
                 raise HTTPException(status_code=404, detail="审批不存在或已结束") from error
@@ -468,6 +539,8 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         annotate(answers=len(body.answers))  # 回答内容可能敏感，审计只记题数
         try:
             await service.answer(conversation, question_id, body.contract())
+        except RunsOnDevice as error:
+            raise runs_on_device() from error
         except CREDENTIAL_ERRORS as error:
             raise credential_error(error) from error
         except KernelError as error:

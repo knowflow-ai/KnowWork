@@ -3,6 +3,7 @@
 
 什么时候推：业务服务启动、本进程改了厂商或模型（catalog.on_change）、宿主重启（换了 epoch）、宿主说不认识某个模型时。
 推的总是当时的整份清单；后台触发的几次合成一次，推的过程中又改了就推完再推一次。后台推失败只记日志，等下次触发。
+用户设备上的本机宿主推不过去：它说不认识某个模型时，设备来取同一份清单（host_models）交给它，再发一次（同「宿主说不认识」）。
 """
 
 import asyncio
@@ -11,11 +12,17 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
+from ..kernel.contract import HostModel
 from .schemas import ChatModel
 
 log = logging.getLogger(__name__)
 
 Push = Callable[[tuple[ChatModel, ...]], Awaitable[None]]
+
+
+def host_models_of(chats: tuple[ChatModel, ...]) -> tuple[HostModel, ...]:
+    """推给宿主的样子（别名、名字、能不能看图）：服务端宿主与用户设备上的本机宿主收同一份（kernel/wire.py 的 models_body）。"""
+    return tuple(HostModel(id=c.alias, name=c.name, vision=c.vision) for c in chats)
 
 
 class ChatModelSource(Protocol):
@@ -36,6 +43,10 @@ class HostModelSync:
         """推一次，等推完；失败照常抛出，由调用方决定（发消息前重推要知道成没成）。"""
         async with self._lock:
             await self._send(await self._catalog.chat_models())
+
+    async def host_models(self) -> tuple[HostModel, ...]:
+        """此刻要给宿主的整份清单（设备上的本机宿主说不认识某个模型时，经设备来取）。"""
+        return host_models_of(await self._catalog.chat_models())
 
     async def choosable(self, alias: str) -> bool:
         """输入框里能不能选这个模型（启用的对话模型）。"""

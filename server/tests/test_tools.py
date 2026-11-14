@@ -13,7 +13,7 @@ import knowwork_server.tools.models  # noqa: F401  注册表结构
 from knowwork_server.db.base import Base, make_engine, make_sessionmaker
 from knowwork_server.kernel.tokens import TokenError, TokenSigner, derive_key
 from knowwork_server.tools import build_tool_service
-from knowwork_server.tools.api import build_internal_router
+from knowwork_server.tools.api import PUBLIC_PREFIX, build_internal_router
 from knowwork_server.tools.models import ActionReceipt, ActionResultBlob
 from knowwork_server.tools.registry import KW_NOW, BuiltinTool, StaticToolRegistry, ToolFailure, ToolOutput, ToolSpec
 from knowwork_server.tools.tokens import ToolTokenSigner
@@ -123,6 +123,29 @@ async def test_list_returns_session_tools(env):
     assert "guidance" not in tools["kw_note"]
     assert tools["kw_note"]["inputSchema"] == NOTE_SCHEMA
     assert (await env["client"].get(f"{PREFIX}/list")).status_code == 401
+
+
+async def test_sessions_without_a_server_sandbox_do_not_get_sandbox_tools(env):
+    """会话不在服务端跑（桌面端的本机会话）：没有服务端沙箱，要往沙箱里放文件的工具不签进令牌，执行时也就用不了。"""
+    put = BuiltinTool(ToolSpec("kw_put", "放进工作区", NOTE_SCHEMA, needs_sandbox=True), Counting())
+    service = build_tool_service(MASTER, env["sessionmaker"], registry=StaticToolRegistry.of([KW_NOW, put]),
+                                 token_ttl_seconds=600)
+    local = service.verify(await service.issue_session_token("ws1", "s-local", user_id="u1", sandbox=False))
+    assert local.tools == frozenset({"kw_now"})
+    server = service.verify(await service.issue_session_token("ws1", "s-server", user_id="u1"))
+    assert server.tools == frozenset({"kw_now", "kw_put"})
+    assert service.token_ttl_seconds == 600
+
+
+async def test_the_same_router_can_be_mounted_at_a_public_prefix(env):
+    """原生应用的本机宿主从公开入口回调：同一套接口、同一种令牌，只是路径前缀不同。"""
+    app = FastAPI()
+    app.include_router(build_internal_router(env["service"], path_prefix=PUBLIC_PREFIX))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://public") as public:
+        auth = {"authorization": f"Bearer {env['token']}"}
+        assert (await public.get(f"{PUBLIC_PREFIX}/list", headers=auth)).status_code == 200
+        assert (await public.get(f"{PREFIX}/list", headers=auth)).status_code == 404
+        assert (await public.get(f"{PUBLIC_PREFIX}/list")).status_code == 401
 
 
 async def test_execute_writes_receipt_and_replays_without_rerunning(env):

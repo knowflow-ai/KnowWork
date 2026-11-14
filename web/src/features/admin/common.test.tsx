@@ -39,7 +39,17 @@ describe('路由', () => {
     const routes = buildRoutes();
     const top = routes.map((r) => r.path);
     // 网页嵌入页与分享链接在外壳之外、不要登录（features/embed）
-    expect(top).toEqual(['/login', '/invite', '/setup', '/embed/:key', '/s/:key', '/', '/admin']);
+    // /oauth/authorize：原生应用（桌面端）经浏览器登录时的授权确认页，在两套外壳之外
+    expect(top).toEqual([
+      '/login',
+      '/invite',
+      '/setup',
+      '/embed/:key',
+      '/s/:key',
+      '/oauth/authorize',
+      '/',
+      '/admin',
+    ]);
     const children = (path: string) =>
       routes.find((r) => r.path === path)?.children?.map((r) => r.path ?? 'index') ?? [];
     const app = children('/');

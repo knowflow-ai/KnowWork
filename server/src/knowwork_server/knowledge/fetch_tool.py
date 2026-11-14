@@ -127,4 +127,4 @@ def fetch_tool(service: KnowledgeService, citations: CitationStore, sandbox: Ses
                     "含义）时先用它取图，再用 read_image 读返回的 path；图用检索或阅读结果里的图 id（如 IMG:2:0），"
                     f"图要连同周围文字一起看或跨页时取页图（给 source_id、doc_ref 和页码，一次最多 {MAX_FETCH_PAGES} 页）；"
                     "要算表格里的数时取原文件交给 Python。",
-        FETCH_SCHEMA, "read", concurrent=True), handler)
+        FETCH_SCHEMA, "read", concurrent=True, needs_sandbox=True), handler)

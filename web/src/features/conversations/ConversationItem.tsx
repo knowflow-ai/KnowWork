@@ -5,7 +5,12 @@ import { DotsHorizontal, EditPencil, Trash } from '@openai/apps-sdk-ui/component
 import { Input } from '@openai/apps-sdk-ui/components/Input';
 import { Menu } from '@openai/apps-sdk-ui/components/Menu';
 import { NavLink, useMatch, useNavigate } from 'react-router';
-import { MAX_TITLE_LENGTH, validateTitle, type ConversationSummary } from '../../api/conversations';
+import {
+  DEVICE_SOURCE,
+  MAX_TITLE_LENGTH,
+  validateTitle,
+  type ConversationSummary,
+} from '../../api/conversations';
 import { readableError } from '../../api/http';
 import { confirm } from '../../ui/confirmStore';
 import { Dialog, DialogActions } from '../../ui/Dialog';
@@ -59,10 +64,22 @@ function RenameDialog({
   );
 }
 
-/** IM 机器人里私聊来的对话：标题后面标上是哪个平台（IM 认人，会话记在本人名下） */
-const SOURCES: Readonly<Record<string, string>> = { wecom: '企业微信', feishu: '飞书', dingtalk: '钉钉' };
+/** 标题后面的来源标记：IM 机器人里私聊来的对话标平台（IM 认人，会话记在本人名下）；在用户设备上执行的标「本机」 */
+const SOURCES: Readonly<Record<string, string>> = {
+  wecom: '企业微信',
+  feishu: '飞书',
+  dingtalk: '钉钉',
+  [DEVICE_SOURCE]: '本机',
+};
 
-export function ConversationItem({ item }: { readonly item: ConversationSummary }) {
+/** showSource：标题后面写来源小字（「本机」「企业微信」）；分组里已经说明了来源的（例如桌面端的工作区）不写 */
+export function ConversationItem({
+  item,
+  showSource = true,
+}: {
+  readonly item: ConversationSummary;
+  readonly showSource?: boolean;
+}) {
   const navigate = useNavigate();
   const remove = useDeleteConversation();
   const [renaming, setRenaming] = useState(false);
@@ -90,7 +107,9 @@ export function ConversationItem({ item }: { readonly item: ConversationSummary 
     <div className="kw-conversation-item">
       <NavLink to={to} className={linkClass} title={title}>
         <span className="kw-ellipsis">{title}</span>
-        {SOURCES[item.source] ? <span className="kw-conversation-source">{SOURCES[item.source]}</span> : null}
+        {showSource && SOURCES[item.source] ? (
+          <span className="kw-conversation-source">{SOURCES[item.source]}</span>
+        ) : null}
       </NavLink>
       <Menu>
         <Menu.Trigger>

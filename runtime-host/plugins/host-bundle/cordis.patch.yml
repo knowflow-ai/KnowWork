@@ -1,4 +1,6 @@
-# KnowWork 宿主配置层，叠在官方 @deepseek-ai/dsh-sdk-minimal 之上。
+# KnowWork 服务端宿主的环境层，叠在官方 @deepseek-ai/dsh-sdk-minimal 与通用那份（@knowwork/dsh-host 的 common.patch.yml，
+# 回答方式、知识库目录、会话策略、工具桥等，用户设备上的本机宿主也挂它）之上。这里只放服务端执行环境才有的：HTTP 驱动、
+# 会话容器里的文件与命令、审批与提问交给业务服务、多用户适配层。
 # 原则：只停用和插入，不改官方插件。
 # 宿主不在本机执行命令、不读写本机文件：代码执行只在业务服务调度的断网容器沙箱里进行。
 # 做法是官方留的扩展点：把 ctx.subprocess 与 ctx.fs 换成落到会话容器的远程实现，
@@ -42,24 +44,7 @@
   config:
     readImage: true
 
-# 模型一律经业务服务的模型网关（OpenAI 兼容），宿主不直连任何模型厂商
-- id: llm-deepseek
-  disabled: true
-# 只往发给 DeepSeek 官方 API 的请求里加字段的三个插件：字段注册表、会话日志上传（dsh_session_log）、插件包清单。
-# 直连已停，它们不起作用；一并停掉，也免得以后有人打开直连时把会话日志传给 DeepSeek
-- id: deepseek-llm-api-extensions
-  disabled: true
-- id: session-log-deepseek
-  disabled: true
-- id: plugin-package-inventory-deepseek
-  disabled: true
-
-# 官方 MCP 资源工具：挂了官方 MCP 客户端才有内容。我们的 MCP 走业务服务的工具桥，它一直是空的
-- id: mcp-resources
-  disabled: true
-# 官方会话标题服务：没有插件用它，对话标题由业务服务管
-- id: session-title
-  disabled: true
+# 模型直连、往 DeepSeek 发东西的插件、MCP 资源、会话标题这几项停用是产品决定，两种宿主一样，在通用那份（common.patch.yml）
 
 # 人设（官方写法：替换 system-prompt 的整段配置，保留的字段照抄官方最小配置）。
 # 官方默认人设是英文的 software engineer assistant：模型会按编程助手自居。可用环境变量覆盖。
@@ -74,6 +59,17 @@
       process.env.KNOWWORK_PERSONA ?? '你是 KnowWork 企业智能助手，帮助员工查资料、处理文档与表格、完成工作任务。'
     personaSuffix: >-
       调用工具前，先用一两句话告诉用户你要做什么；换个查法或重试前，说明原因和要改什么。说明要简短自然，不要提工具名、参数或内部协议。
+
+# 通用那份里的运行时上下文：服务端宿主上官方工作目录是宿主机路径，对模型没用还泄露服务器路径，让那段变空
+- id: knowwork-prompt-context
+  config:
+    hideWorkingDirectory: true
+
+# 通用那份里的自带技能（Office、示意图）：命令在会话容器里跑，Office 技能的资源目录是沙箱镜像里的 /opt/knowwork
+# （镜像把 skills/resources/office 拷到 /opt/knowwork/office）；原生 LibreOffice、pandoc、docx-js、pptxgenjs 都装在镜像里
+- id: knowwork-bundled-skills
+  config:
+    resourceRoot: /opt/knowwork
 
 - insert:
     # 官方会话检查点：模型请求前、工具执行前、每步边界先落盘。崩溃后从存储恢复，
@@ -138,14 +134,6 @@
     - id: tool-present
       name: '@deepseek-ai/dsh-tool-present'
 
-    # KnowWork 自带的 Office 技能（Word、Excel、PPT，照搬 KnowFlow）：原生 LibreOffice、pandoc、docx-js、pptxgenjs
-    # 与 /opt/knowwork/office 下的脚本，都在沙箱镜像里。不挂官方 dsh-skill-office（理由见 bundled-skills.mjs）。
-    - id: knowwork-bundled-skills
-      name: '@knowwork/dsh-host/bundled-skills'
-
-    - id: knowwork-prompt-context
-      name: '@knowwork/dsh-host/prompt-context'
-
     # 官方时钟：模型每走一步前（同一会话一分钟内只记一次）在消息末尾追加当前时间和距上一条消息过了多久，
     # 模型不用调工具也知道今天几号、隔了多久。时区取用户消息来源上的 clientTimeZone（官方网页客户端也这么带），
     # 由 knowwork-http-host 写入：业务服务带来的用户时区，没带时用部署时区（TZ）。消息上没有时区时它会让模型去问用户。
@@ -155,19 +143,6 @@
       name: '@deepseek-ai/dsh-time-context'
       config:
         refreshIntervalMs: 60000
-
-    # 回答方式：每条消息带「智能体 / 快速问答」，会话中途可切换；快速问答在提问后加一段指令，那一步只给模型看
-    # 声明了快速问答的业务工具（官方条件工具 + restrict，见 answer-mode.mjs）
-    - id: knowwork-answer-mode
-      name: '@knowwork/dsh-host/answer-mode'
-
-    # 知识库目录：照官方 dsh-tool-skill 的会话技能目录，只列名字与简介，字段与标签由 knowledge_bases 按需取
-    - id: knowwork-knowledge-catalog
-      name: '@knowwork/dsh-host/knowledge-catalog'
-
-    # 扩展补的每轮上下文（例如记忆）：常驻的一段照知识库目录的办法发，只这一轮的一段紧跟在提问后面
-    - id: knowwork-turn-context
-      name: '@knowwork/dsh-host/turn-context'
 
     # 官方凭据服务：网关短期令牌经 ctx.credentials 轮换，下一次请求即生效，无需重启。
     # 存储文件放在宿主私有目录（容器里挂 tmpfs），宿主不开放 shell 与文件工具，Agent 读不到。
@@ -278,34 +253,6 @@
 
     - id: tool-skill
       name: '@deepseek-ai/dsh-tool-skill'
-
-    - id: knowwork-session-policy
-      name: '@knowwork/dsh-host/session-policy'
-
-    # 本会话技能清单、按需拉取技能内容、加载技能后解锁它认领的专业工具。
-    - id: knowwork-skill-provider
-      name: '@knowwork/dsh-host/skill-provider'
-
-    - id: knowwork-subagent-policy
-      name: '@knowwork/dsh-host/subagent-policy'
-
-    # 业务工具经工具桥回调业务服务内部端口；地址与超时取环境变量。
-    - id: knowwork-tool-bridge
-      name: '@knowwork/dsh-host/tool-bridge'
-
-    - id: knowwork-skill-gate
-      name: '@knowwork/dsh-host/skill-gate'
-
-    - id: knowwork-approval-broker
-      name: '@knowwork/dsh-host/approval-broker'
-      config:
-        timeoutMs: !!js Number(process.env.KNOWWORK_APPROVAL_TIMEOUT_MS ?? 1800000)
-
-    # 提问转给业务服务，用户在对话里作答；等待上限与 tool-ask-user 的默认期限一致
-    - id: knowwork-question-broker
-      name: '@knowwork/dsh-host/question-broker'
-      config:
-        timeoutMs: !!js Number(process.env.KNOWWORK_QUESTION_TIMEOUT_MS ?? 1800000)
 
     - id: knowwork-http-host
       name: '@knowwork/dsh-host/http-host'

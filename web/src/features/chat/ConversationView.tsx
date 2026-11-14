@@ -2,8 +2,8 @@
  * 一个会话的视图：消息列表、运行详情与底部输入框。对话页（ChatPage）和嵌在别的页面里的会话（EmbeddedChat）共用；
  * 给了 answerMode 就按它发消息、不显示回答方式下拉。
  */
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   warmConversation,
   type AnswerMode,
@@ -13,15 +13,20 @@ import {
 import type { SentAttachment } from '../../api/attachments';
 import type { Mention } from '../../api/mentions';
 import { ownRun, turnOfRun } from '../../api/debug';
+import { readableError } from '../../api/http';
 import { useEmbedMode } from '../embed/embedMode';
 import { toast } from '../../ui/toastStore';
 import { CONVERSATIONS_KEY } from '../conversations/queries';
 import { Composer } from './components/Composer';
+import { FileLinks } from './components/Markdown';
 import { MessageList } from './components/MessageList';
 import { selectLastUserMessage, selectRunState } from './events/selectors';
 import { useConversation, type FirstMessage, type TurnExtras } from './hooks/useConversation';
+import { useFileLinks } from './hooks/useFileLinks';
+import { PlaceLabel } from './components/PlaceSelect';
 import { useFeedback } from './hooks/useFeedback';
 import { resolveMentions } from './mentions/resolve';
+import { SERVER_SOURCE, type ConversationSource } from './sources';
 
 // 运行详情（运行调试视图）不常用，点开时才加载
 const RunInspector = lazy(() => import('../debug/RunInspector'));
@@ -56,6 +61,9 @@ interface Props {
   readonly scoped?: boolean;
   /** 输入框里显示对话模型下拉（聊天页给，嵌在别的页面里的会话不给） */
   readonly chooseModel?: boolean;
+  /** 这段对话在哪执行（sources.ts）：默认业务服务。别处执行的，发消息、停止、审批交给来源，输入框按来源的 limits 置灰，
+   *  输入框下面写明在哪执行；读的都是业务服务，反馈、运行详情照常有 */
+  readonly source?: ConversationSource;
 }
 
 function ConnectionNotice({ state, message }: { readonly state: string; readonly message?: string }) {
@@ -82,13 +90,41 @@ export function ConversationView({
   intro,
   scoped = false,
   chooseModel = false,
+  source = SERVER_SOURCE,
 }: Props) {
+  const server = source.server;
   const feedback = useFeedback(conversationId);
   const client = useQueryClient();
+  // 操作交给来源（云端交业务服务，本机交这台电脑），能不能在这里继续也问它；读都走业务服务
+  const actions = source.actions;
+  // @ 工作文件夹里的文件：只有执行的一方看得到文件夹时有（本机对话）
+  const listReferences = source.files?.references;
+  const references = useMemo(
+    () => (listReferences ? (query: string) => listReferences(conversationId, query) : undefined),
+    [listReferences, conversationId],
+  );
+  const sourceDrop = source.dropFiles;
+  const dropFiles = useMemo(
+    () => (sourceDrop ? (files: readonly File[]) => sourceDrop(files, conversationId) : undefined),
+    [sourceDrop, conversationId],
+  );
+  const continuing = useQuery({
+    queryKey: ['conversations', conversationId, 'continue', source.id],
+    queryFn: () => actions.check(conversationId),
+    staleTime: Infinity,
+  });
+  // 问不到能不能在这里继续（例如这台电脑上的本机执行环境没起来）：照不能继续处理，写出原因，不让人发出去才报错
+  const blocked = continuing.isError
+    ? readableError(continuing.error, '这里暂时不能继续这段对话，请稍后再试')
+    : (continuing.data ?? null);
+  // 回答里的文件链接：在业务服务上执行的直接读服务端；别处执行的，确认了这里能继续（别的电脑上看本机会话不行）才能点开
+  const here = server || (continuing.isSuccess && continuing.data === null);
+  const fileLinks = useFileLinks(conversationId, here ? source.files : undefined);
   const { state, connection, connectionMessage, send, cancel, decide, answer } = useConversation(
     conversationId,
     firstMessage,
     answerMode,
+    actions,
   );
   const running = selectRunState(state) !== 'idle';
   const wasRunning = useRef(false);
@@ -100,14 +136,17 @@ export function ConversationView({
   // 加了附件就预热（宿主上的对话、沙箱容器空闲半小时会被回收），一分钟内只预热一次；结果不用管
   const warmedAt = useRef(0);
   const warm = useCallback(() => {
+    if (!server) return;
     const now = Date.now();
     if (now - warmedAt.current < WARM_INTERVAL_MS) return;
     warmedAt.current = now;
     void warmConversation(conversationId).catch(() => undefined);
-  }, [conversationId]);
+  }, [conversationId, server]);
   const onInspect = useCallback((runId: string) => setInspecting(turnOfRun(runId)), []);
   // 网页嵌入页不看运行详情（embedMode.ts）
-  const { inspect: canInspect } = useEmbedMode();
+  const embedMode = useEmbedMode();
+  const embedInspect = embedMode.inspect;
+  const canInspect = embedInspect;
 
   const deliver = useCallback(
     async (text: string, mode: SendMode, extras: TurnExtras = {}) => {
@@ -180,17 +219,22 @@ export function ConversationView({
       <div className="kw-chat-scroll">
         <ConnectionNotice state={connection} message={connectionMessage} />
         {opening ? intro(ask) : null}
-        <MessageList
-          state={state}
-          onDecide={onDecide}
-          onAnswer={onAnswer}
-          onRegenerate={onRegenerate}
-          onDropConditions={onDropConditions}
-          onInspect={canInspect ? onInspect : undefined}
-          feedback={feedback}
-          onAsk={ask}
-        />
+        <FileLinks opener={fileLinks.opener}>
+          <MessageList
+            state={state}
+            onDecide={onDecide}
+            rememberable={actions.remembersApprovals === true}
+            onAnswer={onAnswer}
+            // 这里不能继续这段对话（在别的电脑上执行）：只能看，不给重新回答
+            onRegenerate={blocked === null ? onRegenerate : undefined}
+            onDropConditions={blocked === null ? onDropConditions : undefined}
+            onInspect={canInspect ? onInspect : undefined}
+            feedback={feedback}
+            onAsk={ask}
+          />
+        </FileLinks>
       </div>
+      {fileLinks.preview}
       {inspecting !== undefined ? (
         <Suspense fallback={null}>
           <RunInspector
@@ -207,12 +251,25 @@ export function ConversationView({
           onSend={onSend}
           onStop={cancel}
           initialMentions={firstMessage?.mentions}
-          disabled={connection === 'failed'}
+          disabled={connection === 'failed' || blocked !== null}
           answerMode={answerMode}
-          placeholder={running ? undefined : placeholder}
-          footnote={footnote}
+          limits={source.limits}
+          below={
+            server ? undefined : (
+              <div className="kw-place-row">
+                <PlaceLabel source={source} />
+                {source.Controls && blocked === null ? (
+                  <source.Controls conversationId={conversationId} />
+                ) : null}
+              </div>
+            )
+          }
+          placeholder={blocked ?? (running ? undefined : placeholder)}
+          footnote={footnote ?? source.footnote}
           conversationId={conversationId}
           mentionScope={scoped ? { conversationId } : undefined}
+          fileReferences={references}
+          dropFiles={blocked === null ? dropFiles : undefined}
           onAttach={warm}
           chooseModel={chooseModel}
         />

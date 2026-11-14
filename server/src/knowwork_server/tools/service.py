@@ -80,14 +80,20 @@ class ToolService:
     async def discard_session(self, session_id: str) -> None:
         await self._receipts.discard_session(session_id)
 
+    @property
+    def token_ttl_seconds(self) -> int:
+        return self._ttl
+
     async def issue_session_token(self, workspace_id: str, session_id: str, *, user_id: str,
-                                  only: frozenset[str] | None = None) -> str:
+                                  only: frozenset[str] | None = None, sandbox: bool = True) -> str:
         """会话打开（或续期）时签发；可用工具名取注册表当时的判定。user_id 是会话所属用户。
 
         only 不为空时再与它取交集：受限子会话（固定工作流的 agent 步骤）只拿到该步声明的工具。
+        sandbox 为假时会话没有服务端沙箱（桌面端的本机会话），去掉要用它的工具（ToolSpec.needs_sandbox）。
         """
         specs = await self.available_specs(workspace_id, session_id, user_id=user_id)
-        names = [spec.name for spec in specs if only is None or spec.name in only]
+        names = [spec.name for spec in specs
+                 if (only is None or spec.name in only) and (sandbox or not spec.needs_sandbox)]
         return self._signer.issue(workspace_id=workspace_id, session_id=session_id, user_id=user_id,
                                   tools=names, ttl_seconds=self._ttl)
 

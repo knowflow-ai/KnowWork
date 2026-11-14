@@ -21,9 +21,12 @@ import type { FeedbackControls } from '../hooks/useFeedback';
 interface Props {
   readonly state: ChatState;
   readonly onDecide: (approvalId: string, allow: boolean, remember?: boolean) => Promise<void>;
+  /** 审批卡片上给不给「本会话内同类操作不再询问」（见 sources.ts 的 remembersApprovals），默认给 */
+  readonly rememberable?: boolean;
   /** 返回是否提交成功（失败已由页面提示）。 */
   readonly onAnswer: (questionId: string, answers: readonly QuestionAnswer[]) => Promise<boolean>;
-  readonly onRegenerate: () => void;
+  /** 重新生成最后一轮；不给就不显示（例如这段对话在别的电脑上执行，这里只能看） */
+  readonly onRegenerate?: () => void;
   /** 撤掉最近一轮回答上方的检索条件、重新回答（参数是这一轮要去掉的全部条件）。 */
   readonly onDropConditions?: (dropped: readonly string[]) => void;
   /** 打开某一轮的运行详情（参数是 events.v1 的 run_id）。 */
@@ -37,6 +40,7 @@ interface Props {
 export function MessageList({
   state,
   onDecide,
+  rememberable = true,
   onAnswer,
   onRegenerate,
   onDropConditions,
@@ -85,12 +89,9 @@ export function MessageList({
             run={run}
             approvals={selectRunApprovals(state, entry.runId)}
             questions={selectRunQuestions(state, entry.runId)}
-            artifacts={state.artifacts.filter(
-              // 没记下轮次的产物（旧数据）摆在最后一轮下面，免得看不到
-              (a) => a.runId === entry.runId || (a.runId === undefined && entry.runId === lastRunId),
-            )}
             sources={state.citations}
             onDecide={onDecide}
+            rememberable={rememberable}
             onAnswer={onAnswer}
             onRegenerate={entry.runId === lastRunId ? onRegenerate : undefined}
             onDropConditions={entry.runId === lastRunId && !busy ? onDropConditions : undefined}
@@ -121,6 +122,7 @@ export function MessageList({
           <ApprovalCard
             key={approval.id}
             approval={approval}
+            rememberable={rememberable}
             onDecide={(allow, remember) => onDecide(approval.id, allow, remember)}
           />
         ))}

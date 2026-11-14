@@ -346,3 +346,55 @@ async def test_restarted_pump_recalls_the_model_from_stored_header(sessionmaker,
     assert asked == ["qwen"], "拉起时从库里取这段对话在用的模型"
     assert not any(p.get("reasoning") for p in pushed), "关着显示的模型重启后照样不推思考"
     assert any(p.get("text") == "好的" for p in pushed)
+
+
+def pushed(cursor: int, type_: str, data=None):
+    return session_event(cursor, type_, data, epoch="device")
+
+
+async def test_pushed_frames_go_through_the_same_pipeline(sessionmaker, conversation_id):
+    """会话不在我们的宿主上跑（在用户设备上执行）：帧由外面送进来，编号、投影、落库、推送和拉来的帧一样；
+    重传的跳过；这种会话不去宿主拉；审批取自会话日志。"""
+    kernel = FakeKernel()
+    async with Harness(kernel, sessionmaker) as h:
+        listener = h.broadcaster.listen(conversation_id)
+        async with listener as heard:
+            first = [pushed(0, "turn/start", {"turn": 1}),
+                     pushed(1, "approval/asked", {"id": "ap1", "toolName": "bash", "callId": "c1"})]
+            assert await h.pump.push(conversation_id, "default", first) == 1
+            again = [first[1], pushed(2, "turn/end", {"turn": 1, "reason": {"kind": "completed"}})]
+            assert await h.pump.push(conversation_id, "default", again) == 2
+            got = await heard.next_batch()
+        h.pump.ensure(conversation_id, "default")
+        rows = await h.rows(conversation_id)
+    assert kernel.subscribe_calls == [], "外面送帧的会话不去宿主拉"
+    assert [(r.seq, r.host_cursor) for r in rows] == [(1, 0), (2, 1), (3, 2)]
+    assert [(u["type"], u["kind"]) for r in rows for u in r.ui] == [
+        ("run.started", None), ("item.started", "approval"), ("run.waiting", None), ("run.completed", None)]
+    assert got, "落库前就推给了正在看的页面"
+
+
+async def test_pushing_resumes_where_the_database_left_off(sessionmaker, conversation_id):
+    async with Harness(FakeKernel(), sessionmaker) as h:
+        assert await h.pump.pushed_upto(conversation_id, "default") == {}
+        await h.pump.push(conversation_id, "default", [pushed(0, "turn/start", {"turn": 1}), pushed(1, "x/y")])
+    async with Harness(FakeKernel(), sessionmaker) as h:  # 业务服务重启过
+        assert await h.pump.pushed_upto(conversation_id, "default") == {"device": 1}
+        assert await h.pump.push(conversation_id, "default", [pushed(1, "x/y"), pushed(2, "x/z")]) == 2
+        rows = await h.rows(conversation_id)
+    assert [(r.seq, r.host_cursor) for r in rows] == [(1, 0), (2, 1), (3, 2)]
+
+
+async def test_each_pushed_source_keeps_its_own_position(sessionmaker, conversation_id):
+    """一段对话的帧可以来自几个来源（根会话、各个子 Agent 的会话），各有各的序号：互不当成重传，重启后各自接上。"""
+    child = [session_event(0, "turn/start", {"turn": 1}, epoch="device:kid"),
+             session_event(1, "turn/end", {"turn": 1}, epoch="device:kid")]
+    async with Harness(FakeKernel(), sessionmaker) as h:
+        await h.pump.push(conversation_id, "default", [pushed(0, "turn/start", {"turn": 1}), pushed(1, "x/y")])
+        assert await h.pump.push(conversation_id, "default", child) == 1, "子会话的 0、1 不是根会话的重传"
+        assert await h.pump.push(conversation_id, "default", child) == 1
+    async with Harness(FakeKernel(), sessionmaker) as h:
+        assert await h.pump.pushed_upto(conversation_id, "default") == {"device": 1, "device:kid": 1}
+        rows = await h.rows(conversation_id)
+    assert [(r.seq, r.host_epoch, r.host_cursor) for r in rows] == [
+        (1, "device", 0), (2, "device", 1), (3, "device:kid", 0), (4, "device:kid", 1)]

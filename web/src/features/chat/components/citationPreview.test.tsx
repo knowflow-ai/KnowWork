@@ -6,6 +6,7 @@ import { register } from '../../../slots/registry';
 import { Citation } from './Citation';
 import { AnswerSources } from './AnswerSources';
 import { citedFiles } from './citations';
+import { serverFile } from '../../preview/serverFile';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -21,7 +22,7 @@ describe('引用打开原文预览', () => {
   it('注册了引用预览器的知识源：在预览抽屉里打开并标出引用的那段，出处气泡随之收起', async () => {
     routeFetch({ 'GET /files/d1': new Response('第一章\n报销要在 30 天内提交\n第二章') });
     const resolve = vi.fn(async (docRef: string) =>
-      docRef === 'kb1/d1' ? { name: '差旅办法.txt', url: '/files/d1' } : null,
+      docRef === 'kb1/d1' ? serverFile({ name: '差旅办法.txt', url: '/files/d1' }) : null,
     );
     register('citation.preview', { sourceId: 'demo', resolve });
     renderWithApp(<Citation index={1} source={SOURCE} />);
@@ -58,7 +59,7 @@ describe('引用打开原文预览', () => {
     routeFetch({ 'GET /files/d1': new Response('第一章\n报销要在 30 天内提交\n第二章') });
     register('citation.preview', {
       sourceId: 'demo',
-      resolve: async () => ({ name: '差旅办法.txt', url: '/files/d1' }),
+      resolve: async () => serverFile({ name: '差旅办法.txt', url: '/files/d1' }),
     });
     const sources = {
       1: { ...SOURCE, page: 2 },

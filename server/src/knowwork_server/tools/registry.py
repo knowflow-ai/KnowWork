@@ -68,7 +68,9 @@ class ToolSpec:
     - tailor：按会话裁剪交给宿主的那份描述（可选），例如去掉这个会话用不上的参数。DSH 的工具参数注册时就定了，
       没有按步改参数的扩展点；官方自己的做法是装配时定（bash 只在有沙箱执行器时才带 sandbox_permissions）。
       宿主每个会话开始时拉一次清单，就在那时定，整个会话不变，不动模型服务的前缀缓存。只影响交给宿主的描述，
-      执行时仍按完整的 input_schema 校验：会话中途情况变了，宿主手里那份描述照样能用。
+      执行时仍按完整的 input_schema 校验：会话中途情况变了，宿主手里那份描述照样能用；
+    - needs_sandbox：工具要用服务端的会话沙箱（例如把文件放进工作区）。不在服务端跑的会话（桌面端的本机会话，工作区是
+      用户电脑上的文件夹）没有服务端沙箱，签令牌时去掉它（ToolService.issue_session_token 的 sandbox=False）；不交给宿主。
     """
 
     name: str
@@ -79,6 +81,7 @@ class ToolSpec:
     guidance: str | None = None
     concurrent: bool = False
     answer_modes: frozenset[str] = AGENT_ONLY
+    needs_sandbox: bool = False
     tailor: "Tailor | None" = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:

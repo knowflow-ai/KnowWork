@@ -2,12 +2,17 @@
  * KnowWork 自带的技能（plugins/dsh-host/skills/<名字>/SKILL.md），交给 DSH 官方技能注册表。
  *
  * 现在是三个 Office 技能（Word、Excel、PPT），照搬自 KnowFlow（knowflow/server/deep_agent/skills/office-*），
- * 和画示意图的 diagram（对话界面把 mermaid 代码块画成图，原来常驻在系统提示里，2026-11-09 改成要用时才加载）。
- * Office 技能用原生 LibreOffice、pandoc、docx-js、pptxgenjs 与 /opt/knowwork/office 下的辅助脚本——这些都装在沙箱镜像里
- * （deploy/docker/sandbox.Dockerfile）。不用 DSH 官方的 dsh-skill-office：它绑定的 LibreOffice Kit 在 Linux 上只有
- * WASM 引擎，又慢又吃内存；它也没有修订模式、PPT 设计与必做质检这些内容。
+ * 画示意图的 diagram（对话界面把 mermaid 代码块画成图，原来常驻在系统提示里，2026-11-09 改成要用时才加载），
+ * 和读文档的 read-document（官方 read 只读纯文本，PDF、Office 文件经辅助脚本 office/extract_text.py 转成文字再读）。
+ * Office 技能用原生 LibreOffice、pandoc、docx-js、pptxgenjs 与辅助脚本（skills/resources/office，照官方技能包的写法：
+ * 正文里写相对路径 `office/xxx.py`，官方加载技能时告诉模型资源目录，按它解析）。不用 DSH 官方的 dsh-skill-office：它绑定的
+ * LibreOffice Kit 在 Linux 上只有 WASM 引擎，又慢又吃内存；它也没有修订模式、PPT 设计与必做质检这些内容。
  *
- * 技能按目录发现，新增一个自带技能只要加目录。正文按需读；资源目录报容器里的脚本目录，不把宿主机路径告诉模型。
+ * 资源目录是执行环境的差别（同官方 dsh-skill-office 的 assetRoot 配置）：本机宿主上就是插件包里的 skills/resources；
+ * 服务端宿主上命令在会话容器里跑，环境层配成沙箱镜像里的 /opt/knowwork（镜像把同一份脚本拷到 /opt/knowwork/office，
+ * 业务服务的格式转换与重算也用它），不把宿主机路径告诉模型。工具链在服务端装在沙箱镜像里，本机用这台电脑上装的。
+ *
+ * 技能按目录发现（有 SKILL.md 的子目录），新增一个自带技能只要加目录。正文按需读。
  * 候选的形状、等级、调用权限与官方随包技能一致。
  *
  * 按会话注册（同 skill-provider：用官方 createScope 给 agent 铸一个作用域再 registerProvider），不注册到全局层：
@@ -17,7 +22,7 @@
 
 import { readFileSync, readdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { BUNDLED_SKILL_RANK } from '@deepseek-ai/dsh-skill'
 import { createScope } from '@deepseek-ai/dsh-scope'
@@ -28,9 +33,10 @@ export const name = 'knowwork-bundled-skills'
 export const inject = ['skills']
 
 export const SKILL_ROOT = fileURLToPath(new URL('../skills/', import.meta.url))
-// Office 技能的辅助脚本在沙箱镜像里的目录；diagram 没有资源，不报目录（报了模型加载技能时会看到一个用不着的路径）
-const RESOURCE_BASE = '/opt/knowwork/office'
-const OFFICE = 'office-'
+// 自带技能共用的资源目录（Office 辅助脚本在它下面的 office/）：本机宿主默认就用这一份，服务端宿主由环境层改配置
+export const RESOURCE_ROOT = join(SKILL_ROOT, 'resources')
+// 用到辅助脚本的技能（Office 技能和读文档）才报资源目录；diagram 没有资源，不报（报了模型加载技能时会看到一个用不着的路径）
+const withHelpers = skillName => skillName.startsWith('office-') || skillName === 'read-document'
 
 /** 拆出 frontmatter 的 description 与正文（frontmatter 只用单行的 name、description）。 */
 export function parseSkill(raw, path) {
@@ -70,7 +76,6 @@ export function bundledCandidates() {
       provider: 'knowwork-bundled',
       source: 'bundled',
       rank: BUNDLED_SKILL_RANK,
-      ...(skillName.startsWith(OFFICE) ? { resourceBase: { kind: 'directory', path: RESOURCE_BASE } } : {}),
       locator,
     })
   }))
@@ -81,6 +86,12 @@ export function bundledCandidates() {
 export function bundledFor(root, catalog = root?.skillCatalog ?? []) {
   const hidden = new Set([...(root?.bundledOff ?? []), ...catalog.map(skill => skill.name)])
   return bundledCandidates().filter(candidate => !hidden.has(candidate.name))
+}
+
+/** 候选带上这个执行环境里的资源目录（用到辅助脚本的才有）。 */
+function withResources(candidates, resourceRoot) {
+  const resourceBase = Object.freeze({ kind: 'directory', path: resourceRoot.split(sep).join('/') })
+  return candidates.map(candidate => (withHelpers(candidate.name) ? { ...candidate, resourceBase } : candidate))
 }
 
 function providerOf(candidates) {
@@ -95,8 +106,13 @@ function providerOf(candidates) {
   }
 }
 
-/** @param {import('@deepseek-ai/cordis').Context} ctx */
-export function apply(ctx) {
+/**
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {{ resourceRoot?: string }} [config] 自带技能的资源目录在执行环境里的位置（绝对路径），不给用插件包里的
+ */
+export function apply(ctx, config = {}) {
+  const resourceRoot = config?.resourceRoot ?? RESOURCE_ROOT
+  if (!isAbsolute(resourceRoot) && !resourceRoot.startsWith('/')) throw new Error('bundled-skills: resourceRoot must be absolute')
   /** agent → 为它铸的作用域（释放时撤销提供方）。 */
   const scopes = new WeakMap()
 
@@ -105,7 +121,7 @@ export function apply(ctx) {
     // 拉清单失败时 skill-provider 让会话打开失败；这里什么都不注册（失败关闭）
     const catalog = root === undefined ? [] : await ensureCatalog(root).catch(() => undefined)
     if (catalog === undefined) return
-    const candidates = bundledFor(root, catalog)
+    const candidates = withResources(bundledFor(root, catalog), resourceRoot)
     if (candidates.length === 0) return
     const scope = createScope(ctx, agent)
     scopes.set(agent, scope)

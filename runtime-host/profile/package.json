@@ -6,6 +6,7 @@
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-sdk-minimal",
+        "@knowwork/dsh-host",
         "@knowwork/dsh-host-bundle"
       ]
     }
