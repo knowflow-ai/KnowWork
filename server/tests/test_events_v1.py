@@ -456,3 +456,51 @@ def test_mention_block_becomes_chips_not_text():
         {"type": "document", "id": "kb1/d1", "name": "差旅办法.pdf", "base": "builtin.kb1", "base_name": "制度库"},
         {"type": "mcp", "id": "context7", "name": "Context7"}, {"type": "skill", "id": "weekly-report", "name": "周报"},
         {"type": "extension", "id": "p1", "name": "销售库", "kind": "data_source", "label": "数据源"}]
+
+
+def _todo_reminder(turn=1):
+    return session("user/message", {"id": "u-tidy", "role": "user", "source": {"kind": "knowwork-todo-check", "turn": turn},
+                                    "content": [{"type": "text", "text": "<system-reminder>待办里还有没标完成的</system-reminder>"}]})
+
+
+def _text(turn, step, message_id, text):
+    return session("assistant/message", {"turn": turn, "step": step,
+                                         "message": {"id": message_id, "content": [{"type": "text", "text": text}]}})
+
+
+def test_tidying_up_todos_after_the_reminder_does_not_replace_the_answer():
+    """一轮正常结束前待办没勾完，宿主提醒模型更新待办（宿主的 todo-check）：提醒之后那次 todo_write 不算步骤、
+    收尾的一句话不算回答，原来的回答保持不动；待办照新写的那份更新。下一轮恢复正常。"""
+    s, _ = one(S0, "session/event", session("turn/start", {"turn": 1}))
+    s, answer = one(s, "session/event", _text(1, 3, "m3", "PPT 已经生成好了"))
+    assert answer[0]["data"]["text"] == "PPT 已经生成好了"
+    s, injected = one(s, "session/event", _todo_reminder())
+    assert injected == []
+    s, call = one(s, "session/event", session("tool/call", {"turn": 1, "step": 4, "callId": "c9", "name": "todo_write",
+                                                            "arguments": {}}))
+    assert call == []
+    s, todos = one(s, "session/event", session("todo/write", {"todos": [{"content": "交付文件", "status": "completed"}]}))
+    assert todos[0]["kind"] == "todo" and todos[0]["data"]["items"][0]["status"] == "completed"
+    done = {"turn": 1, "message": {"toolCallId": "c9", "isError": False, "content": [{"type": "text", "text": "Updated"}]}}
+    s, result = one(s, "session/event", session("tool/result", done))
+    assert result == []
+    s, closing = one(s, "session/event", _text(1, 5, "m5", "待办已更新"))
+    assert closing == []
+
+    s, _ = one(s, "session/event", session("turn/start", {"turn": 2}))
+    s, call = one(s, "session/event", session("tool/call", {"turn": 2, "step": 1, "callId": "c10", "name": "todo_write",
+                                                            "arguments": {}}))
+    assert call[0]["item_id"] == "c10"
+    s, text = one(s, "session/event", _text(2, 2, "m6", "第二轮的回答"))
+    assert text[0]["data"]["text"] == "第二轮的回答"
+
+
+def test_real_work_after_the_todo_reminder_still_shows():
+    """提醒之后模型不只是更新待办，还接着做了事（比如补交漏掉的文件）：那些步骤和最后的回答照常展示。"""
+    s, _ = one(S0, "session/event", session("turn/start", {"turn": 1}))
+    s, _ = one(s, "session/event", _todo_reminder())
+    s, call = one(s, "session/event", session("tool/call", {"turn": 1, "step": 4, "callId": "c11", "name": "present",
+                                                            "arguments": {}}))
+    assert call[0]["item_id"] == "c11"
+    s, text = one(s, "session/event", _text(1, 5, "m7", "漏交的文件补上了"))
+    assert text[0]["data"]["text"] == "漏交的文件补上了"

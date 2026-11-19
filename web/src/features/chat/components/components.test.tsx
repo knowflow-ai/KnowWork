@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '../../../test/user';
 import { jsonResponse, renderWithApp, routeFetch } from '../../../test/render';
 import { register } from '../../../slots/registry';
@@ -7,6 +7,7 @@ import { ApprovalCard } from './ApprovalCard';
 import { AnswerActions } from './AnswerActions';
 import { AssistantTurn } from './AssistantTurn';
 import { Composer } from './Composer';
+import { useComposerInbox } from '../editRequest';
 import { DeliverableCards, FileCard } from './FileCard';
 import { FileLinks, Markdown } from './Markdown';
 import { ProcessSummary } from './ProcessSummary';
@@ -281,6 +282,29 @@ describe('Composer', () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledWith('你好', 'followup', [], []));
     await waitFor(() => expect(input).toHaveValue(''));
     expect(screen.getByText('回答可能有误，重要结论请点开出处核对')).toBeInTheDocument();
+  });
+
+  it('编辑器交来的一句：输入框空着就直接发；有草稿就接在后面等用户发；别的对话的不认', async () => {
+    const onSend = vi.fn(async () => undefined);
+    renderWithApp(<Composer running={false} onSend={onSend} conversationId="c_1" />);
+    const input = screen.getByRole('textbox');
+    act(() => useComposerInbox.getState().offer('c_2', '别的对话', true));
+    expect(onSend).not.toHaveBeenCalled();
+    act(() => useComposerInbox.getState().offer('c_1', '在编辑器里修改 @a.docx：改简洁些', true));
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith('在编辑器里修改 @a.docx：改简洁些', 'followup', [], []),
+    );
+    expect(input).toHaveValue('');
+
+    await userEvent.type(input, '先看第二节');
+    act(() => useComposerInbox.getState().offer('c_1', '在编辑器里修改 @a.docx：统一语气', true));
+    await waitFor(() => expect(input).toHaveValue('先看第二节\n\n在编辑器里修改 @a.docx：统一语气'));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    act(() => useComposerInbox.getState().offer('c_1', '再补一句', false));
+    await waitFor(() =>
+      expect(input).toHaveValue('先看第二节\n\n在编辑器里修改 @a.docx：统一语气\n\n再补一句'),
+    );
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 
   it('运行中 Ctrl+回车 补充到当前任务，并能停止', async () => {

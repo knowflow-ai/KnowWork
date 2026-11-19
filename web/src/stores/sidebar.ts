@@ -22,17 +22,31 @@ function save(collapsed: boolean): void {
 }
 
 interface SidebarState {
+  /** 用户自己选的（记在本浏览器里） */
   readonly collapsed: boolean;
+  /**
+   * 页面暂时收起（照 ChatGPT Canvas：文档并排打开在对话右边时收起侧栏给两栏腾地方），不改用户的选择，关掉文档就恢复。
+   * 显示时按 collapsed 或 folded 算
+   */
+  readonly folded: boolean;
   readonly toggle: () => void;
+  readonly fold: (folded: boolean) => void;
 }
 
 export const useSidebar = create<SidebarState>((set, get) => ({
   collapsed: load(),
+  folded: false,
   toggle: () => {
+    // 暂时收起时点展开：只取消这次暂时收起，用户自己的选择不动
+    if (get().folded) {
+      set({ folded: false });
+      return;
+    }
     const collapsed = !get().collapsed;
     save(collapsed);
     set({ collapsed });
   },
+  fold: (folded) => set({ folded }),
 }));
 
 /** 照 ChatGPT 的快捷键：Ctrl/⌘ + Shift + S 收起或展开侧栏。 */

@@ -22,12 +22,15 @@
     "./question-broker": "./src/question-broker.mjs",
     "./session-policy": "./src/session-policy.mjs",
     "./skill-gate": "./src/skill-gate.mjs",
+    "./output-limit": "./src/output-limit.mjs",
+    "./todo-check": "./src/todo-check.mjs",
     "./skill-provider": "./src/skill-provider.mjs",
     "./subagent-policy": "./src/subagent-policy.mjs",
     "./tool-bridge": "./src/tool-bridge.mjs",
     "./test-tools": "./src/test-tools.mjs",
     "./owners": "./src/multi-user/owners.mjs",
     "./schedule": "./src/multi-user/schedule.mjs",
-    "./state": "./src/state.mjs"
+    "./state": "./src/state.mjs",
+    "./workpath": "./src/workpath.mjs"
   }
 }

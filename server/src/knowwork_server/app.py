@@ -14,6 +14,7 @@ import httpx
 from fastapi import APIRouter, Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from starlette.routing import Route
+from starlette.types import ASGIApp
 
 from .access.api import build_router as access_router
 from .access.deps import require_system_admin
@@ -58,6 +59,7 @@ from .conversations.service import ConversationService
 from .conversations.summaries import RunSummaries
 from .conversations.tool_credentials import ToolCredentials, require_membership
 from .conversations.turn_context import TurnContextHook
+from .conversations.turn_state import TurnStateHook
 from .conversations.writer import BatchWriter
 from .db.base import Base, make_engine, make_held_engine, make_sessionmaker, make_workspace_sessionmaker
 from .db.migrate import migrate_for_settings
@@ -68,6 +70,7 @@ from .docparse import DocumentParsers
 from .docparse import build_router as docparse_router
 from .documents import ConversationFiles, PreviewService
 from .documents import build_router as documents_router
+from .documents.editing import ConversationFileEditing
 from .extensions import ApiContext, Extensions, installed_extensions
 from .extensions.contract import DeviceTokenIssuer
 from .gateway.credential_rotation import CredentialRotator
@@ -106,6 +109,8 @@ from .models.api import build_router as models_router
 from .models.host_sync import HostModelSync, host_models_of
 from .models.observer import UsageObserver
 from .models.schemas import ChatModel
+from .office import OfficeRuntime, author_names, build_office
+from .office.config import OfficeSettings
 from .ops.health import build_router as health_router
 from .ops.health import database_check, host_check, host_dsh_version
 from .principals import (
@@ -182,6 +187,7 @@ class Runtime:
     blobs: BlobStore
     audit: AuditModule
     sandbox: SandboxModule | None  # 没打开 Docker 沙箱时为空：宿主的执行与文件工具进每个会话的 deny
+    office: OfficeRuntime | None  # 一人一个 Office 容器；没配置时为空
     attachments: Attachments
     artifacts: Artifacts
     previews: PreviewService
@@ -224,6 +230,8 @@ class Runtime:
     extensions: Extensions
     extension_routers: tuple[APIRouter, ...]
     extension_internal_routers: tuple[APIRouter, ...] = ()
+    # 扩展提供的编辑器（setup_editor，挂在编辑器端口上的整个 ASGI 应用）；没有就不开编辑器端口
+    editor_app: ASGIApp | None = None
     # 跟着别的进程（worker 里的组织同步、删知识库的任务）改的权限规则重新加载；见 access/core.py 的 follow_changes
     policy_stop: asyncio.Event = field(default_factory=asyncio.Event)
     policy_follower: asyncio.Task | None = None
@@ -254,6 +262,8 @@ class Runtime:
         self.audit.start()
         if self.sandbox is not None:
             self.sandbox.start()
+        if self.office is not None:
+            self.office.start()
         await self.rotator.start()
         await self.host_models.push_quietly()  # 宿主的模型凭据就绪后推可选模型；宿主暂时连不上，等它重启或发消息时再推
         self.tool_credentials.start()
@@ -295,6 +305,8 @@ class Runtime:
                 await extension.aclose()
             except Exception:  # 一个扩展关不干净不影响别的资源释放
                 log.exception("closing extension %s failed", extension.name)
+        if self.office is not None:  # 扩展的在线编辑也用它：扩展关完再关
+            await self.office.aclose()
         if self.held_engine is not None:
             await self.held_engine.dispose()
         await self.engine.dispose()
@@ -416,6 +428,10 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     # 每轮汇总：回合开始、结束时各写一次；检索记录从它知道这一轮是第几轮，回合结束时把知识这一项事实交回给它
     summaries = RunSummaries(scoped, _owner_lookup(scoped))
     sandbox = build_sandbox(SandboxSettings())
+
+    # 一人一个 Office 容器：扩展的在线编辑用它，业务服务里只建这一份（格式转换仍在会话沙箱里）。
+    # 修订作者名建容器时才查；身份模块在下面才建好，到那时早已就绪
+    office = build_office(OfficeSettings(), author_of=author_names(lambda ids: identity.users.get_many(ids)))
     # 知识工具要会话沙箱放取来的图与文件（knowledge_fetch）；没开 Docker 沙箱时不提供这个工具
     knowledge = build_knowledge(master_key, global_sessionmaker, access, turn_scope=turn_scope,
                                 current_turn=summaries.current_turn,
@@ -518,6 +534,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
 
     # 扩展给每轮补的上下文（例如记忆）：扩展装配时登记提供者，没登记时这一轮什么都不带
     turn_context = TurnContextHook()
+    turn_state = TurnStateHook()  # 扩展给宿主插件的每轮状态（conversations/turn_state.py）
     # 回答方式：内置智能体与快速问答，扩展装配时可以再登记
     answer_modes = AnswerModes()
     # 用量配额：扩展装配时登记判定，没登记时不限制
@@ -525,7 +542,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     service = ConversationService(kernel, scoped, pump, feed, on_host_restart=host_restarted, models=host_models,
                                   refresh_model_credential=rotator.ensure_fresh, profiles=profiles,
                                   grants=grants, attachments=TurnAttachments(attachments.service),
-                                  knowledge_catalog=knowledge_catalog, turn_context=turn_context,
+                                  knowledge_catalog=knowledge_catalog, turn_context=turn_context, turn_state=turn_state,
                                   answer_modes=answer_modes, mention_kinds=mention_kinds, scopes=scopes,
                                   quota=quota, tool_credentials=tool_credentials, skill_credentials=skill_credentials,
                                   erasers=(erase_knowledge, erase_receipts,
@@ -552,6 +569,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          models=ModelClient(models.catalog, routed_http),
                          stores_for=lambda namespace: namespaced_stores(settings, namespace),
                          knowledge_sources=knowledge.provided, tools=provided_tools, turn_context=turn_context,
+                         turn_state=turn_state,
                          answer_modes=answer_modes, results=results, mentions=mention_kinds, conversation_scopes=scopes,
                          links=links, profiles=identity.users.get_many, on_turn_ended=summaries.contribute,
                          platform_skills=skills.platform, enterprise_mcp=mcp.enterprise, accounts=identity.accounts,
@@ -564,13 +582,17 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          oauth_device_id=identity.oauth.device_id,
                          oauth_devices=identity.oauth.list_devices,
                          im_identities=im_identities,
+                         office=office,
                          background=LocalBackground(service, member=lambda user_id, workspace_id:
                                                     access.check(user_id, workspace_id, WORKSPACE_RESOURCE, Action.USE)),
                          embed_guard=embed_guard.check, channel_targets=channel_targets,
                          quota=quota, usage=models.recorder,
+                         file_editing=ConversationFileEditing(service, conversation_files, artifacts.collector,
+                                                              session_sandbox, settle=artifact_observer.settle),
+                         verify_host_token=tools.verify,
                          principal=lambda scope: scoped_principal(identity, scope) if scope else bound_principal(identity))
-    extensions, extension_routers, extension_internal = _setup_extensions(extensions or installed_extensions(),
-                                                                          context)
+    extensions, extension_routers, extension_internal, editor_app = _setup_extensions(
+        extensions or installed_extensions(), context)
     if identity.oauth_clients.registered():
         # 扩展登记了原生应用（桌面端等）：它的本机宿主经令牌交换拿模型令牌，和服务端宿主同一种（平台级、受众 model）。
         # 没登记时不登记这个受众，换令牌接口也认不出任何客户端
@@ -590,7 +612,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     return Runtime(settings=settings, kernel=kernel, signer=signer, writer=writer, broadcaster=broadcaster,
                    pump=pump, service=service, rotator=rotator, host_models=host_models,
                    tool_credentials=tool_credentials,
-                   skill_credentials=skill_credentials, skills=skills, blobs=blobs, audit=audit, sandbox=sandbox, attachments=attachments,
+                   skill_credentials=skill_credentials, skills=skills, blobs=blobs, audit=audit, sandbox=sandbox, office=office, attachments=attachments,
                    artifacts=artifacts, previews=previews, conversation_files=conversation_files,
                    artifact_observer=artifact_observer,
                    citation_observer=citation_observer, summaries=summaries, skill_runs=skill_runs,
@@ -612,7 +634,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                    engine=engine, held_engine=held_engine, upstream=upstream, routed_http=routed_http,
                    host_http=host_http,
                    sso_http=sso_http, extensions=extensions, extension_routers=extension_routers,
-                   extension_internal_routers=extension_internal)
+                   extension_internal_routers=extension_internal, editor_app=editor_app)
 
 
 Routers = tuple[APIRouter, ...]
@@ -632,23 +654,32 @@ def _device_tokens(tools: ToolService, skills: SkillDelivery) -> dict[str, Devic
     return {TOOLS_AUDIENCE: issue_tools, SKILLS_AUDIENCE: issue_skills}
 
 
-def _setup_extensions(extensions: Extensions, context: ApiContext) -> tuple[Extensions, Routers, Routers]:
-    """逐个装配启用的扩展：公开路由，以及可选的内部端口路由（setup_internal）。某个扩展装配报错只去掉它并记下
-    原因（两种路由都不挂，不留半截），开源功能与别的扩展照常。"""
+def _setup_extensions(extensions: Extensions,
+                      context: ApiContext) -> tuple[Extensions, Routers, Routers, ASGIApp | None]:
+    """逐个装配启用的扩展：公开路由，以及可选的内部端口路由（setup_internal）、编辑器（setup_editor）。某个扩展
+    装配报错只去掉它并记下原因（哪样都不挂，不留半截），开源功能与别的扩展照常。编辑器只认第一个提供的扩展。"""
     public: list[APIRouter] = []
     internal: list[APIRouter] = []
+    editor: ASGIApp | None = None
     for extension in extensions.active:
         try:
             mine = tuple(extension.setup_api(context))
             setup_internal = getattr(extension, "setup_internal", None)
             hidden = tuple(setup_internal(context)) if setup_internal is not None else ()
+            setup_editor = getattr(extension, "setup_editor", None)
+            own_editor = setup_editor(context) if setup_editor is not None else None
         except Exception:
             log.exception("setting up extension %s failed", extension.name)
             extensions = extensions.without(extension, "扩展装配失败，详情见业务服务日志")
             continue
         public.extend(mine)
         internal.extend(hidden)
-    return extensions, tuple(public), tuple(internal)
+        if own_editor is not None:
+            if editor is None:
+                editor = own_editor
+            else:
+                log.warning("extension %s also provides an editor; only the first one is served", extension.name)
+    return extensions, tuple(public), tuple(internal), editor
 
 
 def create_public_app(runtime: Runtime) -> FastAPI:

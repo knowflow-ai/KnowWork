@@ -5,6 +5,15 @@
 const KEY = 'kw.embed.visitor';
 const PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 
+/**
+ * 32 位十六进制随机串。不用 crypto.randomUUID：它只在安全上下文（HTTPS、localhost）里有，
+ * 私有化常见的纯 HTTP 地址打开公开访问页会直接报错；getRandomValues 不受这个限制。
+ */
+function randomHex(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export function visitorId(): string {
   try {
     const saved = window.localStorage.getItem(KEY);
@@ -12,7 +21,7 @@ export function visitorId(): string {
   } catch {
     // 存储被禁：下面生成一个只在这一页有效的
   }
-  const id = crypto.randomUUID().replaceAll('-', '');
+  const id = randomHex();
   try {
     window.localStorage.setItem(KEY, id);
   } catch {

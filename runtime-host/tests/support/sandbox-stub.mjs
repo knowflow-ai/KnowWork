@@ -1,6 +1,7 @@
 /**
  * 业务服务沙箱内部接口的测试桩（/internal/extensions/sandbox/{exec,stat,read,list,write,delete}）。
- * 每个令牌对应一个会话；`/sessions/<会话>` 对到一个本地临时目录（扮演容器的 /workspace），exec 真的在那里跑。
+ * 每个令牌对应一个会话；请求里的路径是工作区路径（相对写法，根是空串，同真实业务服务的 workpath.decode），
+ * 对到一个本地临时目录（扮演容器的 /workspace），exec 真的在那里跑。
  * 只为验证宿主侧的远程执行器接线，容器本身的行为由业务服务的测试负责。
  *
  * 给了 ssh.containers（会话 → 容器名）时另提供流式执行的两个接口，照业务服务的做法落到真实容器：
@@ -52,10 +53,10 @@ export async function startSandboxStub({ sessionsByToken, ssh }) {
     return workspaces.get(sessionId)
   }
   const local = (sessionId, path) => {
-    const root = `/sessions/${sessionId}`
-    const normal = posix.normalize(path)
-    if (normal !== root && !normal.startsWith(`${root}/`)) return undefined
-    return join(workspaceOf(sessionId), normal.slice(root.length))
+    if (typeof path !== 'string' || path.startsWith('/')) return undefined
+    const normal = path === '' ? '' : posix.normalize(path).replace(/\/+$/, '')
+    if (normal === '..' || normal.startsWith('../')) return undefined
+    return join(workspaceOf(sessionId), normal === '.' ? '' : normal)
   }
   const statOf = (file, follow) => {
     let info

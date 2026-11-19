@@ -1,6 +1,8 @@
 """容器生命周期：开关、姿态参数、按名字与 label 找回、停了拉起、配置变更重建、不收养、销毁、新建钩子。"""
 
 import asyncio
+import io
+import tarfile
 
 import pytest
 
@@ -281,3 +283,19 @@ async def test_start_triggers_one_background_sweep_and_close_is_clean(make):
     assert "list" in fake.calls
     await module.aclose()
     assert fake.closed
+
+
+async def test_read_file_takes_one_file_out_of_a_container(make):
+    """给没有脚本环境的容器用的取文件（Docker 取档接口）：放进去的取得回，不存在是 None，超过上限报错。"""
+    fake, module = make()
+    container = fake.add_container("other", {"io.knowwork.component": "office"})
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        member = tarfile.TarInfo("a.docx")
+        member.size = 5
+        tar.addfile(member, io.BytesIO(b"hello"))
+    await module.engine.put_archive(container["Id"], "/work", buffer.getvalue())
+    assert await module.engine.read_file(container["Id"], "/work/a.docx", max_bytes=10) == b"hello"
+    assert await module.engine.read_file(container["Id"], "/work/missing.docx", max_bytes=10) is None
+    with pytest.raises(SandboxError, match="太大"):
+        await module.engine.read_file(container["Id"], "/work/a.docx", max_bytes=4)

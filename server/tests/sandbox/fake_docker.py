@@ -75,6 +75,7 @@ class FakeDocker:
     images: set[str] = field(default_factory=lambda: {"kw-sandbox:1"})
     pulls: list[str] = field(default_factory=list)
     markers: dict[str, str] = field(default_factory=dict)  # 容器 Id -> 活动标记 mtime
+    files: dict[tuple[str, str], bytes] = field(default_factory=dict)  # (容器 Id, 路径) -> 内容：put_archive 放进去的
     fail_all: int | None = None  # 设了就让所有调用返回这个状态码
     connect_error: bool = False  # 设了就让所有调用连不上
     fail: dict[str, Exception] = field(default_factory=dict)  # 方法名 -> 这次要抛的异常
@@ -171,8 +172,18 @@ class FakeApi:
     def inspect_container(self, ref: str) -> dict[str, Any]:
         self._fake.guard("inspect")
         c = self._fake.by_ref(ref)
-        return {"Id": c["Id"], "Config": {"Labels": c["Labels"]},
-                "State": {"Status": c["Status"], "Running": c["Status"] == "running"}}
+        options = c.get("Options") or {}
+        info: dict[str, Any] = {"Id": c["Id"], "Name": "/" + c["Name"],
+                                "Config": {"Labels": c["Labels"], "Env": list(options.get("environment") or [])},
+                                "State": {"Status": c["Status"], "Running": c["Status"] == "running"},
+                                "NetworkSettings": {"Networks": {}, "Ports": {}}}
+        network = options.get("network")
+        if network:
+            info["NetworkSettings"]["Networks"][network] = {"IPAddress": "172.30.0." + c["Id"][-2:].lstrip("0")}
+        for port, binding in (options.get("ports") or {}).items():
+            host = binding[0] if isinstance(binding, tuple) else "127.0.0.1"
+            info["NetworkSettings"]["Ports"][port] = [{"HostIp": host, "HostPort": str(40000 + int(port.split("/")[0]) % 1000)}]
+        return info
 
     def containers(self, all: bool, filters: dict[str, list[str]]) -> list[dict[str, Any]]:
         self._fake.guard("list")
@@ -196,13 +207,26 @@ class FakeApi:
 
     def put_archive(self, container_id: str, path: str, data: bytes) -> bool:
         self._fake.guard("put_archive")
-        self._fake.by_ref(container_id)
+        container = self._fake.by_ref(container_id)
         self._fake.archives.append((container_id, path, data))
+        with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+            for member in tar.getmembers():
+                extracted = tar.extractfile(member) if member.isfile() else None
+                if extracted is not None:
+                    self._fake.files[(container["Id"], f"{path.rstrip('/')}/{member.name}")] = extracted.read()
         return True
 
     def get_archive(self, container_id: str, path: str) -> tuple[Any, dict[str, Any]]:
         self._fake.guard("get_archive")
         container = self._fake.by_ref(container_id)
+        stored = self._fake.files.get((container["Id"], path))
+        if stored is not None:
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as tar:
+                member = tarfile.TarInfo(path.rsplit("/", 1)[-1])
+                member.size = len(stored)
+                tar.addfile(member, io.BytesIO(stored))
+            return iter([buffer.getvalue()]), {"name": member.name, "size": len(stored), "mtime": "2026-11-17T00:00:00Z"}
         if container["Id"] not in self._fake.markers:
             raise NotFound("no such file")
         return iter([b""]), {"name": path.rsplit("/", 1)[-1], "mtime": self._fake.markers[container["Id"]]}

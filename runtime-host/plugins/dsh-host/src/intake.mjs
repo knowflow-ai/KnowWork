@@ -123,9 +123,23 @@ export function provision(contract) {
   return state
 }
 
+const EXTENSION_NAME = /^[a-z][a-z0-9_-]{0,39}$/
+const EXTENSION_STATE_MAX_BYTES = 64 * 1024
+
+/** 扩展随这一轮交来的状态（业务服务 kernel/contract.TurnInput.extension_state）：按扩展名分的 JSON；不合规整条拒收 */
+export function extensionStateOf(raw) {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('extensionState 必须是对象')
+  const names = Object.keys(raw)
+  if (names.length > 16 || names.some((name) => !EXTENSION_NAME.test(name))) throw new Error('extensionState 的扩展名不合规')
+  if (Buffer.byteLength(JSON.stringify(raw)) > EXTENSION_STATE_MAX_BYTES) throw new Error('extensionState 太大')
+  return raw
+}
+
 /**
  * 收一轮：把这一轮的合同写成用户消息交给 Agent，本轮的语言、时区、知识库目录、回答方式、扩展补的上下文记进会话状态，
- * 由各自的插件（prompt-context、knowledge-catalog、answer-mode、turn-context）在这条消息进入步骤时拆包。
+ * 由各自的插件（prompt-context、knowledge-catalog、answer-mode、turn-context）在这条消息进入步骤时拆包；扩展的状态
+ * （extensionState）收下就记，扩展自己的宿主插件读（工具可见性在步骤开始前就要算，等到进入步骤再记就晚了）。
  * @param {{ models: { knows: (id: string) => boolean }, provider: string, fallbackTimeZone?: string }} options
  *   models：宿主现在能用的模型（model-catalog）；provider：选模型时的模型来源；fallbackTimeZone：消息没带时区时用，默认宿主所在的时区
  */
@@ -150,6 +164,7 @@ export function createTurnIntake({ models, provider, fallbackTimeZone = deployme
         knowledge: catalogOf(body.knowledge),
         mentions: mentionsOf(body.mentions),
         context: turnContextOf(body.context),
+        extensions: extensionStateOf(body.extensionState),
       }
     } catch (error) {
       throw new HostError(400, 'invalid_request', error.message)
@@ -184,10 +199,11 @@ export function createTurnIntake({ models, provider, fallbackTimeZone = deployme
         throw new HostError(400, 'invalid_request', error.message)
       }
     }
-    const { files, knowledge, mentions, context } = partsOf(body)
+    const { files, knowledge, mentions, context, extensions } = partsOf(body)
     selectModel(agent, body.model)
     if (state !== undefined && language !== undefined) state.language = language
     if (state !== undefined && knowledge !== undefined) state.knowledgeCatalog = knowledge
+    if (state !== undefined && extensions !== undefined && mode === 'followup') state.extensionState = extensions
     const content = [{ type: 'text', text }, ...attachmentBlocks(files), ...mentionBlocks(mentions)]
     const source = userSource(body.timeZone, fallbackTimeZone)
     if (state !== undefined) state.timeZone = source.clientTimeZone

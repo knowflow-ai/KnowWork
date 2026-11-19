@@ -1,0 +1,1373 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: weizxfree <weizhangxiang2022@gmail.com>
+Date: Mon, 16 Nov 2026 21:40:05 -0800
+Subject: [PATCH 2/5] feat(web): an embedded run that shows nothing outside its
+ pages
+
+For an editor served to a host page (KnowWork):
+- --web-only / GENOFFICE_WEB_ONLY=1 runs the web server only: no window, no
+  dock icon, no update checks
+- a native dialog no browser tab asked for is answered "cancel" and logged
+- window.alert shows as the page's toast
+- a page framed by its host tells the host when the connection drops, and
+  reloads when the server closes its document
+- a page framed by its host tells the host each time its file is written
+  (Save, AutoSave, an agent's save), so the host can keep its copy current
+- a page framed by its host keeps file dialogs on the user's computer: a save
+  downloads the written file, an open uses the browser's file picker and uploads
+  the chosen files; the server's disk is never browsed
+- an open-folder dialog in such a page is an export target (Export as Images,
+  mail merge into files): one written file downloads as it is, several as a zip
+- a web-only run never reveals or opens a file on its own machine
+---
+ apps/shell/src/main/index.ts                  |   3 +
+ apps/shell/src/web/bridge.ts                  |   6 +
+ apps/shell/src/web/embedded-files.ts          | 330 ++++++++++++++++++
+ apps/shell/src/web/index.ts                   |   7 +-
+ apps/shell/src/web/saved-watch.ts             |  97 +++++
+ apps/shell/src/web/shim/client.ts             |  50 ++-
+ apps/shell/src/web/shim/embedded-files.ts     |  90 +++++
+ apps/shell/src/web/shim/host-page.ts          |  30 ++
+ apps/shell/src/web/web-dialogs.ts             |  31 +-
+ apps/shell/src/web/web-only-dialogs.ts        |  55 +++
+ apps/shell/src/web/web-only.ts                |  11 +
+ apps/shell/tests/web-dialogs-web-only.test.ts |  69 ++++
+ apps/shell/tests/web-embedded-files.test.ts   | 212 +++++++++++
+ apps/shell/tests/web-only.test.ts             |  11 +
+ apps/shell/tests/web-saved-watch.test.ts      |  74 ++++
+ packages/ui/src/host-origin.ts                |  20 ++
+ 16 files changed, 1076 insertions(+), 20 deletions(-)
+ create mode 100644 apps/shell/src/web/embedded-files.ts
+ create mode 100644 apps/shell/src/web/saved-watch.ts
+ create mode 100644 apps/shell/src/web/shim/embedded-files.ts
+ create mode 100644 apps/shell/src/web/shim/host-page.ts
+ create mode 100644 apps/shell/src/web/web-only-dialogs.ts
+ create mode 100644 apps/shell/src/web/web-only.ts
+ create mode 100644 apps/shell/tests/web-dialogs-web-only.test.ts
+ create mode 100644 apps/shell/tests/web-embedded-files.test.ts
+ create mode 100644 apps/shell/tests/web-only.test.ts
+ create mode 100644 apps/shell/tests/web-saved-watch.test.ts
+ create mode 100644 packages/ui/src/host-origin.ts
+
+diff --git a/apps/shell/src/main/index.ts b/apps/shell/src/main/index.ts
+index 361dc590..e4e26cbd 100644
+--- a/apps/shell/src/main/index.ts
++++ b/apps/shell/src/main/index.ts
+@@ -34,6 +34,7 @@ import { atomicCopyFile, atomicWriteFile } from './atomic-write'
+ // before any ipcMain registration below (and in the app modules) so the web
+ // bridge can reach every handler
+ import { installWebIpcCapture } from '../web/capture'
++import { deliveredAsDownload } from '../web/embedded-files'
+ installWebIpcCapture()
+ import { parseWebServerArgv } from '../web/index'
+ import { startWebShare, stopWebShare, webShareStatus } from '../web/share'
+@@ -4637,6 +4638,8 @@ function openDocumentPath(filePath: string): boolean {
+  * overwrite the file we just exported.
+  */
+ function openGeneratedDocument(filePath: string): boolean {
++  // exported from a tab embedded in a host page: the tab downloads it instead
++  if (deliveredAsDownload(filePath)) return true
+   if (tabManager && PDF_RE.test(filePath)) {
+     const existing = tabManager.findPdfTabByPath(filePath)
+     if (existing) {
+diff --git a/apps/shell/src/web/bridge.ts b/apps/shell/src/web/bridge.ts
+index 19b29ba0..d8625f3e 100644
+--- a/apps/shell/src/web/bridge.ts
++++ b/apps/shell/src/web/bridge.ts
+@@ -9,6 +9,8 @@ import { trackWebTab as trackHtmlTab } from '../../../html/src/main/html-main'
+ import { decodeFrame, encodeFrame } from './serialize'
+ import { rewriteIn, rewriteOut } from './schemes'
+ import { WebTabContents, registerWebTab, unregisterWebTab } from './web-contents'
++import { watchEmbeddedTab } from './saved-watch'
++import { cancelPicksFor } from './embedded-files'
+ import {
+   cancelWebDialogsFor,
+   listWebDialogDir,
+@@ -169,6 +171,8 @@ export function attachWebBridge(
+     }
+     registerWebTab(tab)
+     seedTabFromUrl(tab)
++    // an embedding host keeps its own copy of the file: tell it about each write (saved-watch.ts)
++    const stopSavedWatch = watchEmbeddedTab(tab.url, (channel, args) => tab.deliver(channel, args))
+ 
+     ws.on('message', (data: Buffer, isBinary: boolean) => {
+       let frame: Record<string, unknown>
+@@ -210,6 +214,8 @@ export function attachWebBridge(
+     })
+ 
+     const close = () => {
++      stopSavedWatch()
++      cancelPicksFor(tab)
+       cancelWebDialogsFor(tab)
+       unregisterWebTab(tab)
+       tab.destroy()
+diff --git a/apps/shell/src/web/embedded-files.ts b/apps/shell/src/web/embedded-files.ts
+new file mode 100644
+index 00000000..55b1ce53
+--- /dev/null
++++ b/apps/shell/src/web/embedded-files.ts
+@@ -0,0 +1,330 @@
++import { randomBytes } from 'node:crypto'
++import { createReadStream, existsSync, statSync } from 'node:fs'
++import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
++import type { IncomingMessage, ServerResponse } from 'node:http'
++import { tmpdir } from 'node:os'
++import { basename, extname, join, sep } from 'node:path'
++import type { OpenDialogOptions, SaveDialogOptions } from 'electron'
++import type { WebTabContents } from './web-contents'
++
++/**
++ * File dialogs of a browser tab embedded in a host page (KnowWork).
++ *
++ * The web-server dialogs browse the server's own disk, which is right when the
++ * person in the browser owns that machine. An embedded editor runs on a
++ * machine its user does not own (a per-person container, or a shared host):
++ * its directories are none of the user's business, and a file exported there
++ * never reaches them. So for an embedded tab the dialogs land on the user's
++ * own computer instead:
++ * - save (Export PDF, Save As, Save Picture): the app writes into a private
++ *   temp folder, and once the file is written the tab downloads it through a
++ *   one-time URL;
++ * - open (Insert Picture, Open): the tab shows the browser's file picker and
++ *   uploads the chosen files into a private temp folder, whose paths go back to
++ *   the app;
++ * - open a folder (Export as Images, mail merge into files): GenOffice only
++ *   asks for a folder to write an export into, so this is a save as well: the
++ *   app writes into a private temp folder, and once nothing has changed for a
++ *   few seconds one file downloads as it is and several as one zip.
++ * Both URLs sit behind the same token cookie as everything else.
++ */
++
++const EXPORT_PREFIX = '/__web/export/'
++const UPLOAD_PREFIX = '/__web/upload/'
++const MAX_UPLOAD_BYTES = 200 * 1024 * 1024
++const WRITE_POLL_MS = 250
++const WRITE_WAIT_MS = 10 * 60_000
++const EXPORT_TTL_MS = 10 * 60_000
++/** a folder export is done when nothing in it has changed for this long */
++const FOLDER_QUIET_MS = 4_000
++
++/** whether a tab is embedded in a host page (its URL names the host, `?host=`) */
++export function isEmbeddedTab(tab: { url: string }): boolean {
++  try {
++    return Boolean(new URL(tab.url, 'http://localhost').searchParams.get('host'))
++  } catch {
++    return false
++  }
++}
++
++// ---- save: write privately, then download ----
++
++const exports = new Map<string, { path: string; name: string; expires: number }>()
++/** files written for a download: an app "opening what it just exported" has nothing to do for them */
++const downloads = new Set<string>()
++
++/** an export the tab downloads (or a file in such a folder); the shell skips opening it (it would reveal the editor machine's file) */
++export function deliveredAsDownload(path: string): boolean {
++  if (downloads.has(path)) return true
++  for (const target of downloads) if (path.startsWith(target + sep)) return true
++  return false
++}
++
++/** hand a written file to the tab as a one-time download; `done` cleans up after it expires */
++function offerDownload(tab: WebTabContents, path: string, name: string, done: () => void): void {
++  const token = randomBytes(18).toString('base64url')
++  exports.set(token, { path, name, expires: Date.now() + EXPORT_TTL_MS })
++  setTimeout(() => {
++    exports.delete(token)
++    done()
++  }, EXPORT_TTL_MS).unref()
++  tab.deliver('web:download', [{ url: `${EXPORT_PREFIX}${token}`, name }])
++}
++
++function fileNameOf(options: SaveDialogOptions): string {
++  const given = basename(String(options.defaultPath ?? '')).trim()
++  const ext = options.filters?.[0]?.extensions?.find((e) => e && e !== '*')
++  const name = given || 'export'
++  return extname(name) || !ext ? name : `${name}.${ext}`
++}
++
++/** wait until the app has written the file (it appears and its size settles) */
++async function written(path: string): Promise<boolean> {
++  const deadline = Date.now() + WRITE_WAIT_MS
++  let last = -1
++  while (Date.now() < deadline) {
++    await new Promise((r) => setTimeout(r, WRITE_POLL_MS))
++    const size = await stat(path).then(
++      (s) => s.size,
++      () => -1,
++    )
++    if (size > 0 && size === last) return true
++    last = size
++  }
++  return false
++}
++
++export async function embeddedSave(
++  tab: WebTabContents,
++  options: SaveDialogOptions,
++): Promise<{ canceled: boolean; filePath?: string }> {
++  const dir = await mkdtemp(join(tmpdir(), 'genoffice-export-'))
++  const name = fileNameOf(options)
++  const filePath = join(dir, name)
++  downloads.add(filePath)
++  const forget = () => {
++    downloads.delete(filePath)
++    void rm(dir, { recursive: true, force: true })
++  }
++  void written(filePath).then((ok) => {
++    if (!ok || tab.isDestroyed()) forget()
++    else offerDownload(tab, filePath, name, forget)
++  })
++  return { canceled: false, filePath }
++}
++
++// ---- open a folder: an export target, downloaded as one file or one zip ----
++
++/** the files written into the folder so far (half-written atomic-write temps and hidden files left out) */
++async function filesIn(dir: string): Promise<{ path: string; name: string; size: number }[]> {
++  const names = await readdir(dir).catch(() => [] as string[])
++  const files = await Promise.all(
++    names
++      .filter((name) => !name.startsWith('.') && !name.endsWith('.tmp'))
++      .sort()
++      .map(async (name) => {
++        const info = await stat(join(dir, name)).catch(() => null)
++        return info?.isFile() ? { path: join(dir, name), name, size: info.size } : null
++      }),
++  )
++  return files.filter((file) => file !== null)
++}
++
++/** wait until the app has written its export into the folder: files there, nothing changing for a while */
++async function folderSettled(dir: string, quietMs: number): Promise<string[]> {
++  const deadline = Date.now() + WRITE_WAIT_MS
++  let signature = ''
++  let quietSince = Date.now()
++  while (Date.now() < deadline) {
++    await new Promise((r) => setTimeout(r, WRITE_POLL_MS))
++    const files = await filesIn(dir)
++    const now = files.map((file) => `${file.name}:${file.size}`).join('|')
++    if (now !== signature) {
++      signature = now
++      quietSince = Date.now()
++    } else if (files.length > 0 && Date.now() - quietSince >= quietMs) {
++      return files.map((file) => file.path)
++    }
++  }
++  return []
++}
++
++/** the name of the document the tab shows, without its extension (names the zip) */
++function documentStem(tab: WebTabContents): string {
++  let path: string
++  try {
++    path = new URL(tab.url, 'http://localhost').searchParams.get('path') ?? ''
++  } catch {
++    path = ''
++  }
++  const name = basename(path)
++  return (name ? name.slice(0, name.length - extname(name).length) : '') || 'export'
++}
++
++export async function embeddedFolder(
++  tab: WebTabContents,
++  quietMs = FOLDER_QUIET_MS,
++): Promise<{ canceled: boolean; filePaths: string[] }> {
++  const root = await mkdtemp(join(tmpdir(), 'genoffice-export-'))
++  const dir = join(root, 'files')
++  await mkdir(dir)
++  downloads.add(dir)
++  const forget = () => {
++    downloads.delete(dir)
++    void rm(root, { recursive: true, force: true })
++  }
++  void folderSettled(dir, quietMs).then(async (files) => {
++    if (files.length === 0 || tab.isDestroyed()) return forget()
++    if (files.length === 1) return offerDownload(tab, files[0], basename(files[0]), forget)
++    const { default: JSZip } = await import('jszip')
++    const zip = new JSZip()
++    for (const file of files) zip.file(basename(file), await readFile(file))
++    const name = `${documentStem(tab)}.zip`
++    const zipPath = join(root, name)
++    await writeFile(zipPath, await zip.generateAsync({ type: 'nodebuffer' }))
++    offerDownload(tab, zipPath, name, forget)
++  })
++  return { canceled: false, filePaths: [dir] }
++}
++
++// ---- open: browser picker, upload, then the app gets the uploaded paths ----
++
++interface Pick {
++  readonly tab: WebTabContents
++  readonly dir: string
++  readonly files: string[]
++  readonly resolve: (result: { canceled: boolean; filePaths: string[] }) => void
++}
++
++const picks = new Map<string, Pick>()
++
++export async function embeddedOpen(
++  tab: WebTabContents,
++  options: OpenDialogOptions,
++): Promise<{ canceled: boolean; filePaths: string[] }> {
++  // GenOffice asks for a folder only to write an export into it (checked: Export as
++  // Images, mail merge into files): that is a save, not a file from the user
++  if ((options.properties ?? []).includes('openDirectory')) return embeddedFolder(tab)
++  const id = randomBytes(12).toString('base64url')
++  const dir = await mkdtemp(join(tmpdir(), 'genoffice-upload-'))
++  const accept = (options.filters ?? [])
++    .flatMap((f) => f.extensions)
++    .filter((e) => e && e !== '*')
++    .map((e) => `.${e}`)
++  const multiple = (options.properties ?? []).includes('multiSelections')
++  return new Promise((resolve) => {
++    const timer = setTimeout(() => finish(id, true), WRITE_WAIT_MS)
++    timer.unref()
++    picks.set(id, {
++      tab,
++      dir,
++      files: [],
++      resolve: (result) => {
++        clearTimeout(timer)
++        resolve(result)
++      },
++    })
++    tab.deliver('web:pick', [{ url: `${UPLOAD_PREFIX}${id}`, accept: accept.join(','), multiple }])
++  })
++}
++
++function finish(id: string, canceled: boolean): void {
++  const pick = picks.get(id)
++  if (!pick) return
++  picks.delete(id)
++  if (canceled || pick.files.length === 0) {
++    void rm(pick.dir, { recursive: true, force: true })
++    pick.resolve({ canceled: true, filePaths: [] })
++  } else {
++    pick.resolve({ canceled: false, filePaths: [...pick.files] })
++  }
++}
++
++/** a closed tab can never finish its pick */
++export function cancelPicksFor(tab: WebTabContents): void {
++  for (const [id, pick] of [...picks]) if (pick.tab === tab) finish(id, true)
++}
++
++async function readBody(req: IncomingMessage): Promise<Buffer | null> {
++  const chunks: Buffer[] = []
++  let size = 0
++  for await (const chunk of req) {
++    size += chunk.length
++    if (size > MAX_UPLOAD_BYTES) return null
++    chunks.push(chunk as Buffer)
++  }
++  return Buffer.concat(chunks)
++}
++
++/** the picked file's own name (the query string is already decoded): no folders, no control characters */
++function safeName(raw: string | undefined): string {
++  const name = [...basename((raw ?? '').replace(/\\/g, '/'))]
++    .filter((ch) => ch.charCodeAt(0) >= 32)
++    .join('')
++    .trim()
++  return name && name !== '.' && name !== '..' ? name.slice(0, 200) : 'file'
++}
++
++// ---- HTTP ----
++
++/** serve the export downloads and the uploads; false when the request is not one of them */
++export async function serveEmbeddedFiles(
++  req: IncomingMessage,
++  res: ServerResponse,
++  opts: { authorized: (req: IncomingMessage) => boolean },
++): Promise<boolean> {
++  const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
++  const isExport = pathname.startsWith(EXPORT_PREFIX)
++  const isUpload = pathname.startsWith(UPLOAD_PREFIX)
++  if (!isExport && !isUpload) return false
++  if (!opts.authorized(req)) {
++    res.writeHead(401)
++    res.end('unauthorized')
++    return true
++  }
++  if (isExport) {
++    const entry = exports.get(pathname.slice(EXPORT_PREFIX.length))
++    if (req.method !== 'GET' || !entry || entry.expires < Date.now() || !existsSync(entry.path)) {
++      res.writeHead(404)
++      res.end('gone')
++      return true
++    }
++    res.writeHead(200, {
++      'content-type': 'application/octet-stream',
++      'content-length': String(statSync(entry.path).size),
++      'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(entry.name)}`,
++      'cache-control': 'no-store',
++    })
++    createReadStream(entry.path).pipe(res)
++    return true
++  }
++  const search = new URL(req.url ?? '/', 'http://localhost').searchParams
++  const id = pathname.slice(UPLOAD_PREFIX.length)
++  const pick = picks.get(id)
++  if (req.method !== 'POST' || !pick) {
++    res.writeHead(404)
++    res.end('gone')
++    return true
++  }
++  if (search.get('done') !== null || search.get('cancel') !== null) {
++    finish(id, search.get('cancel') !== null)
++    res.writeHead(204)
++    res.end()
++    return true
++  }
++  const body = await readBody(req)
++  if (body === null) {
++    res.writeHead(413)
++    res.end('too large')
++    return true
++  }
++  // each file in its own folder, under the name the user picked (the app may show or keep it)
++  const folder = join(pick.dir, String(pick.files.length))
++  await mkdir(folder, { recursive: true })
++  const target = join(folder, safeName(search.get('name') ?? undefined))
++  await writeFile(target, body)
++  pick.files.push(target)
++  res.writeHead(204)
++  res.end()
++  return true
++}
+diff --git a/apps/shell/src/web/index.ts b/apps/shell/src/web/index.ts
+index aa9bd5fb..2ad6b561 100644
+--- a/apps/shell/src/web/index.ts
++++ b/apps/shell/src/web/index.ts
+@@ -13,6 +13,7 @@ import {
+   webRendererRoots,
+   type RendererRoots,
+ } from './static'
++import { serveEmbeddedFiles } from './embedded-files'
+ import { serveWebApi } from './api'
+ import { createCliRunner, type CliRunner } from '../main/mcp/cli-runner'
+ import { showErrorDialog } from '../main/error-dialog'
+@@ -134,7 +135,11 @@ export async function startWebServer(
+       res.end('cross-origin request refused')
+       return
+     }
+-    void serveWebApi(req, res, { token, runner: apiRunner, port: config.port })
++    void serveEmbeddedFiles(req, res, { authorized: (r) => tokenValid(r, token, config.port) })
++      .then(
++        (served) =>
++          served || serveWebApi(req, res, { token, runner: apiRunner, port: config.port }),
++      )
+       .then((served) => {
+         if (served) return
+         return serveWebStatic(req, res, { roots, token, port: config.port })
+diff --git a/apps/shell/src/web/saved-watch.ts b/apps/shell/src/web/saved-watch.ts
+new file mode 100644
+index 00000000..143d071e
+--- /dev/null
++++ b/apps/shell/src/web/saved-watch.ts
+@@ -0,0 +1,97 @@
++import { watch, type FSWatcher } from 'node:fs'
++import { stat } from 'node:fs/promises'
++import { basename, dirname } from 'node:path'
++
++/**
++ * Tell an embedded browser tab that its document was written to disk
++ * (web-server mode under a host page, KnowWork).
++ *
++ * The host keeps its own copy of the file (a new version per save), so it has
++ * to hear about every write: Save, AutoSave, Save As over the same path, and an
++ * agent's open_documents save. Each family saves through its own channel, so
++ * the one place that sees them all is the file itself. The directory is
++ * watched rather than the file because a save that writes a temp file and
++ * renames it over the original would leave a file watcher on the old inode.
++ * Writes settle for a moment (a save may write in pieces) and the size and
++ * mtime must differ from the last notice, so one save is one notice.
++ */
++
++export const SETTLE_MS = 400
++
++async function stampOf(path: string): Promise<string | null> {
++  try {
++    const info = await stat(path)
++    return info.isFile() ? `${info.mtimeMs}:${info.size}` : null
++  } catch {
++    return null
++  }
++}
++
++/** watch one file; notify() after each settled write. Returns the stop function */
++export async function watchFileSaves(
++  filePath: string,
++  notify: () => void,
++  settleMs = SETTLE_MS,
++): Promise<() => void> {
++  let last = await stampOf(filePath)
++  let timer: ReturnType<typeof setTimeout> | null = null
++  let stopped = false
++  const name = basename(filePath)
++  const check = async (): Promise<void> => {
++    timer = null
++    const now = await stampOf(filePath)
++    if (stopped || now === null || now === last) return
++    last = now
++    notify()
++  }
++  let watcher: FSWatcher
++  try {
++    watcher = watch(dirname(filePath), (_event, changed) => {
++      if (changed && changed.toString() !== name) return
++      if (timer) clearTimeout(timer)
++      timer = setTimeout(() => void check(), settleMs)
++    })
++  } catch {
++    return () => {}
++  }
++  watcher.on('error', () => watcher.close())
++  return () => {
++    stopped = true
++    if (timer) clearTimeout(timer)
++    watcher.close()
++  }
++}
++
++/**
++ * The file a browser tab was opened with, when the tab is embedded in a host
++ * page (`?host=`); other tabs are left alone.
++ */
++export function embeddedTabFile(tabUrl: string): string | null {
++  let url: URL
++  try {
++    url = new URL(tabUrl, 'http://localhost')
++  } catch {
++    return null
++  }
++  const path = url.searchParams.get('path')
++  return path && url.searchParams.get('host') ? path : null
++}
++
++/** start watching an embedded tab's file; deliver('web:saved', [path]) per write */
++export function watchEmbeddedTab(
++  tabUrl: string,
++  deliver: (channel: string, args: unknown[]) => void,
++): () => void {
++  const path = embeddedTabFile(tabUrl)
++  if (!path) return () => {}
++  let stop: (() => void) | null = null
++  let closed = false
++  void watchFileSaves(path, () => deliver('web:saved', [path])).then((fn) => {
++    if (closed) fn()
++    else stop = fn
++  })
++  return () => {
++    closed = true
++    stop?.()
++  }
++}
+diff --git a/apps/shell/src/web/shim/client.ts b/apps/shell/src/web/shim/client.ts
+index c4a0b297..d7659be8 100644
+--- a/apps/shell/src/web/shim/client.ts
++++ b/apps/shell/src/web/shim/client.ts
+@@ -1,5 +1,9 @@
+ import { decodeFrame, encodeFrame } from '../serialize'
+ import { Outbox } from './outbox'
++import { installMenuShortcuts } from './menu-shortcuts'
++import { dialogResponseFrame, type DialogAnswer } from './dialog-answer'
++import { installAlertToast, tellHostDisconnected, tellHostSaved } from './host-page'
++import { downloadFile, pickFiles } from './embedded-files'
+ 
+ /**
+  * The one WebSocket per browser tab. Connects to the URL the page was served
+@@ -65,6 +69,11 @@ function send(channel: string, args: unknown[]): void {
+   call({ t: 'send', channel, args })
+ }
+ 
++/** answer the main process's pending dialog call (dialog-answer.ts) */
++function answerDialog(id: number, answer: DialogAnswer): void {
++  call(dialogResponseFrame(id, answer))
++}
++
+ function failAllPending(err: Error): void {
+   for (const p of pendingInvokes.values()) p.reject(err)
+   pendingInvokes.clear()
+@@ -89,6 +98,25 @@ function onMessage(data: string | ArrayBuffer): void {
+   } else if (t === 'event') {
+     const channel = String(frame.channel)
+     const args = Array.isArray(frame.args) ? frame.args : []
++    // the server closed this tab's document (open_documents close): reopen the
++    // file from disk; the discarded edits' recovery copy is already gone
++    if (channel === 'web:closed') {
++      location.reload()
++      return
++    }
++    // embedded in a host page: files go to and come from the user's computer (embedded-files.ts)
++    if (channel === 'web:download') {
++      downloadFile((args[0] ?? {}) as Record<string, unknown>)
++      return
++    }
++    if (channel === 'web:pick') {
++      pickFiles((args[0] ?? {}) as Record<string, unknown>)
++      return
++    }
++    if (channel === 'web:saved') {
++      tellHostSaved(String(args[0] ?? ''))
++      return
++    }
+     if (channel === 'web:dialog') {
+       const req = args[0] as DialogRequest | undefined
+       if (req) showDialogOverlay(req)
+@@ -123,6 +151,8 @@ function connect(): void {
+     ws = null
+     outbox.drop()
+     failAllPending(new Error('web bridge closed'))
++    // a host page embedding the editor brings it back itself (host-page.ts)
++    if (tellHostDisconnected()) return
+     // a fresh load re-seeds the tab's pending state cleanly; a boot that never
+     // connected (server gone) would loop, so only reload a page that worked
+     if (Date.now() - bootedAt > 5000) {
+@@ -255,10 +285,8 @@ function showDialogOverlay(req: DialogRequest): void {
+ 
+   function respond(path: string | null): void {
+     host.remove()
+-    dialogResolver?.(
+-      path === null ? { canceled: true } : { canceled: false, filePath: path, filePaths: [path] },
+-    )
+     dialogResolver = null
++    answerDialog(req.id, { kind: 'file', path })
+   }
+ 
+   async function confirmSelection(): Promise<void> {
+@@ -279,7 +307,8 @@ function showDialogOverlay(req: DialogRequest): void {
+     if (ev.key === 'Enter') void confirmSelection()
+   })
+ 
+-  dialogResolver = () => respond(null)
++  // the connection dropped: the server cancels the dialog itself, just drop the overlay
++  dialogResolver = () => host.remove()
+   void requestDialogStarts(req.options.defaultPath).then((dirs) => {
+     void showDir(dirs[0] ?? '/')
+   })
+@@ -308,18 +337,13 @@ function showMessageOverlay(req: DialogRequest): void {
+     }
+     btn.onclick = () => {
+       host.remove()
+-      const resolve = dialogResolver
+       dialogResolver = null
+-      resolve?.({ canceled: false, response: index })
++      answerDialog(req.id, { kind: 'message', response: index })
+     }
+     row.appendChild(btn)
+   })
+-  dialogResolver = () => {
+-    const resolve = dialogResolver
+-    dialogResolver = null
+-    host.remove()
+-    resolve?.({ canceled: false, response: 0 })
+-  }
++  // the connection dropped: the server cancels the dialog itself, just drop the overlay
++  dialogResolver = () => host.remove()
+ }
+ 
+ function escapeHtml(text: string): string {
+@@ -365,5 +389,7 @@ function installDropGuard(): void {
+ 
+ connect()
+ installDropGuard()
++installMenuShortcuts()
++installAlertToast(toast)
+ 
+ ;(window as unknown as Record<string, unknown>).__genofficeWebClient = { invoke, send }
+diff --git a/apps/shell/src/web/shim/embedded-files.ts b/apps/shell/src/web/shim/embedded-files.ts
+new file mode 100644
+index 00000000..8d1009f2
+--- /dev/null
++++ b/apps/shell/src/web/shim/embedded-files.ts
+@@ -0,0 +1,90 @@
++/**
++ * Browser side of the embedded file dialogs (../embedded-files.ts): in a tab
++ * embedded in a host page, a saved file is downloaded to the user's computer
++ * and an opened file is picked from it, instead of browsing the server's disk.
++ */
++
++/** the server wrote a file the user asked for (Export PDF, Save As): download it */
++export function downloadFile(request: { url?: unknown; name?: unknown }): void {
++  if (typeof request.url !== 'string' || !request.url.startsWith('/__web/export/')) return
++  const link = document.createElement('a')
++  link.href = request.url
++  link.download = typeof request.name === 'string' ? request.name : ''
++  link.style.display = 'none'
++  document.body.appendChild(link)
++  link.click()
++  link.remove()
++}
++
++const zh = (): boolean => /^zh/i.test(navigator.language || '')
++
++/**
++ * the app asked for files (Insert Picture, Open): the browser's file picker,
++ * each chosen file uploaded, then done (or cancel when nothing was chosen)
++ */
++export function pickFiles(request: { url?: unknown; accept?: unknown; multiple?: unknown }): void {
++  const url = request.url
++  if (typeof url !== 'string' || !url.startsWith('/__web/upload/')) return
++  const input = document.createElement('input')
++  input.type = 'file'
++  input.accept = typeof request.accept === 'string' ? request.accept : ''
++  input.multiple = request.multiple === true
++  input.style.display = 'none'
++  let settled = false
++  let prompt: HTMLElement | null = null
++  const finish = (outcome: 'done' | 'cancel'): void => {
++    if (settled) return
++    settled = true
++    input.remove()
++    prompt?.remove()
++    void fetch(`${url}?${outcome}=1`, { method: 'POST', credentials: 'same-origin' }).catch(
++      () => undefined,
++    )
++  }
++  input.addEventListener('change', () => {
++    const files = [...(input.files ?? [])]
++    if (files.length === 0) return finish('cancel')
++    void (async () => {
++      try {
++        for (const file of files) {
++          const response = await fetch(`${url}?name=${encodeURIComponent(file.name)}`, {
++            method: 'POST',
++            body: file,
++            credentials: 'same-origin',
++          })
++          if (!response.ok) throw new Error(`upload failed: ${response.status}`)
++        }
++        finish('done')
++      } catch {
++        finish('cancel')
++      }
++    })()
++  })
++  input.addEventListener('cancel', () => finish('cancel'))
++  document.body.appendChild(input)
++  // a file picker opens only on a user gesture; the request comes back over
++  // the socket right after the click that asked for it, usually still inside
++  // the gesture's window. When it has passed, ask for one more click.
++  const activation = (navigator as { userActivation?: { isActive: boolean } }).userActivation
++  if (activation === undefined || activation.isActive) {
++    input.click()
++    return
++  }
++  prompt = document.createElement('div')
++  prompt.style.cssText =
++    'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;' +
++    'background:rgba(0,0,0,.25);font:14px system-ui,sans-serif'
++  const box = document.createElement('div')
++  box.style.cssText =
++    'background:#fff;border-radius:10px;padding:16px 20px;display:flex;gap:12px;align-items:center;' +
++    'box-shadow:0 8px 24px rgba(0,0,0,.18)'
++  const choose = document.createElement('button')
++  choose.textContent = zh() ? '选择文件' : 'Choose file'
++  const cancel = document.createElement('button')
++  cancel.textContent = zh() ? '取消' : 'Cancel'
++  choose.onclick = () => input.click()
++  cancel.onclick = () => finish('cancel')
++  box.append(choose, cancel)
++  prompt.appendChild(box)
++  document.body.appendChild(prompt)
++}
+diff --git a/apps/shell/src/web/shim/host-page.ts b/apps/shell/src/web/shim/host-page.ts
+new file mode 100644
+index 00000000..d90a18d4
+--- /dev/null
++++ b/apps/shell/src/web/shim/host-page.ts
+@@ -0,0 +1,30 @@
++import { hostAiOrigin } from '../../../../../packages/ui/src/host-origin'
++
++/**
++ * Browser-tab behaviour for an editor embedded in a host page (KnowWork), kept
++ * apart from client.ts so that file only carries the calls.
++ */
++
++/** the connection dropped: tell an embedding host, which brings the editor back
++ *  itself (it may have to restart the service first); true when there is one */
++export function tellHostDisconnected(): boolean {
++  const host = hostAiOrigin(window)
++  if (!host) return false
++  window.parent.postMessage({ type: 'genoffice:disconnected' }, host)
++  return true
++}
++
++/** the document was written to disk (Save, AutoSave, an agent's save; see
++ *  saved-watch.ts): tell an embedding host, which keeps its own copy */
++export function tellHostSaved(path: string): void {
++  const host = hostAiOrigin(window)
++  if (!host || !path) return
++  window.parent.postMessage({ type: 'genoffice:saved', path }, host)
++}
++
++/** window.alert in a browser tab is a blocking native box (an embedding desktop
++ *  app draws it with its own window chrome): show the notice as the page's
++ *  toast instead. confirm/prompt must answer synchronously, so they stay */
++export function installAlertToast(toast: (text: string) => void): void {
++  window.alert = (message?: unknown) => toast(String(message ?? ''))
++}
+diff --git a/apps/shell/src/web/web-dialogs.ts b/apps/shell/src/web/web-dialogs.ts
+index 8d6bd318..1530a313 100644
+--- a/apps/shell/src/web/web-dialogs.ts
++++ b/apps/shell/src/web/web-dialogs.ts
+@@ -5,6 +5,9 @@ import { AsyncLocalStorage } from 'node:async_hooks'
+ import { basename, dirname, extname, join, resolve, sep } from 'node:path'
+ import { existsSync, statSync } from 'node:fs'
+ import type { WebTabContents } from './web-contents'
++import { webOnlyRequested } from './web-only'
++import { embeddedOpen, embeddedSave, isEmbeddedTab } from './embedded-files'
++import { nativeDialogs, silenceShell } from './web-only-dialogs'
+ 
+ /**
+  * Native open/save/message dialogs belong to the server machine; for requests
+@@ -103,9 +106,13 @@ function optionsOf<T>(first: unknown, second: unknown): T {
+   return (second === undefined ? first : second) as T
+ }
+ 
+-type ShowSave = (options: SaveDialogOptions) => Promise<{ canceled: boolean; filePath?: string }>
+-type ShowOpen = (options: OpenDialogOptions) => Promise<{ canceled: boolean; filePaths: string[] }>
+-type ShowMessage = (options: MessageBoxOptions) => Promise<{ response: number }>
++export type ShowSave = (
++  options: SaveDialogOptions,
++) => Promise<{ canceled: boolean; filePath?: string }>
++export type ShowOpen = (
++  options: OpenDialogOptions,
++) => Promise<{ canceled: boolean; filePaths: string[] }>
++export type ShowMessage = (options: MessageBoxOptions) => Promise<{ response: number }>
+ 
+ /** Install once at web-server startup; wraps the Electron dialog methods. */
+ let dialogPatchInstalled = false
+@@ -121,14 +128,23 @@ export function installWebDialogPatch(): void {
+     showOpenDialog: ShowOpen
+     showMessageBox: ShowMessage
+   }
+-  const nativeSave = d.showSaveDialog.bind(d)
+-  const nativeOpen = d.showOpenDialog.bind(d)
+-  const nativeMessage = d.showMessageBox.bind(d)
+-
++  // a web-only run never shows a native dialog of its own, nor reveals or opens
++  // files on its machine (web-only-dialogs.ts)
++  const webOnly = webOnlyRequested(process.argv, process.env)
++  const { nativeSave, nativeOpen, nativeMessage } = nativeDialogs(d, webOnly)
++  // read Electron's shell only in a web-only run: other runs leave it alone
++  if (webOnly) {
++    silenceShell(
++      (electronDialog as unknown as { shell?: { showItemInFolder?: unknown } }).shell,
++      webOnly,
++    )
++  }
+   d.showSaveDialog = ((first: unknown, second?: unknown) => {
+     const options = optionsOf<SaveDialogOptions>(first, second)
+     const tab = webDispatchTab()
+     if (!tab) return nativeSave(options)
++    // embedded in a host page: the file goes to the user's own computer (embedded-files.ts)
++    if (isEmbeddedTab(tab)) return embeddedSave(tab, options)
+     return serveWebDialog(tab, saveOptionsOf(options)).then((result) =>
+       result.canceled || !('filePath' in result)
+         ? { canceled: true }
+@@ -139,6 +155,7 @@ export function installWebDialogPatch(): void {
+     const options = optionsOf<OpenDialogOptions>(first, second)
+     const tab = webDispatchTab()
+     if (!tab) return nativeOpen(options)
++    if (isEmbeddedTab(tab)) return embeddedOpen(tab, options)
+     return serveWebDialog(tab, {
+       kind: 'open',
+       title: options.title,
+diff --git a/apps/shell/src/web/web-only-dialogs.ts b/apps/shell/src/web/web-only-dialogs.ts
+new file mode 100644
+index 00000000..93d01e47
+--- /dev/null
++++ b/apps/shell/src/web/web-only-dialogs.ts
+@@ -0,0 +1,55 @@
++import type { ShowMessage, ShowOpen, ShowSave } from './web-dialogs'
++
++/**
++ * The real Electron dialogs the web dialog patch falls back to outside a
++ * browser-tab dispatch. A web-only run (KnowWork's embedded editor) has no
++ * window of its own: a dialog no browser tab asked for (an error box, a
++ * background check) would pop up as a bare Electron window on the machine, so
++ * there it is answered "cancel" and logged instead.
++ */
++export function nativeDialogs(
++  d: { showSaveDialog: ShowSave; showOpenDialog: ShowOpen; showMessageBox: ShowMessage },
++  webOnly: boolean,
++): { nativeSave: ShowSave; nativeOpen: ShowOpen; nativeMessage: ShowMessage } {
++  if (!webOnly) {
++    return {
++      nativeSave: d.showSaveDialog.bind(d),
++      nativeOpen: d.showOpenDialog.bind(d),
++      nativeMessage: d.showMessageBox.bind(d),
++    }
++  }
++  const unseen = (what: string, text: unknown): void =>
++    console.warn(
++      `[web] web-only run: no ${what} dialog shown (${String(text ?? '').slice(0, 120)})`,
++    )
++  const errorBox = d as unknown as { showErrorBox: (title: string, content: string) => void }
++  errorBox.showErrorBox = (title, content) => unseen('error', `${title}: ${content}`)
++  return {
++    nativeSave: async (options) => (unseen('save', options.title), { canceled: true }),
++    nativeOpen: async (options) => (
++      unseen('open', options.title),
++      { canceled: true, filePaths: [] }
++    ),
++    nativeMessage: async (options) => (
++      unseen('message', options.message),
++      { response: options.cancelId ?? 0 }
++    ),
++  }
++}
++
++/**
++ * A web-only run has no desktop of its own either: revealing a just-exported
++ * file in the file manager, or opening it with a local app, would happen on
++ * the server machine (Finder popping up on a shared host). There those calls
++ * only log.
++ */
++export function silenceShell(
++  shell: { showItemInFolder?: unknown; openPath?: unknown } | undefined,
++  webOnly: boolean,
++): void {
++  if (!webOnly || !shell) return
++  const unseen = (what: string, path: unknown): void =>
++    console.warn(`[web] web-only run: not ${what} on this machine (${String(path ?? '')})`)
++  shell.showItemInFolder = (path: string) => unseen('revealing', path)
++  shell.openPath = async (path: string) => (unseen('opening', path), '')
++}
+diff --git a/apps/shell/src/web/web-only.ts b/apps/shell/src/web/web-only.ts
+new file mode 100644
+index 00000000..5b7005f3
+--- /dev/null
++++ b/apps/shell/src/web/web-only.ts
+@@ -0,0 +1,11 @@
++/**
++ * Web-service-only runs: an embedding host (a desktop app that frames the
++ * editors, a server that runs one service per user) wants the browser surface
++ * and nothing on screen. `--web-only` / GENOFFICE_WEB_ONLY=1 keeps the shell
++ * window (the tab manager and the main-process handlers still live in it)
++ * but never shows it, and drops the Dock icon on macOS. Only meaningful with
++ * the web server on.
++ */
++export function webOnlyRequested(argv: readonly string[], env: NodeJS.ProcessEnv): boolean {
++  return argv.includes('--web-only') || env.GENOFFICE_WEB_ONLY === '1'
++}
+diff --git a/apps/shell/tests/web-dialogs-web-only.test.ts b/apps/shell/tests/web-dialogs-web-only.test.ts
+new file mode 100644
+index 00000000..3519169d
+--- /dev/null
++++ b/apps/shell/tests/web-dialogs-web-only.test.ts
+@@ -0,0 +1,69 @@
++import { describe, expect, it, vi } from 'vitest'
++
++// a web-only run: the module reads the flag when the patch is installed
++process.env.GENOFFICE_WEB_ONLY = '1'
++
++const nativeMessage = vi.fn(async () => ({ response: 0 }))
++const nativeOpen = vi.fn(async () => ({ canceled: false, filePaths: ['/x'] }))
++const nativeErrorBox = vi.fn()
++const nativeReveal = vi.fn()
++const nativeOpenPath = vi.fn(async () => '')
++vi.mock('electron', () => ({
++  shell: {
++    showItemInFolder: (path: string) => nativeReveal(path),
++    openPath: (path: string) => nativeOpenPath(path),
++  },
++  dialog: {
++    showSaveDialog: async () => ({ canceled: false, filePath: '/x' }),
++    showOpenDialog: async (options: unknown) => nativeOpen(options),
++    showMessageBox: async (options: unknown) => nativeMessage(options),
++    showErrorBox: (title: string, content: string) => nativeErrorBox(title, content),
++  },
++  session: { defaultSession: {} },
++}))
++
++import { dialog, shell } from 'electron'
++import { installWebDialogPatch, runWithWebDispatch } from '../src/web/web-dialogs'
++import { WebTabContents } from '../src/web/web-contents'
++
++describe('web-only run: no bare native dialogs', () => {
++  installWebDialogPatch()
++
++  it('answers a dialog no browser tab asked for with cancel, and shows nothing', async () => {
++    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
++    await expect(
++      dialog.showMessageBox({ message: 'Update?', buttons: ['Yes', 'No'], cancelId: 1 }),
++    ).resolves.toEqual({
++      response: 1,
++    })
++    await expect(dialog.showOpenDialog({ title: 'Open' })).resolves.toEqual({
++      canceled: true,
++      filePaths: [],
++    })
++    await expect(dialog.showSaveDialog({ title: 'Save' })).resolves.toEqual({ canceled: true })
++    dialog.showErrorBox('Crash', 'renderer gone')
++    expect(nativeMessage).not.toHaveBeenCalled()
++    expect(nativeOpen).not.toHaveBeenCalled()
++    expect(nativeErrorBox).not.toHaveBeenCalled()
++    expect(warn).toHaveBeenCalledTimes(4)
++    warn.mockRestore()
++  })
++
++  it('reveals and opens no file on the server machine (an export would pop up its file manager)', async () => {
++    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
++    shell.showItemInFolder('/tmp/genoffice-export-x/a.pdf')
++    await expect(shell.openPath('/tmp/genoffice-export-x/a.pdf')).resolves.toBe('')
++    expect(nativeReveal).not.toHaveBeenCalled()
++    expect(nativeOpenPath).not.toHaveBeenCalled()
++    expect(warn).toHaveBeenCalledTimes(2)
++    warn.mockRestore()
++  })
++
++  it('still serves a dialog a browser tab asked for in that tab', async () => {
++    const tab = new WebTabContents('/docs/')
++    const delivered: string[] = []
++    tab.deliver = (channel) => delivered.push(channel)
++    void runWithWebDispatch(tab, () => dialog.showMessageBox({ message: 'Restore?' }))
++    expect(delivered).toEqual(['web:dialog'])
++  })
++})
+diff --git a/apps/shell/tests/web-embedded-files.test.ts b/apps/shell/tests/web-embedded-files.test.ts
+new file mode 100644
+index 00000000..f78d7803
+--- /dev/null
++++ b/apps/shell/tests/web-embedded-files.test.ts
+@@ -0,0 +1,212 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import { readFileSync, writeFileSync } from 'node:fs'
++import { createServer, type Server } from 'node:http'
++import type { AddressInfo } from 'node:net'
++import { basename, dirname } from 'node:path'
++
++vi.mock('electron', () => {
++  const native = {
++    showSaveDialog: async () => ({ canceled: true }),
++    showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
++    showMessageBox: async () => ({ response: 0 }),
++  }
++  return { dialog: native, session: { defaultSession: {} } }
++})
++
++import {
++  cancelPicksFor,
++  deliveredAsDownload,
++  embeddedFolder,
++  embeddedOpen,
++  embeddedSave,
++  isEmbeddedTab,
++  serveEmbeddedFiles,
++} from '../src/web/embedded-files'
++import { installWebDialogPatch, runWithWebDispatch } from '../src/web/web-dialogs'
++import { WebTabContents } from '../src/web/web-contents'
++
++const TOKEN = 't'.repeat(48)
++const EMBEDDED = '/docs/?path=%2Fwork%2Fc1%2Fa.docx&host=https%3A%2F%2Fkw.example.com'
++
++function embeddedTab(url = EMBEDDED) {
++  const tab = new WebTabContents(url)
++  const delivered: [string, Record<string, unknown>][] = []
++  tab.deliver = (channel, args) => delivered.push([channel, args[0] as Record<string, unknown>])
++  return { tab, delivered }
++}
++
++let server: Server | undefined
++async function serve(): Promise<{ base: string; cookie: string }> {
++  server = createServer((req, res) => {
++    const authorized = (r: { headers: { cookie?: string } }) =>
++      (r.headers.cookie ?? '').includes(`kw_test=${TOKEN}`)
++    void serveEmbeddedFiles(req, res, { authorized }).then((served) => {
++      if (!served) {
++        res.writeHead(418)
++        res.end()
++      }
++    })
++  })
++  await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r))
++  const port = (server.address() as AddressInfo).port
++  return { base: `http://127.0.0.1:${port}`, cookie: `kw_test=${TOKEN}` }
++}
++
++const until = async (check: () => boolean, ms = 3000) => {
++  const deadline = Date.now() + ms
++  while (!check() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
++}
++
++describe('embedded file dialogs (files go to and come from the user, not the server disk)', () => {
++  afterEach(() => {
++    server?.close()
++    server = undefined
++  })
++
++  it('only tabs embedded in a host page', () => {
++    expect(isEmbeddedTab({ url: EMBEDDED })).toBe(true)
++    expect(isEmbeddedTab({ url: '/docs/?path=%2Fx.docx' })).toBe(false)
++  })
++
++  it('save: no directory browsing; the written file downloads once through a token-guarded URL', async () => {
++    const { base, cookie } = await serve()
++    const { tab, delivered } = embeddedTab()
++    const result = await embeddedSave(tab, {
++      defaultPath: '/data/someone/设备检修通知',
++      filters: [{ name: 'PDF', extensions: ['pdf'] }],
++    })
++    expect(result.canceled).toBe(false)
++    expect(basename(result.filePath!)).toBe('设备检修通知.pdf')
++    expect(dirname(result.filePath!)).not.toContain('/data/someone')
++    writeFileSync(result.filePath!, '%PDF-1.7 exported')
++    await until(() => delivered.length > 0)
++    const [channel, request] = delivered[0]
++    expect(channel).toBe('web:download')
++    expect(request.name).toBe('设备检修通知.pdf')
++    const url = `${base}${String(request.url)}`
++    expect((await fetch(url)).status).toBe(401)
++    const response = await fetch(url, { headers: { cookie } })
++    expect(response.status).toBe(200)
++    expect(response.headers.get('content-disposition')).toContain(
++      encodeURIComponent('设备检修通知.pdf'),
++    )
++    expect(await response.text()).toBe('%PDF-1.7 exported')
++    expect((await fetch(`${base}/__web/export/made-up`, { headers: { cookie } })).status).toBe(404)
++  })
++
++  it('open: the browser picker uploads the chosen files, the app gets their paths; cancel gives nothing', async () => {
++    const { base, cookie } = await serve()
++    const { tab, delivered } = embeddedTab()
++    const picked = embeddedOpen(tab, {
++      filters: [{ name: 'Images', extensions: ['png', 'jpg'] }],
++      properties: ['openFile'],
++    })
++    await until(() => delivered.length > 0)
++    const [channel, request] = delivered[0]
++    expect(channel).toBe('web:pick')
++    expect(request).toMatchObject({ accept: '.png,.jpg', multiple: false })
++    const url = `${base}${String(request.url)}`
++    expect((await fetch(`${url}?name=x.png`, { method: 'POST', body: 'x' })).status).toBe(401)
++    expect(
++      (
++        await fetch(`${url}?name=${encodeURIComponent('../流程图.png')}`, {
++          method: 'POST',
++          body: 'png-bytes',
++          headers: { cookie },
++        })
++      ).status,
++    ).toBe(204)
++    expect((await fetch(`${url}?done=1`, { method: 'POST', headers: { cookie } })).status).toBe(204)
++    const result = await picked
++    expect(result.canceled).toBe(false)
++    expect(result.filePaths.map((p) => basename(p))).toEqual(['流程图.png'])
++    expect(readFileSync(result.filePaths[0], 'utf8')).toBe('png-bytes')
++
++    const second = embeddedTab()
++    const canceled = embeddedOpen(second.tab, {})
++    await until(() => second.delivered.length > 0)
++    await fetch(`${base}${String(second.delivered[0][1].url)}?cancel=1`, {
++      method: 'POST',
++      headers: { cookie },
++    })
++    await expect(canceled).resolves.toEqual({ canceled: true, filePaths: [] })
++
++    const closed = embeddedTab()
++    const gone = embeddedOpen(closed.tab, {})
++    await until(() => closed.delivered.length > 0)
++    cancelPicksFor(closed.tab)
++    await expect(gone).resolves.toEqual({ canceled: true, filePaths: [] })
++  })
++
++  it('a folder is where an export lands: one file downloads as it is, several as one zip', async () => {
++    const { base, cookie } = await serve()
++    const many = embeddedTab()
++    const target = await embeddedFolder(many.tab, 300)
++    const dir = target.filePaths[0]
++    writeFileSync(`${dir}/设备检修通知-1.png`, 'page-1')
++    writeFileSync(`${dir}/设备检修通知-2.png.ab12cd.tmp`, 'half written')
++    writeFileSync(`${dir}/设备检修通知-2.png`, 'page-2')
++    expect(deliveredAsDownload(`${dir}/设备检修通知-1.png`)).toBe(true)
++    await until(() => many.delivered.length > 0, 5000)
++    const [channel, request] = many.delivered[0]
++    expect(channel).toBe('web:download')
++    expect(request.name).toBe('a.zip')
++    const zipped = await fetch(`${base}${String(request.url)}`, { headers: { cookie } })
++    const { default: JSZip } = await import('jszip')
++    const zip = await JSZip.loadAsync(await zipped.arrayBuffer())
++    expect(Object.keys(zip.files).sort()).toEqual(['设备检修通知-1.png', '设备检修通知-2.png'])
++    expect(await zip.file('设备检修通知-2.png')!.async('string')).toBe('page-2')
++
++    const one = embeddedTab()
++    const single = await embeddedFolder(one.tab, 300)
++    writeFileSync(`${single.filePaths[0]}/合并结果.docx`, 'merged')
++    await until(() => one.delivered.length > 0, 5000)
++    expect(one.delivered[0][1].name).toBe('合并结果.docx')
++  })
++
++  it('an open-folder dialog is an export target, not a file picker', async () => {
++    const { tab, delivered } = embeddedTab()
++    const result = await embeddedOpen(tab, { properties: ['openDirectory', 'createDirectory'] })
++    expect(result.canceled).toBe(false)
++    expect(result.filePaths).toHaveLength(1)
++    expect(delivered.some(([channel]) => channel === 'web:pick')).toBe(false)
++  })
++
++  it('the patched Electron dialogs take this path for embedded tabs only', async () => {
++    installWebDialogPatch()
++    const { dialog } = (await import('electron')) as unknown as {
++      dialog: {
++        showSaveDialog: (
++          first: unknown,
++          second?: unknown,
++        ) => Promise<{ canceled: boolean; filePath?: string }>
++      }
++    }
++    const { tab, delivered } = embeddedTab()
++    const result = await runWithWebDispatch(tab, () =>
++      dialog.showSaveDialog({ defaultPath: 'a.pdf' }),
++    )
++    expect(result.canceled).toBe(false)
++    expect(delivered.some(([channel]) => channel === 'web:dialog')).toBe(false)
++    expect(deliveredAsDownload(result.filePath!)).toBe(true)
++    expect(deliveredAsDownload('/data/someone/a.pdf')).toBe(false)
++    // apps pass the parent window first (showSaveDialog(window, options)): the options still count
++    const parent = { title: 'GenOffice', id: 1 }
++    const exported = await runWithWebDispatch(tab, () =>
++      dialog.showSaveDialog(parent, {
++        defaultPath: '设备检修通知.pdf',
++        filters: [{ name: 'PDF', extensions: ['pdf'] }],
++      }),
++    )
++    expect(basename(exported.filePath!)).toBe('设备检修通知.pdf')
++    const plain = embeddedTab('/docs/?path=%2Fx.docx')
++    void runWithWebDispatch(plain.tab, () =>
++      dialog.showSaveDialog(parent, { title: '导出为 PDF', defaultPath: 'a.pdf' }),
++    )
++    await until(() => plain.delivered.length > 0)
++    expect(plain.delivered[0][0]).toBe('web:dialog')
++    expect(plain.delivered[0][1]).toMatchObject({
++      options: { kind: 'save', title: '导出为 PDF', defaultPath: 'a.pdf' },
++    })
++  })
++})
+diff --git a/apps/shell/tests/web-only.test.ts b/apps/shell/tests/web-only.test.ts
+new file mode 100644
+index 00000000..7c08d778
+--- /dev/null
++++ b/apps/shell/tests/web-only.test.ts
+@@ -0,0 +1,11 @@
++import { describe, expect, it } from 'vitest'
++import { webOnlyRequested } from '../src/web/web-only'
++
++describe('web-only runs', () => {
++  it('turn on by flag or environment', () => {
++    expect(webOnlyRequested(['electron', 'apps/shell', '--web-only'], {})).toBe(true)
++    expect(webOnlyRequested(['electron', 'apps/shell'], { GENOFFICE_WEB_ONLY: '1' })).toBe(true)
++    expect(webOnlyRequested(['electron', 'apps/shell', '--web-server'], {})).toBe(false)
++    expect(webOnlyRequested([], { GENOFFICE_WEB_ONLY: '0' })).toBe(false)
++  })
++})
+diff --git a/apps/shell/tests/web-saved-watch.test.ts b/apps/shell/tests/web-saved-watch.test.ts
+new file mode 100644
+index 00000000..66c1f2e1
+--- /dev/null
++++ b/apps/shell/tests/web-saved-watch.test.ts
+@@ -0,0 +1,74 @@
++import { afterEach, describe, expect, it } from 'vitest'
++import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { embeddedTabFile, watchEmbeddedTab, watchFileSaves } from '../src/web/saved-watch'
++
++const SETTLE = 60
++const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
++
++describe('saved watch (an embedding host hears about every write)', () => {
++  let dir = ''
++  afterEach(async () => {
++    if (dir) await rm(dir, { recursive: true, force: true })
++  })
++
++  it('notifies once per settled write, including a temp file renamed over it', async () => {
++    dir = await mkdtemp(join(tmpdir(), 'saved-watch-'))
++    const file = join(dir, 'report.docx')
++    await writeFile(file, 'v1')
++    let notices = 0
++    const stop = await watchFileSaves(file, () => notices++, SETTLE)
++    try {
++      await writeFile(file, 'v2-part')
++      await writeFile(file, 'v2-whole')
++      await wait(SETTLE * 4)
++      expect(notices).toBe(1)
++
++      await writeFile(join(dir, 'other.docx'), 'x')
++      await wait(SETTLE * 4)
++      expect(notices).toBe(1)
++
++      await writeFile(join(dir, '.report.tmp'), 'v3, written elsewhere first')
++      await rename(join(dir, '.report.tmp'), file)
++      await wait(SETTLE * 4)
++      expect(notices).toBe(2)
++    } finally {
++      stop()
++    }
++    await writeFile(file, 'after stop')
++    await wait(SETTLE * 4)
++    expect(notices).toBe(2)
++  })
++
++  it('only watches tabs embedded in a host page', () => {
++    expect(
++      embeddedTabFile('/docs/?path=%2Fwork%2Fc1%2Fa.docx&host=https%3A%2F%2Fkw.example.com'),
++    ).toBe('/work/c1/a.docx')
++    expect(embeddedTabFile('/docs/?path=%2Fwork%2Fc1%2Fa.docx')).toBeNull()
++    expect(embeddedTabFile('/docs/?host=https%3A%2F%2Fkw.example.com')).toBeNull()
++    const delivered: unknown[][] = []
++    const stop = watchEmbeddedTab('/docs/?path=%2Fnowhere%2Fa.docx', (channel, args) =>
++      delivered.push([channel, ...args]),
++    )
++    stop()
++    expect(delivered).toEqual([])
++  })
++
++  it('delivers web:saved with the path for an embedded tab', async () => {
++    dir = await mkdtemp(join(tmpdir(), 'saved-watch-'))
++    const file = join(dir, 'deck.pptx')
++    await writeFile(file, 'v1')
++    const delivered: unknown[][] = []
++    const url = `/slides/?path=${encodeURIComponent(file)}&host=${encodeURIComponent('https://kw.example.com')}`
++    const stop = watchEmbeddedTab(url, (channel, args) => delivered.push([channel, ...args]))
++    try {
++      await wait(SETTLE)
++      await writeFile(file, 'v2')
++      await wait(1000)
++      expect(delivered).toEqual([['web:saved', file]])
++    } finally {
++      stop()
++    }
++  })
++})
+diff --git a/packages/ui/src/host-origin.ts b/packages/ui/src/host-origin.ts
+new file mode 100644
+index 00000000..5516a059
+--- /dev/null
++++ b/packages/ui/src/host-origin.ts
+@@ -0,0 +1,20 @@
++/**
++ * The embedding page's origin when a host owns the AI (KnowWork): the editor's
++ * URL names it (`?host=<origin>`) and the page really is framed by it. No
++ * imports, so the web shim can use it without pulling in host-ai.css.
++ */
++export function hostAiOrigin(win: Window = window): string | null {
++  if (win.parent === win) return null
++  const raw = new URLSearchParams(win.location.search).get('host')
++  if (!raw) return null
++  let origin: string
++  try {
++    origin = new URL(raw).origin
++  } catch {
++    return null
++  }
++  if (origin === 'null') return null
++  const ancestors = (win.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins
++  if (ancestors && ancestors.length > 0 && ancestors[0] !== origin) return null
++  return origin
++}

@@ -1,0 +1,2823 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: weizxfree <weizhangxiang2022@gmail.com>
+Date: Mon, 16 Nov 2026 21:40:05 -0800
+Subject: [PATCH 4/5] feat(ui): let an embedding page own the AI
+
+When the editor's URL names its host (?host=<origin>) and the page really
+is framed by it, the host's assistant replaces the built-in one:
+- Docs: every start of the built-in assistant (Ask AI, ribbon presets,
+  context menu, F7, Tools menu) is posted to the host with the selection,
+  through the one preset setter (host-bridge.ts useHostOwnedAi)
+- Sheets: the selection's Ask AI and the ribbon's Translate are posted with
+  the worksheet name and range
+- Slides: Ask AI on selected elements, and on words selected inside a text
+  box (host-text-ask.tsx), ribbon proofing and translate and the context
+  menu's AI items are posted with the page, the elements' durable ids and
+  the selected words
+- the host's chat is the queue: the selection's ask just sends (Enter or
+  its one button), monochrome
+- no credits notes or prompts; the built-in AI panels stay closed
+  (host-ai.css)
+- the host can scroll to a block and mark what its agent is working on: the
+  blocks in Docs, the range in Sheets (ai-busy-range.ts, a canvas extension)
+  and the elements in Slides (host-busy.tsx, a frame over the canvas)
+- the editor hands MCP agent commands the same stores the built-in agent gets
+---
+ apps/docs/src/renderer/App.tsx                |  26 +-
+ .../src/renderer/components/AiAskPopover.tsx  |  21 +-
+ .../src/renderer/components/ribbon-tabs.tsx   |  18 +-
+ .../docs/src/renderer/editor/ai-busy-frame.ts | 222 ++++++++++++++++++
+ apps/docs/src/renderer/editor/ai-busy.css     |  76 ++++++
+ apps/docs/src/renderer/editor/ai-busy.ts      |  78 ++++++
+ apps/docs/src/renderer/host-bridge.ts         | 157 +++++++++++++
+ apps/docs/tests/ai-ask-host.test.ts           | 118 ++++++++++
+ apps/docs/tests/ai-busy-frame.test.ts         |  46 ++++
+ apps/docs/tests/host-bridge.test.ts           | 150 ++++++++++++
+ apps/docs/tests/host-owned-ai.test.ts         |  88 +++++++
+ apps/sheets/src/renderer/App.tsx              |   5 +
+ apps/sheets/src/renderer/ExcelShell.tsx       |   4 +
+ apps/sheets/src/renderer/ai-busy-range.ts     | 131 +++++++++++
+ apps/sheets/src/renderer/host-bridge.ts       | 115 +++++++++
+ apps/sheets/tests/host-bridge.test.ts         |  32 +++
+ apps/shell/src/main/mcp/agent-edited.ts       |  15 ++
+ .../src/main/mcp/tools/docx-agent-tools.ts    |   6 +-
+ apps/shell/src/main/mcp/tools/slides-tools.ts |   3 +
+ .../src/main/mcp/tools/xlsx-agent-tools.ts    |   9 +-
+ apps/shell/src/web/shim/client.ts             |  11 +-
+ apps/shell/src/web/shim/host-page.ts          |   9 +
+ .../shell/tests/mcp/agent-edit-notice.test.ts |  51 ++++
+ apps/shell/tests/mcp/slides-tools.test.ts     |  20 +-
+ apps/shell/tests/web-agent-edited.test.ts     |  33 +++
+ apps/shell/tests/web-host-page.test.ts        |  31 +++
+ apps/slides/src/renderer/App.tsx              |  42 ++++
+ .../src/renderer/components/AiAskPopover.tsx  |  17 +-
+ .../slides/src/renderer/components/Ribbon.tsx |  11 +-
+ apps/slides/src/renderer/host-bridge.ts       | 133 +++++++++++
+ apps/slides/src/renderer/host-busy.css        |  22 ++
+ apps/slides/src/renderer/host-busy.tsx        |  41 ++++
+ apps/slides/src/renderer/host-text-ask.tsx    | 106 +++++++++
+ apps/slides/tests/host-bridge.test.ts         |  45 ++++
+ apps/slides/tests/host-text-ask.test.ts       |  43 ++++
+ packages/ui/src/ai-panel-prefs-store.ts       |   4 +-
+ packages/ui/src/host-ai.css                   |  87 +++++++
+ packages/ui/src/host-ai.ts                    |  41 ++++
+ packages/ui/src/index.ts                      |   1 +
+ packages/ui/tests/host-ai-sidebar.test.ts     |  27 +++
+ packages/ui/tests/host-ai.test.ts             |  37 +++
+ 41 files changed, 2112 insertions(+), 20 deletions(-)
+ create mode 100644 apps/docs/src/renderer/editor/ai-busy-frame.ts
+ create mode 100644 apps/docs/src/renderer/editor/ai-busy.css
+ create mode 100644 apps/docs/src/renderer/editor/ai-busy.ts
+ create mode 100644 apps/docs/src/renderer/host-bridge.ts
+ create mode 100644 apps/docs/tests/ai-ask-host.test.ts
+ create mode 100644 apps/docs/tests/ai-busy-frame.test.ts
+ create mode 100644 apps/docs/tests/host-bridge.test.ts
+ create mode 100644 apps/docs/tests/host-owned-ai.test.ts
+ create mode 100644 apps/sheets/src/renderer/ai-busy-range.ts
+ create mode 100644 apps/sheets/src/renderer/host-bridge.ts
+ create mode 100644 apps/sheets/tests/host-bridge.test.ts
+ create mode 100644 apps/shell/src/main/mcp/agent-edited.ts
+ create mode 100644 apps/shell/tests/mcp/agent-edit-notice.test.ts
+ create mode 100644 apps/shell/tests/web-agent-edited.test.ts
+ create mode 100644 apps/shell/tests/web-host-page.test.ts
+ create mode 100644 apps/slides/src/renderer/host-bridge.ts
+ create mode 100644 apps/slides/src/renderer/host-busy.css
+ create mode 100644 apps/slides/src/renderer/host-busy.tsx
+ create mode 100644 apps/slides/src/renderer/host-text-ask.tsx
+ create mode 100644 apps/slides/tests/host-bridge.test.ts
+ create mode 100644 apps/slides/tests/host-text-ask.test.ts
+ create mode 100644 packages/ui/src/host-ai.css
+ create mode 100644 packages/ui/src/host-ai.ts
+ create mode 100644 packages/ui/tests/host-ai-sidebar.test.ts
+ create mode 100644 packages/ui/tests/host-ai.test.ts
+
+diff --git a/apps/docs/src/renderer/App.tsx b/apps/docs/src/renderer/App.tsx
+index 0dad962b..ada781b8 100644
+--- a/apps/docs/src/renderer/App.tsx
++++ b/apps/docs/src/renderer/App.tsx
+@@ -560,6 +560,8 @@ const WORD_COUNT_THROTTLE_MS = 400
+ /** consecutive follow-up passes a pass may schedule for itself */
+ import { runHeadlessDocumentExport } from './headless-export'
+ import { installMcpBridge } from './mcp-bridge'
++import type { McpEditorAccess } from './mcp-agent-commands'
++import { useHostBridge, useHostOwnedAi } from './host-bridge'
+ import {
+   clampDocsZoom,
+   DOCS_ZOOM_MAX,
+@@ -1209,11 +1211,14 @@ export function App() {
+   const [autoSave, setAutoSave] = useAutoSavePref('aidocs.autoSave', window.desktop)
+   // tab closed but this renderer kept alive (shell freeze workaround): go inert
+   const [tornDown, setTornDown] = useState(false)
+-  const [aiPreset, setAiPreset] = useState<{
++  const [aiPreset, setAiPresetRaw] = useState<{
+     text: string
+     nonce: number
+     autoRun?: boolean
+   } | null>(null)
++  // an embedding host that owns the AI gets every request meant for the panel (host-bridge.ts)
++  const hostAi = useHostOwnedAi(setAiPresetRaw)
++  const setAiPreset = hostAi.setPreset
+   // selection-scoped AI edit queue (anchors live as editor decorations)
+   const [editQueue, setEditQueue] = useState<DocsEditQueueItem[]>([])
+   const editQueueRef = useRef(editQueue)
+@@ -2201,10 +2206,15 @@ export function App() {
+ 
+   // MCP bridge: let an external agent drive this visible editor. Commands arrive
+   // from the shell main process and run against the live ctx (refs refresh per render).
++  const mcpAccessRef = useRef<McpEditorAccess | null>(null)
+   useEffect(() => {
+     if (tornDown || !editor) return
+-    return installMcpBridge({ getCtx: () => fileCtxRef.current })
++    return installMcpBridge({
++      getCtx: () => fileCtxRef.current,
++      getAccess: () => mcpAccessRef.current,
++    })
+   }, [tornDown, editor])
++  useHostBridge(hostAi, editor, tornDown)
+ 
+   // Recompute the document-level line-height factor while editing:
+   // docStyleCss decides it once at parse time, so typing CJK into a blank document
+@@ -6172,6 +6182,7 @@ export function App() {
+   // behind the one-time whole-document-rewrite acknowledgement
+   const runAiProofread = useCallback(() => {
+     if (
++      !hostAi.origin &&
+       localStorage.getItem(AI_REWRITE_ACK_KEY) !== '1' &&
+       !window.confirm(t('ribbonAiRewriteConfirm'))
+     )
+@@ -7247,6 +7258,7 @@ export function App() {
+     [],
+   )
+   const queueAdd = (instruction: string): void => {
++    if (hostAi.queue(instruction)) return
+     const { from, to, empty } = editor.state.selection
+     if (empty || editQueueRef.current.length >= EDIT_QUEUE_MAX) return
+     const qid = `q${++queueSeqRef.current}`
+@@ -7623,6 +7635,16 @@ export function App() {
+     [editor],
+   )
+ 
++  // the same stores the built-in agent gets, for edits arriving over MCP (mcp-agent-commands.ts)
++  mcpAccessRef.current = {
++    track: trackChanges ? { author: aiRevisionAuthor() } : undefined,
++    comments: aiCommentsAccess,
++    hf: aiHfAccess,
++    pageSetup: aiPageSetupAccess,
++    extras: aiDocExtras,
++    notes: aiNotesAccess,
++  }
++
+   const ribbonActions = useStableCallbacks({
+     allocateNumId: (kind: 'bullet' | 'ordered') => allocateListNumId(kind),
+     createListDef: (levels: CustomNumberingLevel[]) => {
+diff --git a/apps/docs/src/renderer/components/AiAskPopover.tsx b/apps/docs/src/renderer/components/AiAskPopover.tsx
+index 2cf84289..e491e09c 100644
+--- a/apps/docs/src/renderer/components/AiAskPopover.tsx
++++ b/apps/docs/src/renderer/components/AiAskPopover.tsx
+@@ -10,7 +10,7 @@
+  * editable there) instead of discarding it.
+  */
+ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+-import { useImeEnterGuard } from '@genoffice/ui'
++import { hostOwnsAi, useImeEnterGuard } from '@genoffice/ui'
+ import type { Editor } from '@tiptap/core'
+ import { NodeSelection } from '@tiptap/pm/state'
+ import { CellSelection } from '@tiptap/pm/tables'
+@@ -255,6 +255,9 @@ export function AiAskPopover({
+   }
+ 
+   const canSubmit = text.trim().length > 0
++  // an embedding host owns the AI: its chat is the queue, so a request is
++  // just sent (Enter or the one button), the way a chat's inline ask works
++  const hostAi = hostOwnsAi()
+   const editItem = open?.mode === 'edit' ? getItem(open.qid) : undefined
+ 
+   const excerpt = (() => {
+@@ -333,7 +336,10 @@ export function AiAskPopover({
+             if (e.key === 'Enter' && !ime.isImeConfirm(e.nativeEvent)) {
+               e.preventDefault()
+               if (!canSubmit) return
+-              if (open.mode === 'edit') {
++              if (hostAi) {
++                onSendNow(text.trim())
++                close()
++              } else if (open.mode === 'edit') {
+                 onQueueUpdate(open.qid, text.trim())
+                 close()
+               } else if (!queueFull) {
+@@ -383,6 +389,17 @@ export function AiAskPopover({
+                 {t('aiAskUpdate')}
+               </button>
+             </>
++          ) : hostAi ? (
++            <button
++              className="ai-ask-confirm"
++              disabled={!canSubmit}
++              onClick={() => {
++                onSendNow(text.trim())
++                close()
++              }}
++            >
++              {t('aiAskSendNow')}
++            </button>
+           ) : (
+             <>
+               <button
+diff --git a/apps/docs/src/renderer/components/ribbon-tabs.tsx b/apps/docs/src/renderer/components/ribbon-tabs.tsx
+index afa02bf8..f944ede3 100644
+--- a/apps/docs/src/renderer/components/ribbon-tabs.tsx
++++ b/apps/docs/src/renderer/components/ribbon-tabs.tsx
+@@ -7,6 +7,7 @@ import {
+   useDismissablePopover,
+   wordArtSolidColor,
+   type WordArtPreset,
++  hostOwnsAi,
+ } from '@genoffice/ui'
+ import {
+   buildLineParagraphXml,
+@@ -770,6 +771,9 @@ export interface InsertTabProps extends TabProps {
+ /** One-time "AI rewrites the whole document" acknowledgement */
+ export const AI_REWRITE_ACK_KEY = 'docs-ai-rewrite-ack'
+ 
++/** " — uses AI credits" after an AI action's tooltip; none when an embedding host owns the AI (no built-in credits) */
++const aiCreditNote = (): string => (hostOwnsAi() ? '' : ` — ${t('ribbonAiCreditNote')}`)
++
+ export type { BalloonMode, RevisionDisplayMode }
+ 
+ interface ReviewTabProps extends TabProps {
+@@ -902,6 +906,8 @@ export function ReviewTab({
+   // Editor / Translate send the full document to the agent, consume credits and
+   // may rewrite everything — say so once before the first run.
+   const confirmAiRewrite = () => {
++    // an embedding host owns the AI: no built-in credits to warn about
++    if (hostOwnsAi()) return true
+     if (localStorage.getItem(AI_REWRITE_ACK_KEY) === '1') return true
+     if (!window.confirm(t('ribbonAiRewriteConfirm'))) return false
+     localStorage.setItem(AI_REWRITE_ACK_KEY, '1')
+@@ -917,7 +923,7 @@ export function ReviewTab({
+           <button
+             className="rb-big"
+             disabled={!hasDoc}
+-            data-tip={`${t('ribbonEditorTip')} — ${t('ribbonAiCreditNote')}`}
++            data-tip={`${t('ribbonEditorTip')}${aiCreditNote()}`}
+             onClick={() => {
+               if (hasRangeSelection()) onAiPreset(t('ribbonEditorSelectionPrompt'))
+               else if (confirmAiRewrite()) onAiPreset(t('ribbonEditorPrompt'))
+@@ -953,7 +959,7 @@ export function ReviewTab({
+             <button
+               className="rb-big"
+               disabled={!hasDoc}
+-              data-tip={`${t('ribbonTranslateTip')} — ${t('ribbonAiCreditNote')}`}
++              data-tip={`${t('ribbonTranslateTip')}${aiCreditNote()}`}
+               onClick={() => toggleDropdown(setDropdown, 'translate')}
+             >
+               <span className="rb-big-icon">
+@@ -1083,9 +1089,9 @@ export function ReviewTab({
+             <span>{t('ribbonShowComments')}</span>
+           </button>
+           <button
+-            className="rb-big"
++            className="rb-big ai-action"
+             disabled={!hasDoc || openCommentCount === 0}
+-            data-tip={`${t('ribbonAiCommentsTip', { count: openCommentCount })} — ${t('ribbonAiCreditNote')}`}
++            data-tip={`${t('ribbonAiCommentsTip', { count: openCommentCount })}${aiCreditNote()}`}
+             onClick={() => onAiPreset(t('ribbonAiCommentsPrompt'))}
+           >
+             <span className="rb-big-icon">
+@@ -1286,9 +1292,9 @@ export function ReviewTab({
+             <span>{t('ribbonReviewingPane')}</span>
+           </button>
+           <button
+-            className="rb-big"
++            className="rb-big ai-action"
+             disabled={!hasDoc || revisionCount === 0}
+-            data-tip={`${t('ribbonAiRevisionsTip', { count: revisionCount })} — ${t('ribbonAiCreditNote')}`}
++            data-tip={`${t('ribbonAiRevisionsTip', { count: revisionCount })}${aiCreditNote()}`}
+             onClick={() => onAiPreset(t('ribbonAiRevisionsPrompt'))}
+           >
+             <span className="rb-big-icon">
+diff --git a/apps/docs/src/renderer/editor/ai-busy-frame.ts b/apps/docs/src/renderer/editor/ai-busy-frame.ts
+new file mode 100644
+index 00000000..9a4c16c4
+--- /dev/null
++++ b/apps/docs/src/renderer/editor/ai-busy-frame.ts
+@@ -0,0 +1,222 @@
++import type { EditorState, PluginView } from '@tiptap/pm/state'
++import type { EditorView } from '@tiptap/pm/view'
++import type { AiBusyRange } from './ai-busy'
++
++/**
++ * The frames of the "AI is working here" marker (ai-busy.ts): one dashed box
++ * per run of marked blocks, not one per block, so a long range reads as one
++ * piece. Laid over the editor in a layer of its own rather than drawn on the
++ * blocks: an outline per block cannot bridge the paragraph spacing, the
++ * blocks' pseudo-elements are taken (paragraph marks, revision badges, which
++ * the agent's tracked changes bring along), and ProseMirror owns every node
++ * under its root. A run ends where a page gap or a column break falls between
++ * two blocks, so a range over a page boundary gets a box on each page.
++ * Measured from the DOM after layout; nothing here feeds pagination.
++ */
++
++export interface BlockBox {
++  /** client px */
++  top: number
++  bottom: number
++  left: number
++  right: number
++  /** a page gap sits between this block and the previous one of the range */
++  breakBefore: boolean
++}
++
++export interface Box {
++  top: number
++  bottom: number
++  left: number
++  right: number
++}
++
++/** frame lines sit this far outside the text (client px) */
++const PAD = 4
++/** a run continues downward only; slack for sub-pixel layout */
++const SLACK = 1
++
++/** group the measured blocks of one range into frames (client px) */
++export function framesOf(blocks: readonly BlockBox[]): Box[] {
++  const runs = blocks.reduce<Box[]>((done, block) => {
++    const last = done[done.length - 1]
++    const continues =
++      last !== undefined &&
++      !block.breakBefore &&
++      block.top >= last.bottom - SLACK &&
++      block.left < last.right
++    if (!continues) return [...done, { ...block }]
++    const merged = {
++      top: last.top,
++      bottom: Math.max(last.bottom, block.bottom),
++      left: Math.min(last.left, block.left),
++      right: Math.max(last.right, block.right),
++    }
++    return [...done.slice(0, -1), merged]
++  }, [])
++  return runs.map((run) => ({
++    top: run.top - PAD,
++    bottom: run.bottom + PAD,
++    left: run.left - PAD,
++    right: run.right + PAD,
++  }))
++}
++
++/** a page gap widget (pagination-gaps.ts) between two top-level blocks */
++function pageGapBetween(previous: Element, next: Element): boolean {
++  for (
++    let node = previous.nextElementSibling;
++    node && node !== next;
++    node = node.nextElementSibling
++  ) {
++    if (node.classList.contains('page-gap')) return true
++  }
++  return false
++}
++
++/** the visible top-level blocks of a range, measured */
++function measure(view: EditorView, range: AiBusyRange): BlockBox[] {
++  const boxes: BlockBox[] = []
++  let previous: Element | null = null
++  view.state.doc.forEach((_node, offset, index) => {
++    if (index < range.start || index > range.end) return
++    const dom = view.nodeDOM(offset)
++    if (!(dom instanceof HTMLElement)) return
++    const rect = dom.getBoundingClientRect()
++    if (rect.width === 0 && rect.height === 0) return // not rendered (display: none)
++    const breakBefore = previous !== null && pageGapBetween(previous, dom)
++    boxes.push({
++      top: rect.top,
++      bottom: rect.bottom,
++      left: rect.left,
++      right: rect.right,
++      breakBefore,
++    })
++    previous = dom
++  })
++  return boxes
++}
++
++/** '' where the engine computes no overflow (jsdom) */
++const clips = (overflow: string) => overflow !== '' && overflow !== 'visible'
++
++/** the part of the viewport the editor shows: every clipping ancestor (the
++ *  scrolling pane, the multi-page clip window) cut out of the window */
++function visibleArea(el: Element): Box {
++  let area: Box = { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight }
++  for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
++    const style = getComputedStyle(node)
++    if (!clips(style.overflowX) && !clips(style.overflowY)) continue
++    const rect = node.getBoundingClientRect()
++    area = {
++      top: Math.max(area.top, rect.top),
++      left: Math.max(area.left, rect.left),
++      right: Math.min(area.right, rect.right),
++      bottom: Math.min(area.bottom, rect.bottom),
++    }
++  }
++  return area
++}
++
++const px = (value: number) => `${Math.round(value * 10) / 10}px`
++
++/**
++ * The layer itself, as the marker plugin's view: a fixed box over the visible
++ * part of the editor, one child per frame. Redrawn right away when the ranges
++ * change and on the next frame after any other update, scroll or resize; the
++ * frame elements are reused so the shimmer does not restart while scrolling.
++ */
++export class AiBusyFrames implements PluginView {
++  private readonly layer: HTMLDivElement
++  private frame = 0
++  private readonly redraw = (): void => this.schedule()
++  private readonly resizes: ResizeObserver | null
++
++  constructor(
++    private view: EditorView,
++    private readonly rangesOf: (state: EditorState) => AiBusyRange[],
++  ) {
++    this.layer = document.createElement('div')
++    this.layer.className = 'ai-busy-layer'
++    this.layer.setAttribute('aria-hidden', 'true')
++    document.body.append(this.layer)
++    document.addEventListener('scroll', this.redraw, { capture: true, passive: true })
++    window.addEventListener('resize', this.redraw)
++    this.resizes = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(this.redraw)
++    this.resizes?.observe(view.dom)
++    this.draw()
++  }
++
++  update(view: EditorView, previous: EditorState): void {
++    this.view = view
++    if (this.rangesOf(view.state) !== this.rangesOf(previous)) this.draw()
++    else this.schedule()
++  }
++
++  destroy(): void {
++    cancelAnimationFrame(this.frame)
++    document.removeEventListener('scroll', this.redraw, { capture: true })
++    window.removeEventListener('resize', this.redraw)
++    this.resizes?.disconnect()
++    this.layer.remove()
++  }
++
++  private schedule(): void {
++    if (this.frame || this.rangesOf(this.view.state).length === 0) return
++    this.frame = requestAnimationFrame(() => {
++      this.frame = 0
++      this.draw()
++    })
++  }
++
++  private draw(): void {
++    const ranges = this.rangesOf(this.view.state)
++    const frames = ranges.flatMap((range) =>
++      framesOf(measure(this.view, range)).map((box, i) => ({
++        box,
++        label: i === 0 ? range.label : undefined,
++      })),
++    )
++    const area = visibleArea(this.view.dom)
++    Object.assign(this.layer.style, {
++      top: px(area.top),
++      left: px(area.left),
++      width: px(Math.max(0, area.right - area.left)),
++      height: px(Math.max(0, area.bottom - area.top)),
++    })
++    this.layer.classList.toggle('dark', this.view.dom.closest('.page-dark') !== null)
++    frames.forEach(({ box, label }, i) => this.paint(this.frameAt(i), box, area, label))
++    Array.from(this.layer.children)
++      .slice(frames.length)
++      .forEach((el) => {
++        ;(el as HTMLElement).hidden = true
++      })
++  }
++
++  private frameAt(i: number): HTMLElement {
++    const existing = this.layer.children[i] as HTMLElement | undefined
++    if (existing) return existing
++    const el = document.createElement('div')
++    el.className = 'ai-busy-frame'
++    this.layer.append(el)
++    return el
++  }
++
++  private paint(el: HTMLElement, box: Box, area: Box, label: string | undefined): void {
++    el.hidden = false
++    Object.assign(el.style, {
++      top: px(box.top - area.top),
++      left: px(box.left - area.left),
++      width: px(box.right - box.left),
++      height: px(box.bottom - box.top),
++    })
++    const tag = el.firstElementChild as HTMLElement | null
++    if (!label) {
++      tag?.remove()
++      return
++    }
++    const shown = tag ?? el.appendChild(document.createElement('span'))
++    shown.className = 'ai-busy-label'
++    shown.textContent = label
++  }
++}
+diff --git a/apps/docs/src/renderer/editor/ai-busy.css b/apps/docs/src/renderer/editor/ai-busy.css
+new file mode 100644
+index 00000000..c0daf6a8
+--- /dev/null
++++ b/apps/docs/src/renderer/editor/ai-busy.css
+@@ -0,0 +1,76 @@
++/* an embedding host's agent is about to rewrite these blocks (editor/ai-busy.ts):
++   one frame per run, laid over the editor by ai-busy-frame.ts, so pagination
++   measures nothing new. Neutral ink like the sheets and slides marks
++   (ai-busy-range.ts, host-busy.css): the embedding page is monochrome, so the
++   mark is too, not the built-in AI's yellow. Below the menus (z-index 59/60) so
++   a dropdown over the page is not crossed by a frame. */
++.ai-busy-layer {
++  --ai-busy-line: rgba(13, 13, 13, 0.4);
++  --ai-busy-fill: rgba(13, 13, 13, 0.06);
++  --ai-busy-tag: #0d0d0d;
++  --ai-busy-tag-text: #ffffff;
++  position: fixed;
++  z-index: 20;
++  overflow: hidden;
++  pointer-events: none;
++}
++
++/* dark paper (styles.css .page-dark): the layer is outside it, ai-busy-frame.ts
++   copies the state over */
++.ai-busy-layer.dark {
++  --ai-busy-line: rgba(255, 255, 255, 0.45);
++  --ai-busy-fill: rgba(255, 255, 255, 0.08);
++  --ai-busy-tag: #ffffff;
++  --ai-busy-tag-text: #0d0d0d;
++}
++
++.ai-busy-frame {
++  position: absolute;
++  box-sizing: border-box;
++  border: 1px dashed var(--ai-busy-line);
++  border-radius: 2px;
++  background-image: linear-gradient(
++    90deg,
++    transparent 0%,
++    var(--ai-busy-fill) 50%,
++    transparent 100%
++  );
++  background-size: 800px 100%;
++  background-repeat: no-repeat;
++  animation: ai-busy-shimmer 1.6s linear infinite;
++}
++
++.ai-busy-label {
++  position: absolute;
++  top: -22px;
++  right: -1px;
++  padding: 0 8px;
++  border-radius: 10px;
++  background: var(--ai-busy-tag);
++  color: var(--ai-busy-tag-text);
++  font:
++    12px/20px system-ui,
++    sans-serif;
++  white-space: nowrap;
++}
++
++@keyframes ai-busy-shimmer {
++  from {
++    background-position: -800px 0;
++  }
++  to {
++    background-position: calc(100% + 800px) 0;
++  }
++}
++
++@media (prefers-reduced-motion: reduce) {
++  .ai-busy-frame {
++    animation: none;
++  }
++}
++
++@media print {
++  .ai-busy-layer {
++    display: none;
++  }
++}
+diff --git a/apps/docs/src/renderer/editor/ai-busy.ts b/apps/docs/src/renderer/editor/ai-busy.ts
+new file mode 100644
+index 00000000..93871721
+--- /dev/null
++++ b/apps/docs/src/renderer/editor/ai-busy.ts
+@@ -0,0 +1,78 @@
++import type { Editor } from '@tiptap/core'
++import './ai-busy.css'
++import { Plugin, PluginKey, type EditorState } from '@tiptap/pm/state'
++import type { EditorView } from '@tiptap/pm/view'
++import { AiBusyFrames } from './ai-busy-frame'
++
++/**
++ * "The AI is working here" marker: the top-level blocks an embedding host's
++ * agent is about to rewrite get one dashed frame per run and a label
++ * (ai-busy-frame.ts), so a person editing elsewhere in the document sees where
++ * not to type while the agent works. Laid over the editor: nothing is written
++ * to the document, the undo history or the dirty state. The host sets and
++ * clears it (host-bridge.ts).
++ */
++
++export interface AiBusyRange {
++  /** first and last top-level block index, inclusive */
++  start: number
++  end: number
++  /** shown on the first block of the range */
++  label?: string
++}
++
++const MAX_RANGES = 50
++const MAX_LABEL = 80
++
++export const aiBusyKey = new PluginKey<AiBusyRange[]>('aiBusy')
++
++/** keep only well-formed ranges from an untrusted message */
++export function sanitizeAiBusyRanges(raw: unknown): AiBusyRange[] {
++  if (!Array.isArray(raw)) return []
++  const out: AiBusyRange[] = []
++  for (const item of raw.slice(0, MAX_RANGES)) {
++    const { start, end, label } = (item ?? {}) as Record<string, unknown>
++    if (!Number.isInteger(start) || !Number.isInteger(end)) continue
++    if ((start as number) < 0 || (end as number) < (start as number)) continue
++    out.push({
++      start: start as number,
++      end: end as number,
++      ...(typeof label === 'string' && label.trim()
++        ? { label: label.trim().slice(0, MAX_LABEL) }
++        : {}),
++    })
++  }
++  return out
++}
++
++/** replace the marked ranges (an empty list clears the marker) */
++export function setAiBusy(view: EditorView, ranges: AiBusyRange[]): void {
++  view.dispatch(view.state.tr.setMeta(aiBusyKey, ranges).setMeta('addToHistory', false))
++}
++
++export function aiBusyRanges(state: EditorState): AiBusyRange[] {
++  return aiBusyKey.getState(state) ?? []
++}
++
++/**
++ * Add the marker's plugin to a live editor; returns the removal. Registered
++ * only while a host page owns the AI (host-bridge.ts installs it), so the
++ * editor's own extension list stays upstream's.
++ */
++export function registerAiBusy(editor: Editor): () => void {
++  editor.registerPlugin(
++    new Plugin<AiBusyRange[]>({
++      key: aiBusyKey,
++      state: {
++        init: () => [],
++        // block indexes, not positions: the host re-sends the ranges as its
++        // agent moves on, so they are kept as given across document edits
++        apply: (tr, value) => (tr.getMeta(aiBusyKey) as AiBusyRange[] | undefined) ?? value,
++      },
++      view: (view) => new AiBusyFrames(view, aiBusyRanges),
++    }),
++  )
++  return () => {
++    if (!editor.isDestroyed) editor.unregisterPlugin(aiBusyKey)
++  }
++}
+diff --git a/apps/docs/src/renderer/host-bridge.ts b/apps/docs/src/renderer/host-bridge.ts
+new file mode 100644
+index 00000000..a351365d
+--- /dev/null
++++ b/apps/docs/src/renderer/host-bridge.ts
+@@ -0,0 +1,157 @@
++import { useCallback, useEffect, useMemo, useRef } from 'react'
++import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
++import type { Editor } from '@tiptap/core'
++import { navigateToBlock } from './ai/doc-nav'
++import { getSelectionScope } from './ai/protocol'
++import { registerAiBusy, sanitizeAiBusyRanges, setAiBusy } from './editor/ai-busy'
++
++/**
++ * Host page bridge: the editor embedded in another page's iframe (web-server
++ * mode), with that page owning the AI.
++ *
++ * - "Ask AI" on a selection hands the selection and the instruction to the
++ *   host (`genoffice:ai-edit`) instead of the built-in panel;
++ * - the host can scroll to a block (`genoffice:reveal-block`, e.g. from a
++ *   "what changed" list) and mark the blocks its agent is working on
++ *   (`genoffice:ai-busy`).
++ *
++ * Off unless the editor URL names the host origin (`?host=<origin>`) and the
++ * editor really is framed by that origin; messages from any other window or
++ * origin are ignored, and replies go to that origin only.
++ */
++
++const SELECTION_TEXT_MAX = 4000
++
++export interface AiEditSelection {
++  startBlockIndex: number
++  endBlockIndex: number
++  isRange: boolean
++  text: string
++}
++
++export interface AiEditMessage {
++  type: 'genoffice:ai-edit'
++  instruction: string
++  /** true: run now; false: add to the host's pending edits */
++  send: boolean
++  selection: AiEditSelection
++}
++
++/** the embedding page's origin when a host owns the AI (shared with the other editors) */
++export { hostAiOrigin as hostOrigin } from '@genoffice/ui'
++import { hostAiOrigin as hostOrigin } from '@genoffice/ui'
++
++export function selectionForHost(editor: Editor): AiEditSelection {
++  const scope = getSelectionScope(editor)
++  const { from, to } = editor.state.selection
++  return {
++    startBlockIndex: scope.startIndex,
++    endBlockIndex: scope.endIndex,
++    isRange: scope.isRange,
++    text: editor.state.doc.textBetween(from, to, '\n', ' ').slice(0, SELECTION_TEXT_MAX),
++  }
++}
++
++export function postAiEdit(
++  editor: Editor,
++  origin: string,
++  instruction: string,
++  send: boolean,
++  win: Window = window,
++): void {
++  const message: AiEditMessage = {
++    type: 'genoffice:ai-edit',
++    instruction,
++    send,
++    selection: selectionForHost(editor),
++  }
++  win.parent.postMessage(message, origin)
++}
++
++/** Listen to the host. Returns the unsubscribe function. */
++export function installHostBridge(
++  getEditor: () => Editor | null,
++  origin: string,
++  win: Window = window,
++): () => void {
++  const onMessage = (event: MessageEvent): void => {
++    if (event.source !== win.parent || event.origin !== origin) return
++    const data = event.data as { type?: unknown; index?: unknown; ranges?: unknown } | null
++    if (!data || typeof data.type !== 'string') return
++    const editor = getEditor()
++    if (!editor || editor.isDestroyed) return
++    if (data.type === 'genoffice:reveal-block') {
++      if (Number.isInteger(data.index) && (data.index as number) >= 0) {
++        navigateToBlock(editor, data.index as number)
++      }
++    } else if (data.type === 'genoffice:ai-busy') {
++      setAiBusy(editor.view, sanitizeAiBusyRanges(data.ranges))
++    }
++  }
++  const initial = getEditor()
++  const unregisterBusy = initial ? registerAiBusy(initial) : () => {}
++  win.addEventListener('message', onMessage)
++  win.parent.postMessage({ type: 'genoffice:ready' }, origin)
++  return () => {
++    win.removeEventListener('message', onMessage)
++    unregisterBusy()
++  }
++}
++
++/** the pending request for the built-in assistant panel (App's aiPreset state) */
++type AiPreset = { text: string } | null
++
++/**
++ * When the embedding host owns the AI, every request meant for the built-in
++ * assistant panel — the selection's "Ask AI", ribbon presets (Editor,
++ * Translate…), the context menu, F7, the Tools menu — goes to the host
++ * instead: they all start the panel by setting its preset, so wrapping that
++ * one setter covers them all and App keeps its own code paths.
++ */
++export function useHostOwnedAi<P extends AiPreset>(
++  setPreset: Dispatch<SetStateAction<P>>,
++): {
++  readonly origin: string | null
++  readonly setPreset: Dispatch<SetStateAction<P>>
++  /** the selection's "add to queue": the host's composer is the queue; true when handled */
++  readonly queue: (instruction: string) => boolean
++  readonly editorRef: MutableRefObject<Editor | null>
++} {
++  const origin = useMemo(() => hostOrigin(), [])
++  const editorRef = useRef<Editor | null>(null)
++  const wrapped = useCallback<Dispatch<SetStateAction<P>>>(
++    (next) => {
++      const editor = editorRef.current
++      if (origin && editor && next !== null && typeof next === 'object' && 'text' in next) {
++        postAiEdit(editor, origin, next.text, true)
++        return
++      }
++      setPreset(next)
++    },
++    [origin, setPreset],
++  )
++  const queue = useCallback(
++    (instruction: string) => {
++      const editor = editorRef.current
++      if (!origin || !editor) return false
++      if (!editor.state.selection.empty) postAiEdit(editor, origin, instruction, false)
++      return true
++    },
++    [origin],
++  )
++  return { origin, setPreset: wrapped, queue, editorRef }
++}
++
++/** give the host-owned AI the live editor and listen to the host page */
++export function useHostBridge(
++  hostAi: { readonly origin: string | null; readonly editorRef: MutableRefObject<Editor | null> },
++  editor: Editor | null,
++  tornDown: boolean,
++): void {
++  hostAi.editorRef.current = editor
++  const { origin } = hostAi
++  useEffect(() => {
++    if (tornDown || !editor || !origin) return
++    return installHostBridge(() => editor, origin)
++  }, [tornDown, editor, origin])
++}
+diff --git a/apps/docs/tests/ai-ask-host.test.ts b/apps/docs/tests/ai-ask-host.test.ts
+new file mode 100644
+index 00000000..7bbb7d53
+--- /dev/null
++++ b/apps/docs/tests/ai-ask-host.test.ts
+@@ -0,0 +1,118 @@
++/**
++ * When a host page owns the AI (embedded editor, ?host=), the selection's ask
++ * popover is the host chat's inline ask: Enter sends the request at once and
++ * the footer has the one "send now" button — no queue, which is the host's
++ * composer.
++ */
++import { act, createElement } from 'react'
++import { createRoot, type Root } from 'react-dom/client'
++import type { Editor } from '@tiptap/core'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++
++vi.mock('@genoffice/ui', async (original) => ({
++  ...(await original<typeof import('@genoffice/ui')>()),
++  hostOwnsAi: () => true,
++}))
++
++import { applyAiPanelPrefs } from '@genoffice/ui'
++import { AiAskPopover } from '../src/renderer/components/AiAskPopover'
++
++let coords: { left: number; right: number; top: number; bottom: number }
++let listeners: Map<string, () => void>
++let noop: () => void
++
++function makeEditor(): Editor {
++  const tr: Record<string, unknown> = {}
++  tr.setMeta = () => tr
++  const state = {
++    selection: { empty: false, from: 1, to: 5 },
++    doc: { textBetween: () => '\u673aIF\u6539' },
++    tr,
++  }
++  const listenersMap = listeners
++  return {
++    state,
++    isFocused: true,
++    isDestroyed: false,
++    view: {
++      coordsAtPos: () => coords,
++      dispatch: noop,
++    },
++    on: (event: string, handler: () => void) => listenersMap.set(event, handler),
++    off: (event: string) => listenersMap.delete(event),
++  } as unknown as Editor
++}
++
++let host: HTMLDivElement
++let root: Root
++const sendNow = vi.fn()
++const queueAdd = vi.fn()
++
++function mount(): void {
++  host = document.createElement('div')
++  document.body.append(host)
++  root = createRoot(host)
++  act(() =>
++    root.render(
++      createElement(AiAskPopover, {
++        editor: makeEditor(),
++        queueFull: false,
++        getItem: () => undefined,
++        onSendNow: sendNow,
++        onQueueAdd: queueAdd,
++        onQueueUpdate: noop,
++        onQueueRemove: noop,
++      }),
++    ),
++  )
++}
++
++beforeEach(() => {
++  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
++  applyAiPanelPrefs({})
++  coords = { left: 10, right: 20, top: 30, bottom: 45 }
++  listeners = new Map()
++  noop = () => {}
++  sendNow.mockReset()
++  queueAdd.mockReset()
++})
++
++afterEach(() => {
++  act(() => root.unmount())
++  host.remove()
++  vi.unstubAllGlobals()
++})
++
++function type(value: string): HTMLInputElement {
++  const input = host.querySelector<HTMLInputElement>('.ai-ask-pop-input')!
++  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
++  act(() => {
++    setter.call(input, value)
++    input.dispatchEvent(new Event('input', { bubbles: true }))
++  })
++  return input
++}
++
++describe('AiAskPopover when a host owns the AI', () => {
++  it('Enter sends the request at once', () => {
++    mount()
++    act(() => host.querySelector<HTMLButtonElement>('.ai-ask-trigger')!.click())
++    const input = type('改简洁些')
++    act(() => {
++      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
++    })
++    expect(sendNow).toHaveBeenCalledWith('改简洁些')
++    expect(queueAdd).not.toHaveBeenCalled()
++    expect(host.querySelector('.ai-ask-pop')).toBeNull()
++  })
++
++  it('the footer has only the send button', () => {
++    mount()
++    act(() => host.querySelector<HTMLButtonElement>('.ai-ask-trigger')!.click())
++    type('加个句号')
++    const buttons = [...host.querySelectorAll<HTMLButtonElement>('.ai-ask-pop-foot button')]
++    expect(buttons).toHaveLength(1)
++    act(() => buttons[0]!.click())
++    expect(sendNow).toHaveBeenCalledWith('加个句号')
++  })
++})
+diff --git a/apps/docs/tests/ai-busy-frame.test.ts b/apps/docs/tests/ai-busy-frame.test.ts
+new file mode 100644
+index 00000000..76dcd81d
+--- /dev/null
++++ b/apps/docs/tests/ai-busy-frame.test.ts
+@@ -0,0 +1,46 @@
++import { describe, expect, it } from 'vitest'
++import { framesOf, type BlockBox } from '../src/renderer/editor/ai-busy-frame'
++
++/**
++ * The blocks an embedding host's agent works on get one dashed frame per run,
++ * not one per block: a run ends where a page gap or a column break falls
++ * between two blocks, so a range over a page boundary gets a frame per page.
++ */
++
++const block = (
++  top: number,
++  bottom: number,
++  left = 100,
++  right = 700,
++  breakBefore = false,
++): BlockBox => ({
++  top,
++  bottom,
++  left,
++  right,
++  breakBefore,
++})
++
++describe('busy frames', () => {
++  it('draws one frame around adjacent blocks, across the spacing between them', () => {
++    const frames = framesOf([block(100, 130), block(142, 170, 124), block(182, 210, 100, 720)])
++    expect(frames).toEqual([{ top: 96, left: 96, right: 724, bottom: 214 }])
++  })
++
++  it('starts a new frame after a page gap', () => {
++    const frames = framesOf([block(100, 130), block(142, 170), block(1300, 1330, 100, 700, true)])
++    expect(frames).toEqual([
++      { top: 96, left: 96, right: 704, bottom: 174 },
++      { top: 1296, left: 96, right: 704, bottom: 1334 },
++    ])
++  })
++
++  it('starts a new frame when the next block moves up into another column', () => {
++    const frames = framesOf([block(900, 960, 100, 380), block(100, 140, 420, 700)])
++    expect(frames).toHaveLength(2)
++  })
++
++  it('has nothing to frame without blocks', () => {
++    expect(framesOf([])).toEqual([])
++  })
++})
+diff --git a/apps/docs/tests/host-bridge.test.ts b/apps/docs/tests/host-bridge.test.ts
+new file mode 100644
+index 00000000..7851cfb1
+--- /dev/null
++++ b/apps/docs/tests/host-bridge.test.ts
+@@ -0,0 +1,150 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import { Editor } from '@tiptap/core'
++import { TextSelection } from '@tiptap/pm/state'
++import { editorExtensions } from '../src/renderer/editor/extensions'
++import { aiBusyRanges, sanitizeAiBusyRanges } from '../src/renderer/editor/ai-busy'
++import { hostOrigin, installHostBridge, postAiEdit } from '../src/renderer/host-bridge'
++
++/**
++ * The editor embedded in a host page that owns the AI: selection + instruction
++ * go up to the host, and the host scrolls to blocks and marks the ones its
++ * agent is working on. Only the named host origin, framing the editor, is heard.
++ */
++
++const HOST = 'https://kw.example'
++const para = (value: string) => ({
++  type: 'docParagraph',
++  attrs: { docxIndex: null },
++  content: [{ type: 'text', text: value }],
++})
++
++const liveEditors: Editor[] = []
++function createEditor(texts: string[]): Editor {
++  const editor = new Editor({
++    element: document.createElement('div'),
++    extensions: editorExtensions,
++    content: { type: 'doc', content: texts.map(para) },
++  })
++  liveEditors.push(editor)
++  return editor
++}
++afterEach(() => {
++  for (const editor of liveEditors.splice(0)) editor.destroy()
++})
++
++type Listener = (event: MessageEvent) => void
++function fakeWindow(search: string, ancestors?: string[]) {
++  const parent = { postMessage: vi.fn() }
++  const listeners: Listener[] = []
++  const win = {
++    parent,
++    location: { search, ...(ancestors ? { ancestorOrigins: ancestors } : {}) },
++    addEventListener: (_: string, fn: Listener) => listeners.push(fn),
++    removeEventListener: (_: string, fn: Listener) => listeners.splice(listeners.indexOf(fn), 1),
++  }
++  const deliver = (data: unknown, source: unknown = parent, origin = HOST) => {
++    for (const fn of [...listeners]) fn({ data, source, origin } as MessageEvent)
++  }
++  return { win: win as unknown as Window, parent, listeners, deliver }
++}
++
++describe('host origin', () => {
++  it('needs a frame, a host parameter and a matching framing origin', () => {
++    expect(hostOrigin(fakeWindow(`?host=${HOST}/chat`).win)).toBe(HOST)
++    expect(hostOrigin(fakeWindow(`?host=${HOST}`, [HOST]).win)).toBe(HOST)
++    expect(hostOrigin(fakeWindow(`?host=${HOST}`, ['https://evil.example']).win)).toBeNull()
++    expect(hostOrigin(fakeWindow('?path=/x.docx').win)).toBeNull()
++    expect(hostOrigin(fakeWindow('?host=not a url').win)).toBeNull()
++    const top = fakeWindow(`?host=${HOST}`)
++    ;(top.win as unknown as { parent: unknown }).parent = top.win
++    expect(hostOrigin(top.win)).toBeNull()
++  })
++})
++
++describe('host bridge', () => {
++  it('hands the selection and instruction to the host', () => {
++    const editor = createEditor(['First paragraph', 'Second paragraph', 'Third'])
++    const second = editor.state.doc.child(0).nodeSize
++    editor.view.dispatch(
++      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, second + 1, second + 7)),
++    )
++    const { win, parent } = fakeWindow(`?host=${HOST}`)
++    postAiEdit(editor, HOST, 'make it a table', false, win)
++    expect(parent.postMessage).toHaveBeenCalledWith(
++      {
++        type: 'genoffice:ai-edit',
++        instruction: 'make it a table',
++        send: false,
++        selection: { startBlockIndex: 1, endBlockIndex: 1, isRange: true, text: 'Second' },
++      },
++      HOST,
++    )
++  })
++
++  it('marks and clears the blocks the agent is working on', () => {
++    const editor = createEditor(['One', 'Two', 'Three'])
++    const { win, parent, deliver } = fakeWindow(`?host=${HOST}`)
++    const uninstall = installHostBridge(() => editor, HOST, win)
++    expect(parent.postMessage).toHaveBeenCalledWith({ type: 'genoffice:ready' }, HOST)
++
++    // jsdom lays nothing out: stack the blocks 30px apart, 20px high
++    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
++      this: HTMLElement,
++    ) {
++      const index = this.parentElement ? Array.from(this.parentElement.children).indexOf(this) : 0
++      return DOMRect.fromRect({ x: 100, y: 100 + index * 30, width: 600, height: 20 })
++    })
++    deliver({ type: 'genoffice:ai-busy', ranges: [{ start: 1, end: 2, label: 'AI is rewriting' }] })
++    expect(aiBusyRanges(editor.state)).toEqual([{ start: 1, end: 2, label: 'AI is rewriting' }])
++    // one frame around both blocks (130..180, 4px out), laid over the editor
++    const shown = () =>
++      document.querySelectorAll<HTMLElement>('.ai-busy-layer .ai-busy-frame:not([hidden])')
++    expect(shown()).toHaveLength(1)
++    expect(shown()[0]!.textContent).toBe('AI is rewriting')
++    expect(shown()[0]!.style.top).toBe('126px')
++    expect(shown()[0]!.style.height).toBe('58px')
++    // laid over, not written in: the document did not change
++    expect(editor.state.doc.textContent).toBe('OneTwoThree')
++
++    deliver({ type: 'genoffice:ai-busy', ranges: [] })
++    expect(shown()).toHaveLength(0)
++    uninstall()
++    expect(document.querySelector('.ai-busy-layer')).toBeNull()
++    vi.restoreAllMocks()
++  })
++
++  it('scrolls to a block on request', () => {
++    const editor = createEditor(['One', 'Two', 'Three'])
++    const { win, deliver } = fakeWindow(`?host=${HOST}`)
++    const uninstall = installHostBridge(() => editor, HOST, win)
++    deliver({ type: 'genoffice:reveal-block', index: 2 })
++    expect(editor.state.selection.$from.parent.textContent).toBe('Three')
++    uninstall()
++  })
++
++  it('ignores other windows and origins', () => {
++    const editor = createEditor(['One', 'Two'])
++    const { win, deliver } = fakeWindow(`?host=${HOST}`)
++    const uninstall = installHostBridge(() => editor, HOST, win)
++    const mark = { type: 'genoffice:ai-busy', ranges: [{ start: 0, end: 1 }] }
++    deliver(mark, {}, HOST)
++    deliver(mark, undefined, 'https://evil.example')
++    expect(aiBusyRanges(editor.state)).toEqual([])
++    uninstall()
++  })
++})
++
++describe('busy ranges from a message', () => {
++  it('keeps only well-formed ranges', () => {
++    expect(
++      sanitizeAiBusyRanges([
++        { start: 0, end: 1, label: '  x  ' },
++        { start: 2, end: 1 },
++        { start: -1, end: 0 },
++        { start: 1.5, end: 2 },
++        null,
++      ]),
++    ).toEqual([{ start: 0, end: 1, label: 'x' }])
++    expect(sanitizeAiBusyRanges('nope')).toEqual([])
++  })
++})
+diff --git a/apps/docs/tests/host-owned-ai.test.ts b/apps/docs/tests/host-owned-ai.test.ts
+new file mode 100644
+index 00000000..0e617c30
+--- /dev/null
++++ b/apps/docs/tests/host-owned-ai.test.ts
+@@ -0,0 +1,88 @@
++/**
++ * Every start of the built-in assistant sets App's preset; when a host page
++ * owns the AI the wrapped setter hands the request (with the selection) to the
++ * host instead, and the selection's "add to queue" goes to the host's composer.
++ */
++import { act, createElement } from 'react'
++import { createRoot } from 'react-dom/client'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { Editor } from '@tiptap/core'
++import { TextSelection } from '@tiptap/pm/state'
++import { editorExtensions } from '../src/renderer/editor/extensions'
++
++let mockOrigin: string | null = null
++vi.mock('@genoffice/ui', async (original) => ({
++  ...(await original<typeof import('@genoffice/ui')>()),
++  hostAiOrigin: () => mockOrigin,
++}))
++
++import { useHostOwnedAi } from '../src/renderer/host-bridge'
++
++type Preset = { text: string; nonce: number; autoRun?: boolean } | null
++
++function editorWith(text: string): Editor {
++  const editor = new Editor({
++    element: document.createElement('div'),
++    extensions: editorExtensions,
++    content: {
++      type: 'doc',
++      content: [{ type: 'docParagraph', content: [{ type: 'text', text }] }],
++    },
++  })
++  editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 1, 3)))
++  return editor
++}
++
++function mount(raw: (next: unknown) => void): ReturnType<typeof useHostOwnedAi<Preset>> {
++  let hook: ReturnType<typeof useHostOwnedAi<Preset>> | undefined
++  function Probe() {
++    hook = useHostOwnedAi<Preset>(raw as never)
++    return null
++  }
++  const root = createRoot(document.createElement('div'))
++  act(() => root.render(createElement(Probe)))
++  return hook!
++}
++
++beforeEach(() => vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true))
++afterEach(() => {
++  vi.unstubAllGlobals()
++  vi.restoreAllMocks()
++  mockOrigin = null
++})
++
++describe('useHostOwnedAi', () => {
++  it('a host that owns the AI gets the panel request, with the selection; the panel does not start', () => {
++    mockOrigin = 'https://kw.example'
++    const raw = vi.fn()
++    const posted = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => undefined)
++    const hook = mount(raw)
++    const editor = editorWith('举头望明月')
++    hook.editorRef.current = editor
++    hook.setPreset({ text: '校对全文', nonce: 1, autoRun: true })
++    expect(raw).not.toHaveBeenCalled()
++    expect(posted).toHaveBeenCalledWith(
++      expect.objectContaining({ type: 'genoffice:ai-edit', instruction: '校对全文', send: true }),
++      'https://kw.example',
++    )
++    // clearing the preset still reaches the panel state
++    hook.setPreset(null)
++    expect(raw).toHaveBeenCalledWith(null)
++    expect(hook.queue('改简洁')).toBe(true)
++    expect(posted).toHaveBeenLastCalledWith(
++      expect.objectContaining({ instruction: '改简洁', send: false }),
++      'https://kw.example',
++    )
++    editor.destroy()
++  })
++
++  it('without a host the built-in panel works as before', () => {
++    const raw = vi.fn()
++    const hook = mount(raw)
++    hook.editorRef.current = editorWith('x')
++    const preset = { text: '校对全文', nonce: 1, autoRun: true }
++    hook.setPreset(preset)
++    expect(raw).toHaveBeenCalledWith(preset)
++    expect(hook.queue('改简洁')).toBe(false)
++  })
++})
+diff --git a/apps/sheets/src/renderer/App.tsx b/apps/sheets/src/renderer/App.tsx
+index 31debae5..c4563dc6 100644
+--- a/apps/sheets/src/renderer/App.tsx
++++ b/apps/sheets/src/renderer/App.tsx
+@@ -210,6 +210,8 @@ import {
+ import { isSelectionDrag, type Point, type SelectionAskAnchor } from './ai/selection-ask'
+ import { createAiDocument } from './ai/create-document'
+ import { createWorkbookSkill } from './ai/workbook-skill'
++import { hostScopeOf, sheetsHostScope } from './host-bridge'
++import { installAiBusyRange } from './ai-busy-range'
+ import { findWorkbookCells, selectWorkbookRange } from './ai/workbook-search'
+ import { ImportProgressCard } from './ImportProgressCard'
+ import { useImportProgress } from './import-progress'
+@@ -2605,6 +2607,7 @@ export function App({
+     crossHighlightRef.current = installCrossHighlight(runtime, {
+       theme: () => (isDarkTheme() ? 'dark' : 'light'),
+     })
++    const aiBusyRangeDisposable = installAiBusyRange(runtime)
+     const gutterHost = document.querySelector<HTMLElement>('.workbook-area')
+     outlineGutterRef.current = gutterHost
+       ? installOutlineGutter({
+@@ -3950,6 +3953,7 @@ export function App({
+       setFindReplaceService(null)
+       crossHighlightRef.current?.dispose()
+       crossHighlightRef.current = null
++      aiBusyRangeDisposable()
+       outlineGutterRef.current?.dispose()
+       outlineGutterRef.current = null
+       scrollDisposable.dispose()
+@@ -5903,6 +5907,7 @@ export function App({
+   })
+ 
+   const aiScopeChip = resolveScopeChip(aiRunScope, aiScope, aiScopeDismissed)
++  sheetsHostScope.current = hostScopeOf(aiScope, getActiveSheetInfo)
+ 
+   return (
+     <>
+diff --git a/apps/sheets/src/renderer/ExcelShell.tsx b/apps/sheets/src/renderer/ExcelShell.tsx
+index 366537bf..6e50ac6c 100644
+--- a/apps/sheets/src/renderer/ExcelShell.tsx
++++ b/apps/sheets/src/renderer/ExcelShell.tsx
+@@ -86,6 +86,7 @@ import type {
+ } from '../shared/desktop-api'
+ import { AiChatPanel, type AiChatMessage } from './ai/AiChatPanel'
+ import { AiSelectionAsk } from './ai/AiSelectionAsk'
++import { useSheetsHostAi } from './host-bridge'
+ import type { SelectionAskAnchor } from './ai/selection-ask'
+ import {
+   PivotDialog,
+@@ -604,6 +605,7 @@ export function ExcelShell({
+   )
+   // the sidebar switch is a soft hide; it closes the panel when it turns off
+   const aiSidebarEnabled = useAiSidebarEnabled(setIsCopilotOpen)
++  const hostAi = useSheetsHostAi()
+   // Native listener, delegated because each ribbon tab mounts its own `.ribbon`,
+   // and because React registers wheel as passive, which forbids preventDefault.
+   useEffect(() => {
+@@ -1022,6 +1024,7 @@ export function ExcelShell({
+           onIsSelectionInPivot={onIsSelectionInPivot}
+           onCommand={dispatchCommand}
+           onAiRun={(nextPrompt) => {
++            if (hostAi.send(nextPrompt)) return
+             setIsCopilotOpen(true)
+             onSend(nextPrompt)
+           }}
+@@ -1094,6 +1097,7 @@ export function ExcelShell({
+               range={aiScopeRange}
+               onDismiss={onAiSelectionAskDismiss}
+               onSend={(instruction) => {
++                if (hostAi.send(instruction)) return
+                 setIsCopilotOpen(true)
+                 onSend(instruction)
+               }}
+diff --git a/apps/sheets/src/renderer/ai-busy-range.ts b/apps/sheets/src/renderer/ai-busy-range.ts
+new file mode 100644
+index 00000000..3c684f3f
+--- /dev/null
++++ b/apps/sheets/src/renderer/ai-busy-range.ts
+@@ -0,0 +1,131 @@
++import type { IRange, IScale } from '@univerjs/core'
++import {
++  IRenderManagerService,
++  SheetExtension,
++  SpreadsheetExtensionRegistry,
++  type IDrawInfo,
++  type SpreadsheetSkeleton,
++  type UniverRenderingContext,
++} from '@univerjs/engine-render'
++import { parseRange, type RangeBounds } from '@genoffice/xlsx-gateway/domain/cell-address'
++import type { UniverRuntime } from './univer-state'
++
++/**
++ * "The AI is working here" on the grid, for an embedding page that owns the AI
++ * (host-bridge.ts): while the host's agent works on the range the user handed
++ * over, the range gets a dashed outline, a light fill and a label. Decoration
++ * only — painted by a canvas extension like the cross highlight, never written
++ * into the workbook or the undo history; the host clears it when the turn ends.
++ */
++
++export interface AiBusyCells {
++  /** worksheet name */
++  readonly sheet: string
++  /** A1 range on that sheet */
++  readonly range: string
++  readonly label: string
++}
++
++interface BusyState {
++  readonly workbookId: string
++  readonly sheetId: string
++  readonly bounds: RangeBounds
++  readonly label: string
++}
++
++let busy: BusyState | null = null
++let runtimeRef: UniverRuntime | null = null
++
++const COLORS = { fill: 'rgba(13, 13, 13, 0.04)', line: 'rgba(13, 13, 13, 0.55)', text: '#0d0d0d', tag: '#ffffff' }
++
++/**
++ * Grid extension above cell text (45) and borders (50), so the label stays
++ * legible over the row it sits in; the fill is faint enough to read through.
++ * Skipped when printing.
++ */
++export class AiBusyRangeExtension extends SheetExtension {
++  readonly uKey = 'GenOfficeAiBusyRangeExtension'
++  protected Z_INDEX = 55
++
++  override draw(
++    ctx: UniverRenderingContext,
++    _parentScale: IScale,
++    skeleton: SpreadsheetSkeleton,
++    _diffRanges: IRange[] | undefined,
++    _drawInfo?: IDrawInfo,
++  ): void {
++    const state = busy
++    const worksheet = skeleton.worksheet
++    if (!state || ctx.__mode === 'printing' || !worksheet) return
++    if (worksheet.unitId !== state.workbookId || worksheet.getSheetId() !== state.sheetId) return
++    const first = skeleton.getCellWithCoordByIndex(state.bounds.startRow, state.bounds.startColumn, false)
++    const last = skeleton.getCellWithCoordByIndex(state.bounds.endRow, state.bounds.endColumn, false)
++    if (!first || !last) return
++    const left = first.startX
++    const top = first.startY
++    const width = last.endX - left
++    const height = last.endY - top
++    const { scaleX, scaleY } = ctx.getScale()
++    const unit = 1 / Math.max(scaleX, scaleY, 1)
++    ctx.save()
++    ctx.fillStyle = COLORS.fill
++    ctx.fillRect(left, top, width, height)
++    ctx.strokeStyle = COLORS.line
++    ctx.lineWidth = 1.5 * unit
++    ctx.setLineDash([4 * unit, 3 * unit])
++    ctx.strokeRect(left, top, width, height)
++    ctx.setLineDash([])
++    ctx.font = `${12 * unit}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`
++    const textWidth = ctx.measureText(state.label).width
++    const tagHeight = 18 * unit
++    const tagTop = top >= tagHeight ? top - tagHeight : top
++    ctx.fillStyle = COLORS.text
++    ctx.fillRect(left, tagTop, textWidth + 12 * unit, tagHeight)
++    ctx.fillStyle = COLORS.tag
++    ctx.textBaseline = 'middle'
++    ctx.fillText(state.label, left + 6 * unit, tagTop + tagHeight / 2)
++    ctx.restore()
++  }
++}
++
++SpreadsheetExtensionRegistry.add(AiBusyRangeExtension)
++
++function repaint(workbookId: string): void {
++  if (!runtimeRef || !workbookId) return
++  try {
++    const render = runtimeRef.univer.__getInjector().get(IRenderManagerService).getRenderById(workbookId)
++    render?.mainComponent?.makeDirty(true)
++    render?.scene?.makeDirty(true)
++  } catch {
++    // render modules may not exist yet while a workbook is being replaced
++  }
++}
++
++/** the grid the decoration paints on (App installs it with the Univer runtime; returns the uninstall) */
++export function installAiBusyRange(runtime: UniverRuntime): () => void {
++  runtimeRef = runtime
++  return () => {
++    showAiBusyCells(null)
++    if (runtimeRef === runtime) runtimeRef = null
++  }
++}
++
++/** mark the range the host's agent is working on; null (or a range not in this workbook) clears it */
++export function showAiBusyCells(cells: AiBusyCells | null): void {
++  const previous = busy?.workbookId ?? ''
++  busy = resolve(cells)
++  repaint(previous)
++  if (busy && busy.workbookId !== previous) repaint(busy.workbookId)
++}
++
++function resolve(cells: AiBusyCells | null): BusyState | null {
++  if (!cells || !runtimeRef) return null
++  try {
++    const workbook = runtimeRef.univerAPI.getActiveWorkbook()
++    const sheet = workbook?.getSheetByName(cells.sheet)
++    if (!workbook || !sheet) return null
++    return { workbookId: workbook.getId(), sheetId: sheet.getSheetId(), bounds: parseRange(cells.range), label: cells.label }
++  } catch {
++    return null
++  }
++}
+diff --git a/apps/sheets/src/renderer/host-bridge.ts b/apps/sheets/src/renderer/host-bridge.ts
+new file mode 100644
+index 00000000..6b7a2fa5
+--- /dev/null
++++ b/apps/sheets/src/renderer/host-bridge.ts
+@@ -0,0 +1,115 @@
++import { useEffect, useMemo } from 'react'
++import { hostAiOrigin } from '@genoffice/ui'
++import { showAiBusyCells, type AiBusyCells } from './ai-busy-range'
++import type { ActiveSheetInfo, FrozenSelection } from './ai/tools'
++
++/**
++ * Host page bridge for the spreadsheet: the editor embedded in another page's
++ * iframe (web-server mode), with that page owning the AI (see the docs app's
++ * host-bridge.ts for the protocol).
++ *
++ * The selection bubble's "Ask AI" and the ribbon's AI actions (Translate) hand
++ * the instruction and the selected range to the host (`genoffice:ai-edit`)
++ * instead of opening the built-in panel. The range names its worksheet so the
++ * host's agent addresses the same cells even after the user switches sheets.
++ *
++ * The host marks the range its agent is working on (`genoffice:ai-busy` with
++ * `cells: { sheet, range, label }`; anything else clears it), drawn by
++ * ai-busy-range.ts.
++ *
++ * Off unless the editor URL names the host origin (`?host=<origin>`) and the
++ * editor really is framed by that origin.
++ */
++
++export interface SheetsHostScope {
++  /** worksheet name */
++  sheet: string
++  /** A1 range on that sheet */
++  range: string
++}
++
++export interface SheetsAiEditMessage {
++  type: 'genoffice:ai-edit'
++  instruction: string
++  /** true: run now; false: add to the host's pending edits */
++  send: boolean
++  selection: { isRange: boolean; text: string; sheet?: string; range?: string }
++}
++
++/**
++ * The selection the host gets, kept current by App on every render (it alone
++ * knows the workbook's sheets): ExcelShell's AI entries read it when they hand
++ * a request over.
++ */
++export const sheetsHostScope: { current: () => SheetsHostScope | null } = { current: () => null }
++
++/** the live selection as the host sees it: its sheet's name and A1 range */
++export function hostScopeOf(
++  scope: FrozenSelection | null,
++  info: () => Pick<ActiveSheetInfo, 'sheets'>,
++): () => SheetsHostScope | null {
++  return () => {
++    if (!scope) return null
++    const sheet = info().sheets.find((candidate) => candidate.id === scope.sheetId)
++    return sheet ? { sheet: sheet.name, range: scope.a1 } : null
++  }
++}
++
++/** the host's busy mark, or null when the message clears it or is malformed */
++export function busyCellsOf(raw: unknown): AiBusyCells | null {
++  if (!raw || typeof raw !== 'object') return null
++  const { sheet, range, label } = raw as Record<string, unknown>
++  if (typeof sheet !== 'string' || typeof range !== 'string' || !sheet || !range) return null
++  return { sheet, range, label: typeof label === 'string' && label ? label.slice(0, 40) : 'AI' }
++}
++
++export function sheetsAiEditMessage(
++  instruction: string,
++  send: boolean,
++  scope: SheetsHostScope | null,
++): SheetsAiEditMessage {
++  return {
++    type: 'genoffice:ai-edit',
++    instruction,
++    send,
++    selection: scope
++      ? { isRange: true, text: '', sheet: scope.sheet, range: scope.range }
++      : { isRange: false, text: '' },
++  }
++}
++
++/**
++ * When the embedding host owns the AI, `send` hands an AI request to it and
++ * returns true; otherwise it returns false and the caller runs the built-in
++ * assistant as before.
++ */
++export function useSheetsHostAi(): { readonly send: (instruction: string) => boolean } {
++  const origin = useMemo(() => hostAiOrigin(), [])
++  useEffect(() => {
++    if (!origin) return
++    const onMessage = (event: MessageEvent): void => {
++      if (event.source !== window.parent || event.origin !== origin) return
++      const data = event.data as { type?: unknown; cells?: unknown } | null
++      if (data?.type === 'genoffice:ai-busy') showAiBusyCells(busyCellsOf(data.cells))
++    }
++    window.addEventListener('message', onMessage)
++    window.parent.postMessage({ type: 'genoffice:ready' }, origin)
++    return () => {
++      window.removeEventListener('message', onMessage)
++      showAiBusyCells(null)
++    }
++  }, [origin])
++  return useMemo(
++    () => ({
++      send: (instruction: string) => {
++        if (!origin) return false
++        window.parent.postMessage(
++          sheetsAiEditMessage(instruction, true, sheetsHostScope.current()),
++          origin,
++        )
++        return true
++      },
++    }),
++    [origin],
++  )
++}
+diff --git a/apps/sheets/tests/host-bridge.test.ts b/apps/sheets/tests/host-bridge.test.ts
+new file mode 100644
+index 00000000..213b4589
+--- /dev/null
++++ b/apps/sheets/tests/host-bridge.test.ts
+@@ -0,0 +1,32 @@
++import { describe, expect, it } from 'vitest'
++import { busyCellsOf, hostScopeOf, sheetsAiEditMessage } from '../src/renderer/host-bridge'
++
++describe('sheets host bridge (an embedding page owns the AI)', () => {
++  it('names the selected range by its worksheet', () => {
++    const sheets = () => ({ sheets: [{ id: 's-1', name: 'Sheet1' }, { id: 's-2', name: '明细' }] })
++    expect(hostScopeOf({ a1: 'B3:D6', sheetId: 's-2' }, sheets)()).toEqual({ sheet: '明细', range: 'B3:D6' })
++    expect(hostScopeOf({ a1: 'B3:D6', sheetId: 'gone' }, sheets)()).toBeNull()
++    expect(hostScopeOf(null, sheets)()).toBeNull()
++  })
++
++  it('hands the instruction and the range over', () => {
++    expect(sheetsAiEditMessage('保留两位小数', true, { sheet: '明细', range: 'B3:D6' })).toEqual({
++      type: 'genoffice:ai-edit',
++      instruction: '保留两位小数',
++      send: true,
++      selection: { isRange: true, text: '', sheet: '明细', range: 'B3:D6' },
++    })
++    expect(sheetsAiEditMessage('翻译成英文', true, null).selection).toEqual({ isRange: false, text: '' })
++  })
++
++  it('reads the host busy mark; anything else clears it', () => {
++    expect(busyCellsOf({ sheet: '明细', range: 'B3:D6', label: 'AI 正在改' })).toEqual({
++      sheet: '明细',
++      range: 'B3:D6',
++      label: 'AI 正在改',
++    })
++    expect(busyCellsOf({ sheet: '明细', range: 'B3' })?.label).toBe('AI')
++    expect(busyCellsOf(undefined)).toBeNull()
++    expect(busyCellsOf({ sheet: '', range: 'B3' })).toBeNull()
++  })
++})
+diff --git a/apps/shell/src/main/mcp/agent-edited.ts b/apps/shell/src/main/mcp/agent-edited.ts
+new file mode 100644
+index 00000000..be3566ce
+--- /dev/null
++++ b/apps/shell/src/main/mcp/agent-edited.ts
+@@ -0,0 +1,15 @@
++import { webTabById } from '../../web/tab-registry'
++
++/**
++ * An agent's call changed the document open in this tab (an MCP edit tool
++ * reported it mutated or applied). A browser tab embedded in a host page
++ * (web-server mode under KnowWork) passes it on to the host (web:agent-edited,
++ * shim/host-page.ts), which marks the blocks its agent is about to rewrite and
++ * can take the mark down as soon as the edit lands instead of at the end of the
++ * agent's turn — a slow or second-guessing agent otherwise leaves "AI at work"
++ * over text that is already rewritten. Desktop windows have no host page:
++ * nothing is sent there.
++ */
++export function tellAgentEdited(wcId: number): void {
++  webTabById(wcId)?.send('web:agent-edited')
++}
+diff --git a/apps/shell/src/main/mcp/tools/docx-agent-tools.ts b/apps/shell/src/main/mcp/tools/docx-agent-tools.ts
+index bb647d57..eeaec590 100644
+--- a/apps/shell/src/main/mcp/tools/docx-agent-tools.ts
++++ b/apps/shell/src/main/mcp/tools/docx-agent-tools.ts
+@@ -2,6 +2,7 @@ import { z } from 'zod'
+ import type { McpToolDefinition } from '../mcp-server'
+ import type { DocToolDeps } from './document-tools'
+ import type { contentTarget } from './session-tools'
++import { tellAgentEdited } from '../agent-edited'
+ 
+ /**
+  * MCP tools for an external agent that drives an open Word document the way
+@@ -54,12 +55,15 @@ export function createDocxAgentTools(
+       },
+       handler: async (args) => {
+         const wc = await target(args.document)
+-        return docs.runCommand(wc, 'run_tool', {
++        const result = await docs.runCommand(wc, 'run_tool', {
+           name: args.tool,
+           input: args.input ?? {},
+           ...(args.track === true ? { track: true } : {}),
+           ...(typeof args.author === 'string' ? { author: args.author } : {}),
+         })
++        // the edit landed: an embedding host takes down its "AI at work" mark now (agent-edited.ts)
++        if ((result as { mutated?: unknown } | null)?.mutated === true) tellAgentEdited(wc)
++        return result
+       },
+     },
+     {
+diff --git a/apps/shell/src/main/mcp/tools/slides-tools.ts b/apps/shell/src/main/mcp/tools/slides-tools.ts
+index b2371427..1eb9e9c1 100644
+--- a/apps/shell/src/main/mcp/tools/slides-tools.ts
++++ b/apps/shell/src/main/mcp/tools/slides-tools.ts
+@@ -4,6 +4,7 @@ import { createPptxViaCli } from '../headless-cli'
+ import { resolveOutputPath } from './document-tools'
+ import { generateExtension } from './formats'
+ import type { FamilyDriver, SessionHost, TargetResolver } from './session-tools'
++import { tellAgentEdited } from '../agent-edited'
+ import { contentTarget } from './session-tools'
+ import type { McpToolDefinition } from '../mcp-server'
+ import type { CliRunner } from '../cli-runner'
+@@ -210,6 +211,8 @@ function createDeckContentTools(deps: SlidesToolDeps, host: SessionHost): McpToo
+           const details = (result.failures ?? []).map((f) => `[${f.index}] ${f.error}`).join('\n')
+           throw new Error(details || 'the transaction could not be applied')
+         }
++        // the edit landed: an embedding host takes down its "AI at work" mark now (agent-edited.ts)
++        if (result?.applied === true && args.dryRun !== true) tellAgentEdited(wc)
+         return result
+       },
+     },
+diff --git a/apps/shell/src/main/mcp/tools/xlsx-agent-tools.ts b/apps/shell/src/main/mcp/tools/xlsx-agent-tools.ts
+index 4adf9835..4355c8b7 100644
+--- a/apps/shell/src/main/mcp/tools/xlsx-agent-tools.ts
++++ b/apps/shell/src/main/mcp/tools/xlsx-agent-tools.ts
+@@ -2,6 +2,7 @@ import { z } from 'zod'
+ import type { McpToolDefinition } from '../mcp-server'
+ import type { SheetsControl } from './sheets-tools'
+ import type { contentTarget } from './session-tools'
++import { tellAgentEdited } from '../agent-edited'
+ 
+ /**
+  * MCP tools for an external agent that works on an open spreadsheet the way
+@@ -43,7 +44,13 @@ export function createXlsxAgentTools(
+       },
+       handler: async (args) => {
+         const wc = await target(args.document)
+-        return sheets.runCommand(wc, 'run_tool', { name: args.tool, input: args.input ?? {} })
++        const result = await sheets.runCommand(wc, 'run_tool', {
++          name: args.tool,
++          input: args.input ?? {},
++        })
++        // the edit landed: an embedding host takes down its "AI at work" mark now (agent-edited.ts)
++        if ((result as { mutated?: unknown } | null)?.mutated === true) tellAgentEdited(wc)
++        return result
+       },
+     },
+   ]
+diff --git a/apps/shell/src/web/shim/client.ts b/apps/shell/src/web/shim/client.ts
+index d7659be8..f6b5744f 100644
+--- a/apps/shell/src/web/shim/client.ts
++++ b/apps/shell/src/web/shim/client.ts
+@@ -2,7 +2,12 @@ import { decodeFrame, encodeFrame } from '../serialize'
+ import { Outbox } from './outbox'
+ import { installMenuShortcuts } from './menu-shortcuts'
+ import { dialogResponseFrame, type DialogAnswer } from './dialog-answer'
+-import { installAlertToast, tellHostDisconnected, tellHostSaved } from './host-page'
++import {
++  installAlertToast,
++  tellHostAgentEdited,
++  tellHostDisconnected,
++  tellHostSaved,
++} from './host-page'
+ import { downloadFile, pickFiles } from './embedded-files'
+ 
+ /**
+@@ -117,6 +122,10 @@ function onMessage(data: string | ArrayBuffer): void {
+       tellHostSaved(String(args[0] ?? ''))
+       return
+     }
++    if (channel === 'web:agent-edited') {
++      tellHostAgentEdited()
++      return
++    }
+     if (channel === 'web:dialog') {
+       const req = args[0] as DialogRequest | undefined
+       if (req) showDialogOverlay(req)
+diff --git a/apps/shell/src/web/shim/host-page.ts b/apps/shell/src/web/shim/host-page.ts
+index d90a18d4..9ec16921 100644
+--- a/apps/shell/src/web/shim/host-page.ts
++++ b/apps/shell/src/web/shim/host-page.ts
+@@ -22,6 +22,15 @@ export function tellHostSaved(path: string): void {
+   window.parent.postMessage({ type: 'genoffice:saved', path }, host)
+ }
+ 
++/** an agent's edit changed the document (main's web:agent-edited, see
++ *  mcp/agent-edited.ts): tell an embedding host, which takes down its
++ *  "AI at work" mark now rather than at the end of the agent's turn */
++export function tellHostAgentEdited(win: Window = window): void {
++  const host = hostAiOrigin(win)
++  if (!host) return
++  win.parent.postMessage({ type: 'genoffice:agent-edited' }, host)
++}
++
+ /** window.alert in a browser tab is a blocking native box (an embedding desktop
+  *  app draws it with its own window chrome): show the notice as the page's
+  *  toast instead. confirm/prompt must answer synchronously, so they stay */
+diff --git a/apps/shell/tests/mcp/agent-edit-notice.test.ts b/apps/shell/tests/mcp/agent-edit-notice.test.ts
+new file mode 100644
+index 00000000..a977b76d
+--- /dev/null
++++ b/apps/shell/tests/mcp/agent-edit-notice.test.ts
+@@ -0,0 +1,51 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest'
++import { z } from 'zod'
++
++vi.mock('../../src/main/mcp/agent-edited', () => ({ tellAgentEdited: vi.fn() }))
++
++import { tellAgentEdited } from '../../src/main/mcp/agent-edited'
++import { createDocxAgentTools } from '../../src/main/mcp/tools/docx-agent-tools'
++import { createXlsxAgentTools } from '../../src/main/mcp/tools/xlsx-agent-tools'
++
++// the Word and Excel run tools tell the document's tab when the agent's call
++// changed the document (mutated), so an embedding host can take down its
++// "AI at work" mark as soon as the edit lands; a call that changed nothing
++// (no match, a read) leaves the mark until the turn ends
++const documentField = z.string().optional()
++const target = (async () => 41) as never
++
++function runTool(
++  tools: { name: string; handler: (args: never) => Promise<unknown> }[],
++  name: string,
++) {
++  const tool = tools.find((t) => t.name === name)
++  if (!tool) throw new Error(`no ${name}`)
++  return tool.handler({ tool: 'apply_ops', input: {} } as never)
++}
++
++beforeEach(() => vi.mocked(tellAgentEdited).mockClear())
++
++describe('agent edit notice from the run tools', () => {
++  it('Word: a call that changed the document tells its tab; one that did not stays quiet', async () => {
++    let mutated = false
++    const docs = { runCommand: vi.fn(async () => ({ summary: '', output: '', mutated })) }
++    const tools = createDocxAgentTools(target, docs as never, documentField)
++    await runTool(tools as never, 'run_docx_tool')
++    expect(tellAgentEdited).not.toHaveBeenCalled()
++    mutated = true
++    const result = await runTool(tools as never, 'run_docx_tool')
++    expect(tellAgentEdited).toHaveBeenCalledWith(41)
++    expect(result).toMatchObject({ mutated: true })
++  })
++
++  it('Excel: the same', async () => {
++    let mutated = false
++    const sheets = { runCommand: vi.fn(async () => ({ summary: '', output: '', mutated })) }
++    const tools = createXlsxAgentTools(target, sheets as never, documentField)
++    await runTool(tools as never, 'run_xlsx_tool')
++    expect(tellAgentEdited).not.toHaveBeenCalled()
++    mutated = true
++    await runTool(tools as never, 'run_xlsx_tool')
++    expect(tellAgentEdited).toHaveBeenCalledWith(41)
++  })
++})
+diff --git a/apps/shell/tests/mcp/slides-tools.test.ts b/apps/shell/tests/mcp/slides-tools.test.ts
+index 666ba3d8..158cc813 100644
+--- a/apps/shell/tests/mcp/slides-tools.test.ts
++++ b/apps/shell/tests/mcp/slides-tools.test.ts
+@@ -1,4 +1,4 @@
+-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+ import { mkdtemp, rm } from 'node:fs/promises'
+ import { existsSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+@@ -14,6 +14,9 @@ import {
+ } from '../../src/main/mcp/tools/slides-tools'
+ import { createSessionHost, createSessionTools } from '../../src/main/mcp/tools/session-tools'
+ import { fakeCli } from './fake-cli'
++import { tellAgentEdited } from '../../src/main/mcp/agent-edited'
++
++vi.mock('../../src/main/mcp/agent-edited', () => ({ tellAgentEdited: vi.fn() }))
+ 
+ /**
+  * Slides tool surface over a real MCP session: headless create_pptx (markdown
+@@ -344,6 +347,21 @@ describe('visible deck session tools', () => {
+     expect(text(after.content)).toMatch(/no session is open/)
+   })
+ 
++  it('tells the tab when an applied transaction changed its deck, not for a dry run or a failure', async () => {
++    const fake = fakeSlidesControl()
++    await startService(sessionSurface(fake.control))
++    await client!.callTool({ name: 'create_session', arguments: { family: 'pptx' } })
++    vi.mocked(tellAgentEdited).mockClear()
++    await client!.callTool({ name: 'apply_slide_ops', arguments: { ops: [{ op: 'explode' }] } })
++    await client!.callTool({
++      name: 'apply_slide_ops',
++      arguments: { ops: [{ op: 'addElement' }], dryRun: true },
++    })
++    expect(tellAgentEdited).not.toHaveBeenCalled()
++    await client!.callTool({ name: 'apply_slide_ops', arguments: { ops: [{ op: 'addElement' }] } })
++    expect(tellAgentEdited).toHaveBeenCalledWith(1)
++  })
++
+   it('surfaces failed transactions as errors, keeps dry runs successful, caps batch size', async () => {
+     const fake = fakeSlidesControl()
+     await startService(sessionSurface(fake.control))
+diff --git a/apps/shell/tests/web-agent-edited.test.ts b/apps/shell/tests/web-agent-edited.test.ts
+new file mode 100644
+index 00000000..fda3c11e
+--- /dev/null
++++ b/apps/shell/tests/web-agent-edited.test.ts
+@@ -0,0 +1,33 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import { tellAgentEdited } from '../src/main/mcp/agent-edited'
++import { registerWebTab, unregisterWebTab } from '../src/web/tab-registry'
++import type { WebTabContents } from '../src/web/web-contents'
++
++// an agent's edit landed in a document: a browser tab embedded in a host page
++// hears about it (the host takes down its "AI at work" mark); desktop windows
++// have no host page and are left alone
++const tabs: WebTabContents[] = []
++function browserTab(id: number) {
++  const tab = { id, send: vi.fn() } as unknown as WebTabContents
++  registerWebTab(tab)
++  tabs.push(tab)
++  return tab
++}
++afterEach(() => {
++  for (const tab of tabs.splice(0)) unregisterWebTab(tab)
++})
++
++describe('agent edit notice', () => {
++  it('tells the browser tab showing the document', () => {
++    const tab = browserTab(1_000_001)
++    tellAgentEdited(1_000_001)
++    expect(tab.send).toHaveBeenCalledWith('web:agent-edited')
++  })
++
++  it('sends nothing for a desktop window or a tab that has closed', () => {
++    const other = browserTab(1_000_002)
++    expect(() => tellAgentEdited(7)).not.toThrow()
++    expect(() => tellAgentEdited(1_000_003)).not.toThrow()
++    expect(other.send).not.toHaveBeenCalled()
++  })
++})
+diff --git a/apps/shell/tests/web-host-page.test.ts b/apps/shell/tests/web-host-page.test.ts
+new file mode 100644
+index 00000000..8a3845c8
+--- /dev/null
++++ b/apps/shell/tests/web-host-page.test.ts
+@@ -0,0 +1,31 @@
++import { describe, expect, it, vi } from 'vitest'
++import { tellHostAgentEdited } from '../src/web/shim/host-page'
++
++// the browser side of the agent edit notice: an editor embedded in a host page
++// (?host= names it, and it really is the framing page) passes it on; a tab
++// opened on its own has no one to tell
++const HOST = 'https://kw.example'
++function fakeWindow(search: string, ancestors: string[] = [HOST]) {
++  const parent = { postMessage: vi.fn() }
++  const win = { parent, location: { search, ancestorOrigins: ancestors } }
++  return win as unknown as Window & { parent: typeof parent }
++}
++
++describe('telling an embedding host', () => {
++  it('passes an agent edit on to the host page that frames the editor', () => {
++    const win = fakeWindow(`?path=%2Fw%2Fa.docx&host=${encodeURIComponent(HOST)}`)
++    tellHostAgentEdited(win)
++    expect(win.parent.postMessage).toHaveBeenCalledWith({ type: 'genoffice:agent-edited' }, HOST)
++  })
++
++  it('tells no one when not embedded, or when the framing page is not the named host', () => {
++    const alone = fakeWindow('?path=%2Fw%2Fa.docx')
++    tellHostAgentEdited(alone)
++    expect(alone.parent.postMessage).not.toHaveBeenCalled()
++    const framedElsewhere = fakeWindow(`?host=${encodeURIComponent(HOST)}`, [
++      'https://evil.example',
++    ])
++    tellHostAgentEdited(framedElsewhere)
++    expect(framedElsewhere.parent.postMessage).not.toHaveBeenCalled()
++  })
++})
+diff --git a/apps/slides/src/renderer/App.tsx b/apps/slides/src/renderer/App.tsx
+index 3329ac88..bf3b807c 100644
+--- a/apps/slides/src/renderer/App.tsx
++++ b/apps/slides/src/renderer/App.tsx
+@@ -84,6 +84,9 @@ import {
+   type AnchorRect,
+   type AskTarget,
+ } from './components/AiAskPopover'
++import { useSlidesHostAi } from './host-bridge'
++import { HostTextAsk } from './host-text-ask'
++import { HostBusyFrame } from './host-busy'
+ import {
+   anchorId,
+   buildSelectionInstruction,
+@@ -1330,6 +1333,19 @@ export function App() {
+     })
+   }, [])
+ 
++  // an embedding page that owns the AI gets every assistant request (host-bridge.ts)
++  const hostAi = useSlidesHostAi(() => ({
++    slide: current,
++    targets: (askState?.ids ?? selectedIds).flatMap((id) => {
++      const node = findNodeCtx(id)?.node
++      if (!node) return []
++      const desc = describeNode(node)
++      return [{ id: anchorId(node), type: desc.type, ...(desc.text ? { text: desc.text } : {}) }]
++    }),
++  }))
++  const hostAiRef = useRef(hostAi)
++  hostAiRef.current = hostAi
++
+   const pushAiPreset = useCallback(
+     (
+       text: string,
+@@ -1339,6 +1355,7 @@ export function App() {
+       slideShot?: boolean,
+       scope?: AiScopeQuoteData,
+     ) => {
++      if (hostAiRef.current?.ask(displayText ?? text, true)) return
+       setShowAi(() => {
+         rememberAiPanelOpen('ai-slides-show-ai', true)
+         return true
+@@ -1460,6 +1477,7 @@ export function App() {
+       const state = askState
+       setAskState(null)
+       if (!state) return
++      if (!state.itemKey && hostAiRef.current?.ask(instruction, false)) return
+       setEditQueue((prev) => {
+         if (state.itemKey) {
+           return prev.map((it) => (it.key === state.itemKey ? { ...it, instruction } : it))
+@@ -4738,6 +4756,30 @@ export function App() {
+           <AiAskTrigger getAnchorRect={getAskTriggerRect} onOpen={openAskPopover} />
+         )}
+ 
++      {hostAi.busy && hostAi.busy.slide === current && (
++        <HostBusyFrame
++          label={hostAi.busy.label}
++          rect={() =>
++            selectionRect(
++              (slides[current]?.nodes ?? [])
++                .filter((node) => hostAi.busy?.elements.includes(anchorId(node)))
++                .map((node) => node.sourceId),
++            )
++          }
++        />
++      )}
++
++      {hostAi.owned && (
++        <HostTextAsk
++          slide={current}
++          target={() => {
++            const node = editing ? findNodeCtx(editing.sourceId)?.node : undefined
++            return node ? { id: anchorId(node), sourceId: node.sourceId, desc: describeNode(node) } : null
++          }}
++          ask={(instruction, send, selection) => void hostAi.ask(instruction, send, selection)}
++        />
++      )}
++
+       {askState && askTargets.length > 0 && (
+         <AiAskPopover
+           targets={askTargets}
+diff --git a/apps/slides/src/renderer/components/AiAskPopover.tsx b/apps/slides/src/renderer/components/AiAskPopover.tsx
+index 1a5eee39..2dd3c1f8 100644
+--- a/apps/slides/src/renderer/components/AiAskPopover.tsx
++++ b/apps/slides/src/renderer/components/AiAskPopover.tsx
+@@ -7,7 +7,7 @@
+  * coordinates and refreshed while the canvas scrolls or zooms.
+  */
+ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+-import { useAiPanelPrefs, useImeEnterGuard } from '@genoffice/ui'
++import { hostOwnsAi, useAiPanelPrefs, useImeEnterGuard } from '@genoffice/ui'
+ import { useI18n, type StringKey } from '../i18n/locale'
+ import {
+   EDIT_INSTRUCTION_MAX,
+@@ -190,6 +190,9 @@ export function AiAskPopover({
+ 
+   // A full queue blocks queueing only for new asks; edits update in place
+   const queueBlocked = Boolean(queueFull && onSendNow)
++  // an embedding host owns the AI: its chat is the queue, so a new ask is just
++  // sent (Enter or the one button), as in the docs editor
++  const sendOnly = Boolean(onSendNow) && hostOwnsAi()
+ 
+   /** Clicking away keeps whatever was typed: it lands in the queue, where it can still be edited or removed */
+   const commitOrCancel = useCallback(() => {
+@@ -288,7 +291,7 @@ export function AiAskPopover({
+           if (e.key === 'Enter' && !ime.isImeConfirm(e.nativeEvent)) {
+             e.preventDefault()
+             if (!canSubmit) return
+-            if (queueBlocked) onSendNow?.(text.trim())
++            if (queueBlocked || sendOnly) onSendNow?.(text.trim())
+             else onSubmit(text.trim())
+           }
+         }}
+@@ -309,7 +312,15 @@ export function AiAskPopover({
+         ))}
+       </div>
+       <div className="ai-ask-pop-foot">
+-        {onSendNow ? (
++        {sendOnly ? (
++          <button
++            className="ai-ask-confirm"
++            disabled={!canSubmit}
++            onClick={() => canSubmit && onSendNow?.(text.trim())}
++          >
++            {t('aiAskSendNow')}
++          </button>
++        ) : onSendNow ? (
+           <>
+             <button
+               className="ai-ask-cancel"
+diff --git a/apps/slides/src/renderer/components/Ribbon.tsx b/apps/slides/src/renderer/components/Ribbon.tsx
+index 9fa028ad..55c1be09 100644
+--- a/apps/slides/src/renderer/components/Ribbon.tsx
++++ b/apps/slides/src/renderer/components/Ribbon.tsx
+@@ -20,6 +20,7 @@ import {
+   THEME_COLORS,
+   THEME_COLOR_SHADES,
+   STANDARD_COLORS,
++  hostOwnsAi,
+ } from '@genoffice/ui'
+ import {
+   createRecentColorSession,
+@@ -230,6 +231,10 @@ const TRANSLATE_TARGETS: StringKey[] = [
+ /** One-time "AI rewrites the whole document" acknowledgement */
+ const AI_REWRITE_ACK_KEY = 'slides-ai-rewrite-ack'
+ 
++/** " — uses AI credits" after an AI action's tooltip; none when an embedding host owns the AI (no built-in credits) */
++const aiCreditNote = (t: (key: StringKey) => string): string =>
++  hostOwnsAi() ? '' : ` — ${t('ribbonAiCreditNote')}`
++
+ const TRANSITIONS: Array<{ kind: TransitionKind; label: StringKey; icon: React.ReactElement }> = [
+   { kind: 'none', label: 'ribbonNone', icon: <IconTransNone size={BIG} /> },
+   { kind: 'morph', label: 'ribbonTransMorph', icon: <IconTransMorph size={BIG} /> },
+@@ -1569,6 +1574,8 @@ export function Ribbon({
+   // Spelling / Translate send the full deck to the agent, consume credits and may
+   // rewrite every slide — say so once before the first run.
+   const confirmAiRewrite = () => {
++    // an embedding host owns the AI: no built-in credits to warn about
++    if (hostOwnsAi()) return true
+     if (localStorage.getItem(AI_REWRITE_ACK_KEY) === '1') return true
+     if (!window.confirm(t('ribbonAiRewriteConfirm'))) return false
+     localStorage.setItem(AI_REWRITE_ACK_KEY, '1')
+@@ -2469,7 +2476,7 @@ export function Ribbon({
+               <button
+                 className="rb-big"
+                 disabled={!hasDoc}
+-                data-tip={`${t('ribbonSpellCheckTip')} — ${t('ribbonAiCreditNote')}`}
++                data-tip={`${t('ribbonSpellCheckTip')}${aiCreditNote(t)}`}
+                 onClick={() => {
+                   if (confirmAiRewrite()) onAiPreset(t('ribbonSpellCheckPrompt'))
+                 }}
+@@ -2485,7 +2492,7 @@ export function Ribbon({
+                 <button
+                   className={`rb-big ${translateOpen ? 'active' : ''}`}
+                   disabled={!hasDoc}
+-                  data-tip={`${t('ribbonTranslateTip')} — ${t('ribbonAiCreditNote')}`}
++                  data-tip={`${t('ribbonTranslateTip')}${aiCreditNote(t)}`}
+                   onMouseDown={(e) => {
+                     e.stopPropagation()
+                     closeSiblingPanels(e, closePanels, 'translate')
+diff --git a/apps/slides/src/renderer/host-bridge.ts b/apps/slides/src/renderer/host-bridge.ts
+new file mode 100644
+index 00000000..7b7ea17a
+--- /dev/null
++++ b/apps/slides/src/renderer/host-bridge.ts
+@@ -0,0 +1,133 @@
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
++import { hostAiOrigin } from '@genoffice/ui'
++
++/**
++ * Host page bridge for the presentation: the editor embedded in another page's
++ * iframe (web-server mode), with that page owning the AI (see the docs app's
++ * host-bridge.ts for the protocol).
++ *
++ * Every request meant for the built-in assistant — the selection's "Ask AI"
++ * (send now, or add to queue), the ribbon's proofing and translate, the
++ * context menu's AI items — goes to the host (`genoffice:ai-edit`) with the
++ * page and the selected elements' durable ids (the ids read_deck and
++ * apply_slide_ops use), instead of the built-in panel.
++ *
++ * The host marks the elements its agent is working on (`genoffice:ai-busy`
++ * with `slide: { index, elements }` and a `label`; anything else clears it),
++ * drawn by host-busy.tsx.
++ *
++ * Off unless the editor URL names the host origin (`?host=<origin>`) and the
++ * editor really is framed by that origin.
++ */
++
++const TEXT_MAX = 4000
++
++/** the host's busy mark: page, durable element ids, label */
++export interface SlidesBusy {
++  readonly slide: number
++  readonly elements: readonly string[]
++  readonly label: string
++}
++
++/** the busy mark of a `genoffice:ai-busy` message, or null when it clears or is malformed */
++export function busyOf(data: { slide?: unknown; label?: unknown }): SlidesBusy | null {
++  const slide = data.slide as { index?: unknown; elements?: unknown } | undefined
++  if (!slide || !Number.isInteger(slide.index) || (slide.index as number) < 0) return null
++  const elements = Array.isArray(slide.elements)
++    ? slide.elements.filter((id): id is string => typeof id === 'string' && id !== '')
++    : []
++  if (elements.length === 0) return null
++  const label = typeof data.label === 'string' && data.label ? data.label.slice(0, 40) : 'AI'
++  return { slide: slide.index as number, elements, label }
++}
++
++export interface SlidesHostTarget {
++  /** durable element id */
++  id: string
++  type: string
++  text?: string
++}
++
++export interface SlidesHostSelection {
++  /** 0-based page index */
++  slide: number
++  targets: readonly SlidesHostTarget[]
++}
++
++export interface SlidesAiEditMessage {
++  type: 'genoffice:ai-edit'
++  instruction: string
++  /** true: run now; false: add to the host's pending edits */
++  send: boolean
++  selection: {
++    isRange: boolean
++    text: string
++    slide: number
++    elements: { id: string; type: string }[]
++  }
++}
++
++export function slidesAiEditMessage(
++  instruction: string,
++  send: boolean,
++  selection: SlidesHostSelection,
++): SlidesAiEditMessage {
++  const text = selection.targets
++    .map((target) => target.text?.trim() ?? '')
++    .filter(Boolean)
++    .join('\n')
++    .slice(0, TEXT_MAX)
++  return {
++    type: 'genoffice:ai-edit',
++    instruction,
++    send,
++    selection: {
++      isRange: selection.targets.length > 0,
++      text,
++      slide: selection.slide,
++      elements: selection.targets.map((target) => ({ id: target.id, type: target.type })),
++    },
++  }
++}
++
++/**
++ * When the embedding host owns the AI, `ask` hands a request to it with the
++ * current page and selection (from `selection`, read at call time) and returns
++ * true; otherwise it returns false and the caller runs the built-in assistant.
++ */
++export function useSlidesHostAi(selection: () => SlidesHostSelection): {
++  /** true when an embedding page owns the AI */
++  readonly owned: boolean
++  /** the elements the host's agent is working on, if any */
++  readonly busy: SlidesBusy | null
++  /** hand a request over (with `chosen`, else the current page and selection); false when no host owns the AI */
++  readonly ask: (instruction: string, send: boolean, chosen?: SlidesHostSelection) => boolean
++} {
++  const origin = useMemo(() => hostAiOrigin(), [])
++  const selectionRef = useRef(selection)
++  selectionRef.current = selection
++  const [busy, setBusy] = useState<SlidesBusy | null>(null)
++  useEffect(() => {
++    if (!origin) return
++    const onMessage = (event: MessageEvent): void => {
++      if (event.source !== window.parent || event.origin !== origin) return
++      const data = event.data as { type?: unknown; slide?: unknown; label?: unknown } | null
++      if (data?.type === 'genoffice:ai-busy') setBusy(busyOf(data))
++    }
++    window.addEventListener('message', onMessage)
++    window.parent.postMessage({ type: 'genoffice:ready' }, origin)
++    return () => window.removeEventListener('message', onMessage)
++  }, [origin])
++  const ask = useCallback(
++    (instruction: string, send: boolean, chosen?: SlidesHostSelection) => {
++      if (!origin) return false
++      window.parent.postMessage(
++        slidesAiEditMessage(instruction, send, chosen ?? selectionRef.current()),
++        origin,
++      )
++      return true
++    },
++    [origin],
++  )
++  return useMemo(() => ({ owned: origin !== null, busy, ask }), [origin, busy, ask])
++}
+diff --git a/apps/slides/src/renderer/host-busy.css b/apps/slides/src/renderer/host-busy.css
+new file mode 100644
+index 00000000..cab33f4e
+--- /dev/null
++++ b/apps/slides/src/renderer/host-busy.css
+@@ -0,0 +1,22 @@
++/* HostBusyFrame (host-busy.tsx): the elements the host's agent is working on */
++.host-busy-frame {
++  position: fixed;
++  z-index: 40;
++  border: 1.5px dashed rgba(13, 13, 13, 0.55);
++  background: rgba(13, 13, 13, 0.04);
++  border-radius: 2px;
++  pointer-events: none;
++}
++
++.host-busy-label {
++  position: absolute;
++  bottom: 100%;
++  left: -1.5px;
++  padding: 1px 6px;
++  border-radius: 4px 4px 0 0;
++  background: #0d0d0d;
++  color: #fff;
++  font-size: 12px;
++  line-height: 16px;
++  white-space: nowrap;
++}
+diff --git a/apps/slides/src/renderer/host-busy.tsx b/apps/slides/src/renderer/host-busy.tsx
+new file mode 100644
+index 00000000..3ecbf51a
+--- /dev/null
++++ b/apps/slides/src/renderer/host-busy.tsx
+@@ -0,0 +1,41 @@
++import { useLayoutEffect, useState } from 'react'
++import type { AnchorRect } from './components/AiAskPopover'
++import './host-busy.css'
++
++/**
++ * "The AI is working here" over the slide elements the host's agent is
++ * changing (host-bridge.ts: `genoffice:ai-busy` with `slide`): a dashed frame
++ * and a label laid over the canvas. Decoration only — never part of the deck;
++ * the host clears it when the turn ends. Follows the canvas as it scrolls.
++ */
++export function HostBusyFrame({
++  rect,
++  label,
++}: {
++  /** viewport box of the elements; null hides the frame */
++  readonly rect: () => AnchorRect | null
++  readonly label: string
++}): React.JSX.Element | null {
++  const [box, setBox] = useState<AnchorRect | null>(() => rect())
++  useLayoutEffect(() => {
++    const update = (): void => setBox(rect())
++    update()
++    const scroller = document.querySelector('.stage-wrap')
++    scroller?.addEventListener('scroll', update, { passive: true })
++    window.addEventListener('resize', update)
++    return () => {
++      scroller?.removeEventListener('scroll', update)
++      window.removeEventListener('resize', update)
++    }
++  }, [rect])
++  if (!box) return null
++  return (
++    <div
++      className="host-busy-frame"
++      aria-hidden
++      style={{ left: box.left, top: box.top, width: box.right - box.left, height: box.bottom - box.top }}
++    >
++      <span className="host-busy-label">{label}</span>
++    </div>
++  )
++}
+diff --git a/apps/slides/src/renderer/host-text-ask.tsx b/apps/slides/src/renderer/host-text-ask.tsx
+new file mode 100644
+index 00000000..c35ef2ba
+--- /dev/null
++++ b/apps/slides/src/renderer/host-text-ask.tsx
+@@ -0,0 +1,106 @@
++import { useCallback, useEffect, useState } from 'react'
++import {
++  AiAskPopover,
++  AiAskTrigger,
++  type AnchorRect,
++  type AskTarget,
++} from './components/AiAskPopover'
++import type { SlidesHostSelection } from './host-bridge'
++
++/**
++ * "Ask AI" on text selected while editing a text box, for an embedding page
++ * that owns the AI (host-bridge.ts). The built-in assistant only offers Ask AI
++ * on whole selected elements, hiding it while a text box is being edited; a
++ * host's user selects words the way they do in a document and expects the
++ * same bubble. It reuses the element Ask AI trigger and popover, and hands the
++ * request over with the page, the element's durable id and the selected words.
++ *
++ * The request is captured when the popover opens: typing in it moves focus
++ * out of the text box, which may end the edit.
++ */
++
++const TEXT_MAX = 4000
++
++interface TextSelection {
++  readonly text: string
++  readonly rect: AnchorRect
++}
++
++/** the words selected inside the slide's text editor, and where they sit on screen */
++export function textSelection(doc: Document = document): TextSelection | null {
++  const selection = doc.getSelection()
++  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null
++  const range = selection.getRangeAt(0)
++  const container = range.commonAncestorContainer
++  const element = container instanceof Element ? container : container.parentElement
++  if (!element?.closest('.slide-text-editor')) return null
++  const text = selection.toString().trim()
++  if (!text) return null
++  const box = range.getBoundingClientRect()
++  const stage = doc.querySelector('.stage-wrap')?.getBoundingClientRect()
++  return {
++    text: text.slice(0, TEXT_MAX),
++    rect: {
++      left: box.left,
++      top: box.top,
++      right: box.right,
++      bottom: box.bottom,
++      viewTop: stage?.top ?? 0,
++      viewBottom: stage?.bottom ?? doc.defaultView?.innerHeight ?? box.bottom,
++    },
++  }
++}
++
++export function HostTextAsk({
++  slide,
++  target,
++  ask,
++}: {
++  /** 0-based page index */
++  readonly slide: number
++  /** the element whose text is being edited; null when none can take the request */
++  readonly target: () => AskTarget | null
++  readonly ask: (instruction: string, send: boolean, selection: SlidesHostSelection) => void
++}): React.JSX.Element | null {
++  const [live, setLive] = useState<TextSelection | null>(null)
++  const [asking, setAsking] = useState<(TextSelection & { target: AskTarget }) | null>(null)
++
++  useEffect(() => {
++    const update = (): void => setLive(textSelection())
++    document.addEventListener('selectionchange', update)
++    return () => document.removeEventListener('selectionchange', update)
++  }, [])
++
++  const triggerRect = useCallback(() => live?.rect ?? null, [live])
++  const askRect = useCallback(() => asking?.rect ?? null, [asking])
++
++  if (asking) {
++    const finish = (instruction: string, send: boolean): void => {
++      setAsking(null)
++      ask(instruction, send, {
++        slide,
++        targets: [{ id: asking.target.id, type: asking.target.desc.type, text: asking.text }],
++      })
++    }
++    return (
++      <AiAskPopover
++        targets={[{ ...asking.target, desc: { ...asking.target.desc, text: asking.text } }]}
++        getAnchorRect={askRect}
++        queueFull={false}
++        onSubmit={(instruction) => finish(instruction, false)}
++        onSendNow={(instruction) => finish(instruction, true)}
++        onCancel={() => setAsking(null)}
++      />
++    )
++  }
++  if (!live || !target()) return null
++  return (
++    <AiAskTrigger
++      getAnchorRect={triggerRect}
++      onOpen={() => {
++        const element = target()
++        if (element) setAsking({ ...live, target: element })
++      }}
++    />
++  )
++}
+diff --git a/apps/slides/tests/host-bridge.test.ts b/apps/slides/tests/host-bridge.test.ts
+new file mode 100644
+index 00000000..4e5e6ae1
+--- /dev/null
++++ b/apps/slides/tests/host-bridge.test.ts
+@@ -0,0 +1,45 @@
++import { describe, expect, it } from 'vitest'
++import { busyOf, slidesAiEditMessage } from '../src/renderer/host-bridge'
++
++describe('slides host bridge (an embedding page owns the AI)', () => {
++  it('hands the page, the selected elements and their text over', () => {
++    expect(
++      slidesAiEditMessage('换个更有力的标题', true, {
++        slide: 0,
++        targets: [
++          { id: 'e_2', type: 'text', text: '三季度经营汇报' },
++          { id: 'e_5', type: 'image' },
++        ],
++      }),
++    ).toEqual({
++      type: 'genoffice:ai-edit',
++      instruction: '换个更有力的标题',
++      send: true,
++      selection: {
++        isRange: true,
++        text: '三季度经营汇报',
++        slide: 0,
++        elements: [
++          { id: 'e_2', type: 'text' },
++          { id: 'e_5', type: 'image' },
++        ],
++      },
++    })
++  })
++
++  it('without a selection only the page goes, queued edits are not sent', () => {
++    const message = slidesAiEditMessage('逐页检查错别字', false, { slide: 2, targets: [] })
++    expect(message.send).toBe(false)
++    expect(message.selection).toEqual({ isRange: false, text: '', slide: 2, elements: [] })
++  })
++
++  it('reads the host busy mark: page and element ids; no elements clears it', () => {
++    expect(busyOf({ slide: { index: 1, elements: ['e_5', '', 3] }, label: 'AI 正在改' })).toEqual({
++      slide: 1,
++      elements: ['e_5'],
++      label: 'AI 正在改',
++    })
++    expect(busyOf({ slide: { index: 1, elements: [] } })).toBeNull()
++    expect(busyOf({})).toBeNull()
++  })
++})
+diff --git a/apps/slides/tests/host-text-ask.test.ts b/apps/slides/tests/host-text-ask.test.ts
+new file mode 100644
+index 00000000..655d721f
+--- /dev/null
++++ b/apps/slides/tests/host-text-ask.test.ts
+@@ -0,0 +1,43 @@
++// @vitest-environment jsdom
++import { afterEach, describe, expect, it } from 'vitest'
++import { textSelection } from '../src/renderer/host-text-ask'
++
++function select(node: Node, start: number, end: number): void {
++  const range = document.createRange()
++  range.setStart(node, start)
++  range.setEnd(node, end)
++  // jsdom has no layout: a fixed box stands in for the selection's rect
++  range.getBoundingClientRect = () => ({ left: 10, top: 20, right: 110, bottom: 40 }) as DOMRect
++  const selection = document.getSelection()!
++  selection.removeAllRanges()
++  selection.addRange(range)
++}
++
++afterEach(() => {
++  document.getSelection()?.removeAllRanges()
++  document.body.innerHTML = ''
++})
++
++describe('words selected in a slide text box (host-owned Ask AI)', () => {
++  it('gives the selected words and where they sit', () => {
++    document.body.innerHTML =
++      '<div class="stage-wrap"><div class="slide-text-editor" contenteditable="true"><p>中国微短剧市场规模突破 500 亿元</p></div></div>'
++    const text = document.querySelector('.slide-text-editor p')!.firstChild!
++    select(text, 0, 9)
++    const selection = textSelection()
++    expect(selection?.text).toBe('中国微短剧市场规模')
++    expect(selection?.rect).toMatchObject({ left: 10, top: 20, right: 110, bottom: 40 })
++  })
++
++  it('nothing for a caret, blank text, or a selection outside a text box', () => {
++    document.body.innerHTML =
++      '<div class="slide-text-editor" contenteditable="true"><p>标题</p><p>   </p></div><p id="notes">备注</p>'
++    const [title, blank] = [...document.querySelectorAll('.slide-text-editor p')].map((p) => p.firstChild!)
++    select(title!, 1, 1)
++    expect(textSelection()).toBeNull()
++    select(blank!, 0, 3)
++    expect(textSelection()).toBeNull()
++    select(document.getElementById('notes')!.firstChild!, 0, 2)
++    expect(textSelection()).toBeNull()
++  })
++})
+diff --git a/packages/ui/src/ai-panel-prefs-store.ts b/packages/ui/src/ai-panel-prefs-store.ts
+index a1ad98b6..cb8c69ba 100644
+--- a/packages/ui/src/ai-panel-prefs-store.ts
++++ b/packages/ui/src/ai-panel-prefs-store.ts
+@@ -1,4 +1,5 @@
+ import { useEffect, useSyncExternalStore } from 'react'
++import { hostOwnsAi } from './host-ai'
+ import {
+   DEFAULT_AI_PANEL_PREFS,
+   aiPanelZoom,
+@@ -81,7 +82,8 @@ export function useAiPanelPrefs(): AiPanelPrefs {
+  * turning the switch back on leaves the panel closed rather than resurrecting it.
+  */
+ export function useAiSidebarEnabled(setOpen: (open: boolean) => void): boolean {
+-  const enabled = useAiPanelPrefs().showAiSidebar
++  // an embedding page that owns the AI turns the sidebar off for good (host-ai.ts)
++  const enabled = useAiPanelPrefs().showAiSidebar && !hostOwnsAi()
+   useEffect(() => {
+     if (!enabled) setOpen(false)
+   }, [enabled, setOpen])
+diff --git a/packages/ui/src/host-ai.css b/packages/ui/src/host-ai.css
+new file mode 100644
+index 00000000..a4b24166
+--- /dev/null
++++ b/packages/ui/src/host-ai.css
+@@ -0,0 +1,87 @@
++/* When a host page owns the AI (KnowWork; host-ai.ts marks <html data-host-ai>):
++   the editor's own AI entry points go, and the selection's ask follows the
++   host's monochrome chat. Loaded by host-ai.ts so no app entry imports it. */
++/* An embedding page owns the AI (host-ai.ts): the editor shows none of its own
++   AI entry points — the AI ribbon groups and the separator after them, single
++   AI actions in other groups (.ai-action), AI-badged context menu items, the
++   slide stage's AI bar, "Name with AI", the rail and the panel itself (an
++   explicit shortcut for the assistant would otherwise still open it). !important: these
++   must beat every per-app and panel-side rule. */
++html[data-host-ai] .ribbon-group:has(.ai-entry),
++html[data-host-ai] .ribbon-group:has(.ai-entry) + .ribbon-sep,
++html[data-host-ai] .ai-action,
++html[data-host-ai] .ctx-item:has(.copilot-badge),
++html[data-host-ai] .ctx-item-wrap:has(.copilot-badge),
++html[data-host-ai] .ctx-sep:has(+ .ctx-item .copilot-badge),
++html[data-host-ai] .stage-ai-bar,
++html[data-host-ai] .qa-name-with-ai,
++html[data-host-ai] .ai-rail,
++html[data-host-ai] .ai-dock,
++html[data-host-ai] .sheet-body > .copilot {
++  display: none !important;
++}
++
++html[data-host-ai] .sheet-body {
++  grid-template-columns: minmax(0, 1fr) !important;
++}
++
++/* An embedding host's chat is monochrome (it follows ChatGPT's look), so the
++   one AI entry left in the editor — the selection's "Ask AI" bubble and its
++   popover — drops the orange AI accent for the editor's own text and surface
++   colors (dark pages included): pill buttons, a softer shadow, a neutral
++   focus ring. */
++html[data-host-ai] {
++  --color-ai-action: var(--text);
++  --color-ai-action-hover: var(--text);
++  --color-ai-action-text: var(--surface);
++}
++
++html[data-host-ai] .ai-ask-trigger {
++  padding: 6px 12px;
++  color: var(--text);
++  box-shadow:
++    0 4px 16px rgba(0, 0, 0, 0.08),
++    0 0 1px rgba(0, 0, 0, 0.16);
++}
++
++html[data-host-ai] .ai-ask-pop {
++  padding: 14px;
++  border-radius: 16px;
++  box-shadow:
++    0 8px 28px rgba(0, 0, 0, 0.1),
++    0 0 1px rgba(0, 0, 0, 0.16);
++}
++
++html[data-host-ai] .ai-ask-pop-input {
++  padding: 9px 12px;
++  border-radius: 12px;
++  background: var(--surface);
++  font-size: 14px;
++}
++
++html[data-host-ai] .ai-ask-pop-input:focus {
++  border-color: var(--text-dim);
++}
++
++html[data-host-ai] .ai-ask-cancel,
++html[data-host-ai] .ai-ask-confirm {
++  padding: 6px 14px;
++  border-radius: 999px;
++  font-size: 13px;
++}
++
++html[data-host-ai] .ai-ask-confirm:hover:not(:disabled) {
++  opacity: 0.85;
++}
++
++/* while an ask popover is open, the other selection's Ask AI chip stays hidden
++   (slides: a text box's ask leaves the box selected, whose own chip would show) */
++html[data-host-ai] body:has(.ai-ask-pop) .ai-ask-trigger {
++  display: none !important;
++}
++
++/* the save toast's check (docs, sheets, slides: .app-toast.success) takes the
++   toast's own ink instead of the system green, like the host's monochrome toasts */
++html[data-host-ai] .app-toast.success .app-toast-icon {
++  color: inherit;
++}
+diff --git a/packages/ui/src/host-ai.ts b/packages/ui/src/host-ai.ts
+new file mode 100644
+index 00000000..ff44dfa6
+--- /dev/null
++++ b/packages/ui/src/host-ai.ts
+@@ -0,0 +1,41 @@
++/**
++ * "An embedding page owns the AI" (web-server mode).
++ *
++ * When an editor runs inside another page's iframe and its URL names that
++ * page as the host (`?host=<origin>`), the page offers its own assistant and
++ * the editor must not show a second one: the AI panel and its rail stay off
++ * (useAiSidebarEnabled), and `<html data-host-ai>` hides the remaining entry
++ * points — the AI ribbon groups, the slide stage's AI bar, "Name with AI" —
++ * through host-ai.css. The selection "Ask AI" popover of Docs stays:
++ * it hands the request to the host (docs host-bridge.ts).
++ *
++ * The URL alone is not enough: Chromium reports the real framing origin, so a
++ * page that merely copies the URL into its own frame cannot claim the role.
++ */
++
++import './host-ai.css'
++
++export { hostAiOrigin } from './host-origin'
++import { hostAiOrigin } from './host-origin'
++
++let owned: boolean | null = null
++
++/** whether this page's AI belongs to the embedding host (fixed for the page's life) */
++export function hostOwnsAi(): boolean {
++  owned ??= typeof window !== 'undefined' && hostAiOrigin(window) !== null
++  return owned
++}
++
++/** mark `<html>` so the shared stylesheet hides the editor's own AI entry points */
++export function markHostOwnedAi(): void {
++  if (hostOwnsAi()) document.documentElement.dataset.hostAi = ''
++}
++
++/** test seam: forget the cached answer */
++export function resetHostOwnsAiForTests(): void {
++  owned = null
++}
++
++// every app's renderer imports this package before it renders, so the page is
++// marked as soon as the module loads and no app entry has to call it
++if (typeof document !== 'undefined') markHostOwnedAi()
+diff --git a/packages/ui/src/index.ts b/packages/ui/src/index.ts
+index 95524726..dc2bd7f1 100644
+--- a/packages/ui/src/index.ts
++++ b/packages/ui/src/index.ts
+@@ -172,3 +172,4 @@ export { useRedactLabelField } from './use-redact-label'
+ export type { RedactLabelField } from './use-redact-label'
+ export { useScrollWindow } from './scroll-window'
+ export { createImeEnterGuard, useImeEnterGuard, type ImeEnterGuard } from './ime-enter'
++export { hostAiOrigin, hostOwnsAi, markHostOwnedAi } from './host-ai'
+diff --git a/packages/ui/tests/host-ai-sidebar.test.ts b/packages/ui/tests/host-ai-sidebar.test.ts
+new file mode 100644
+index 00000000..da5def6b
+--- /dev/null
++++ b/packages/ui/tests/host-ai-sidebar.test.ts
+@@ -0,0 +1,27 @@
++/** @vitest-environment jsdom */
++/** With a host owning the AI, the sidebar switch reads off and closes an open panel. */
++import { act, createElement, useState } from 'react'
++import { createRoot } from 'react-dom/client'
++import { expect, it, vi } from 'vitest'
++
++vi.mock('../src/host-ai', () => ({ hostOwnsAi: () => true }))
++
++const { applyAiPanelPrefs, useAiSidebarEnabled } = await import('../src/ai-panel-prefs-store')
++
++it('turns the sidebar off when an embedding page owns the AI', () => {
++  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
++  applyAiPanelPrefs({ showAiSidebar: true })
++  function Dock() {
++    const [open, setOpen] = useState(true)
++    const enabled = useAiSidebarEnabled(setOpen)
++    return createElement('div', { 'data-open': String(open), 'data-enabled': String(enabled) })
++  }
++  const host = document.createElement('div')
++  document.body.append(host)
++  const root = createRoot(host)
++  act(() => root.render(createElement(Dock)))
++  const dock = host.firstElementChild as HTMLElement
++  expect(dock.dataset.enabled).toBe('false')
++  expect(dock.dataset.open).toBe('false')
++  act(() => root.unmount())
++})
+diff --git a/packages/ui/tests/host-ai.test.ts b/packages/ui/tests/host-ai.test.ts
+new file mode 100644
+index 00000000..bfb4aa34
+--- /dev/null
++++ b/packages/ui/tests/host-ai.test.ts
+@@ -0,0 +1,37 @@
++/** @vitest-environment jsdom */
++/**
++ * An embedding page that owns the AI (web-server mode, `?host=<origin>`, framed
++ * by that origin) makes the editors hide their own AI: the sidebar switch reads
++ * off, and `<html data-host-ai>` drives the stylesheet. A top-level page, or a
++ * frame whose real parent is someone else, keeps the editor's AI.
++ */
++import { afterEach, describe, expect, it } from 'vitest'
++import { hostAiOrigin, hostOwnsAi, markHostOwnedAi, resetHostOwnsAiForTests } from '../src/host-ai'
++
++const HOST = 'https://kw.example'
++const framed = (search: string, ancestors?: string[]): Window =>
++  ({
++    parent: {},
++    location: { search, ...(ancestors ? { ancestorOrigins: ancestors } : {}) },
++  }) as unknown as Window
++
++afterEach(() => {
++  resetHostOwnsAiForTests()
++  delete document.documentElement.dataset.hostAi
++})
++
++describe('host-owned AI', () => {
++  it('needs a frame, a host parameter and a matching framing origin', () => {
++    expect(hostAiOrigin(framed(`?host=${HOST}/chat`))).toBe(HOST)
++    expect(hostAiOrigin(framed(`?host=${HOST}`, [HOST]))).toBe(HOST)
++    expect(hostAiOrigin(framed(`?host=${HOST}`, ['https://evil.example']))).toBeNull()
++    expect(hostAiOrigin(framed('?path=/x.docx'))).toBeNull()
++    expect(hostAiOrigin(framed('?host=not a url'))).toBeNull()
++  })
++
++  it('leaves a top-level editor its own AI', () => {
++    expect(hostOwnsAi()).toBe(false)
++    markHostOwnedAi()
++    expect(document.documentElement.dataset.hostAi).toBeUndefined()
++  })
++})

@@ -10,8 +10,10 @@
 
 import asyncio
 import contextlib
+import io
 import logging
 import socket as pysocket
+import tarfile
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -193,6 +195,32 @@ class DockerEngine:
             return await self._call("stat", stat)
         except DockerNotFound:
             return None
+
+    async def read_file(self, container_id: str, path: str, *, max_bytes: int) -> bytes | None:
+        """从容器里取一个普通文件（Docker 的取档接口，容器里不需要任何工具）。不存在时为 None，超过 max_bytes 抛错。
+        沙箱读文件走它自己的脚本（要按块读、带版本）；这个给没有脚本环境的容器用（例如扩展起的 Office 编辑器容器）。"""
+        def fetch(client: docker.DockerClient) -> bytes:
+            stream, info = client.api.get_archive(container_id, path)
+            if int((info or {}).get("size") or 0) > max_bytes:
+                for _chunk in stream:
+                    pass
+                raise SandboxError("文件太大")
+            archive = bytearray()
+            for chunk in stream:
+                archive.extend(chunk)
+                if len(archive) > max_bytes + 64 * 1024:  # tar 头与对齐另算一点余量
+                    raise SandboxError("文件太大")
+            return bytes(archive)
+        try:
+            archive = await self._call("read", fetch)
+        except DockerNotFound:
+            return None
+        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+            member = next((item for item in tar.getmembers() if item.isfile()), None)
+            if member is None:
+                raise SandboxError("这不是普通文件")
+            extracted = tar.extractfile(member)
+            return extracted.read() if extracted is not None else b""
 
     # -- 镜像 ---------------------------------------------------------------
 

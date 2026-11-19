@@ -27,9 +27,9 @@ async def test_ready_attachments_become_turn_files(files_db, tmp_path):
     pdf, broken = mine
     turns = TurnAttachments(attachments.service)
     [item] = await turns.for_turn(conv, [pdf["id"]])
-    assert (item.name, item.path, item.bytes, item.sha256) == ("报告.pdf", "/workspace/input/报告.pdf", len(PDF),
+    assert (item.name, item.path, item.bytes, item.sha256) == ("报告.pdf", "input/报告.pdf", len(PDF),
                                                                sha256_hex(PDF))
-    assert (item.extracted_path, item.extraction_pending) == ("/workspace/input/报告.md", True), \
+    assert (item.extracted_path, item.extraction_pending) == ("input/报告.md", True), \
         "还在解析：给出解析好以后的位置，并说明现在还没有"
     for ids in ([broken["id"]], [theirs[0]["id"]], ["att_missing"]):
         with pytest.raises(AttachmentUnavailable):
@@ -45,8 +45,8 @@ def _view(**changes) -> AttachmentView:
 
 
 @pytest.mark.parametrize(("changes", "extracted", "pending"), [
-    ({}, "/workspace/input/报告.md", False),
-    ({"parse_status": "parsing"}, "/workspace/input/报告.md", True),
+    ({}, "input/报告.md", False),
+    ({"parse_status": "parsing"}, "input/报告.md", True),
     ({"parse_status": "failed"}, None, False),
     ({"parsed_name": None, "parse_status": None}, None, False),
     # 迁移 0013 之前的旧行只放了 Markdown：原件就是那份 Markdown，不另给

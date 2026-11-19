@@ -11,6 +11,7 @@
 自动重启；宿主在 runtime-host/plugins 下的文件改了自动重启。runtime-host/profile/ 是启动时拷过去的，改了要重启整套。
 """
 
+import json
 import os
 import secrets
 import shlex
@@ -59,6 +60,9 @@ def secret(name: str) -> str:
 
 
 def install_profile(home: Path) -> None:
+    """装宿主配置档。扩展的开发脚本可以经 KNOWWORK_HOST_BUNDLES（逗号分隔的包名）多挂几个配置层：包已经装在
+    runtime-host/node_modules 下（在那里才解析得到 DSH 的依赖），这里链接进配置档、排在开源那几层之后；它们按包名引用开源插件包
+    （例如取会话状态），所以把开源插件包也链接进 runtime-host/node_modules，按真实路径和配置档里的是同一份模块。"""
     profile = home / "profiles" / "knowwork-host"
     shutil.rmtree(profile, ignore_errors=True)
     profile.mkdir(parents=True)
@@ -68,6 +72,20 @@ def install_profile(home: Path) -> None:
     modules.mkdir(parents=True)
     (modules / "dsh-host").symlink_to(ROOT / "runtime-host/plugins/dsh-host")
     (modules / "dsh-host-bundle").symlink_to(ROOT / "runtime-host/plugins/host-bundle")
+    extra = [name.strip() for name in os.environ.get("KNOWWORK_HOST_BUNDLES", "").split(",") if name.strip()]
+    if extra:
+        installed = ROOT / "runtime-host/node_modules"
+        shared = installed / "@knowwork" / "dsh-host"
+        if not shared.exists():
+            shared.parent.mkdir(parents=True, exist_ok=True)
+            shared.symlink_to(ROOT / "runtime-host/plugins/dsh-host")
+        manifest = json.loads((profile / "package.json").read_text())
+        for name in extra:
+            link = profile / "node_modules" / name
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(installed / name)
+            manifest["dsh"]["profile"]["bundles"].append(name)
+        (profile / "package.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
 
 
 def start(name: str, args: list[str], *, cwd: Path, env: dict) -> subprocess.Popen:

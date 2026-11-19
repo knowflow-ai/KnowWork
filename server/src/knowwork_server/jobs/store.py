@@ -176,7 +176,7 @@ class JobStore:
 
     async def requeue(self, claim: Claim, delay: float, error: JobError | None, *, refund: bool = False,
                       on_retry: OnRetry | None = None) -> str:
-        """退回排队，返回 retry | superseded | lost。refund：停机释放，不算一次尝试。
+        """退回排队，返回 retry | superseded | lost。refund：不算一次尝试（停机释放、等资源）。
 
         同一对象这期间又排进了一条新请求时（唯一索引冲突），这次重试被新请求取代，标 superseded，不再排。
         """
@@ -198,8 +198,9 @@ class JobStore:
             except IntegrityError:
                 await self._end(session, claim.job_id, CANCELED, "superseded")
                 return "superseded"
-            if error is not None and not refund and on_retry is not None:
-                failure = JobFailure(error.code, error.message, error.error_class, error.detail)
+            # 停机退回不带错误、不通知；等资源带着错误，业务照样知道它在等什么
+            if error is not None and on_retry is not None:
+                failure = JobFailure(error.code, error.message, error.error_class, error.detail, waits=error.waits)
                 await _run_hook(session, lambda s, c, f: on_retry(s, c, f, values["next_attempt_at"]), claim, failure)
         return "retry"
 

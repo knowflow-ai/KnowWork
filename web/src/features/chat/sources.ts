@@ -50,10 +50,64 @@ export interface ConversationFiles {
   /** 用本机程序打开（app）或在文件管理器里显示（reveal）：只有文件就在这台电脑上时有 */
   readonly open?: (conversationId: string, path: string, how: 'app' | 'reveal') => Promise<void>;
   /**
+   * 在编辑器里打开：返回编辑器地址，这种文件、这里编辑不了时返回 null；打不开时抛错（说明写在预览上方）。
+   * 桌面端的本机对话给；云端对话由扩展经插槽 chat.files.server 给。预览抽屉有它就直接是编辑器
+   */
+  readonly edit?: (conversationId: string, path: string) => Promise<{ readonly url: string } | null>;
+  /**
+   * 编辑器说这份文件存了盘（GenOffice 补丁 2 的 `genoffice:saved`：保存、自动保存、智能体存盘都算）：云端要把编辑器里的
+   * 文件存回对话，成为这个路径的新一版；本机不用给（文件就在那台电脑的磁盘上）
+   */
+  readonly saved?: (conversationId: string, path: string) => Promise<void>;
+  /**
+   * 编辑器里开着的文件，每轮结束时变没变（AI 在这一轮里改了它）、编辑器里有没有没存的改动：path 与 edit 时的写法一样。
+   * 返回取消订阅。给了 edit 的来源才给
+   */
+  readonly editorChanges?: (
+    conversationId: string,
+    listener: (files: readonly EditedFile[]) => void,
+  ) => () => void;
+  /** 丢掉编辑器里没存的改动（载入磁盘上被改过的版本之前） */
+  readonly discardEdits?: (conversationId: string, path: string) => Promise<void>;
+  /**
    * @ 点名工作文件夹里的文件（照官方 @file 补全）：按路径查找词列出文件与文件夹。只有执行的一方看得到文件夹时有
    * （本机对话；云端对话的沙箱目录用户现在看不到，先不给）
    */
   readonly references?: (conversationId: string, query: string) => Promise<readonly FileReference[]>;
+  /**
+   * 文件面板（照 DSH 官方的工作区文件）：工作文件夹里一层的直接子项，path 相对工作文件夹、根是空串。只有执行的一方看得到
+   * 文件夹时有（本机对话）
+   */
+  readonly list?: (conversationId: string, path: string) => Promise<DirectoryListing>;
+  /** 在文件管理器里显示工作文件夹里的一个文件夹（path 同 list，根是空串）：文件面板文件夹的右键 */
+  readonly revealFolder?: (conversationId: string, path: string) => Promise<void>;
+  /** 跟着一层（list 的 path）的变化，变了调 listener；返回停止跟的函数。给了 list 的来源才可能给 */
+  readonly watch?: (conversationId: string, path: string, listener: () => void) => () => void;
+}
+
+/** 工作文件夹里的一层（官方 WorkspaceDirectoryListing 加上工作文件夹本身的位置） */
+export interface DirectoryListing {
+  /** 工作文件夹在执行那台电脑上的位置（标题行显示）；不知道是 null */
+  readonly root: string | null;
+  /** 这一层相对工作文件夹的路径，根是空串；子项路径是它和名字用 / 拼起来 */
+  readonly path: string;
+  readonly entries: readonly DirectoryEntry[];
+  /** 条目太多，后面的没列出来 */
+  readonly truncated: boolean;
+}
+
+export interface DirectoryEntry {
+  readonly name: string;
+  /** 符号链接按它指向的算；other 是既不是文件也不是文件夹的（打不开，照样列出来） */
+  readonly type: 'file' | 'directory' | 'other';
+  readonly size?: number;
+}
+
+/** 一轮结束时编辑器里开着的一个文件：changed 磁盘上变了，unsaved 编辑器里还有没存的改动 */
+export interface EditedFile {
+  readonly path: string;
+  readonly changed: boolean;
+  readonly unsaved: boolean;
 }
 
 /** 工作文件夹里的一项：insert 是选中后写进消息的文字（照官方语法格式化好的 @路径，带空格的加引号），模型自己去读 */
@@ -136,6 +190,27 @@ export interface ConversationSource {
   readonly files?: ConversationFiles;
 }
 
+/**
+ * 云端对话文件上，扩展补的编辑能力（插槽 chat.files.server，例如在线 Office 编辑）：给了 edit，预览抽屉对能编辑的文件就是
+ * 编辑器；没注册时云端文件只能预览。
+ */
+export type ServerFileEditing = Pick<ConversationFiles, 'edit' | 'saved' | 'editorChanges' | 'discardEdits'>;
+
+let serverFiles: { readonly from: readonly ServerFileEditing[]; readonly files: ConversationFiles } | null =
+  null;
+
+/** 云端对话的文件：业务服务那几样，加上扩展补的编辑。插槽每次给同一个数组，合出来的也是同一个对象（页面拿它当依赖） */
+function filesOnServer(): ConversationFiles {
+  const extra = slotItems('chat.files.server');
+  if (serverFiles?.from !== extra) {
+    serverFiles = {
+      from: extra,
+      files: extra.reduce<ConversationFiles>((files, item) => ({ ...files, ...item }), SERVER_FILES),
+    };
+  }
+  return serverFiles.files;
+}
+
 export const SERVER_SOURCE: ConversationSource = {
   id: 'server',
   label: '云端',
@@ -144,7 +219,9 @@ export const SERVER_SOURCE: ConversationSource = {
   server: true,
   start: (input) => startConversation(input),
   actions: SERVER_ACTIONS,
-  files: SERVER_FILES,
+  get files() {
+    return filesOnServer();
+  },
 };
 
 export const ELSEWHERE = '这段对话在创建它的电脑上执行，请到那台电脑上继续';

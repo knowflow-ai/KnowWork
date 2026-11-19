@@ -19,7 +19,7 @@ import type { PreviewFile } from '../features/preview/FilePreview';
 import type { NavItem } from '../layout/nav';
 import type { TabItem } from '../ui/Tabs';
 import type { Mention } from '../api/mentions';
-import type { ConversationSource } from '../features/chat/sources';
+import type { ConversationSource, ServerFileEditing } from '../features/chat/sources';
 
 export interface AdminNavEntry {
   /** 插进哪个分组（管理后台侧栏的分组名，如「能力接入」）；没有这个分组就新起一组，排在系统设置之前 */
@@ -229,6 +229,8 @@ export interface ExtensionSlots {
   'chat.composer.top': ComposerTopItem;
   /** 对话的数据来源（features/chat/sources.ts）：同一个对话页按来源换数据，例如在用户自己电脑上跑的会话 */
   'chat.sources': ConversationSource;
+  /** 云端对话文件上补的编辑能力（例如在线 Office 编辑）；没注册时云端文件只能预览 */
+  'chat.files.server': ServerFileEditing;
   /** 新对话页输入框下面的一块（建议问题这类）；没注册时什么都没有 */
   'chat.welcome': ChatWelcomeItem;
   /** 挂了范围的对话：顶部、还没问过时的开场、输入框下面那行字（例如专家对话）；没注册时顶部只显示范围的名字 */

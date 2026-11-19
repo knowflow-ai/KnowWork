@@ -52,6 +52,7 @@ env:
     runtime-host=.dockerignore deploy/docker/runtime-host.Dockerfile runtime-host/package.json runtime-host/package-lock.json runtime-host/profile runtime-host/plugins deploy/runtime-host
     gateway=.dockerignore deploy/docker/gateway.Dockerfile web deploy/gateway
     sandbox=.dockerignore deploy/docker/sandbox.Dockerfile runtime-host/plugins/dsh-host/skills/resources/office
+    office=.dockerignore deploy/docker/office.Dockerfile deploy/docker/office
 
 jobs:
   check:
@@ -161,6 +162,12 @@ jobs:
           registry: ${{ env.REGISTRY_HOST }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
+      # Office 镜像要编 GenOffice（依赖、Electron、Rust 编译产物），构建机自带的磁盘不够：删掉用不上的工具链腾出二十多 GB
+      - name: 腾磁盘（Office 镜像）
+        if: matrix.name == 'office'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h /
       - name: 构建并推送（带架构后缀的标签，合成 vX.Y.Z 在下一步）
         uses: docker/build-push-action@v6
         with:
@@ -180,7 +187,8 @@ jobs:
             io.knowwork.inputs=${{ env.INPUTS_FINGERPRINT }}
           tags: ${{ vars.ACR_REGISTRY }}/knowwork-${{ matrix.name }}:${{ env.TAG }}-${{ matrix.arch }}
           cache-from: type=gha,scope=${{ matrix.name }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}-${{ matrix.arch }}
+          # Office 镜像不写缓存：编 GenOffice 的中间层有好几 GB，会把仓库的缓存配额挤掉；它的输入没变时整个镜像复用上一版
+          cache-to: ${{ matrix.name != 'office' && format('type=gha,mode=max,scope={0}-{1}', matrix.name, matrix.arch) || '' }}
 
   manifests:
     name: 合成标签 ${{ matrix.name }}

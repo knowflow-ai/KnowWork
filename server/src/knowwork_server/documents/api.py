@@ -14,10 +14,11 @@ from ..artifacts.api import ARTIFACT_ID, DownloadHook, download_headers
 from ..artifacts.collector import ArtifactView
 from ..artifacts.service import ArtifactNotFound, ArtifactUnavailable
 from ..conversations.api import Actor, ActorDependency
-from ..sandbox.contract import SandboxError, SandboxTooLarge
+from ..sandbox.contract import SandboxError
 from ..sessionfiles.lookup import ConversationLookup, owned_conversation
 from ..sessionfiles.names import content_disposition
-from .files import ConversationFiles, FileContent, FileGone, FileMissing, FileOutside, FilesOnDevice
+from .errors import describe
+from .files import ConversationFiles, FileContent
 from .preview import PreviewService, PreviewUnsupported
 
 FILE_PATH = Query(min_length=1, max_length=4096, description="模型写的路径：相对路径、/workspace/... 或 /sessions/<会话>/...")
@@ -30,26 +31,15 @@ def _file_response(file: FileContent, media_type: str) -> Response:
 
 
 async def _serve(load) -> FileContent:
-    """把对话文件的失败换成给人看的说明。"""
+    """把对话文件的失败换成给人看的说明（errors.py，扩展的编辑入口用同一张表）。"""
     try:
         return await load()
-    except FilesOnDevice as error:
-        raise HTTPException(status_code=409, detail="这段对话在创建它的电脑上执行，文件在那台电脑上") from error
-    except FileOutside as error:
-        raise HTTPException(status_code=400, detail="只能读这段对话工作目录里的文件") from error
-    except FileMissing as error:
-        raise HTTPException(status_code=404, detail="找不到这个文件，可能已经移走或删掉了") from error
-    except FileGone as error:
-        raise HTTPException(status_code=410,
-                            detail="文件已随执行环境回收，交付过的文件仍可在交付卡片里打开") from error
-    except (ArtifactNotFound, ArtifactUnavailable) as error:
-        raise HTTPException(status_code=410, detail="文件内容已不可用") from error
-    except PreviewUnsupported as error:
-        raise HTTPException(status_code=415, detail="这种文件不提供 PDF 预览") from error
-    except SandboxTooLarge as error:
-        raise HTTPException(status_code=413, detail="文件太大，不能在这里打开") from error
-    except SandboxError as error:
-        raise HTTPException(status_code=503, detail=f"文件暂时读不了：{error}") from error
+    except Exception as error:
+        described = describe(error)
+        if described is None:
+            raise
+        status, message = described
+        raise HTTPException(status_code=status, detail=message) from error
 
 
 def build_router(preview: PreviewService, conversations: ConversationLookup, current_actor: ActorDependency, *,
@@ -84,7 +74,7 @@ def build_router(preview: PreviewService, conversations: ConversationLookup, cur
             回答里的文件链接、交付卡片按路径读原件：交付过的读收好的那份，没交付过的从会话沙箱现读。
             """
             conversation = await owned_conversation(conversations, conversation_id, who)
-            file = await _serve(lambda: files.read(conversation, path))
+            file = await _serve(lambda: files.read(conversation, files.locate(conversation, path)))
             return _file_response(file, "application/octet-stream")
 
         @router.get("/{conversation_id}/files/preview")
@@ -94,7 +84,7 @@ def build_router(preview: PreviewService, conversations: ConversationLookup, cur
             Word、PPT 等转成的 PDF，PDF 原样；交付过的复用产物预览的缓存。
             """
             conversation = await owned_conversation(conversations, conversation_id, who)
-            file = await _serve(lambda: files.pdf(conversation, path))
+            file = await _serve(lambda: files.pdf(conversation, files.locate(conversation, path)))
             return _file_response(file, "application/pdf")
 
     return router

@@ -912,3 +912,32 @@
   width: 70%;
   height: 70%;
 }
+
+/* 右键菜单（ui/ContextMenu）：用组件库菜单的变量，和组件库的 Menu 一个样子 */
+.kw-context-menu {
+  min-width: 180px;
+  padding: var(--menu-gutter);
+  border-radius: var(--menu-radius);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--shadow), var(--shadow-hairline);
+  color: var(--color-text);
+  font-size: var(--menu-font-size);
+  line-height: var(--menu-line-height);
+}
+
+.kw-context-menu-item {
+  padding: var(--menu-item-padding);
+  border-radius: calc(var(--menu-radius) - var(--menu-gutter));
+  outline: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.kw-context-menu-item[data-highlighted] {
+  background: var(--menu-item-background-color);
+}
+
+.kw-context-menu-item[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

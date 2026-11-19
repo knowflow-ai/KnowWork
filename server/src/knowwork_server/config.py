@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     public_port: int = Field(default=8000, ge=1, le=65535)
     internal_host: str = "0.0.0.0"
     internal_port: int = Field(default=8001, ge=1, le=65535)
+    # 编辑器端口（可选）：扩展提供的在线编辑器要一个和本站分开的来源（编辑器的路径写死在站点根上，渲染的又是
+    # 不可信的文档，不该和本站同源），网关给它单独的端口或子域名再转到这里。不设就不开；设了但没有扩展提供编辑器也不开。
+    editor_host: str = "0.0.0.0"
+    editor_port: int | None = Field(default=None, ge=1, le=65535)
     # 独立的模型网关进程（ops/model_gateway.py）：宿主调模型经它，不记状态，忙不过来就多开几个 worker 进程
     model_gateway_host: str = "0.0.0.0"
     model_gateway_port: int = Field(default=8002, ge=1, le=65535)

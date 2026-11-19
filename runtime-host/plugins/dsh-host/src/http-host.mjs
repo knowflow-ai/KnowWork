@@ -18,7 +18,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { createAnswers } from './answers.mjs'
-import { sessionRoot } from './sandbox-client.mjs'
+import { hostMount } from './workpath.mjs'
 import { EPOCH, dropSession, framesAfter, getSession, oldestCursor, publish, publishLive } from './state.mjs'
 import { createIdleTracker, idleMsOf, releasable, sweepMsOf } from './idle-sessions.mjs'
 import { bundledCandidates } from './bundled-skills.mjs'
@@ -160,7 +160,7 @@ export function apply(ctx, config) {
     const id = brandString(sessionId)
     const task = resume
       ? ctx.agents.resume({ resumeSessionId: id, agentOptions })
-      : ctx.agents.create({ sessionId: id, meta: { cwd: sessionRoot(sessionId) }, agentOptions })
+      : ctx.agents.create({ sessionId: id, meta: { cwd: hostMount(sessionId).root }, agentOptions })
     opening.set(sessionId, task)
     try {
       const handle = await task

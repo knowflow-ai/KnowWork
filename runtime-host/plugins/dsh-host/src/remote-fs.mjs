@@ -19,12 +19,12 @@ import { FileSystem, FsError, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs
 import { applyHunks } from '@deepseek-ai/dsh-fs-patch'
 import { posix } from 'node:path'
 import { applyLiteralEdit, decodeText, normalizeLineEndings, restoreLike } from './fs-text.mjs'
-import { SandboxCallError, createSandboxClient, sessionPath, sessionRoot } from './sandbox-client.mjs'
+import { SandboxCallError, createSandboxClient } from './sandbox-client.mjs'
+import { SANDBOX, hostMount, locateHostPath } from './workpath.mjs'
 
 const READ_CHUNK = 4 * 1024 * 1024
 const MAX_TEXT_BYTES = 32 * 1024 * 1024
 const DIFF_BASIS_MAX_BYTES = 10 * 1024 * 1024
-const WORKSPACE = '/workspace'
 
 const TYPES = { f: 'file', d: 'directory' }
 const CODES = {
@@ -50,10 +50,10 @@ function throwIfAborted(signal, verb) {
  * 调用方带了会话工作目录（cwd）时，把 /workspace 开头的路径换到这个会话下；没有 cwd 就认不出会话，原样返回（随后被拒）。
  */
 function workspaceAlias(path, cwd) {
-  const normal = posix.normalize(path)
-  if (normal !== WORKSPACE && !normal.startsWith(`${WORKSPACE}/`)) return path
-  const session = cwd === undefined ? undefined : sessionPath(cwd)
-  return session === undefined ? path : sessionRoot(session.sessionId) + normal.slice(WORKSPACE.length)
+  const relative = SANDBOX.of(path)
+  if (relative === undefined) return path
+  const session = cwd === undefined ? undefined : locateHostPath(cwd)
+  return session === undefined ? path : hostMount(session.sessionId).at(relative)
 }
 
 export default class RemoteFileSystem extends FileSystem {
@@ -85,10 +85,10 @@ export default class RemoteFileSystem extends FileSystem {
   locate(path, cwd) {
     if (typeof path !== 'string' || path.trim().length === 0) throw new FsError('file_path must be a non-empty string', 'FS_NOT_FOUND')
     const absolute = path.startsWith('/') ? workspaceAlias(path, cwd) : cwd === undefined ? undefined : posix.join(cwd, path)
-    const located = absolute === undefined ? undefined : sessionPath(absolute)
+    const located = absolute === undefined ? undefined : locateHostPath(absolute)
     // 调用方（模型的文件工具带着本会话的工作目录）只能落到自己的会话：沙箱请求用的是路径里那个会话的令牌，
     // 不核对的话，知道别人对话 id 的模型就能读写别人的容器。子 Agent 继承根会话的工作目录，照样通过
-    const caller = cwd === undefined ? undefined : sessionPath(cwd)
+    const caller = cwd === undefined ? undefined : locateHostPath(cwd)
     if (located === undefined || (cwd !== undefined && caller?.sessionId !== located.sessionId)) {
       throw new FsError(`cannot access "${path}": only files under the session working directory are available`, 'FS_PERMISSION_DENIED')
     }
@@ -96,9 +96,10 @@ export default class RemoteFileSystem extends FileSystem {
   }
 
   async call(operation, target, body, verb, signal) {
-    const { sessionId } = this.locate(String(target.targetKey))
+    // 官方文件服务的键是宿主路径；发给业务服务的是工作区路径（workpath.mjs）
+    const { sessionId, relative } = this.locate(String(target.targetKey))
     try {
-      return await this.client.request(operation, sessionId, { path: String(target.targetKey), ...body }, { signal })
+      return await this.client.request(operation, sessionId, { path: relative, ...body }, { signal })
     } catch (error) {
       throw fsError(error, verb, target.displayPath)
     }
@@ -106,8 +107,8 @@ export default class RemoteFileSystem extends FileSystem {
 
   async probe(target, verb, signal, follow = true) {
     // 会话工作目录本身总是一个目录：工作目录服务开会话就要 stat 它，不为此去建容器，也不要求会话已拿到令牌
-    const { path, sessionId } = this.locate(String(target.targetKey))
-    if (path === sessionRoot(sessionId)) {
+    const { relative } = this.locate(String(target.targetKey))
+    if (relative === '') {
       return { kind: 'd', size: 0, version: 'session-root' }
     }
     const { stat } = await this.call('stat', target, { follow }, verb, signal)

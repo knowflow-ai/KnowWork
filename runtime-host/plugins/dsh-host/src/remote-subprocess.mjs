@@ -18,7 +18,8 @@
  */
 
 import { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { createSandboxClient, sessionPath } from './sandbox-client.mjs'
+import { createSandboxClient } from './sandbox-client.mjs'
+import { locateHostPath } from './workpath.mjs'
 import { createSshWorlds } from './ssh-worlds.mjs'
 import { getSession, onSessionDropped, rootSessionIdOf } from './state.mjs'
 
@@ -78,7 +79,7 @@ export default class RemoteSubprocessRuntime extends SubprocessRuntime {
 
   /** 认出 cwd 所在的会话，并核对调用方只能落到自己根会话的工作目录。 */
   locate(spec) {
-    const located = sessionPath(spec.cwd)
+    const located = locateHostPath(spec.cwd)
     if (located === undefined) throw new Error(`remote subprocess: cwd must be inside the session working directory: ${spec.cwd}`)
     const caller = spec.env?.DSH_SESSION_ID
     if (caller !== undefined && rootSessionIdOf(caller) !== located.sessionId) {
@@ -114,7 +115,7 @@ export default class RemoteSubprocessRuntime extends SubprocessRuntime {
     const signal = spec.signal === undefined ? controller.signal : AbortSignal.any([spec.signal, controller.signal])
     const skills = [...(getSession(located.sessionId)?.loadedSkills ?? [])]
     const done = this.client.request('exec', located.sessionId, {
-      argv: [...spec.argv], cwd: located.path, timeoutMs: MAX_TIMEOUT_MS, maxOutputBytes, env: envOf(spec.env),
+      argv: [...spec.argv], cwd: located.relative, timeoutMs: MAX_TIMEOUT_MS, maxOutputBytes, env: envOf(spec.env),
       ...(skills.length > 0 ? { skills } : {}),
     }, { signal, timeoutMs: MAX_TIMEOUT_MS + 30_000 }).then(result => {
       state.stdout = Buffer.from(result.stdout ?? '', 'utf8')

@@ -37,10 +37,10 @@ class FakeSandbox:
         return SandboxFile(name=name, size=len(data))
 
     async def read_delivered(self, workspace_id, session_id, path, *, max_bytes):
-        """outputs 按 /workspace 下的相对路径存；path 是容器路径。"""
+        """outputs 按工作区路径存；path 是工作区路径（workpath.WorkPath）。"""
         if self.fail_list is not None:
             raise self.fail_list
-        name = path.removeprefix("/workspace/")
+        name = path.relative
         self.reads.append(name)
         if (workspace_id, session_id) in self.recycled:
             raise SandboxNotStarted("这个会话还没有沙箱")
@@ -53,6 +53,13 @@ class FakeSandbox:
         if len(data) > max_bytes:
             raise SandboxTooLarge("文件超过上限")
         return data
+
+    async def write_back(self, workspace_id, session_id, path, data):
+        """同 read_delivered：outputs 按工作区路径存；回收了的会话不写。"""
+        if (workspace_id, session_id) in self.recycled:
+            return False
+        self.outputs.setdefault((workspace_id, session_id), {})[path.relative] = bytes(data)
+        return True
 
     async def exec(self, workspace_id, session_id, command, *, timeout_seconds, max_output_bytes):
         return ExecResult(exit_code=0, stdout="", stderr="")
@@ -88,7 +95,7 @@ class FakeSandbox:
         self.destroyed.append((workspace_id, session_id))
 
     def write_output(self, workspace_id, session_id, name, data: bytes) -> None:
-        """name 是 /workspace 下的相对路径。"""
+        """name 是工作区路径的写法（相对工作区根）。"""
         self.outputs.setdefault((workspace_id, session_id), {})[name] = data
 
     def recycle(self, workspace_id, session_id) -> None:

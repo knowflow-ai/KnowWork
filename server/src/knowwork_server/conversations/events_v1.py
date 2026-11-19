@@ -68,6 +68,11 @@ MAX_OPEN_QUESTIONS = 64
 # 卡片编号就是日志里的官方编号，答审批的接口认的也是它。子 Agent 的那一对在它自己的会话里，经 subagent/event 转到根会话。
 # 宿主上我们的应答者按「本会话不再询问」自动批准时，另发一个只带官方编号的标记 approval/auto，卡片据此写「自动批准」。
 APPROVAL_EVENTS = ("approval/asked", "approval/decided")
+# 宿主的待办核对（runtime-host todo-check.mjs）：一轮正常要结束、待办还有没勾的，宿主补这条消息让模型再走一步更新待办。
+# 那一步的 todo_write 和收尾的一句话不该顶掉原来的回答（前端把工具前的文字当过程说明，回答就成了「待办已更新」），
+# 所以提醒之后只更新待办时，那次调用和收尾的话都不展示；待办照新写的那份更新。提醒之后又做了别的事，就照常展示
+TODO_CHECK_SOURCE = "knowwork-todo-check"
+TODO_TOOL = "todo_write"
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,9 @@ class ProjectionState:
     auto_approved: frozenset[str] = frozenset()
     timed_questions: bool = False  # 最近一次请求头里 ask_user_question 是不是计时模式（能转入稍后再答）
     questions: frozenset[str] = frozenset()  # 还能答的提问（开着或转入稍后再答）的工具调用 id
+    tidy_turn: int | None = None  # 宿主提醒过更新待办的那一轮（提醒之后只更新待办的那一步不展示）
+    tidy_working: bool = False  # 提醒之后模型又做了别的事：之后照常展示
+    tidy_calls: frozenset[str] = frozenset()  # 提醒之后那几次 todo_write 的调用 id，它们的结果也不展示
 
 
 def _run_id(turn: int | None) -> str | None:
@@ -308,10 +316,16 @@ def _tool_call(state: ProjectionState, payload: dict, seq: int, time: int) -> li
                    data={"name": str(payload.get("name", "")), "arguments": payload.get("arguments")})]
 
 
-def _tool_result(state: ProjectionState, payload: dict, seq: int, time: int) -> list[dict]:
+def _result_call_id(payload: dict) -> str | None:
     message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
     call_id = message.get("toolCallId") or (message.get("source") or {}).get("callId")
-    if not isinstance(call_id, str):
+    return call_id if isinstance(call_id, str) else None
+
+
+def _tool_result(state: ProjectionState, payload: dict, seq: int, time: int) -> list[dict]:
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    call_id = _result_call_id(payload)
+    if call_id is None:
         return []
     turn = _turn(payload, state)
     failed = message.get("isError") is True
@@ -339,7 +353,18 @@ def _session_event(state: ProjectionState, event: Any, seq: int) -> tuple[Projec
     time = _int(event.get("time")) or 0  # 缺时间时记 0，不影响排序（排序看 seq）
     if kind == "turn/start":
         turn = _int(payload.get("turn"))
-        return replace(state, turn=turn, gate_failed_turn=None), [_event("run.started", seq=seq, turn=turn, time=time)]
+        return (replace(state, turn=turn, gate_failed_turn=None, tidy_turn=None, tidy_working=False, tidy_calls=frozenset()),
+                [_event("run.started", seq=seq, turn=turn, time=time)])
+    tidying = state.tidy_turn is not None and state.tidy_turn == _turn(payload, state) and not state.tidy_working
+    if kind == "assistant/message" and tidying:
+        return state, []
+    if kind == "tool/call" and tidying:
+        call_id = payload.get("callId")
+        if payload.get("name") == TODO_TOOL and isinstance(call_id, str):
+            return replace(state, tidy_calls=state.tidy_calls | {call_id}), []
+        state = replace(state, tidy_working=True)
+    if kind == "tool/result" and _result_call_id(payload) in state.tidy_calls:
+        return state, []
     if kind == "turn/end":
         return _turn_end(state, payload, seq, time)
     if kind == "assistant/message":
@@ -347,6 +372,9 @@ def _session_event(state: ProjectionState, event: Any, seq: int) -> tuple[Projec
     if kind == "request/header":
         return _question_mode(state, payload), []
     if kind == "user/message":
+        source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+        if source.get("kind") == TODO_CHECK_SOURCE:
+            return replace(state, tidy_turn=state.turn, tidy_working=False, tidy_calls=frozenset()), []
         answered, events = _question_reply(state, payload, seq, time)
         return answered, events + _user_message(state, payload, seq, time)
     if kind == "tool/call":

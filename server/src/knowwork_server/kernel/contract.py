@@ -4,10 +4,12 @@
 宿主协议的变化只改实现，不改这里；这里的变化必须升版本号。
 """
 
+import json
+import re
 from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SCHEMA_VERSION = "kernel.v1"
 
@@ -59,13 +61,14 @@ class OutlineEntry(_Frozen):
 
 
 class TurnAttachment(_Frozen):
-    """本轮消息附带的一个文件：已在本会话容器的 /workspace/input 里（照官方 dsh-attachment，模型按需读）。"""
+    """本轮消息附带的一个文件：已在本会话工作区的附件目录 input/ 里（照官方 dsh-attachment，模型按需读）。
+    路径是工作区路径（workpath.py，例如 input/合同.pdf），给模型看哪种写法由宿主按自己的挂载点定。"""
 
     name: str = Field(min_length=1, max_length=200)
-    path: str = Field(pattern=r"^/workspace/input/[^/]{1,200}$")
+    path: str = Field(pattern=r"^input/[^/]{1,200}$")
     bytes: int = Field(ge=0)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    extracted_path: str | None = Field(default=None, pattern=r"^/workspace/input/[^/]{1,200}$")
+    extracted_path: str | None = Field(default=None, pattern=r"^input/[^/]{1,200}$")
     # 文档解析还没完成：extracted_path 是解析好以后放的位置，现在那里还没有文件。网页发送前会等解析完，
     # 用户点了「直接发送」、或经接口发来的消息才会这样
     extraction_pending: bool = False
@@ -76,7 +79,7 @@ class TurnAttachment(_Frozen):
     text_pages: int | None = Field(default=None, ge=1)
     outline: tuple[OutlineEntry, ...] = Field(default=(), max_length=200)
     # 导读（附件 digest_job.py）：全文摘要与各段要点（带原文行号），放不进对话的长文档才有；还在生成时 digest_pending
-    digest_path: str | None = Field(default=None, pattern=r"^/workspace/input/[^/]{1,200}$")
+    digest_path: str | None = Field(default=None, pattern=r"^input/[^/]{1,200}$")
     digest_pending: bool = False
 
 
@@ -136,6 +139,8 @@ class TurnContext(_Frozen):
 ANSWER_MODE_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
 # 模型别名（同 models.schemas 的 Alias）：输入框选的模型，宿主按它换这段对话的模型
 MODEL_ALIAS_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
+EXTENSION_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
+EXTENSION_STATE_MAX_BYTES = 64 * 1024
 
 
 class AnswerModeSpec(_Frozen):
@@ -162,6 +167,21 @@ class TurnInput(_Frozen):
     context: TurnContext | None = None
     # 输入框选的模型别名；宿主按官方会话级选择换（存进会话，之后不带也沿用）。None = 不换
     model: str | None = Field(default=None, pattern=MODEL_ALIAS_PATTERN)
+    # 扩展随这一轮交给宿主插件的状态（conversations/turn_state.py），按扩展名分、各自的 JSON，宿主收下就记进会话状态，
+    # 扩展自己的宿主插件读。例如 Office 编辑：这段对话此刻在编辑器里开着哪几份（插件据此决定给不给模型编辑器工具）。
+    # 在用户设备上执行的对话，设备交给本机宿主之前可以补上自己的（编辑器在那台电脑上）。None = 这轮没算，宿主沿用上一轮的
+    extension_state: dict[str, Any] | None = None
+
+    @field_validator("extension_state")
+    @classmethod
+    def _extension_state(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if len(value) > 16 or any(not EXTENSION_NAME_PATTERN.match(name) for name in value):
+            raise ValueError("extension_state 的扩展名不合规")
+        if len(json.dumps(value, ensure_ascii=False).encode()) > EXTENSION_STATE_MAX_BYTES:
+            raise ValueError("extension_state 太大")
+        return value
 
 
 class KernelEvent(_Frozen):

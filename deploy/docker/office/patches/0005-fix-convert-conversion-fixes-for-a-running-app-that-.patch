@@ -1,0 +1,1042 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: weizxfree <weizhangxiang2022@gmail.com>
+Date: Wed, 18 Nov 2026 05:35:34 -0800
+Subject: [PATCH 5/5] fix(convert): conversion fixes for a running app that
+ replaces LibreOffice
+
+KnowWork retires LibreOffice in favour of GenOffice for conversions (previews,
+legacy formats, skill exports). Each fix below was found by converting the same
+real documents with both and comparing.
+
+- doc2docx: keep the outline of a converted .doc as Heading styles. Styles were
+  flattened into direct formatting, so a converted .doc kept its headings' look
+  but no paragraph was a heading (a real procurement plan: 47 in, 0 out). A
+  paragraph now gets Heading N from its outline level the way Word reads it (its
+  own outline level, then each style down the chain, a built-in heading style
+  implying its level, 9 being body text); the Heading styles carry only the
+  outline level, so the document renders pixel-identical. Empty heading-styled
+  paragraphs stay out of the outline, as in Word.
+- sheets: export_document in a running app wrote no PDF. The hidden window the
+  main process opens for the export had its output path honoured only in a
+  --headless-export run, so the running app put up a save dialog instead (no one
+  answers it in web-server mode). A window the main process opened for an export
+  now writes where it was told and does not open the file afterwards; any other
+  window still asks.
+- sheets print: text that does not wrap spills into the empty cells beside it,
+  as Excel prints it (left-aligned to the right, right-aligned to the left,
+  centred evenly both ways, up to the first cell with content; numbers never
+  do). Every cell was clipped at its own edge, so a note typed into one cell of
+  a wide empty row came out cut off.
+- sheets print: a picture anchored to one cell (oneCellAnchor) keeps its size as
+  offsets past that cell while its end marker stays on it, and the print area
+  went by the end marker, so a tall flow chart printed as a sliver on one page.
+  The area now reaches as far as such a picture does; a real end marker
+  (twoCellAnchor) stays authoritative.
+- odf2ooxml: a shape holding text in an .odp keeps the text as a text box at the
+  shape's place. LibreOffice saves a PowerPoint text box as draw:custom-shape
+  and generated decks do the same, so dropping every shape converted such decks
+  to slides with no text at all (3 real decks: 0 characters out, now identical
+  to LibreOffice's). The shape's outline and fill are reported as dropped.
+- docs: prune the pagination preview's per-page clones from about 3 pages of 10k
+  elements (CLONE_PRUNE_ELEMENT_BUDGET 1M -> 30k). Each preview page carried a
+  full copy of the document below that budget, so a 49-page tender put 465k
+  elements in the preview and every style recalc and print-media flip walked
+  all of them: its PDF export took ~80 s (110 s on Linux), now ~18 s (22 s).
+  Six real documents export the same pages pixel for pixel, apart from
+  sub-pixel offsets on a few pages.
+---
+ .../src/renderer/preview-canvas-snapshot.ts   |  10 +-
+ .../tests/pagination-preview-prune.test.ts    |  13 +-
+ apps/sheets/src/main/pdf-export.ts            |  12 +-
+ apps/sheets/src/main/sheets-main.ts           |   8 +-
+ apps/sheets/src/renderer/print-html.ts        | 126 +++++++++++++++++-
+ apps/sheets/src/renderer/print-visuals.ts     |   4 +
+ .../tests/pdf-export-own-window.test.ts       |  71 ++++++++++
+ apps/sheets/tests/print-overflow.test.ts      | 121 +++++++++++++++++
+ apps/sheets/tests/print-visual-extent.test.ts |  83 ++++++++++++
+ packages/doc2docx/src/docx-writer.ts          |  33 ++++-
+ packages/doc2docx/src/formatting.ts           |   6 +
+ packages/doc2docx/src/resolve.ts              |  46 ++++++-
+ packages/doc2docx/tests/docx-writer.test.ts   |  48 ++++++-
+ packages/doc2docx/tests/styles.test.ts        |  38 ++++++
+ packages/odf2ooxml/src/odp-pptx.ts            |  29 +++-
+ .../odf2ooxml/tests/odp-shape-text.test.ts    |  53 ++++++++
+ 16 files changed, 678 insertions(+), 23 deletions(-)
+ create mode 100644 apps/sheets/tests/pdf-export-own-window.test.ts
+ create mode 100644 apps/sheets/tests/print-overflow.test.ts
+ create mode 100644 apps/sheets/tests/print-visual-extent.test.ts
+ create mode 100644 packages/odf2ooxml/tests/odp-shape-text.test.ts
+
+diff --git a/apps/docs/src/renderer/preview-canvas-snapshot.ts b/apps/docs/src/renderer/preview-canvas-snapshot.ts
+index 41fab812..964f2503 100644
+--- a/apps/docs/src/renderer/preview-canvas-snapshot.ts
++++ b/apps/docs/src/renderer/preview-canvas-snapshot.ts
+@@ -313,9 +313,15 @@ export const CLONE_PRUNE_BUDGET = 150_000
+  * 87k elements stayed under the block budget, so the preview carried 9.7 M
+  * nodes and each chunked printToPDF took minutes. Elements are what Blink
+  * pays for, so they get their own budget. 1.7 M nodes (107 pages of 16k
+- * elements) still took 23 minutes to open against 3 pruned.
++ * elements) still took 23 minutes to open against 3 pruned. A mid-size
++ * document paid too: a 49-page tender (9.3k elements, 455k across its pages)
++ * exported to PDF in ~80 s, every style recalc and print-media flip walking
++ * 49 copies of it; pruned, ~18 s (a 22-page plan: ~15 s → ~8 s), and six real
++ * documents compared page by page render the same (at most sub-pixel offsets on
++ * a few pages). So the budget keeps full clones only for short documents (about
++ * 3 pages of 10k elements).
+  */
+-export const CLONE_PRUNE_ELEMENT_BUDGET = 1_000_000
++export const CLONE_PRUNE_ELEMENT_BUDGET = 30_000
+ /** window slack around a page (px): keeps neighbours whose floats/overflow bleed into the page */
+ export const CLONE_PRUNE_PAD = 2000
+ 
+diff --git a/apps/docs/tests/pagination-preview-prune.test.ts b/apps/docs/tests/pagination-preview-prune.test.ts
+index 3c61c333..1500806c 100644
+--- a/apps/docs/tests/pagination-preview-prune.test.ts
++++ b/apps/docs/tests/pagination-preview-prune.test.ts
+@@ -75,8 +75,17 @@ describe('prunedCloneHtml', () => {
+ })
+ 
+ describe('shouldPruneClones', () => {
+-  it('keeps full clones for a document that fits both budgets', () => {
+-    expect(shouldPruneClones(20, 500, 20_000)).toBe(false)
++  it('keeps full clones for a short document that fits both budgets', () => {
++    expect(shouldPruneClones(3, 60, 9_000)).toBe(false)
++  })
++
++  it('prunes a mid-size document: full clones made its export minutes slower', () => {
++    // a real 49-page tender (675 blocks, 9,296 elements): full clones put 465k
++    // elements in the preview and its PDF export took ~80 s; pruned, ~18 s with
++    // every page rendering the same (sub-pixel offsets on 3 of 49 pages)
++    expect(shouldPruneClones(49, 675, 9_296)).toBe(true)
++    // a 22-page procurement plan: ~15 s full, ~8 s pruned, same pages
++    expect(shouldPruneClones(22, 400, 4_000)).toBe(true)
+   })
+ 
+   it('prunes once pages x blocks passes the block budget', () => {
+diff --git a/apps/sheets/src/main/pdf-export.ts b/apps/sheets/src/main/pdf-export.ts
+index 4418bd3a..ed4f449d 100644
+--- a/apps/sheets/src/main/pdf-export.ts
++++ b/apps/sheets/src/main/pdf-export.ts
+@@ -26,15 +26,23 @@ import type {
+ export async function exportPdf(
+   event: IpcMainInvokeEvent,
+   request: WorkbookExportPdfRequest,
++  options: {
++    /** the sender is a hidden window this process opened to export for an external
++     *  caller (exportSheetsPdfHeadless): the main process handed it request.outPath */
++    outPathAuthorized?: boolean
++  } = {},
+ ): Promise<WorkbookExportPdfResult> {
+   const parent = BrowserWindow.fromWebContents(event.sender)
+   const dialogOptions = {
+     defaultPath: request.fileName,
+     filters: [{ name: 'PDF', extensions: ['pdf'] }],
+   }
+-  // Headless export has no dialog to authorize a path; the CLI already chose one.
++  // Headless export has no dialog to authorize a path; the CLI already chose one. Neither
++  // has an export the running app makes for an external caller (MCP export_document):
++  // asking there put up a dialog no one answers in web-server mode, and no file came out
++  const authorized = isHeadlessMode() || options.outPathAuthorized === true
+   const selection =
+-    isHeadlessMode() && request.outPath
++    authorized && request.outPath
+       ? { canceled: false as const, filePath: request.outPath }
+       : await showSaveDialogWithMemory(dialog, parent, dialogOptions)
+   if (selection.canceled || !selection.filePath) return { canceled: true }
+diff --git a/apps/sheets/src/main/sheets-main.ts b/apps/sheets/src/main/sheets-main.ts
+index 1285c76d..8175f5d3 100644
+--- a/apps/sheets/src/main/sheets-main.ts
++++ b/apps/sheets/src/main/sheets-main.ts
+@@ -3910,8 +3910,12 @@ export function registerSheetsIpc(): void {
+   ipcMain.handle(IPC_CHANNELS.exportPdf, async (event, input: unknown) => {
+     sessionFor(event)
+     const request = workbookExportPdfRequestSchema.parse(input)
+-    const result = await exportPdf(event, request)
+-    if (!result.canceled && result.path) openGeneratedFile(result.path)
++    // a hidden window this process opened to export for an external caller
++    // (exportSheetsPdfHeadless) writes where it was told and stays silent, like a
++    // headless run: no save dialog, no opening the file afterwards
++    const ownExport = headlessExportWaiters.has(event.sender.id)
++    const result = await exportPdf(event, request, { outPathAuthorized: ownExport })
++    if (!result.canceled && result.path && !ownExport) openGeneratedFile(result.path)
+     return result
+   })
+ 
+diff --git a/apps/sheets/src/renderer/print-html.ts b/apps/sheets/src/renderer/print-html.ts
+index dd76f42d..2e661c24 100644
+--- a/apps/sheets/src/renderer/print-html.ts
++++ b/apps/sheets/src/renderer/print-html.ts
+@@ -227,6 +227,12 @@ export interface SheetPrintOptions {
+ }
+ 
+ /// One laid-out page before the job-wide numbering is known.
++/// How far a cell's text runs into its empty neighbours, in pt (layoutSheetPrint spillOf)
++interface Spill {
++  readonly left: number
++  readonly right: number
++}
++
+ export interface SheetPrintPageRecord {
+   readonly body: string
+   readonly page: PrintPage
+@@ -403,6 +409,42 @@ export function layoutSheetPrint(
+     readonly leftOf: number | null
+     readonly rightOf: number | null
+   }
++  /// How far a plain cell's text may run into the empty cells beside it (pt), as Excel
++  /// prints it: unwrapped text that is left-aligned (or general) runs right,
++  /// right-aligned runs left, centred runs the same width both ways so it stays centred
++  /// on its cell, each up to the first cell with content or a merge. Numbers and
++  /// booleans never spill (Excel shows ####). Without it every cell was clipped at its
++  /// own edge: a note typed into one cell of a wide empty row printed cut off.
++  const spillOf = (
++    data: (typeof areaData)[number],
++    row: number,
++    index: number,
++    columns: readonly number[],
++    free: readonly boolean[],
++  ): Spill | null => {
++    const column = columns[index]!
++    const style = styleAt(row, column)
++    const raw = rawAt(data, row, column)
++    if (style?.tb === 3 || typeof raw === 'number' || typeof raw === 'boolean') return null
++    if (displayAt(data, row, column) === '') return null
++    const run = (step: 1 | -1): number => {
++      let total = 0
++      for (let i = index + step; i >= 0 && i < columns.length && free[i]; i += step)
++        total += columnWidthPt(columns[i]!)
++      return total
++    }
++    const ht = style?.ht
++    const spill =
++      ht === undefined || ht === 0 || ht === 1
++        ? { left: 0, right: run(1) }
++        : ht === 3
++          ? { left: run(-1), right: 0 }
++          : ht === 2
++            ? { left: Math.min(run(-1), run(1)), right: Math.min(run(-1), run(1)) }
++            : null
++    return spill && spill.left + spill.right > 0 ? spill : null
++  }
++
+   const cell = (
+     data: (typeof areaData)[number],
+     row: number,
+@@ -410,6 +452,7 @@ export function layoutSheetPrint(
+     span: string,
+     heightPt: number,
+     near: Neighbours,
++    spill: Spill | null = null,
+   ): string => {
+     const style = styleAt(row, column)
+     const text = displayAt(data, row, column)
+@@ -429,9 +472,16 @@ export function layoutSheetPrint(
+         borderEdge(style, 'b') !== undefined || (gridlines && !custom(near.below, column, 't')),
+       right: borderEdge(style, 'r') !== undefined || (gridlines && !custom(row, near.rightOf, 'l')),
+     }
++    // a spilling cell lets its content box out over its empty neighbours; the box itself
++    // still clips, at the first cell with content
++    const spillTd = spill ? ';overflow:visible' : ''
++    const spillBox = spill
++      ? (spill.left > 0 ? `;margin-left:-${round(spill.left)}pt` : '') +
++        `;width:calc(100% + ${round(spill.left + spill.right)}pt)`
++      : ''
+     return (
+-      `<td${span} style="${cellCss(style, rawAt(data, row, column), gridlines, edges)}">` +
+-      `<div class="c" style="height:${round(heightPt)}pt;align-items:${align}"><span>${escapeHtml(text)}</span></div></td>`
++      `<td${span} style="${cellCss(style, rawAt(data, row, column), gridlines, edges)}${spillTd}">` +
++      `<div class="c" style="height:${round(heightPt)}pt;align-items:${align}${spillBox}"><span>${escapeHtml(text)}</span></div></td>`
+     )
+   }
+ 
+@@ -468,6 +518,15 @@ export function layoutSheetPrint(
+         printedRows[printedRows.indexOf(last) + 1] ?? null
+       const columnAfter = (last: number): number | null =>
+         allColumns[allColumns.indexOf(last) + 1] ?? null
++      // cells text can run into: empty and not part of a merge
++      const free = allColumns.map((column) => {
++        const key = `${row}:${column}`
++        return (
++          !data.merges.covered.has(key) &&
++          !data.merges.anchors.has(key) &&
++          displayAt(data, row, column) === ''
++        )
++      })
+       allColumns.forEach((column, index) => {
+         const key = `${row}:${column}`
+         const near = {
+@@ -504,7 +563,9 @@ export function layoutSheetPrint(
+           )
+           return
+         }
+-        cells.push(cell(data, row, column, '', heightPt, near))
++        cells.push(
++          cell(data, row, column, '', heightPt, near, spillOf(data, row, index, allColumns, free)),
++        )
+       })
+       return `<tr style="height:${round(heightPt)}pt">${cells.join('')}</tr>`
+     }
+@@ -842,11 +903,66 @@ export function buildSheetPrintPayload(
+ 
+ /// Excel's default print range covers the cells and the drawings over them.
+ function usedArea(worksheet: PrintWorksheet, visuals: readonly PrintVisual[]): PrintArea {
++  const ends = visuals.map((visual) => visualEnd(worksheet, visual))
+   return {
+     startRow: 0,
+     startColumn: 0,
+-    endRow: Math.max(worksheet.getLastRow(), 0, ...visuals.map((visual) => visual.toRow)),
+-    endColumn: Math.max(worksheet.getLastColumn(), 0, ...visuals.map((visual) => visual.toColumn)),
++    endRow: Math.max(worksheet.getLastRow(), 0, ...ends.map((end) => end.row)),
++    endColumn: Math.max(worksheet.getLastColumn(), 0, ...ends.map((end) => end.column)),
++  }
++}
++
++/// Excel's sheet limits: the walk below never runs past them
++const LAST_SHEET_ROW = 1_048_575
++const LAST_SHEET_COLUMN = 16_383
++
++/// The last row and column a visual reaches: its end marker, except for a visual
++/// anchored to one cell (oneCellAnchor), which keeps its size as offsets past that
++/// cell while its end marker stays on it (the engine encodes it so). That end is
++/// walked from the anchor through the rows and columns the visual covers; going by
++/// the end marker alone printed a tall flow chart beside a small table as a sliver
++/// on one page. A real end marker stays authoritative (pixel walks round).
++function visualEnd(
++  worksheet: PrintWorksheet,
++  visual: PrintVisual,
++): { row: number; column: number } {
++  if (!visual.sizedFromAnchor) return { row: visual.toRow, column: visual.toColumn }
++  const walk = (
++    start: number,
++    offsetPx: number,
++    spanPx: number,
++    sizeOf: (index: number) => number,
++    last: number,
++  ): number => {
++    let index = start
++    let remaining = finitePt(offsetPx, 0) + finitePt(spanPx, 0)
++    while (index < last && remaining > Math.max(sizeOf(index), 0)) {
++      remaining -= Math.max(sizeOf(index), 0)
++      index += 1
++    }
++    return index
++  }
++  return {
++    row: Math.max(
++      visual.toRow,
++      walk(
++        visual.fromRow,
++        visual.offsetYPx,
++        visual.heightPx,
++        (i) => worksheet.getRowHeight(i),
++        LAST_SHEET_ROW,
++      ),
++    ),
++    column: Math.max(
++      visual.toColumn,
++      walk(
++        visual.fromColumn,
++        visual.offsetXPx,
++        visual.widthPx,
++        (i) => worksheet.getColumnWidth(i),
++        LAST_SHEET_COLUMN,
++      ),
++    ),
+   }
+ }
+ 
+diff --git a/apps/sheets/src/renderer/print-visuals.ts b/apps/sheets/src/renderer/print-visuals.ts
+index 78d34957..4c297cf9 100644
+--- a/apps/sheets/src/renderer/print-visuals.ts
++++ b/apps/sheets/src/renderer/print-visuals.ts
+@@ -16,6 +16,9 @@ export interface PrintVisual {
+   readonly offsetYPx: number
+   readonly widthPx: number
+   readonly heightPx: number
++  /// the anchor has no end marker of its own (oneCellAnchor: size from xdr:ext), so
++  /// toRow/toColumn stay on the anchor cell and the visual's reach comes from its size
++  readonly sizedFromAnchor?: boolean
+   readonly html: string
+ }
+ 
+@@ -73,6 +76,7 @@ export function snapshotPrintVisuals(
+       offsetYPx: frame.marginY,
+       widthPx: frame.width,
+       heightPx: frame.height,
++      ...(frame.visual.anchor?.explicitTo === true ? {} : { sizedFromAnchor: true }),
+       html: clone.outerHTML,
+     })
+   }
+diff --git a/apps/sheets/tests/pdf-export-own-window.test.ts b/apps/sheets/tests/pdf-export-own-window.test.ts
+new file mode 100644
+index 00000000..abf27255
+--- /dev/null
++++ b/apps/sheets/tests/pdf-export-own-window.test.ts
+@@ -0,0 +1,71 @@
++/**
++ * A running app exports a workbook for an external caller (MCP export_document)
++ * through a hidden sheets window the main process opens itself, handing it the
++ * output path. That path used to be honoured only in a --headless-export run, so
++ * the running app put up a save dialog instead — with no one to answer it in the
++ * web-server mode, the export "succeeded" with no file. A window the main process
++ * opened for an export writes where it was told; any other window still asks.
++ */
++import { existsSync, readFileSync } from 'node:fs'
++import { mkdtemp } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { beforeEach, describe, expect, it, vi } from 'vitest'
++
++const mocks = vi.hoisted(() => ({
++  showSaveDialogWithMemory: vi.fn(async () => ({ canceled: true, filePath: undefined })),
++}))
++
++vi.mock('electron', () => {
++  class FakeBrowserWindow {
++    readonly webContents = { printToPDF: vi.fn(async () => Buffer.from('%PDF-1.4 workbook')) }
++    static fromWebContents(): null {
++      return null
++    }
++    async loadFile(): Promise<void> {}
++    destroy(): void {}
++  }
++  return { BrowserWindow: FakeBrowserWindow, dialog: {} }
++})
++vi.mock('@genoffice/electron-utils', () => ({
++  isHeadlessMode: () => false,
++  showSaveDialogWithMemory: mocks.showSaveDialogWithMemory,
++}))
++vi.mock('@genoffice/electron-utils/print-cups', () => ({
++  printPdfViaCups: vi.fn(),
++  printToPdfOptionsFor: vi.fn(),
++}))
++
++import { exportPdf } from '../src/main/pdf-export'
++
++const request = (outPath: string) => ({
++  fileName: 'book.pdf',
++  html: '<p>cells</p>',
++  landscape: false,
++  pageSize: 'A4' as const,
++  margins: { top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 },
++  scale: 1,
++  outPath,
++})
++
++beforeEach(() => mocks.showSaveDialogWithMemory.mockClear())
++
++describe('exporting a workbook to PDF from a running app', () => {
++  it("writes an export window's file where the main process said, without a dialog", async () => {
++    const out = join(await mkdtemp(join(tmpdir(), 'sheets-own-export-')), 'book.pdf')
++    const result = await exportPdf({ sender: {} } as never, request(out), {
++      outPathAuthorized: true,
++    })
++    expect(result).toEqual({ canceled: false, path: out })
++    expect(readFileSync(out, 'utf8')).toBe('%PDF-1.4 workbook')
++    expect(mocks.showSaveDialogWithMemory).not.toHaveBeenCalled()
++  })
++
++  it('still asks where to save for any other window, whatever path its request names', async () => {
++    const out = join(await mkdtemp(join(tmpdir(), 'sheets-own-export-')), 'book.pdf')
++    const result = await exportPdf({ sender: {} } as never, request(out))
++    expect(mocks.showSaveDialogWithMemory).toHaveBeenCalledTimes(1)
++    expect(result).toEqual({ canceled: true })
++    expect(existsSync(out)).toBe(false)
++  })
++})
+diff --git a/apps/sheets/tests/print-overflow.test.ts b/apps/sheets/tests/print-overflow.test.ts
+new file mode 100644
+index 00000000..f761b2e6
+--- /dev/null
++++ b/apps/sheets/tests/print-overflow.test.ts
+@@ -0,0 +1,121 @@
++/**
++ * Text that does not wrap spills into the empty cells next to it, as Excel prints it:
++ * left-aligned to the right, right-aligned to the left, centred evenly both ways, up to
++ * the first cell with content. The exported PDF used to clip every cell at its own edge,
++ * so a note typed into one cell of a wide empty row came out cut off after a few words.
++ * Numbers never spill (Excel shows ####), nor does wrapped text.
++ */
++import { describe, expect, it } from 'vitest'
++import { layoutSheetPrint, type PrintWorksheet } from '../src/renderer/print-html'
++import type { EffectivePageSetup } from '../src/renderer/print-settings'
++
++type Cell = string | number
++const LONG = '本表为演示生成的示例数据，销量、单价、成本均非真实业务数据'
++const grid: Cell[][] = [
++  [LONG, '', '', 'D1'],
++  [LONG, 'B2', '', ''],
++  ['', '', LONG, ''],
++  [1234567890123, '', '', ''],
++  [LONG, '', '', ''],
++  ['', LONG, '', ''],
++]
++const styles: Record<string, object> = {
++  '2:2': { ht: 3 },
++  '4:0': { tb: 3 },
++  '5:1': { ht: 2 },
++}
++
++function worksheet(): PrintWorksheet {
++  const slice = (row: number, column: number, rows = 1, columns = 1) =>
++    grid.slice(row, row + rows).map((cells) => cells.slice(column, column + columns))
++  return {
++    getLastRow: () => grid.length - 1,
++    getLastColumn: () => 3,
++    getRowHeight: () => 20,
++    getColumnWidth: () => 100,
++    getMergedRanges: () => [],
++    getRange: ((row: number, column: number, rows?: number, columns?: number) => ({
++      getDisplayValues: () => slice(row, column, rows, columns).map((r) => r.map(String)),
++      getValues: () => slice(row, column, rows, columns),
++      getCellStyleData: () => styles[`${row}:${column}`] ?? null,
++    })) as PrintWorksheet['getRange'],
++  }
++}
++
++const setup = {
++  orientation: 'landscape',
++  paperSize: 9,
++  scale: 100,
++  fitToWidth: 0,
++  fitToHeight: 0,
++  fitToPage: false,
++  margins: { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
++  printGridlines: false,
++  printHeadings: false,
++  printAreas: [],
++  printTitles: null,
++  printTitleColumns: null,
++  header: null,
++  footer: null,
++  firstPage: null,
++  evenPages: null,
++  headerFooterScaleWithDoc: true,
++  headerFooterPictures: [],
++} as EffectivePageSetup
++
++const body = (): string =>
++  layoutSheetPrint(
++    worksheet(),
++    setup,
++    'Book',
++    'S1',
++    new Map(),
++    { visuals: [], css: '' },
++    {
++      now: new Date(2026, 0, 2),
++    },
++  ).pages[0]!.body
++
++/** the cell holding `text` in row `row` (0-based, body rows in order): its td and content box styles */
++function cellStyles(html: string, row: number, text: string): { td: string; box: string } {
++  const rows = html.match(/<tr\b[^>]*>.*?<\/tr>/gs) ?? []
++  const match = new RegExp(
++    `<td[^>]*style="([^"]*)"[^>]*><div class="c" style="([^"]*)"><span>${text}</span>`,
++  ).exec(rows[row] ?? '')
++  if (!match) throw new Error(`no cell "${text}" in row ${row}`)
++  return { td: match[1]!, box: match[2]! }
++}
++
++describe('text spilling into empty neighbours in the printed sheet', () => {
++  const html = body()
++  const column = Number(/<col style="width:([\d.]+)pt">/.exec(html)?.[1])
++
++  it('left-aligned text spills right up to the first cell with content', () => {
++    const { td, box } = cellStyles(html, 0, LONG)
++    expect(td).toContain('overflow:visible')
++    expect(box).toContain(`width:calc(100% + ${2 * column}pt)`)
++    expect(box).not.toContain('margin-left')
++  })
++
++  it('stays in its cell when the neighbour has content', () => {
++    expect(cellStyles(html, 1, LONG).td).not.toContain('overflow:visible')
++  })
++
++  it('right-aligned text spills left', () => {
++    const { td, box } = cellStyles(html, 2, LONG)
++    expect(td).toContain('overflow:visible')
++    expect(box).toContain(`margin-left:-${2 * column}pt`)
++    expect(box).toContain(`width:calc(100% + ${2 * column}pt)`)
++  })
++
++  it('centred text spills evenly both ways so it stays centred on its cell', () => {
++    const { box } = cellStyles(html, 5, LONG)
++    expect(box).toContain(`margin-left:-${column}pt`)
++    expect(box).toContain(`width:calc(100% + ${2 * column}pt)`)
++  })
++
++  it('numbers and wrapped text never spill', () => {
++    expect(cellStyles(html, 3, '1234567890123').td).not.toContain('overflow:visible')
++    expect(cellStyles(html, 4, LONG).td).not.toContain('overflow:visible')
++  })
++})
+diff --git a/apps/sheets/tests/print-visual-extent.test.ts b/apps/sheets/tests/print-visual-extent.test.ts
+new file mode 100644
+index 00000000..033721ce
+--- /dev/null
++++ b/apps/sheets/tests/print-visual-extent.test.ts
+@@ -0,0 +1,83 @@
++/**
++ * A picture anchored to one cell (oneCellAnchor: "move but don't size") keeps its size
++ * as offsets past that cell; the engine leaves its end marker on the anchor cell. The
++ * print area went by that end marker, so a tall flow chart pasted next to a small
++ * table printed as a sliver on one page. The area now reaches as far as the picture
++ * does, and the picture is drawn on every page it crosses.
++ */
++import { describe, expect, it } from 'vitest'
++import { layoutSheetPrint, type PrintWorksheet } from '../src/renderer/print-html'
++import type { EffectivePageSetup } from '../src/renderer/print-settings'
++
++const worksheet: PrintWorksheet = {
++  getLastRow: () => 0,
++  getLastColumn: () => 0,
++  getRowHeight: () => 20,
++  getColumnWidth: () => 100,
++  getMergedRanges: () => [],
++  getRange: ((row: number, column: number, rows: number = 1, columns: number = 1) => ({
++    getDisplayValues: () =>
++      Array.from({ length: rows }, (_, r) =>
++        Array.from({ length: columns }, (_, c) => (row + r === 0 && column + c === 0 ? 'A1' : '')),
++      ),
++    getValues: () =>
++      Array.from({ length: rows }, (_, r) =>
++        Array.from({ length: columns }, (_, c) => (row + r === 0 && column + c === 0 ? 'A1' : '')),
++      ),
++    getCellStyleData: () => null,
++  })) as PrintWorksheet['getRange'],
++}
++
++const setup = {
++  orientation: 'portrait',
++  paperSize: 9,
++  scale: 100,
++  fitToWidth: 0,
++  fitToHeight: 0,
++  fitToPage: false,
++  margins: { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
++  printGridlines: false,
++  printHeadings: false,
++  printAreas: [],
++  printTitles: null,
++  printTitleColumns: null,
++  header: null,
++  footer: null,
++  firstPage: null,
++  evenPages: null,
++  headerFooterScaleWithDoc: true,
++  headerFooterPictures: [],
++} as EffectivePageSetup
++
++// anchored at F7, 1000 x 2000 px: past column P and row 100, as the engine encodes it
++const flowChart = {
++  id: 'flow',
++  fromRow: 6,
++  fromColumn: 5,
++  toRow: 6,
++  toColumn: 5,
++  offsetXPx: 6,
++  offsetYPx: 4,
++  widthPx: 1000,
++  heightPx: 2000,
++  sizedFromAnchor: true,
++  html: '<i class="flow-chart"></i>',
++}
++
++describe('printing a picture anchored to one cell', () => {
++  const document = layoutSheetPrint(
++    worksheet,
++    setup,
++    'Book',
++    'S1',
++    new Map(),
++    { visuals: [flowChart], css: '' },
++    { now: new Date(2026, 0, 2) },
++  )
++
++  it('prints as far as the picture reaches, on every page it crosses', () => {
++    const withPicture = document.pages.filter((page) => page.body.includes('flow-chart'))
++    expect(document.pages.length).toBeGreaterThan(4)
++    expect(withPicture.length).toBeGreaterThan(4)
++  })
++})
+diff --git a/packages/doc2docx/src/docx-writer.ts b/packages/doc2docx/src/docx-writer.ts
+index f2578111..f9850622 100644
+--- a/packages/doc2docx/src/docx-writer.ts
++++ b/packages/doc2docx/src/docx-writer.ts
+@@ -393,6 +393,12 @@ export function toParaFormat(formatting: ParagraphFormatting): ParaFormat | unde
+   return Object.keys(out).length > 0 ? out : undefined
+ }
+ 
++/** any character that is not whitespace or a Word control character (section, page, cell marks) */
++function hasVisibleText(text: string): boolean {
++  for (const char of text) if (char.trim() !== '' && char.charCodeAt(0) >= 0x20) return true
++  return false
++}
++
+ function paragraphBlock(entry: {
+   paragraph: FormattedParagraph
+   list?: ParagraphListInfo
+@@ -404,7 +410,12 @@ function paragraphBlock(entry: {
+     runs: paragraph.runs.map(toDocxRun),
+   }
+   if (entry.list) block.list = { ...entry.list }
++  const heading = paragraph.formatting.headingLevel
+   if (entry.styleId) block.styleId = entry.styleId
++  // a heading without text (often the paragraph carrying a section break) is no
++  // chapter: Word's navigation pane skips it, so it is not put in the outline
++  else if (heading !== undefined && hasVisibleText(paragraph.text))
++    block.styleId = `Heading${heading}`
+   const format = toParaFormat(paragraph.formatting)
+   if (format) block.format = format
+   return block
+@@ -1548,7 +1559,27 @@ function convertedStylesXml(
+   }
+   if (noteKinds.length > 0)
+     out = out.replace('</w:styles>', noteKinds.map(noteStylesXml).join('') + '</w:styles>')
+-  return out
++  // the blank template's Heading styles add bold, size and spacing: swap them for ones
++  // that only place the paragraph in the outline (outlineHeadingStyle)
++  out = out.replace(TEMPLATE_HEADING_STYLE, '')
++  const headings = Array.from({ length: 9 }, (_, index) => outlineHeadingStyle(index + 1))
++  return out.replace('</w:styles>', headings.join('') + '</w:styles>')
++}
++
++const TEMPLATE_HEADING_STYLE = /<w:style [^>]*w:styleId="Heading[1-9]"[^>]*>.*?<\/w:style>/gs
++
++/**
++ * Heading 1-9 as converted documents use them: the name and the outline level
++ * only. A heading's look is already written as direct formatting (styles are
++ * flattened, see convertLegacyDocToDocx), so the style must not add to it; it is
++ * there for the outline, the navigation pane and readers that go by style.
++ */
++function outlineHeadingStyle(level: number): string {
++  return (
++    `<w:style w:type="paragraph" w:styleId="Heading${level}"><w:name w:val="heading ${level}"/>` +
++    '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/>' +
++    `<w:pPr><w:outlineLvl w:val="${level - 1}"/></w:pPr></w:style>`
++  )
+ }
+ 
+ const BODY_OPEN = '<w:body>'
+diff --git a/packages/doc2docx/src/formatting.ts b/packages/doc2docx/src/formatting.ts
+index a90c1574..6e5690bc 100644
+--- a/packages/doc2docx/src/formatting.ts
++++ b/packages/doc2docx/src/formatting.ts
+@@ -157,6 +157,12 @@ export interface ParagraphFormatting {
+   /** sprmPDyaLine: dyaLine in twips plus the multiple-line-spacing flag */
+   lineSpacing?: { dyaLine: number; multiple: boolean }
+   outlineLevel?: number
++  /**
++   * 1-9 when the paragraph is a heading in the document outline (resolve.ts
++   * headingLevelOf): written as the Heading style so the converted document keeps
++   * its structure, not only the headings' look
++   */
++  headingLevel?: number
+   listLevel?: number
+   listId?: number
+   inTable?: boolean
+diff --git a/packages/doc2docx/src/resolve.ts b/packages/doc2docx/src/resolve.ts
+index f44a9d40..39dfbce2 100644
+--- a/packages/doc2docx/src/resolve.ts
++++ b/packages/doc2docx/src/resolve.ts
+@@ -30,7 +30,7 @@ import {
+   readFormattingDetailed,
+ } from './formatting'
+ import { fontNamesFor, parseFontTable } from './fonts'
+-import { iterateSprms, readSprmU16 } from './sprm'
++import { iterateSprms, iterateSprmsLenient, readSprmU16, readSprmU8 } from './sprm'
+ import { parseStsh, type Style, type StyleSheet } from './styles'
+ import { createWordControlMapper } from './text'
+ 
+@@ -112,6 +112,8 @@ function resolveParagraphFormatting(
+     applyParagraphGrpprl(formatting, style.papxSprms, resolver.context, 'inherit')
+   applyParagraphGrpprl(formatting, sprms, resolver.context, 'inherit')
+   formatting.styleIndex = istd
++  const headingLevel = headingLevelOf(sprms, paragraphStyles)
++  if (headingLevel !== undefined) formatting.headingLevel = headingLevel
+   return formatting
+ }
+ 
+@@ -415,12 +417,42 @@ export function resolveParagraphFormattingFor(
+     resolver.warn,
+     `the paragraph style (index ${request.styleIstd})`,
+   )
+-  const formatting: ParagraphFormatting = {}
+-  for (const style of paragraphStyles)
+-    applyParagraphGrpprl(formatting, style.papxSprms, resolver.context, 'inherit')
+-  applyParagraphGrpprl(formatting, request.papxSprms, resolver.context, 'inherit')
+-  formatting.styleIndex = request.styleIstd
+-  return formatting
++  return resolveParagraphFormatting(request.styleIstd, request.papxSprms, paragraphStyles, resolver)
++}
++
++const SPRM_P_OUT_LVL = 0x2640
++const BODY_TEXT_OUTLINE_LEVEL = 9
++const STI_HEADING_FIRST = 1
++const STI_HEADING_LAST = 9
++
++/** the outline level a grpprl sets (sprmPOutLvl), if it sets one */
++function outlineLevelIn(grpprl: Uint8Array): number | undefined {
++  let level: number | undefined
++  for (const sprm of iterateSprmsLenient(grpprl).sprms)
++    if (sprm.opcode === SPRM_P_OUT_LVL) level = readSprmU8(sprm.operand) ?? level
++  return level
++}
++
++/**
++ * The paragraph's level in the document outline, as Word's navigation pane reads
++ * it: the most specific outline level wins (the paragraph's own sprm, then each
++ * style from the derived one to its bases), where a style counts when it sets
++ * sprmPOutLvl or is a built-in heading (sti 1-9, whose level is implied). Level 9
++ * is body text. Without it every heading of a converted .doc became body text with
++ * heading looks, and readers that go by structure (the outline, pandoc, our
++ * attachment and knowledge-base parsing) lost the chapters.
++ */
++function headingLevelOf(paragraphSprms: Uint8Array, chain: readonly Style[]): number | undefined {
++  const fromOutline = (level: number): number | undefined =>
++    level < BODY_TEXT_OUTLINE_LEVEL ? level + 1 : undefined
++  const direct = outlineLevelIn(paragraphSprms)
++  if (direct !== undefined) return fromOutline(direct)
++  for (const style of [...chain].reverse()) {
++    const own = outlineLevelIn(style.papxSprms)
++    if (own !== undefined) return fromOutline(own)
++    if (style.sti >= STI_HEADING_FIRST && style.sti <= STI_HEADING_LAST) return style.sti
++  }
++  return undefined
+ }
+ 
+ /**
+diff --git a/packages/doc2docx/tests/docx-writer.test.ts b/packages/doc2docx/tests/docx-writer.test.ts
+index 360d9cb0..c12dc152 100644
+--- a/packages/doc2docx/tests/docx-writer.test.ts
++++ b/packages/doc2docx/tests/docx-writer.test.ts
+@@ -5,6 +5,7 @@ import type { Block } from '@genoffice/docx-engine'
+ import {
+   LegacyDocError,
+   convertLegacyDocToDocx,
++  generateBodyParagraphsXml,
+   readLegacyDoc,
+   readLegacyDocBody,
+   readLegacyDocLayout,
+@@ -35,8 +36,9 @@ function sprm(opcode: number, operand: number[]): Uint8Array {
+ }
+ 
+ /** the generated-document paragraphs (parseDocx adds one passthrough block for the sectPr) */
++/** body paragraphs in order, headings included (a converted heading reads back as a heading block) */
+ function paragraphsOf(parsed: Parsed): Block[] {
+-  return parsed.blocks.filter((block) => block.type === 'paragraph')
++  return parsed.blocks.filter((block) => block.type === 'paragraph' || block.type === 'heading')
+ }
+ 
+ function textOf(block: Block): string {
+@@ -612,6 +614,7 @@ describe('styles.doc -> docx round trip (resolved stylesheet)', () => {
+   })
+ 
+   it('P1 Heading 1 becomes bold 14pt with keep/spacing', () => {
++    expect(paragraphs[1]).toMatchObject({ type: 'heading', level: 1 })
+     expect(paragraphs[1]!.runs?.[0]).toMatchObject({
+       text: 'Heading one text',
+       bold: true,
+@@ -688,3 +691,46 @@ describe('styles.doc -> docx round trip (resolved stylesheet)', () => {
+     expect(paragraphs[2]).not.toContain('<w:rPr>')
+   })
+ })
++
++describe('headings', () => {
++  // a heading-styled paragraph without text (often the one carrying a section break)
++  // has no place in the outline: Word's navigation pane skips it too, and readers
++  // that go by style would list an empty chapter
++  it('leaves a heading-styled paragraph without text out of the outline', () => {
++    const paragraph = (text: string) => ({
++      startCp: 0,
++      endCp: text.length,
++      text,
++      formatting: { headingLevel: 1 },
++      runs: text ? [{ startCp: 0, endCp: text.length, text, formatting: {} }] : [],
++    })
++    expect(generateBodyParagraphsXml([paragraph('项目概况'), paragraph('')] as never)).toBe(
++      generateBodyParagraphsXml([paragraph('项目概况')] as never) +
++        generateBodyParagraphsXml([{ ...paragraph(''), formatting: {} }] as never),
++    )
++  })
++
++  // a heading keeps its place in the outline (Heading style, as Word writes it), while
++  // its look stays the one converted as direct formatting: the Heading styles carry
++  // nothing but the outline level, so the blank template's bold/size never leak in
++  it('writes heading paragraphs with a Heading style that only carries the outline level', async () => {
++    const { docx } = await convertLegacyDocToDocx(fixtureBytes('styles'))
++    const zip = await JSZip.loadAsync(docx)
++    const documentXml = await zip.file('word/document.xml')!.async('string')
++    const stylesXml = await zip.file('word/styles.xml')!.async('string')
++    expect(documentXml.match(/<w:pStyle w:val="Heading\d"\/>/g)).toEqual([
++      '<w:pStyle w:val="Heading1"/>',
++    ])
++    for (let level = 1; level <= 9; level++) {
++      const style = new RegExp(
++        `<w:style [^>]*w:styleId="Heading${level}"[^>]*>(.*?)</w:style>`,
++        's',
++      )
++      const body = style.exec(stylesXml)?.[1] ?? ''
++      expect(body).toContain(`<w:name w:val="heading ${level}"/>`)
++      expect(body).toContain(`<w:outlineLvl w:val="${level - 1}"/>`)
++      expect(body).not.toContain('<w:rPr>')
++      expect(body).not.toContain('<w:spacing')
++    }
++  })
++})
+diff --git a/packages/doc2docx/tests/styles.test.ts b/packages/doc2docx/tests/styles.test.ts
+index a950c305..756ae9a4 100644
+--- a/packages/doc2docx/tests/styles.test.ts
++++ b/packages/doc2docx/tests/styles.test.ts
+@@ -315,6 +315,44 @@ describe('synthetic stylesheets: chains and defaults', () => {
+   })
+ })
+ 
++describe('synthetic stylesheets: heading levels', () => {
++  // what Word's navigation pane and outline go by: an outline level set on the
++  // paragraph or down its style chain wins (9 is body text), else the nearest
++  // built-in heading style (sti 1-9) in the chain. Converted documents lost every
++  // heading without it: the look was kept as direct formatting, the structure not
++  it('gives built-in heading styles, styles based on them and explicit outline levels a level', () => {
++    const bytes = syntheticDoc({
++      styles: [
++        { name: 'Normal', kind: 'paragraph', sti: 0 },
++        { name: 'heading 1', kind: 'paragraph', sti: 1, basedOn: 0 },
++        { name: 'heading 2', kind: 'paragraph', sti: 2, basedOn: 0 },
++        { name: 'Chapter', kind: 'paragraph', sti: 0x0ffe, basedOn: 2 },
++        {
++          name: 'Outlined',
++          kind: 'paragraph',
++          sti: 0x0ffe,
++          basedOn: 0,
++          papxSprms: sprm(0x2640, [3]),
++        },
++      ],
++      text: 'h1\rchapter\routline\rbody\rdemoted\rstyle-outline\r',
++      paragraphs: [
++        { istd: 1 },
++        { istd: 3 },
++        { istd: 0, sprms: sprm(0x2640, [2]) },
++        { istd: 0 },
++        { istd: 1, sprms: sprm(0x2640, [9]) },
++        { istd: 4 },
++      ],
++    })
++    // the model ends with the document's closing empty paragraph: only the six above count
++    const levels = readResolvedLegacyDocModel(bytes)
++      .paragraphs.slice(0, 6)
++      .map((paragraph) => paragraph.formatting.headingLevel)
++    expect(levels).toEqual([1, 2, 3, undefined, undefined, 4])
++  })
++})
++
+ describe('synthetic stylesheets: toggle layering', () => {
+   function toggleDoc(styleBold: number | undefined, directBold: number): Uint8Array {
+     const styles: SyntheticStyle[] = [
+diff --git a/packages/odf2ooxml/src/odp-pptx.ts b/packages/odf2ooxml/src/odp-pptx.ts
+index 07dac42f..e86b7fc5 100644
+--- a/packages/odf2ooxml/src/odp-pptx.ts
++++ b/packages/odf2ooxml/src/odp-pptx.ts
+@@ -90,7 +90,7 @@ export async function convertOdpToPptx(odp: Uint8Array): Promise<OdpToPptxResult
+     for (const { name, node } of childElements(page.node)) {
+       if (name === 'draw:frame') addFrame(opened, slide, node, ctx, deckSize, pack, imageTasks)
+       else if (name === 'presentation:notes') drops.add('notes')
+-      else if (SHAPES.has(name)) drops.add('shapes')
++      else if (SHAPES.has(name)) addShape(slide, node, ctx, deckSize)
+       // anything else on the page (thumbnails, settings) is page furniture
+     }
+   }
+@@ -156,6 +156,33 @@ function addFrame(
+   ctx.drops.add('shapes')
+ }
+ 
++/**
++ * A shape (rectangle, ellipse, custom shape …) that holds text. LibreOffice saves a
++ * PowerPoint text box as draw:custom-shape and decks built by programs do the same,
++ * so dropping shapes dropped most of a deck's text. The text keeps its place as a
++ * text box; the shape's outline, fill and geometry are not rebuilt (reported as
++ * dropped 'shape-styling'). A shape without text is dropped as before.
++ */
++function addShape(
++  slide: Slide,
++  shape: XNode,
++  ctx: WalkContext,
++  deck: { widthEmu: number; heightEmu: number },
++): void {
++  const paragraphs: Paragraph[] = []
++  collectParagraphs(shape, ctx, paragraphs, 0)
++  const hasText = paragraphs.some((paragraph) =>
++    paragraph.runs.some((run) => 'text' in run && run.text.trim() !== ''),
++  )
++  const box = hasText ? frameBox(shape, deck) : null
++  if (!box) {
++    ctx.drops.add('shapes')
++    return
++  }
++  addElement(slide, { kind: 'textbox', offset: box, paragraphs })
++  ctx.drops.add('shape-styling')
++}
++
+ function collectParagraphs(
+   container: XNode,
+   ctx: WalkContext,
+diff --git a/packages/odf2ooxml/tests/odp-shape-text.test.ts b/packages/odf2ooxml/tests/odp-shape-text.test.ts
+new file mode 100644
+index 00000000..66b4cc60
+--- /dev/null
++++ b/packages/odf2ooxml/tests/odp-shape-text.test.ts
+@@ -0,0 +1,53 @@
++import JSZip from 'jszip'
++import { expect, it } from 'vitest'
++import { convertOdpToPptx } from '../src/index'
++
++// Text in an .odp mostly sits in shapes, not in text frames: LibreOffice saves a
++// PowerPoint text box as draw:custom-shape, and decks built by programs do the same.
++// Every shape was dropped, so such a deck converted to slides with no text at all.
++// A shape that holds text keeps it as a text box at the shape's place; its outline
++// and fill are reported as dropped. Shapes without text are dropped as before.
++const NS =
++  'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" ' +
++  'xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" ' +
++  'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" ' +
++  'xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"'
++
++async function odp(page: string): Promise<Uint8Array> {
++  const zip = new JSZip()
++  zip.file('mimetype', 'application/vnd.oasis.opendocument.presentation')
++  zip.file(
++    'content.xml',
++    `<office:document-content ${NS}><office:body><office:presentation><draw:page draw:name="P1">${page}</draw:page></office:presentation></office:body></office:document-content>`,
++  )
++  return zip.generateAsync({ type: 'uint8array' })
++}
++
++it('keeps the text of shapes as text boxes at their place', async () => {
++  const result = await convertOdpToPptx(
++    await odp(
++      '<draw:custom-shape svg:x="2cm" svg:y="3cm" svg:width="8cm" svg:height="2cm">' +
++        '<text:p>画完龙，再点上眼睛</text:p><draw:enhanced-geometry draw:type="rectangle"/></draw:custom-shape>' +
++        '<draw:rect svg:x="1cm" svg:y="6cm" svg:width="5cm" svg:height="1cm"><text:p>一笔点睛</text:p></draw:rect>' +
++        '<draw:line svg:x1="0cm" svg:y1="0cm" svg:x2="1cm" svg:y2="1cm"/>',
++    ),
++  )
++  const slide = await (
++    await JSZip.loadAsync(result.pptx)
++  )
++    .file('ppt/slides/slide1.xml')!
++    .async('string')
++  expect(slide).toContain('画完龙，再点上眼睛')
++  expect(slide).toContain('一笔点睛')
++  // 2cm, 3cm in EMU: the text box sits where the shape was
++  expect(slide).toContain('<a:off x="720000" y="1080000"/>')
++  expect(result.dropped.map((d) => d.what)).toContain('shape-styling')
++  expect(result.dropped.map((d) => d.what)).toContain('shapes')
++})
++
++it('still drops a shape without text', async () => {
++  const result = await convertOdpToPptx(
++    await odp('<draw:rect svg:x="1cm" svg:y="1cm" svg:width="5cm" svg:height="1cm"/>'),
++  )
++  expect(result.dropped.map((d) => d.what)).toEqual(['shapes'])
++})

@@ -14,8 +14,9 @@ description: 处理 Word 文档（.docx / .dotx）时使用。包括：用户提
 | **读取**内容 | `markitdown 文件.docx`；要看修订痕迹用 `pandoc --track-changes=all -t markdown 文件.docx`（云端对话才有 pandoc） |
 
 > 命令里的 `office/…` 是本技能资源目录（加载技能时给出的 Base directory）下的辅助脚本，运行时按资源目录写成完整路径；其余相对路径都相对当前工作目录。
-> **解释器与库：** 工具列表里有 `load_workspace_dependencies`（本机对话）就先调一次：Python 脚本（包括 `office/` 下的）都用它返回的 `python` 跑，`markitdown` 写成 `"<python>" -m markitdown`；Node 脚本用它返回的 `node` 跑，`NODE_PATH` 设成它返回的 `nodePackages`。没有这个工具（云端对话的沙箱）就直接用 `python3`、`node`、`markitdown`，下面的命令按这种写法写。用到的库都已带好，不要 `pip install`、`npm install`，也不要另找系统里的解释器。
-> **文件放哪：** 用户给的原文件只读、不要原地改（云端对话的附件在 `input/`；本机对话的原文件就在工作文件夹里，用用户说的路径）。成品存进当前工作目录（用户指定了位置就照用户说的），按内容起名、不和已有文件重名；生成用的脚本也放工作目录，按用途起名（如 `生成报告.js`；Python 脚本别叫 `docx.py`、`pptx.py` 这类会挡住库的名字）。
+> **解释器与库：** 工具列表里有 `load_workspace_dependencies` 就先调一次：Python 脚本（包括 `office/` 下的）都用它返回的 `python` 跑，`markitdown` 写成 `"<python>" -m markitdown`；Node 脚本用它返回的 `node` 跑，`NODE_PATH` 设成它返回的 `nodePackages`。没有这个工具就直接用 `python3`、`node`、`markitdown`，下面的命令按这种写法写。用到的库都已带好，不要 `pip install`、`npm install`，也不要另找系统里的解释器。
+> **文件放哪：** 用户给的原文件只读、不要原地改（云端对话的附件在 `input/`；本机对话的原文件就在工作文件夹里，用用户说的路径）。例外见下文「在原文件上修订」。成品存进当前工作目录（用户指定了位置就照用户说的），按内容起名、不和已有文件重名；生成用的脚本也放工作目录，按用途起名（如 `生成报告.js`；Python 脚本别叫 `docx.py`、`pptx.py` 这类会挡住库的名字）。
+> **脚本分几个文件写：** 写文件时写进去的内容全部算在模型这一次的输出里，单次输出有上限（私有化部署常见 8K token），一个长脚本写到一半被截断，这一步就白做了、文件也没写成。所以生成用的脚本按块拆开：配色、样式、公用函数放一个文件，每一块内容（演示稿每一页、文档每一节、表格每张表）一个文件，最后一个入口文件把它们串起来运行；单个文件控制在 150 行左右。大段数据单独存成 JSON 或 CSV，分几次写，不要整段写进脚本。要改哪一块，只重写那一个文件。
 > **中间文件：** 解压出来的部件、渲染的页面图这类一次性的东西，放进这次新建的隐藏临时目录：`mktemp -d ./.dsh-office.XXXXXXXX` 会打印出目录名（下文写作 `<临时目录>`），之后的命令都直接写这个名字（每条命令是新的 shell，变量留不下来）。用完——失败了也一样——只删这个目录（`rm -rf <临时目录>`）；不要用固定的目录名，不要删工作目录本身，回答里不要链接已经删掉的图片。
 > 写好后调用 `present` 交付成品（例如 `present({"files":[{"path":"报告.docx"}]})`），中间文件不交付。
 > 知识库里的文档不是这里的文件，改不了原件；用户要改它，请他把那份 .docx 给你（云端对话作为附件上传，本机对话放进工作文件夹）。
@@ -69,7 +70,7 @@ python3 office/merge_runs.py <临时目录>/unpacked/               # 合并碎�
 # 原地改 <临时目录>/unpacked/word/document.xml——不要重新排版或美化缩进
 (cd <临时目录>/unpacked && rm -f ../../原文件名-修改版.docx && zip -Xr ../../原文件名-修改版.docx .)
 python3 office/validate.py 原文件名-修改版.docx --original input/原文件.docx
-# 用了修订模式？加 --author "你写修订时用的名字"，检查每处改动都带了修订标记
+# 用了修订模式？加 --author "${KNOWWORK_REVISION_AUTHOR:-KnowWork Agent}"，检查每处改动都带了修订标记
 rm -rf <临时目录>
 ```
 
@@ -79,9 +80,11 @@ Word 会因为修订号、拼写检查标记把一句话拆成很多个 `<w:r>`�
 （`merge_runs.py 文件.docx -o 合并后.docx`）。
 
 **修订模式：** 用户要"修订 / 留痕 / 能逐条接受拒绝"时，改动必须包进修订标记，验证时加
-`--author "你用的作者名"`（需要同时给 `--original`）——它会报出所有**改了字却没包进**
+`--author "${KNOWWORK_REVISION_AUTHOR:-KnowWork Agent}"`（需要同时给 `--original`）——它会报出所有**改了字却没包进**
 `<w:ins>`/`<w:del>` 的地方，这种错误很容易犯，而且在"接受后"的视图里完全看不出来。
-`<w:ins>`/`<w:del>` 都要带 `w:id`、`w:author`、`w:date` 三个属性。`<w:del>` 里面的文字元素
+`<w:ins>`/`<w:del>` 都要带 `w:id`、`w:author`、`w:date` 三个属性；作者一律写环境变量
+`KNOWWORK_REVISION_AUTHOR` 的值（`echo "$KNOWWORK_REVISION_AUTHOR"` 看一下，没有就写 `KnowWork Agent`），
+`docx_redline.py` 默认用的就是它，不要自己起名字，用户靠作者分清哪些是 AI 改的。`<w:del>` 里面的文字元素
 是 `<w:delText>`，不是 `<w:t>`。被删除的段落标记（`<w:pPr><w:rPr><w:del w:id=".."
 w:author=".." w:date=".."/></w:rPr></w:pPr>`）表示"这一段并入下一段"——所以整段删除等于
 这个标记，再加上把段里每个 run 都包进 `<w:del>`。这个 `<w:del/>` 必须排在 rPr 其他子元素
@@ -100,6 +103,11 @@ python3 office/docx_redline.py input/原文件.docx <临时目录>/edits.json �
 字，不要把整段当 `find` 重写——那样修订里全是删除线，用户没法逐条审。用户明确说"直接改好、
 不要修订痕迹"时加 `--no-track`。任何一项失败它都不写文件。结构性改动（增删段落、改表格、
 换图）还是走上面的解压改 XML。
+
+**在原文件上修订：** 用户要你直接改这份文件本身时（消息里写着「在原文件上修订」或「在编辑器里修改」；
+后者有编辑器工具时用编辑器工具改，没有时才走这里），不另存修改版：改动全部包进修订标记（不能 `--no-track`），结果先写进 `<临时目录>`，
+`validate.py` 加 `--original 原文件 --author ...` 通过后再 `cp` 覆盖原文件。用户正在编辑器里开着它，这一轮
+结束后编辑器会重新载入、显示你的修订，所以不用 `present`；回答里照常说清楚改了哪几处。
 
 要得到接受全部修订后的干净稿：`python3 office/accept_changes.py 输入.docx 输出.docx`。
 

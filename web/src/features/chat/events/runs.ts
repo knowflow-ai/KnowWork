@@ -29,8 +29,14 @@ export function endReasonOf(event: V1Event): EndReason {
       return { kind: 'failed', message: FAILED_MESSAGES[code] ?? '这一轮没有完成，请稍后重试' };
     }
     default:
+      // 宿主下一轮会告诉模型截在哪、要拆小（runtime-host output-limit.mjs），所以「继续」管用；
+      // 上限是管理员给模型填的「最大输出」（模型网关按它收紧），调高也行
       return event.data.reason === 'max_tokens'
-        ? { kind: 'max-tokens', message: '回答过长，已被截断' }
+        ? {
+            kind: 'max-tokens',
+            message:
+              '这一步要输出的内容超过了模型单次输出的上限，没写完就停了。回复「继续」，AI 会拆小接着做；也可以请管理员调高这个模型的「最大输出」。',
+          }
         : { kind: 'completed' };
   }
 }

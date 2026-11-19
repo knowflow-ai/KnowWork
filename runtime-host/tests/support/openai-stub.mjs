@@ -9,6 +9,8 @@ import { createServer } from 'node:http'
 /**
  * @param {{ script?: Array<{ text: string } | { tool: string, args: object } | { calls: Array<{ tool: string, args: object }> }>, pick?: (body: object) => ({ text: string } | { tool: string, args: object }), token?: () => string }} options
  *   calls 是一步里同时发几个工具调用。
+ *   { truncated: { tool, args } } 扮演输出到单次上限被截停：发出一个参数只写了一半的工具调用（args 是半截的 JSON 文本），
+ *   结束原因 length，输出 token 记 8192（照 2026-11 客户实例：管理员设的最大输出 8192）。
  *   token 返回当前有效的 API Key；不匹配返回 401。
  *   pick 按请求内容选回答（多个 Agent 并发请求时按到达顺序不确定，用它按角色分别编排）；给了就不用 script。
  */
@@ -38,6 +40,14 @@ export async function startOpenAiStub(options) {
     const base = { id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body?.model ?? 'stub' }
     const send = data => res.write(`data: ${JSON.stringify(data)}\n\n`)
     send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] })
+    if ('truncated' in step) {
+      const toolCall = { index: 0, id: `call_${next}`, type: 'function', function: { name: step.truncated.tool, arguments: step.truncated.args } }
+      send({ ...base, choices: [{ index: 0, delta: { tool_calls: [toolCall] }, finish_reason: null }] })
+      send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'length' }] })
+      send({ ...base, choices: [], usage: { prompt_tokens: 10, completion_tokens: 8192, total_tokens: 8202 } })
+      res.write('data: [DONE]\n\n')
+      return res.end()
+    }
     if ('text' in step) {
       for (const piece of step.text.match(/.{1,8}/gu) ?? []) {
         send({ ...base, choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] })

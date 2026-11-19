@@ -1,0 +1,7 @@
+# GenOffice 的固定版本：patches/ 里的补丁按顺序打在这个提交上（apply.sh、export.sh、check-upstream.sh、
+# deploy/docker/office.Dockerfile 读这个文件）。
+# 上游不收我们的补丁，按长期自维护的改版来管：升级时把补丁换到新的基点上，改这里的 commit。
+# 网页模式来自社区 PR #2283（还没合进上游），所以基点是那个 PR 的头，它当时已合并了上游 main。
+repository=https://github.com/genspark-ai/genoffice.git
+ref=refs/pull/2283/head
+commit=2a1735db2d38ed5220acab51a2d4e890f4ff9d65

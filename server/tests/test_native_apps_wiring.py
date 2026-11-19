@@ -58,7 +58,8 @@ async def entry_status(runtime, path: str) -> int:
 
 
 async def test_without_native_apps_nothing_extra_is_mounted():
-    runtime = build_runtime(settings())
+    # 明确不带扩展：装了扩展的环境里，本机已安装的扩展会登记自己的原生应用，就不是「没有原生应用」了
+    runtime = build_runtime(settings(), extensions=Extensions(license=NO_LICENSE, installed=(), active=()))
     assert await entry_status(runtime, PUBLIC_MODEL) == 404
     assert await entry_status(runtime, PUBLIC_TOOLS) == 404
     assert await entry_status(runtime, PUBLIC_SKILLS) == 404

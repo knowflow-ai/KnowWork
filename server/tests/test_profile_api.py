@@ -238,7 +238,7 @@ class Files:
     async def for_turn(self, conversation, ids):
         if "att_gone" in ids:
             raise AttachmentUnavailable("有附件还没准备好或已失效，请移除后重新上传")
-        return tuple(TurnAttachment(name=f"{i}.docx", path=f"/workspace/input/{i}.docx", bytes=1, sha256="b" * 64)
+        return tuple(TurnAttachment(name=f"{i}.docx", path=f"input/{i}.docx", bytes=1, sha256="b" * 64)
                      for i in ids)
 
 
@@ -250,7 +250,7 @@ async def test_attachments_ride_along_with_the_message(sessionmaker):
         assert (await http.post(url, headers=AUTH, json={"text": "改一下", "attachments": ["att_1"]})).status_code == 202
         gone = await http.post(url, headers=AUTH, json={"text": "x", "attachments": ["att_gone"]})
         assert (gone.status_code, gone.json()["detail"]) == (409, "有附件还没准备好或已失效，请移除后重新上传")
-    assert [[a.path for a in turn.attachments] for turn in kernel.sent] == [["/workspace/input/att_1.docx"]]
+    assert [[a.path for a in turn.attachments] for turn in kernel.sent] == [["input/att_1.docx"]]
     await pump.close()
 
 

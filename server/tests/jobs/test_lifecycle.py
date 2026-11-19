@@ -105,6 +105,31 @@ async def test_retry_after_overrides_backoff(files_db):
     assert (await r.run_once("ws1")).status == "succeeded"
 
 
+async def test_waiting_for_a_resource_is_not_counted_as_a_try(files_db):
+    """等资源（例如同时在跑的 Office 容器到了上限）：退回排队、过一会儿再试，不算一次尝试，等得再久也不会因此失败；
+    任务上照样记着在等什么。"""
+    busy = JobError("office_busy", "同时在用 Office 的人数到了上限，排队等名额", waits=True, retry_after=5.0)
+    rec = Recorder(*([busy] * 5), None)
+    waiting = []
+
+    async def on_retry(session, claim, failure, retry_at):
+        waiting.append((failure.code, failure.message, failure.waits))
+
+    clock = Clock()
+    r = JobRunner(files_db.sessionmaker, clock=clock)
+    r.register(KIND, rec.handle, rec.give_up, on_retry)
+    job_id = await put(files_db)
+    for _ in range(5):  # 比 max_tries 多
+        assert (await r.run_once("ws1")).status == "retry"
+        row = await job(files_db, job_id)
+        assert (row.tries, row.error_code) == (0, "office_busy")
+        assert await r.run_once("ws1") is None, "间隔内不领"
+        clock.advance(5)
+    assert (await r.run_once("ws1")).status == "succeeded"
+    assert rec.calls == 6 and rec.gave_up == []
+    assert waiting == [("office_busy", "同时在用 Office 的人数到了上限，排队等名额", True)] * 5, "业务照样知道它在等什么"
+
+
 async def test_crashes_are_internal_errors_retried_twice(files_db):
     rec = Recorder(KeyError("boom"))
     r, clock = build(files_db, rec, replace(KIND, max_tries=6))

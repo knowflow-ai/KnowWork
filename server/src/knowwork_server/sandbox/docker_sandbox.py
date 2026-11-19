@@ -15,9 +15,9 @@ import posixpath
 import secrets
 from dataclasses import dataclass
 
+from ..workpath import INPUT, ROOT, SANDBOX, WorkPath, check_name, writable
 from .containers import ContainerManager, SandboxKey
 from .contract import (
-    INPUT_DIR,
     ExecResult,
     SandboxConversionFailed,
     SandboxError,
@@ -28,7 +28,6 @@ from .contract import (
 )
 from .docker_engine import DockerEngine
 from .execution import ExecRequest, RawExec, run
-from .paths import WORKSPACE_DIR, check_name, resolve, resolve_writable
 from .scripts import (
     CONVERT_OFFICE,
     DELETE_FILE,
@@ -70,7 +69,7 @@ class PathStat:
 
 @dataclass(frozen=True)
 class FileChunk:
-    path: str
+    path: WorkPath
     size: int  # 文件总字节数
     offset: int
     data: bytes
@@ -148,7 +147,7 @@ class DockerSessionSandbox:
         return self._max_write
 
     async def _run(self, container_id: str, argv: list[str], *, timeout: float = INTERNAL_TIMEOUT_SECONDS,
-                   cap: int = LIST_OUTPUT_BYTES, workdir: str = WORKSPACE_DIR, user: str | None = None) -> RawExec:
+                   cap: int = LIST_OUTPUT_BYTES, workdir: str = SANDBOX.root, user: str | None = None) -> RawExec:
         request = ExecRequest(argv=tuple(argv), user=user or self._user, workdir=workdir, timeout_seconds=timeout,
                               max_output_bytes=cap)
         return await run(self._engine, container_id, request)
@@ -174,14 +173,14 @@ class DockerSessionSandbox:
             raise SandboxTooLarge(f"附件 {name} 超出沙箱单文件上限")
         uid, gid = self._owner
         # 0444：附件由系统放入，约定只读（root 不受文件权限约束，这不是隔离手段）
-        tar = build([Entry(f"{INPUT_DIR.lstrip('/')}/{name}", uid, gid, 0o444, data)])
+        tar = build([Entry(SANDBOX.at(INPUT.child(name)).lstrip("/"), uid, gid, 0o444, data)])
         async with self._containers.using(SandboxKey.of(workspace_id, session_id)) as container_id:
             await self._engine.put_archive(str(container_id), "/", tar)
         return SandboxFile(name=name, size=len(data))
 
-    async def read_delivered(self, workspace_id: str, session_id: str, path: str, *, max_bytes: int) -> bytes:
-        """读一个交付的文件（模型用 present 声明的）：/workspace 下的普通文件，最后一级不跟随符号链接。"""
-        target = resolve(path)
+    async def read_delivered(self, workspace_id: str, session_id: str, path: WorkPath, *, max_bytes: int) -> bytes:
+        """读一个交付的文件（模型用 present 声明的）：工作区里的普通文件，最后一级不跟随符号链接。"""
+        target = SANDBOX.at(path)
         if max_bytes <= 0:
             raise SandboxTooLarge(FILE_ERRORS[9])
         result = await self._script(workspace_id, session_id, READ_DELIVERED, [target, str(max_bytes)], create=False,
@@ -195,10 +194,9 @@ class DockerSessionSandbox:
         return result.stdout
 
     async def exec(self, workspace_id: str, session_id: str, command: list[str], *, timeout_seconds: float,
-                   max_output_bytes: int, user: str | None = None, workdir: str = WORKSPACE_DIR,
+                   max_output_bytes: int, user: str | None = None, workdir: WorkPath = ROOT,
                    env: dict[str, str] | None = None) -> ExecResult:
-        """user 留空用配置的执行账号（默认 root）；可按调用指定，例如 "1000:1000"。workdir 须在 /workspace 下。"""
-        workdir = resolve(workdir)
+        """user 留空用配置的执行账号（默认 root）；可按调用指定，例如 "1000:1000"。workdir 是工作区里的目录。"""
         command = _env_argv(env, command)
         _check_command(command)
         if not 0 < timeout_seconds <= self._max_timeout:
@@ -209,7 +207,7 @@ class DockerSessionSandbox:
             raise SandboxError("执行账号不合法")
         async with self._containers.using(SandboxKey.of(workspace_id, session_id)) as container_id:
             result = await self._run(str(container_id), list(command), timeout=timeout_seconds,
-                                     cap=max_output_bytes, user=user, workdir=workdir)
+                                     cap=max_output_bytes, user=user, workdir=SANDBOX.at(workdir))
         return ExecResult(exit_code=result.exit_code, stdout=result.stdout.decode("utf-8", errors="replace"),
                           stderr=result.stderr.decode("utf-8", errors="replace"), timed_out=result.timed_out,
                           truncated=result.truncated)
@@ -309,13 +307,13 @@ class DockerSessionSandbox:
 
     # -- 工作区文件（沙箱工具用） --------------------------------------------
 
-    async def stat_path(self, workspace_id: str, session_id: str, path: str, *, follow: bool) -> PathStat | None:
+    async def stat_path(self, workspace_id: str, session_id: str, path: WorkPath, *,
+                        follow: bool) -> PathStat | None:
         """不存在返回 None。还没有容器时不为此建一个：工作区根目录当作空目录，其余路径都不存在。"""
-        target = resolve(path)
-        result = await self._script(workspace_id, session_id, STAT_PATH, [target, "1" if follow else "0"],
+        result = await self._script(workspace_id, session_id, STAT_PATH, [SANDBOX.at(path), "1" if follow else "0"],
                                     create=False)
         if result is None:
-            return PathStat(kind="d", size=0, version="empty") if target == WORKSPACE_DIR else None
+            return PathStat(kind="d", size=0, version="empty") if path.is_root else None
         if result.exit_code == 3:
             return None
         if result.exit_code != 0:
@@ -325,16 +323,15 @@ class DockerSessionSandbox:
         except ValueError as error:
             raise SandboxError("文件操作失败") from error
 
-    async def list_dir(self, workspace_id: str, session_id: str, path: str) -> list[DirEntry]:
-        target = resolve(path)
-        result = await self._script(workspace_id, session_id, LIST_DIR, [target])
+    async def list_dir(self, workspace_id: str, session_id: str, path: WorkPath) -> list[DirEntry]:
+        result = await self._script(workspace_id, session_id, LIST_DIR, [SANDBOX.at(path)])
         if result is None or result.exit_code != 0:
             raise SandboxError("目录不存在或无法读取")
         return _parse_listing(result.stdout)
 
-    async def read_file(self, workspace_id: str, session_id: str, path: str, *, offset: int,
+    async def read_file(self, workspace_id: str, session_id: str, path: WorkPath, *, offset: int,
                         limit: int) -> FileChunk:
-        target = resolve(path)
+        target = SANDBOX.at(path)
         if offset < 0 or limit <= 0:
             raise SandboxError("读取范围不合法")
         # 宿主读文件不再先 stat：还没有容器时不为此建一个，什么文件都还不存在（同 stat_path）
@@ -349,28 +346,38 @@ class DockerSessionSandbox:
             size, mtime, inode = head.decode("ascii").split("|")
         except (UnicodeDecodeError, ValueError) as error:
             raise SandboxError("文件操作失败") from error
-        return FileChunk(path=target, size=int(size), offset=offset, data=data[:limit],
+        return FileChunk(path=path, size=int(size), offset=offset, data=data[:limit],
                          version=f"{mtime}:{inode}:{size}")
 
-    async def delete_file(self, workspace_id: str, session_id: str, path: str) -> None:
+    async def delete_file(self, workspace_id: str, session_id: str, path: WorkPath) -> None:
         """删一个文件（官方 apply_patch 的删除与移动用）。同写入：附件目录里的不让删。还没有容器时什么文件都不存在。"""
-        target = resolve_writable(path)
-        result = await self._script(workspace_id, session_id, DELETE_FILE, [target], create=False)
+        result = await self._script(workspace_id, session_id, DELETE_FILE, [SANDBOX.at(writable(path))],
+                                    create=False)
         if result is None:
             raise SandboxFileError(FILE_ERRORS[3], FILE_ERROR_CODES[3])
         if result.exit_code != 0:
             raise _file_error(result)
 
-    async def write_file(self, workspace_id: str, session_id: str, path: str, data: bytes) -> int:
-        target = resolve_writable(path)
+    async def write_file(self, workspace_id: str, session_id: str, path: WorkPath, data: bytes) -> int:
+        await self._write(workspace_id, session_id, path, data, create=True)
+        return len(data)
+
+    async def write_back(self, workspace_id: str, session_id: str, path: WorkPath, data: bytes) -> bool:
+        return await self._write(workspace_id, session_id, path, data, create=False)
+
+    async def _write(self, workspace_id: str, session_id: str, path: WorkPath, data: bytes, *,
+                     create: bool) -> bool:
+        target = SANDBOX.at(writable(path))
         if len(data) > self._max_write:
             raise SandboxTooLarge("写入内容超出上限")
         parent, name = posixpath.split(target)
         uid, gid = self._owner
         tar = build([Entry(name, uid, gid, 0o644, data)])
-        async with self._containers.using(SandboxKey.of(workspace_id, session_id)) as container_id:
+        async with self._containers.using(SandboxKey.of(workspace_id, session_id), create=create) as container_id:
+            if container_id is None:
+                return False
             prepared = await self._run(str(container_id), ["sh", "-c", PREPARE_WRITE, "kw", target])
             if prepared.exit_code != 0:
                 raise _file_error(prepared)
             await self._engine.put_archive(str(container_id), parent, tar)
-        return len(data)
+        return True

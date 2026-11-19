@@ -69,8 +69,8 @@ test('时区名照官方规则规范化：别名换成规范名（官方时钟�
 })
 
 test('子 Agent 沿用根会话的时区：官方委派的任务消息不带时区，宿主补上，读数里不再让子 Agent 去问用户', async () => {
-  // 官方给子 Agent 的首条消息里带「Your parent agent id is」，按它区分父子两边的请求
-  const isChild = body => JSON.stringify(body).includes('Your parent agent id is')
+  // 官方给子 Agent 的首条任务消息后面固定跟一段交付说明（0.2.2-rc.2 起），按它区分父子两边的请求
+  const isChild = body => JSON.stringify(body).includes('Your final answer is delivered automatically')
   const counts = { parent: 0, child: 0 }
   const gateway = await startOpenAiStub({ pick: body => {
     const role = isChild(body) ? 'child' : 'parent'

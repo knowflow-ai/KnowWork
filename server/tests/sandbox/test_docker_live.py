@@ -18,6 +18,7 @@ import pytest
 from knowwork_server.sandbox import SandboxSettings, build_sandbox, scripts
 from knowwork_server.sandbox.containers import SandboxKey
 from knowwork_server.sandbox.contract import SandboxError, SandboxTooLarge
+from knowwork_server.workpath import parse
 
 pytestmark = pytest.mark.anyio
 IMAGE = os.environ.get("KNOWWORK_SANDBOX_TEST_IMAGE", "alpine:3.20")
@@ -135,14 +136,14 @@ async def test_read_delivered_regular_files_only(factory):
     module, (ws, sid) = await factory()
     sandbox = module.sandbox
     with pytest.raises(SandboxError):  # 没有沙箱时不为此创建容器
-        await sandbox.read_delivered(ws, sid, "/workspace/a.txt", max_bytes=10)
+        await sandbox.read_delivered(ws, sid, parse("/workspace/a.txt"), max_bytes=10)
     await _sh(sandbox, ws, sid, "cd /workspace && mkdir -p out && printf abc > out/a.txt "
                                 "&& ln -s /etc/passwd link && printf 0123456789 > big.bin")
-    assert await sandbox.read_delivered(ws, sid, "/workspace/out/a.txt", max_bytes=10) == b"abc"
+    assert await sandbox.read_delivered(ws, sid, parse("/workspace/out/a.txt"), max_bytes=10) == b"abc"
     with pytest.raises(SandboxTooLarge):
-        await sandbox.read_delivered(ws, sid, "/workspace/big.bin", max_bytes=5)
+        await sandbox.read_delivered(ws, sid, parse("/workspace/big.bin"), max_bytes=5)
     with pytest.raises(SandboxError):
-        await sandbox.read_delivered(ws, sid, "/workspace/link", max_bytes=1000)
+        await sandbox.read_delivered(ws, sid, parse("/workspace/link"), max_bytes=1000)
 
 
 async def test_idle_sweep_deletes_container_and_next_use_recreates(factory):
@@ -191,28 +192,28 @@ async def test_session_root_links_to_the_workspace_for_host_paths(factory):
 async def test_stat_path_follows_links_only_when_asked(factory):
     module, (ws, sid) = await factory()
     sandbox = module.sandbox
-    root = await sandbox.stat_path(ws, sid, "/workspace", follow=True)
+    root = await sandbox.stat_path(ws, sid, parse("/workspace"), follow=True)
     assert root is not None and root.kind == "d" and root.version == "empty"  # 还没有容器时不为此新建
     await _sh(sandbox, ws, sid, "printf abc > /workspace/f && ln -s /workspace/f /workspace/l && mkdir /workspace/d")
-    file = await sandbox.stat_path(ws, sid, "/workspace/l", follow=True)
-    link = await sandbox.stat_path(ws, sid, "/workspace/l", follow=False)
+    file = await sandbox.stat_path(ws, sid, parse("/workspace/l"), follow=True)
+    link = await sandbox.stat_path(ws, sid, parse("/workspace/l"), follow=False)
     assert (file.kind, file.size) == ("f", 3) and link.kind == "l"
-    assert (await sandbox.stat_path(ws, sid, "/workspace/d", follow=True)).kind == "d"
-    assert await sandbox.stat_path(ws, sid, "/workspace/missing", follow=True) is None
+    assert (await sandbox.stat_path(ws, sid, parse("/workspace/d"), follow=True)).kind == "d"
+    assert await sandbox.stat_path(ws, sid, parse("/workspace/missing"), follow=True) is None
     before = file.version
     await _sh(sandbox, ws, sid, "sleep 1.1; printf abcd > /workspace/f")
-    assert (await sandbox.stat_path(ws, sid, "/workspace/f", follow=True)).version != before
+    assert (await sandbox.stat_path(ws, sid, parse("/workspace/f"), follow=True)).version != before
 
 
 async def test_exec_takes_workdir_and_environment(factory):
     module, (ws, sid) = await factory()
     sandbox = module.sandbox
     await _sh(sandbox, ws, sid, "mkdir -p /workspace/sub")
-    result = await _sh(sandbox, ws, sid, 'pwd; echo "$KW_TEST_VALUE"', workdir="/workspace/sub",
+    result = await _sh(sandbox, ws, sid, 'pwd; echo "$KW_TEST_VALUE"', workdir=parse("/workspace/sub"),
                        env={"KW_TEST_VALUE": "中文 值"})
     assert result.stdout == "/workspace/sub\n中文 值\n", result.stderr
     with pytest.raises(SandboxError):
-        await _sh(sandbox, ws, sid, "true", workdir="/etc")
+        await _sh(sandbox, ws, sid, "true", workdir=parse("/etc"))
 
 
 @pytest.mark.skipif("knowwork-sandbox" not in IMAGE, reason="Office 转换需要带 LibreOffice Kit 的沙箱镜像")
@@ -223,7 +224,7 @@ async def test_convert_office_document_to_pdf(factory):
     made = await _sh(sandbox, ws, sid, "python3 -c \"from docx import Document; d=Document(); "
                                        "d.add_heading('销售简报', 0); d.add_paragraph('华东 1200 万'); d.save('/workspace/a.docx')\"")
     assert made.exit_code == 0, made.stderr
-    docx = await sandbox.read_delivered(ws, sid, "/workspace/a.docx", max_bytes=1 << 20)
+    docx = await sandbox.read_delivered(ws, sid, parse("/workspace/a.docx"), max_bytes=1 << 20)
     pdf = await sandbox.convert_to_pdf(ws, sid, "docx", docx, max_bytes=20 << 20, timeout_seconds=240)
     assert pdf.startswith(b"%PDF-") and len(pdf) > 1000
     leftovers = await _sh(sandbox, ws, sid, "ls /tmp | grep -c kw-convert || true")
@@ -242,7 +243,7 @@ async def test_convert_legacy_word_to_docx(factory):
                                        "d.add_paragraph('采购合同'); d.save('a.docx')\" && "
                                        "python3 /opt/knowwork/office/soffice.py --headless --convert-to doc a.docx")
     assert made.exit_code == 0, made.stderr
-    doc = await sandbox.read_delivered(ws, sid, "/workspace/a.doc", max_bytes=1 << 20)
+    doc = await sandbox.read_delivered(ws, sid, parse("/workspace/a.doc"), max_bytes=1 << 20)
     assert doc.startswith(b"\xd0\xcf\x11\xe0")
     docx = await sandbox.convert_doc_to_docx(ws, sid, doc, max_bytes=20 << 20, timeout_seconds=240)
     with zipfile.ZipFile(io.BytesIO(docx)) as archive:
@@ -262,8 +263,8 @@ async def test_extract_text_from_word_and_pdf(factory):
                                        "d.save('a.docx')\" && python3 /opt/knowwork/office/soffice.py --headless "
                                        "--convert-to pdf a.docx")
     assert made.exit_code == 0, made.stderr
-    docx = await sandbox.read_delivered(ws, sid, "/workspace/a.docx", max_bytes=1 << 20)
-    pdf = await sandbox.read_delivered(ws, sid, "/workspace/a.pdf", max_bytes=1 << 20)
+    docx = await sandbox.read_delivered(ws, sid, parse("/workspace/a.docx"), max_bytes=1 << 20)
+    pdf = await sandbox.read_delivered(ws, sid, parse("/workspace/a.pdf"), max_bytes=1 << 20)
     markdown = (await sandbox.extract_text(ws, sid, "docx", docx, max_bytes=1 << 20, timeout_seconds=120)).decode()
     assert "# 付款条款" in markdown and "30 天内付清" in markdown and "100 万" in markdown
     text = (await sandbox.extract_text(ws, sid, "pdf", pdf, max_bytes=1 << 20, timeout_seconds=120)).decode()
@@ -298,7 +299,7 @@ async def test_word_tables_markdown_cannot_hold_come_out_as_html(factory):
     script = "; ".join(_TABLES_DOCX)
     made = await _sh(sandbox, ws, sid, f'python3 -c "{script}"')
     assert made.exit_code == 0, made.stderr
-    docx = await sandbox.read_delivered(ws, sid, "/workspace/t.docx", max_bytes=1 << 20)
+    docx = await sandbox.read_delivered(ws, sid, parse("/workspace/t.docx"), max_bytes=1 << 20)
     markdown = (await sandbox.extract_text(ws, sid, "docx", docx, max_bytes=1 << 20, timeout_seconds=120)).decode()
     assert "[TABLE]" not in markdown
     assert "| 铁棍山药 | 38 元 |" in markdown, "规整的表仍是 Markdown 表格"
@@ -317,7 +318,7 @@ async def test_recalc_fills_formulas_without_cached_values(factory):
     made = await _sh(sandbox, ws, sid, "python3 -c \"from openpyxl import Workbook; w=Workbook(); s=w.active; "
                                        "s.append([1, 2, '=A1+B1']); w.save('/workspace/t.xlsx')\"")
     assert made.exit_code == 0, made.stderr
-    data = await sandbox.read_delivered(ws, sid, "/workspace/t.xlsx", max_bytes=1 << 20)
+    data = await sandbox.read_delivered(ws, sid, parse("/workspace/t.xlsx"), max_bytes=1 << 20)
     recalculated = await sandbox.recalc_xlsx(ws, sid, data, max_bytes=20 << 20, timeout_seconds=240)
     from openpyxl import load_workbook
     assert load_workbook(io.BytesIO(recalculated), data_only=True).active["C1"].value == 3
@@ -332,7 +333,7 @@ async def test_conversion_out_of_memory_is_explained(factory):
     module, (ws, sid) = await factory(exec_max_timeout_seconds=300, max_input_bytes=1 << 20, memory_bytes=64 << 20)
     sandbox = module.sandbox
     await _sh(sandbox, ws, sid, "python3 -c \"from docx import Document; Document().save('/workspace/a.docx')\"")
-    docx = await sandbox.read_delivered(ws, sid, "/workspace/a.docx", max_bytes=1 << 20)
+    docx = await sandbox.read_delivered(ws, sid, parse("/workspace/a.docx"), max_bytes=1 << 20)
     with pytest.raises(SandboxError, match="内存不足"):
         await sandbox.convert_to_pdf(ws, sid, "docx", docx, max_bytes=20 << 20, timeout_seconds=240)
 

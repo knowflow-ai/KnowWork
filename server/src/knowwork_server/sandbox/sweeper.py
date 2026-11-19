@@ -7,6 +7,11 @@ Docker 没有空闲超时：容器会一直跑到有人停它。没有清扫，�
 - 清扫在创建、连接时于后台触发，同一进程每 60 秒最多一次，单次最多跑 2 分钟；不是定时器；
 - 删除前再判一次是否空闲（列表加逐个 stat 在繁忙 daemon 上要一会儿，期间会话可能又被用起来），
   并且持有该会话的锁、确认本进程没在用它。
+
+清扫哪类容器（label）、容器归谁（key_of）、最后一次使用是什么时候（activity）都可以换：默认是会话沙箱这套，
+扩展里的长驻容器（例如一人一个的 Office 编辑器）按自己的流量算活动，同一套清扫逻辑。
+删之前还可以先做一件事（before_remove，例如 Office 编辑器把没存的文档存回对话）：持着锁跑，跑完再判一次空闲，
+这期间又有人用了就不删；它失败不挡回收（自己记日志），免得一个坏容器永远收不掉。
 """
 
 import asyncio
@@ -31,9 +36,9 @@ LiveCheck = Callable[[str, str], Awaitable[bool]]
 
 
 class Guard(Protocol):
-    def lock(self, key: SandboxKey) -> asyncio.Lock: ...
+    def lock(self, key: Any) -> asyncio.Lock: ...
 
-    def is_busy(self, key: SandboxKey) -> bool: ...
+    def is_busy(self, key: Any) -> bool: ...
 
 
 def _timestamp(raw: Any) -> float | None:
@@ -52,12 +57,22 @@ def managed_filter() -> dict[str, str]:
 
 class IdleSweeper:
     def __init__(self, engine: DockerEngine, guard: Guard, *, default_ttl_seconds: int,
-                 min_interval_seconds: float = 60.0, clock: Callable[[], float] = time.time) -> None:
+                 min_interval_seconds: float = 60.0, clock: Callable[[], float] = time.time,
+                 labels: dict[str, str] | None = None,
+                 key_of: Callable[[dict[str, str] | None], Any] = SandboxKey.from_labels,
+                 activity: Callable[[dict[str, Any]], Awaitable[float | None]] | None = None,
+                 before_remove: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+                 name: str = "sandbox-idle-sweep") -> None:
         self._engine = engine
         self._guard = guard
         self._ttl = default_ttl_seconds
         self._interval = min_interval_seconds
         self._clock = clock
+        self._labels = labels if labels is not None else managed_filter()
+        self._key_of = key_of
+        self._activity = activity
+        self._before_remove = before_remove
+        self._name = name
         self._last: float | None = None
         self._tasks: set[asyncio.Task] = set()
 
@@ -67,7 +82,7 @@ class IdleSweeper:
         if self._last is not None and now - self._last < self._interval:
             return
         self._last = now
-        task = asyncio.create_task(self._run(), name="sandbox-idle-sweep")
+        task = asyncio.create_task(self._run(), name=self._name)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -88,18 +103,29 @@ class IdleSweeper:
 
     async def sweep(self) -> int:
         reclaimed = 0
-        for item in await self._engine.list_containers(managed_filter()):
+        for item in await self._engine.list_containers(self._labels):
             if not await self.is_idle(item):
                 continue
-            key = SandboxKey.from_labels(item.get("Labels"))
+            key = self._key_of(item.get("Labels"))
             if key is None:
                 reclaimed += await self._remove(item)
                 continue
             async with self._guard.lock(key):
                 if self._guard.is_busy(key) or not await self.is_idle(item):
                     continue
+                if self._before_remove is not None and not await self._prepare(key, item):
+                    continue
                 reclaimed += await self._remove(item)
         return reclaimed
+
+    async def _prepare(self, key: Any, item: dict[str, Any]) -> bool:
+        """删之前的那件事；跑完还能删（没人在这期间用起来）才是 True。"""
+        assert self._before_remove is not None
+        try:
+            await self._before_remove(item)
+        except Exception:
+            log.warning("回收前的处理失败，照样回收", exc_info=True)
+        return not self._guard.is_busy(key) and await self.is_idle(item)
 
     async def _remove(self, item: dict[str, Any]) -> int:
         try:
@@ -115,6 +141,8 @@ class IdleSweeper:
         return int(raw) if str(raw).isdigit() else self._ttl
 
     async def last_activity(self, item: dict[str, Any]) -> float | None:
+        if self._activity is not None:
+            return await self._activity(item)
         created = item.get("Created")
         fallback = float(created) if isinstance(created, int | float) and created > 0 else None
         stat = await self._engine.stat_path(str(item["Id"]), ACTIVITY_MARKER)

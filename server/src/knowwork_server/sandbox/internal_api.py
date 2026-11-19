@@ -14,7 +14,8 @@
 鉴权沿用本会话的工具令牌（受众 tools），另按当前授权再判一次是不是空间成员，权限收回立即生效。
 exec 带上宿主报的「本会话加载过的技能」（skills），这里按此刻的会话清单取它们的环境变量加进命令（skill_env，技能那边判），
 输出交回之前把这些值换成 ******：值只在业务服务与容器里，宿主与模型都看不到原文。
-路径只认 `/sessions/<令牌里的会话>` 下面的，换成容器里的 /workspace 再走沙箱自己的校验。
+路径是工作区路径（相对写法，根是空串，workpath.py）：宿主在发出前把它看到的 `/sessions/<会话>/...` 换掉，会话按令牌认，
+越出工作区的拒绝；沙箱自己把它放到容器里的位置。
 错误统一为 `{"error": {"code", "message"}}`，message 可以直接给模型看。
 """
 
@@ -32,10 +33,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..tools.service import ToolAccessError
 from ..tools.tokens import ToolTokenClaims
+from ..workpath import InvalidPath, decode
 from .contract import SandboxError, SandboxTooLarge
 from .docker_sandbox import DockerSessionSandbox, PathStat, SandboxFileError
 from .output import mask
-from .paths import InvalidPath, from_session_path
 from .ssh_pipe import InvalidKey, SshPipes, SshUnavailable
 
 log = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class _Body(BaseModel):
 
 class _ExecBody(_Body):
     argv: list[str] = Field(min_length=1, max_length=4096)
-    cwd: str = Field(min_length=1, max_length=4096)
+    cwd: str = Field(max_length=4096)  # 工作区路径，根是空串
     timeout_ms: int = Field(alias="timeoutMs", ge=1, le=3_600_000)
     max_output_bytes: int = Field(alias="maxOutputBytes", ge=1, le=MAX_OUTPUT_BYTES)
     env: dict[str, str] = Field(default_factory=dict, max_length=256)
@@ -70,7 +71,7 @@ class _ExecBody(_Body):
 
 
 class _PathBody(_Body):
-    path: str = Field(min_length=1, max_length=4096)
+    path: str = Field(max_length=4096)  # 工作区路径，根是空串
 
 
 class _StatBody(_PathBody):
@@ -174,36 +175,33 @@ def build_internal_router(sandbox: DockerSessionSandbox, tokens: TokenVerifier, 
         except SandboxError as error:
             return _sandbox_error(error)
 
-    def container_path(claims: ToolTokenClaims, path: str) -> str:
-        return from_session_path(path, claims.session_id)
-
     async def do_exec(claims: ToolTokenClaims, body: _ExecBody, request: Request) -> dict[str, Any]:
         timeout = min(body.timeout_ms / 1000, max_timeout_seconds)
         secrets = await skill_env(claims.workspace_id, claims.user_id, body.skills) \
             if skill_env is not None and body.skills else {}
         result = await _until_disconnected(request, sandbox.exec(
             claims.workspace_id, claims.session_id, body.argv, timeout_seconds=timeout,
-            max_output_bytes=body.max_output_bytes, workdir=container_path(claims, body.cwd),
+            max_output_bytes=body.max_output_bytes, workdir=decode(body.cwd),
             env={**body.env, **secrets}))
         hidden = list(secrets.values())
         return {"exitCode": result.exit_code, "stdout": mask(result.stdout, hidden),
                 "stderr": mask(result.stderr, hidden), "timedOut": result.timed_out, "truncated": result.truncated}
 
     async def do_stat(claims: ToolTokenClaims, body: _StatBody, _request: Request) -> dict[str, Any]:
-        stat = await sandbox.stat_path(claims.workspace_id, claims.session_id, container_path(claims, body.path),
+        stat = await sandbox.stat_path(claims.workspace_id, claims.session_id, decode(body.path),
                                        follow=body.follow)
         return {"stat": _stat(stat)}
 
     async def do_read(claims: ToolTokenClaims, body: _ReadBody, _request: Request) -> dict[str, Any]:
         if body.length == 0:
             return {"data": ""}
-        chunk = await sandbox.read_file(claims.workspace_id, claims.session_id, container_path(claims, body.path),
+        chunk = await sandbox.read_file(claims.workspace_id, claims.session_id, decode(body.path),
                                         offset=body.offset, limit=body.length)
         return {"size": chunk.size, "data": base64.b64encode(chunk.data).decode("ascii"),
                 "stat": {"kind": "f", "size": chunk.size, "version": chunk.version}}
 
     async def do_list(claims: ToolTokenClaims, body: _PathBody, _request: Request) -> dict[str, Any]:
-        entries = await sandbox.list_dir(claims.workspace_id, claims.session_id, container_path(claims, body.path))
+        entries = await sandbox.list_dir(claims.workspace_id, claims.session_id, decode(body.path))
         return {"entries": [{"name": e.name, "kind": e.kind, "size": e.size} for e in entries]}
 
     async def do_write(claims: ToolTokenClaims, body: _WriteBody, _request: Request) -> dict[str, Any]:
@@ -211,12 +209,12 @@ def build_internal_router(sandbox: DockerSessionSandbox, tokens: TokenVerifier, 
             data = base64.b64decode(body.data, validate=True)
         except (binascii.Error, ValueError) as error:
             raise ToolAccessError(400, "invalid_request", "写入内容不是合法的 base64") from error
-        path = container_path(claims, body.path)
+        path = decode(body.path)
         await sandbox.write_file(claims.workspace_id, claims.session_id, path, data)
         return {"stat": _stat(await sandbox.stat_path(claims.workspace_id, claims.session_id, path, follow=True))}
 
     async def do_delete(claims: ToolTokenClaims, body: _PathBody, _request: Request) -> dict[str, Any]:
-        await sandbox.delete_file(claims.workspace_id, claims.session_id, container_path(claims, body.path))
+        await sandbox.delete_file(claims.workspace_id, claims.session_id, decode(body.path))
         return {}
 
     async def do_ssh_identity(claims: ToolTokenClaims, _body: _Body, _request: Request) -> dict[str, Any]:

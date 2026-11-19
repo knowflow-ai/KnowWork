@@ -1,6 +1,6 @@
 [project]
 name = "knowwork-server"
-version = "0.1.1"
+version = "0.1.2"
 description = "KnowWork 业务服务"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -53,6 +53,8 @@ packages = ["src/knowwork_server"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# 一条测试超过 5 分钟就把所有线程的调用栈打出来（不杀测试）：CI 上卡住时日志里只剩一串点，看不出停在哪
+faulthandler_timeout = 300
 
 [tool.coverage.run]
 # SQLAlchemy 的 async 会话跑在 greenlet 里，不声明会把 await 之后的行误报为未覆盖。

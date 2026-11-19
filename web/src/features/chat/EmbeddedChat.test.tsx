@@ -6,6 +6,7 @@ import { renderWithApp, jsonResponse } from '../../test/render';
 import type { StreamHandlers } from '../../api/sse';
 import { ev } from './events/fixtures';
 import type { WireEvent } from './events/types';
+import { onTurnEnd as onConversationTurnEnd } from './turnEnds';
 
 const streams: StreamHandlers[] = [];
 vi.mock('../../api/sse', () => ({
@@ -105,8 +106,10 @@ describe('EmbeddedChat', () => {
     expect(calls.some((c) => c.url.endsWith('/messages'))).toBe(false);
   });
 
-  it('一轮跑完告诉外层，页面据此刷新自己的数据', async () => {
+  it('一轮跑完告诉外层，页面据此刷新自己的数据；也按对话通知扩展（例如在线编辑查改动）', async () => {
     const onTurnEnd = vi.fn();
+    const ended = vi.fn();
+    const stop = onConversationTurnEnd('c1', ended);
     renderWithApp(<EmbeddedChat answerMode="ext_mode" conversationId="c1" onTurnEnd={onTurnEnd} />);
     act(() => streams[0]?.onStatus?.('connected'));
     push(ev.runStarted(1));
@@ -114,6 +117,8 @@ describe('EmbeddedChat', () => {
     expect(onTurnEnd).not.toHaveBeenCalled();
     push(ev.runCompleted(3));
     await waitFor(() => expect(onTurnEnd).toHaveBeenCalledTimes(1));
+    expect(ended).toHaveBeenCalledTimes(1);
+    stop();
   });
 
   it('页面上正在看的对象：输入框上方写明，下一条开头带上，只带一次；点掉就不带', async () => {

@@ -48,6 +48,12 @@
 
     - id: knowwork-skill-gate
       name: '@knowwork/dsh-host/skill-gate'
+    # 一次输出到了单次上限被截停（官方 max-tokens，这一轮就此结束）：下一轮第一步前告诉模型截在哪一步、在写什么、要拆小，只说一次
+    - id: knowwork-output-limit
+      name: '@knowwork/dsh-host/output-limit'
+    # 一轮正常结束前待办还有没勾的：让模型再走一步把待办更新掉，每轮最多一次（同技能门用官方 agent/turn-stopping）
+    - id: knowwork-todo-check
+      name: '@knowwork/dsh-host/todo-check'
     # 审批与提问的应答者：两种宿主同一对（记下日志里的官方编号、查「本会话不再询问」的授权、挂起等用户答），决定从哪来
     # 由各自的环境层接（服务端经 HTTP，业务服务代用户提交；本机宿主经主进程），收法共用 answers.mjs。
     # 等待上限：审批到期按拒绝；提问与服务端 tool-ask-user 的计时期限一致（本机用官方预设的 legacy 模式，到期按超时关闭）

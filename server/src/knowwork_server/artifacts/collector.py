@@ -24,10 +24,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from ..access.rls import set_workspace
 from ..sandbox.contract import SandboxError, SandboxTooLarge, SessionSandbox
-from ..sandbox.paths import InvalidPath, from_session_path
 from ..sessionfiles.names import extension, is_plain_name
 from ..sessionfiles.storage import SessionStores
 from ..skills.errors import BlobIntegrityError
+from ..workpath import InvalidPath, WorkPath, host_mount
 from .models import Artifact
 from .sanitize import SpreadsheetRejected, sanitize_csv, sanitize_xlsx
 
@@ -69,6 +69,7 @@ class ArtifactView:
     sanitized: bool
     created_at: datetime | None
     description: str | None = None
+    digest: str = ""  # 存进去的内容（表格是转义后的）的 sha256，读出来的就是这份
 
 
 @dataclass(frozen=True)
@@ -88,7 +89,7 @@ class CollectResult:
 def artifact_view(row: Artifact) -> ArtifactView:
     return ArtifactView(id=row.id, filename=row.filename, content_type=row.content_type, size=row.size,
                         run_id=row.run_id, sanitized=row.sanitized, created_at=row.created_at,
-                        description=row.description)
+                        description=row.description, digest=row.digest)
 
 
 def one_line(description: str | None) -> str | None:
@@ -136,12 +137,18 @@ class ArtifactCollector:
         budget = await self._budget(workspace_id, session_id)
         artifacts, notices, names = [], [], set()
         for path in dict.fromkeys(paths):  # 同一路径交付多次只收一次
-            name = posixpath.basename(path)
+            try:
+                # present 交来的是宿主看到的路径（/sessions/<本会话>/...），在这里换成工作区路径，之后只用它
+                work_path = host_mount(session_id).of(path)
+            except InvalidPath:
+                notices.append(Notice(posixpath.basename(path), "outside_workspace", "只能交付会话工作目录里的文件"))
+                continue
+            name = work_path.name
             if name in names:
                 notices.append(Notice(name, "duplicate_name", "本轮已经交付过同名文件"))
                 continue
             names.add(name)
-            outcome = await self._one(workspace_id, session_id, run_id, path, name, budget,
+            outcome = await self._one(workspace_id, session_id, run_id, work_path, budget,
                                       one_line((descriptions or {}).get(path)))
             if isinstance(outcome, Notice):
                 notices.append(outcome)
@@ -166,30 +173,56 @@ class ArtifactCollector:
             return Notice(name, "unsupported_spreadsheet", "含宏或旧格式的表格无法做安全检查，请输出 xlsx 或 csv")
         return None
 
-    async def _read(self, workspace_id: str, session_id: str, container_path: str, name: str) -> bytes | Notice:
+    async def _read(self, workspace_id: str, session_id: str, path: WorkPath, name: str) -> bytes | Notice:
         try:
-            return await self._sandbox.read_delivered(workspace_id, session_id, container_path,
+            return await self._sandbox.read_delivered(workspace_id, session_id, path,
                                                       max_bytes=self._limits.max_file_bytes)
         except SandboxTooLarge:
             return Notice(name, "file_too_large", f"超过单文件 {self._limits.max_file_bytes // MIB} MiB 上限")
         except SandboxError as error:
             return Notice(name, "read_failed", f"读取失败（{error}）")
 
-    async def _one(self, workspace_id: str, session_id: str, run_id: str | None, path: str, name: str,
+    async def _one(self, workspace_id: str, session_id: str, run_id: str | None, work_path: WorkPath,
                    budget: _Budget, description: str | None) -> ArtifactView | Notice | None:
+        name = work_path.name
         notice = self._precheck(name)
         if notice is not None:
             return notice
-        try:
-            container_path = from_session_path(path, session_id)
-        except InvalidPath:
-            return Notice(name, "outside_workspace", "只能交付会话工作目录里的文件")
-        raw = await self._read(workspace_id, session_id, container_path, name)
+        raw = await self._read(workspace_id, session_id, work_path, name)
         if isinstance(raw, Notice):
             return raw
         source = hashlib.sha256(raw).hexdigest()
         if (name, source) in budget.seen:
             return None  # 之前收过、内容没变
+        return await self._accept(workspace_id, session_id, run_id, name, raw, source, budget, description,
+                                  work_path)
+
+    async def store_edit(self, workspace_id: str, session_id: str, path: WorkPath,
+                         raw: bytes) -> ArtifactView | Notice | None:
+        """人在编辑器里改过、存了盘：同一路径存成新的一版（同交付：表格转义、单文件与累计上限、按摘要存储）。
+        只和这个路径最新的一版比，内容一样返回 None；不能按「同名同内容出现过」判，改了又改回去时最新版会停在中间那版。
+        说明沿用上一版的；不算哪一轮交付的（run_id 为空）。"""
+        name = path.name
+        notice = self._precheck(name)
+        if notice is not None:
+            return notice
+        source = hashlib.sha256(raw).hexdigest()
+        async with self._sessionmaker() as session, session.begin():
+            await set_workspace(session, workspace_id)
+            latest = (await session.execute(
+                select(Artifact.source_sha256, Artifact.description)
+                .where(Artifact.conversation_id == session_id, Artifact.source_path == path.relative)
+                .order_by(Artifact.created_at.desc(), Artifact.id.desc()).limit(1))).first()
+        if latest is not None and latest.source_sha256 == source:
+            return None
+        budget = await self._budget(workspace_id, session_id)
+        return await self._accept(workspace_id, session_id, None, name, raw, source, budget,
+                                  latest.description if latest is not None else None, path)
+
+    async def _accept(self, workspace_id: str, session_id: str, run_id: str | None, name: str, raw: bytes,
+                      source: str, budget: _Budget, description: str | None,
+                      path: WorkPath) -> ArtifactView | Notice:
+        """检查、转义、算上限后存一份。"""
         try:
             content, sanitized = await sanitize(name, raw)
         except SpreadsheetRejected as error:
@@ -198,7 +231,7 @@ class ArtifactCollector:
         if quota is not None:
             return quota
         row = await self._store(workspace_id, session_id, run_id, name, content, source, sanitized, description,
-                                container_path)
+                                path)
         if isinstance(row, Notice):
             return row
         budget.collected += 1
@@ -217,7 +250,7 @@ class ArtifactCollector:
 
     async def _store(self, workspace_id: str, session_id: str, run_id: str | None, name: str, content: bytes,
                      source: str, sanitized: bool, description: str | None,
-                     source_path: str) -> ArtifactView | Notice:
+                     path: WorkPath) -> ArtifactView | Notice:
         try:
             digest = await self._stores(workspace_id, session_id).put(content)
         except BlobIntegrityError:
@@ -225,7 +258,7 @@ class ArtifactCollector:
         row = Artifact(id=f"art_{uuid.uuid4().hex}", workspace_id=workspace_id, conversation_id=session_id,
                        run_id=run_id, filename=name, content_type=content_type_of(name), size=len(content),
                        digest=digest, source_sha256=source, sanitized=sanitized, description=description,
-                       source_path=source_path, created_at=datetime.now(UTC))
+                       source_path=path.relative, created_at=datetime.now(UTC))
         async with self._sessionmaker() as session, session.begin():
             await set_workspace(session, workspace_id)
             session.add(row)

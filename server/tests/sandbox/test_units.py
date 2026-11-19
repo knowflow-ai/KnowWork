@@ -14,8 +14,8 @@ from knowwork_server.sandbox.docker_engine import DockerConflict, DockerEngine, 
 from knowwork_server.sandbox.docker_host import client_factory, tls_config, validate_docker_host
 from knowwork_server.sandbox.docker_sandbox import owner_of
 from knowwork_server.sandbox.output import CappedOutput
-from knowwork_server.sandbox.paths import check_name, resolve, resolve_writable
 from knowwork_server.tools.registry import ToolContext
+from knowwork_server.workpath import SANDBOX, check_name, host_mount, parse, writable
 
 from .fake_docker import FakeApi, FakeDocker, FakeResponse, api_error
 from .helpers import SID, WS, settings
@@ -124,20 +124,33 @@ def test_build_sandbox_respects_switch():
                                           ("/workspace/x/../y", "/workspace/y"), ("./out/", "/workspace/out"),
                                           ("//workspace//a", "/workspace/a")])
 def test_resolve_accepts_workspace_paths(raw, expected):
-    assert resolve(raw) == expected
+    assert SANDBOX.at(parse(raw)) == expected
 
 
 @pytest.mark.parametrize("raw", ["", " ", "/etc/passwd", "../etc", "/workspace/../etc", "/workspacex",
                                  "a\x00b", "x" * 5000, scripts.ACTIVITY_MARKER])
 def test_resolve_rejects_escapes(raw):
     with pytest.raises(SandboxError):
-        resolve(raw)
+        parse(raw)
 
 
 @pytest.mark.parametrize("raw", ["/workspace/input", "input/a", "/workspace"])
 def test_resolve_writable_rejects_attachments_and_dirs(raw):
     with pytest.raises(SandboxError):
-        resolve_writable(raw)
+        writable(parse(raw))
+
+
+@pytest.mark.parametrize("raw,expected", [("/sessions/s1/a.txt", "a.txt"), ("/sessions/s1", ""),
+                                          ("/sessions/s1/x/../y", "y"), ("a.txt", "a.txt"), ("/workspace/a", "a")])
+def test_host_paths_of_this_session_parse_to_the_same_workspace_path(raw, expected):
+    assert parse(raw, "s1").relative == expected
+    assert host_mount("s1").at(parse(raw, "s1")) == "/sessions/s1" + ("/" + expected if expected else "")
+
+
+@pytest.mark.parametrize("raw", ["/sessions/s2/a.txt", "/sessions", "/sessions/s1/../s2/a", "/sessions/s1/a"])
+def test_host_paths_of_other_sessions_are_refused(raw):
+    with pytest.raises(SandboxError):
+        parse(raw, "s1") if raw != "/sessions/s1/a" else parse(raw)
 
 
 def test_check_name_and_owner():

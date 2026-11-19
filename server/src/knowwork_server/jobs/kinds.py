@@ -37,10 +37,13 @@ class JobError(Exception):
     - internal：代码异常（未捕获的异常自动归到这里），最多再试两次。
     retryable 显式给出时以它为准（例如「没有配置解析服务」是服务类，但重试没有意义）。
     retry_after 给出时用它代替退避表（例如锁冲突，固定短间隔就能成功）。
+    waits：在等资源（例如同时在跑的 Office 容器到了上限，名额空出来就能成功）：退回排队、retry_after 之后再试，
+    不算一次尝试，等得再久也不会因此失败。
     """
 
     def __init__(self, code: str, message: str, *, error_class: ErrorClass = "service",
-                 retryable: bool | None = None, retry_after: float | None = None, detail: str | None = None) -> None:
+                 retryable: bool | None = None, retry_after: float | None = None, detail: str | None = None,
+                 waits: bool = False) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
@@ -48,6 +51,7 @@ class JobError(Exception):
         self.retryable = error_class != "file" if retryable is None else retryable
         self.retry_after = retry_after
         self.detail = detail
+        self.waits = waits
 
 
 class JobCanceled(Exception):
@@ -70,3 +74,4 @@ class JobFailure:
     message: str
     error_class: ErrorClass
     detail: str | None = field(default=None)
+    waits: bool = False  # 在等资源（JobError 的 waits）：重试时不算次数，业务别说「已试几次」

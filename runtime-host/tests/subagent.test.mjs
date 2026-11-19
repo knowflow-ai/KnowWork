@@ -2,7 +2,8 @@
  * 官方子 Agent 在宿主会话里打开，并按父会话继承策略：工具收窄、业务工具、审批、事件。
  *
  * 父子两个 Agent 的模型请求会并发到达，按到达顺序编排不确定，所以用 openai-stub 的 pick
- * 按请求内容区分角色（官方给子 Agent 的首条消息里带「Your parent agent id is」），各自按自己的请求次数出回答。
+ * 按请求内容区分角色（官方给子 Agent 的首条任务消息后面固定跟一段交付说明「Your final answer is delivered automatically」，
+ * 0.2.2-rc.2 起；之前是「Your parent agent id is」），各自按自己的请求次数出回答。
  */
 
 import { test } from 'node:test'
@@ -12,7 +13,7 @@ import { startOpenAiStub } from './support/openai-stub.mjs'
 import { bizTool, startToolsStub } from './support/tools-stub.mjs'
 
 const TOKEN = 'tools-token-sub-'.padEnd(40, 's')
-const DELEGATION = 'Your parent agent id is'
+const DELEGATION = 'Your final answer is delivered automatically'
 const isChildRequest = body => JSON.stringify(body).includes(DELEGATION)
 const toolNamesOf = body => (body?.tools ?? []).map(t => t.function?.name)
 const subagentEvent = type => f => f.kind === 'subagent/event' && f.data.event?.type === type

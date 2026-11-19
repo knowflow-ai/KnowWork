@@ -55,6 +55,7 @@ from .scopes import ConversationScopes, ScopeClaim
 from .search import SearchHit, search_conversations
 from .tool_credentials import ToolCredentials
 from .turn_context import TurnContextHook, TurnContextRequest
+from .turn_state import TurnStateHook, TurnStateRequest
 
 # 删除会话时一并清掉的关联数据（引用目录、动作回执等），由装配方按模块给出
 Eraser = Callable[[Conversation], Awaitable[None]]
@@ -155,6 +156,7 @@ class ConversationService:
                  attachments: AttachmentSource | None = None,
                  knowledge_catalog: KnowledgeCatalogOf | None = None,
                  turn_context: TurnContextHook | None = None,
+                 turn_state: TurnStateHook | None = None,
                  answer_modes: AnswerModes | None = None,
                  mention_kinds: MentionKinds | None = None,
                  scopes: ConversationScopes | None = None,
@@ -178,6 +180,7 @@ class ConversationService:
         self._attachments = attachments
         self._knowledge_catalog = knowledge_catalog
         self._turn_context = turn_context
+        self._turn_state = turn_state
         # 扩展在服务建好之后才登记（app.py）：登记表这时是空的，不能用 or——MentionKinds 空时为假，会换成另一个空表，
         # 后来登记的 @ 类型这里就看不到（@ 了数据源报「不认识这种 @」）
         self._answer_modes = answer_modes if answer_modes is not None else AnswerModes()
@@ -417,9 +420,10 @@ class ConversationService:
         return await self._with_answer_mode(conversation, turn)
 
     async def _packed(self, conversation: Conversation, turn: TurnInput, profile: RuntimeProfile | None) -> TurnInput:
-        """准备这一轮的第二段（在会话锁里、运行配置定了之后）：知识库目录与扩展补的上下文。"""
+        """准备这一轮的第二段（在会话锁里、运行配置定了之后）：知识库目录、扩展补的上下文与扩展的状态。"""
         turn = await self._with_catalog(conversation, turn, profile)
-        return await self._with_context(conversation, turn)
+        turn = await self._with_context(conversation, turn)
+        return await self._with_state(conversation, turn)
 
     async def _deliver(self, conversation: Conversation, turn: TurnInput, profile: RuntimeProfile | None) -> str:
         try:
@@ -502,6 +506,15 @@ class ConversationService:
             workspace_id=conversation.workspace_id, user_id=conversation.user_id, conversation_id=conversation.id,
             text=turn.text, answer_mode=turn.answer_mode))
         return turn if context is None else turn.model_copy(update={"context": context})
+
+    async def _with_state(self, conversation: Conversation, turn: TurnInput) -> TurnInput:
+        """带上扩展给宿主插件的状态（turn_state.py）。没有扩展登记时不带；插话（steer）不另算。"""
+        if not self._turn_state or turn.mode != "followup":
+            return turn
+        state = await self._turn_state.collect(TurnStateRequest(
+            workspace_id=conversation.workspace_id, user_id=conversation.user_id, conversation_id=conversation.id,
+            source=conversation.source, answer_mode=turn.answer_mode))
+        return turn if state is None else turn.model_copy(update={"extension_state": state})
 
     async def _refresh_credentials(self, conversation: Conversation) -> None:
         """每轮开始前把到期的令牌续上：电脑刚从睡眠醒来时，续期循环可能还没轮到，令牌却已按墙上时间过期。

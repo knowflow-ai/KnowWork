@@ -7,6 +7,7 @@ import { jsonResponse, ME, renderWithApp, routeFetch } from '../../test/render';
 import { register } from '../../slots/registry';
 import ChatPage from './ChatPage';
 import type { ConversationFiles, ConversationSource } from './sources';
+import { useSidebar } from '../../stores/sidebar';
 
 vi.mock('../preview/PdfView', () => ({
   default: ({ data }: { data: ArrayBuffer }) => <div>PDF 阅读器：{new TextDecoder().decode(data)}</div>,
@@ -27,6 +28,24 @@ const pdfFile = vi.fn<NonNullable<ConversationFiles['pdf']>>(
   async () => new TextEncoder().encode('%PDF-本机转的').buffer,
 );
 const saveFile = vi.fn<NonNullable<ConversationFiles['save']>>(async () => undefined);
+// 能在编辑器里打开（只有 Word）：给编辑器地址
+const editFile = vi.fn<NonNullable<ConversationFiles['edit']>>(async () => ({
+  url: 'http://127.0.0.1:5123/docs/?path=%2Fw%2Freport.docx',
+}));
+// 文件面板：工作文件夹里一层的直接子项（根下两个文件），不跟变化
+const listFiles = vi.fn<NonNullable<ConversationFiles['list']>>(async (_id, path) => ({
+  root: '/w',
+  path,
+  truncated: false,
+  entries:
+    path === ''
+      ? [
+          { name: 'report.docx', type: 'file' },
+          { name: 'notes.md', type: 'file' },
+        ]
+      : [],
+}));
+const watchFiles = vi.fn<NonNullable<ConversationFiles['watch']>>(() => () => undefined);
 let blocked = false;
 // 能不能在这里继续：null 能，字符串是不能的原因，ApiError 是问不到（例如本机执行环境没起来）
 let here: string | null | Error = null;
@@ -62,7 +81,15 @@ const OTHER: ConversationSource = {
     decide: decided,
     answer: answered,
   },
-  files: { read: readFile, pdf: pdfFile, save: saveFile, open: openFile },
+  files: {
+    read: readFile,
+    pdf: pdfFile,
+    save: saveFile,
+    open: openFile,
+    edit: editFile,
+    list: listFiles,
+    watch: watchFiles,
+  },
 };
 register('chat.sources', OTHER);
 // 扩展说得出在用户设备上执行的对话在哪台设备上（chat.place）：默认说不出
@@ -246,17 +273,90 @@ describe('对话的来源：同一个对话页、都读业务服务，只有在�
       await waitFor(() => expect(openFile).toHaveBeenCalledWith('x1', './out/report.md', 'reveal'));
     });
 
-    it('要转换的（PPT、Word）由来源转成 PDF 交给 PDF 阅读器；箭头菜单里能另存为', async () => {
-      server('elsewhere', '做好了：[简报](deck.pptx)');
+    it('要转换的（旧格式 PPT 这类编辑器开不了的）由来源转成 PDF 交给 PDF 阅读器；箭头菜单里能另存为', async () => {
+      server('elsewhere', '做好了：[简报](deck.ppt)');
       here = null;
       renderWithApp(<ChatPage />, { route: '/chat/x1', path: '/chat/:conversationId' });
       await userEvent.click(await screen.findByRole('button', { name: '简报' }));
-      const sheet = await screen.findByRole('dialog', { name: /deck\.pptx/ });
+      const sheet = await screen.findByRole('dialog', { name: /deck\.ppt/ });
       expect(await within(sheet).findByText('PDF 阅读器：%PDF-本机转的')).toBeInTheDocument();
-      expect(pdfFile).toHaveBeenCalledWith('x1', 'deck.pptx');
+      expect(pdfFile).toHaveBeenCalledWith('x1', 'deck.ppt');
       await userEvent.click(within(sheet).getByRole('button', { name: '更多打开方式' }));
       await userEvent.click(await screen.findByRole('menuitem', { name: '另存为…' }));
-      await waitFor(() => expect(saveFile).toHaveBeenCalledWith('x1', 'deck.pptx'));
+      await waitFor(() => expect(saveFile).toHaveBeenCalledWith('x1', 'deck.ppt'));
+    });
+
+    it('能编辑的 Word 并排打开在对话右边（照 ChatGPT Canvas）：对话照常能看能输入，侧栏暂时收起，关掉就恢复；窄窗口照旧用抽屉', async () => {
+      // 窗口够宽
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: query.includes('min-width'),
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }));
+      server('elsewhere', '改好了：[季度报告](report.docx)');
+      here = null;
+      renderWithApp(<ChatPage />, { route: '/chat/x1', path: '/chat/:conversationId' });
+      await userEvent.click(await screen.findByRole('button', { name: '季度报告' }));
+      const pane = await screen.findByRole('region', { name: 'report.docx' });
+      expect(within(pane).queryByText(/暂时只能预览/)).not.toBeInTheDocument();
+      expect(await within(pane).findByTitle('编辑 report.docx')).toHaveAttribute(
+        'src',
+        'http://127.0.0.1:5123/docs/?path=%2Fw%2Freport.docx',
+      );
+      expect(editFile).toHaveBeenCalledWith('x1', 'report.docx');
+      // 不是盖在对话上的抽屉：没有对话框，对话与输入框照常可见、能输入
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      const input = screen.getByRole('textbox');
+      await userEvent.type(input, '把第二段改短');
+      expect(input).toHaveValue('把第二段改短');
+      expect(useSidebar.getState().folded).toBe(true);
+      await userEvent.click(within(pane).getByRole('button', { name: '关闭' }));
+      expect(screen.queryByRole('region', { name: 'report.docx' })).not.toBeInTheDocument();
+      expect(useSidebar.getState().folded).toBe(false);
+      expect(screen.getByRole('textbox')).toHaveValue('把第二段改短');
+    });
+
+    it('文件面板：右上角「文件」或 ⌘P 打开目录树；点开的文件在右边打开、旁边留着目录树，关掉文件回到目录树', async () => {
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: query.includes('min-width'),
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }));
+      server('elsewhere', '好了');
+      here = null;
+      renderWithApp(<ChatPage />, { route: '/chat/x1', path: '/chat/:conversationId' });
+      await userEvent.click(await screen.findByRole('button', { name: '文件' }));
+      const files = await screen.findByRole('region', { name: '文件' });
+      expect(within(files).getByTitle('/w')).toBeInTheDocument();
+      // 只开目录树时对话栏不收窄、侧栏不收起
+      expect(useSidebar.getState().folded).toBe(false);
+      await userEvent.click(await within(files).findByRole('button', { name: 'report.docx' }));
+      const pane = await screen.findByRole('region', { name: 'report.docx' });
+      expect(editFile).toHaveBeenCalledWith('x1', 'report.docx');
+      expect(within(pane).getByRole('treeitem', { current: true })).toHaveTextContent('report.docx');
+      expect(useSidebar.getState().folded).toBe(true);
+      // 不能编辑的也在右边打开（文件面板开着），不盖抽屉
+      await userEvent.click(within(pane).getByRole('button', { name: 'notes.md' }));
+      expect(await screen.findByRole('region', { name: 'notes.md' })).toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      // 关掉文件回到目录树；⌘P 关掉文件面板
+      await userEvent.click(
+        within(screen.getByRole('region', { name: 'notes.md' })).getAllByRole('button', { name: '关闭' })[0]!,
+      );
+      expect(await screen.findByRole('region', { name: '文件' })).toBeInTheDocument();
+      await userEvent.keyboard('{Meta>}p{/Meta}');
+      expect(screen.queryByRole('region', { name: '文件' })).not.toBeInTheDocument();
+      expect(listFiles).toHaveBeenCalledWith('x1', '');
+    });
+
+    it('窗口太窄放不下两栏：能编辑的 Word 也照旧开在抽屉里', async () => {
+      server('elsewhere', '改好了：[季度报告](report.docx)');
+      here = null;
+      renderWithApp(<ChatPage />, { route: '/chat/x1', path: '/chat/:conversationId' });
+      await userEvent.click(await screen.findByRole('button', { name: '季度报告' }));
+      const sheet = await screen.findByRole('dialog', { name: /report\.docx/ });
+      expect(await within(sheet).findByTitle('编辑 report.docx')).toBeInTheDocument();
+      expect(useSidebar.getState().folded).toBe(false);
     });
 
     it('这里不能继续（在别的电脑上执行）：文件链接只是文字', async () => {
@@ -301,6 +401,8 @@ describe('对话的来源：同一个对话页、都读业务服务，只有在�
       await userEvent.click(deck);
       const sheet = await screen.findByRole('dialog', { name: /deck\.pptx/ });
       expect(await within(sheet).findByText('PDF 阅读器：%PDF-服务端转的 out/deck.pptx')).toBeInTheDocument();
+      // 云端对话给不出编辑：Office 文件说清楚只能预览、去哪能改
+      expect(within(sheet).getByText(/暂时只能预览，不能编辑/)).toBeInTheDocument();
       expect(calls.find('GET', '/api/workspaces/default/conversations/x1/files/preview')).toHaveLength(1);
       // 云端没有本机程序可开：顶部只有下载
       expect(within(sheet).getByRole('button', { name: /下载/ })).toBeInTheDocument();

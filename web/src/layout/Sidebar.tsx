@@ -150,7 +150,7 @@ function Head({ collapsed, onToggle }: { readonly collapsed: boolean; readonly o
 
 export function Sidebar() {
   useBrandHead();
-  const collapsed = useSidebar((s) => s.collapsed);
+  const collapsed = useSidebar((s) => s.collapsed || s.folded);
   const toggle = useSidebar((s) => s.toggle);
   return (
     <nav className={cx('kw-sidebar', collapsed && 'is-collapsed')} aria-label="主导航">

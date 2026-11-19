@@ -8,6 +8,7 @@ from knowwork_server.sandbox import scripts
 from knowwork_server.sandbox.containers import SandboxKey
 from knowwork_server.sandbox.contract import SandboxError, SandboxFile, SandboxTooLarge
 from knowwork_server.sandbox.execution import WATCHDOG_GRACE_SECONDS
+from knowwork_server.workpath import parse
 
 from .fake_docker import Behavior, FakeDocker, tar_members, tar_payload
 from .helpers import SID, WS
@@ -92,7 +93,7 @@ async def test_put_input_rejects_oversize(make):
 async def test_read_delivered_without_sandbox_does_not_create_one(make):
     fake, module = make()
     with pytest.raises(SandboxError, match="还没有沙箱"):
-        await module.sandbox.read_delivered(WS, SID, "/workspace/a.txt", max_bytes=10)
+        await module.sandbox.read_delivered(WS, SID, parse("/workspace/a.txt"), max_bytes=10)
     assert "create" not in fake.calls
 
 
@@ -101,17 +102,17 @@ async def test_read_delivered_limits_and_errors(make):
              else Behavior(exit_code={"/workspace/big": 9, "/workspace/gone": 3}[args[0]])}
     _fake, module = make(FakeDocker(responder=script_responder(table)))
     await _touch(module)
-    assert await module.sandbox.read_delivered(WS, SID, "/workspace/ok", max_bytes=10) == b"abc"
+    assert await module.sandbox.read_delivered(WS, SID, parse("/workspace/ok"), max_bytes=10) == b"abc"
     with pytest.raises(SandboxTooLarge):
-        await module.sandbox.read_delivered(WS, SID, "/workspace/big", max_bytes=10)
+        await module.sandbox.read_delivered(WS, SID, parse("/workspace/big"), max_bytes=10)
     with pytest.raises(SandboxError, match="不存在"):
-        await module.sandbox.read_delivered(WS, SID, "/workspace/gone", max_bytes=10)
+        await module.sandbox.read_delivered(WS, SID, parse("/workspace/gone"), max_bytes=10)
     with pytest.raises(SandboxTooLarge):  # 文件在检查后又变大：输出被截断
-        await module.sandbox.read_delivered(WS, SID, "/workspace/ok", max_bytes=2)
+        await module.sandbox.read_delivered(WS, SID, parse("/workspace/ok"), max_bytes=2)
     with pytest.raises(SandboxTooLarge):
-        await module.sandbox.read_delivered(WS, SID, "/workspace/ok", max_bytes=0)
+        await module.sandbox.read_delivered(WS, SID, parse("/workspace/ok"), max_bytes=0)
     with pytest.raises(SandboxError):
-        await module.sandbox.read_delivered(WS, SID, "/etc/passwd", max_bytes=10)
+        await module.sandbox.read_delivered(WS, SID, parse("/etc/passwd"), max_bytes=10)
 
 
 async def test_exec_truncates_output_per_stream(make):
@@ -172,15 +173,15 @@ async def test_read_file_returns_data_with_the_same_version_as_stat(make):
     table = {scripts.READ_FILE: lambda args: Behavior(stdout=header + b"0123456789"[int(args[1]):][:int(args[2])])}
     _fake, module = make(FakeDocker(responder=script_responder(table)))
     await _touch(module)
-    chunk = await module.sandbox.read_file(WS, SID, "notes/a.txt", offset=4, limit=3)
-    assert (chunk.path, chunk.size, chunk.offset, chunk.data) == ("/workspace/notes/a.txt", 10, 4, b"456")
+    chunk = await module.sandbox.read_file(WS, SID, parse("notes/a.txt"), offset=4, limit=3)
+    assert (chunk.path.relative, chunk.size, chunk.offset, chunk.data) == ("notes/a.txt", 10, 4, b"456")
     assert chunk.version == "1730000000.123456789:42:10"
 
 
 async def test_read_file_without_sandbox_is_not_found_and_creates_none(make):
     fake, module = make()
     with pytest.raises(SandboxError, match="不存在"):
-        await module.sandbox.read_file(WS, SID, "/workspace/a.txt", offset=0, limit=10)
+        await module.sandbox.read_file(WS, SID, parse("/workspace/a.txt"), offset=0, limit=10)
     assert "create" not in fake.calls
 
 
@@ -190,7 +191,7 @@ async def test_read_file_errors(make, code, message):
     _fake, module = make(FakeDocker(responder=script_responder(table)))
     await _touch(module)
     with pytest.raises(SandboxError, match=message):
-        await module.sandbox.read_file(WS, SID, "a", offset=0, limit=10)
+        await module.sandbox.read_file(WS, SID, parse("a"), offset=0, limit=10)
 
 
 async def test_read_file_garbage_header_and_bad_range(make):
@@ -198,16 +199,16 @@ async def test_read_file_garbage_header_and_bad_range(make):
     _fake, module = make(FakeDocker(responder=script_responder(table)))
     await _touch(module)
     with pytest.raises(SandboxError):
-        await module.sandbox.read_file(WS, SID, "a", offset=0, limit=10)
+        await module.sandbox.read_file(WS, SID, parse("a"), offset=0, limit=10)
     with pytest.raises(SandboxError, match="范围"):
-        await module.sandbox.read_file(WS, SID, "a", offset=-1, limit=10)
+        await module.sandbox.read_file(WS, SID, parse("a"), offset=-1, limit=10)
 
 
 async def test_write_file_prepares_as_exec_user_then_extracts_into_parent(make):
     prepared, users = [], []
     table = {scripts.PREPARE_WRITE: lambda args: prepared.append(args) or Behavior()}
     fake, module = make(FakeDocker(responder=script_responder(table, users)))
-    assert await module.sandbox.write_file(WS, SID, "out/r.md", "内容".encode()) == 6
+    assert await module.sandbox.write_file(WS, SID, parse("out/r.md"), "内容".encode()) == 6
     assert prepared == [["/workspace/out/r.md"]] and users[-1] == "root"
     _cid, path, data = fake.archives[-1]
     member = tar_members(data)[0]
@@ -219,13 +220,13 @@ async def test_write_file_failures(make):
     table = {scripts.PREPARE_WRITE: lambda args: Behavior(exit_code=6)}
     fake, module = make(FakeDocker(responder=script_responder(table)), max_write_bytes=4)
     with pytest.raises(SandboxError, match="权限"):
-        await module.sandbox.write_file(WS, SID, "a", b"x")
+        await module.sandbox.write_file(WS, SID, parse("a"), b"x")
     assert fake.archives == []
     with pytest.raises(SandboxTooLarge):
-        await module.sandbox.write_file(WS, SID, "a", b"12345")
+        await module.sandbox.write_file(WS, SID, parse("a"), b"12345")
     for bad in ("/workspace/input/a", "/etc/passwd", "../x", "/workspace", "/workspace/output"):
         with pytest.raises(SandboxError):
-            await module.sandbox.write_file(WS, SID, bad, b"x")
+            await module.sandbox.write_file(WS, SID, parse(bad), b"x")
 
 
 async def test_delete_file_removes_one_file_and_reports_why_not(make):
@@ -233,26 +234,26 @@ async def test_delete_file_removes_one_file_and_reports_why_not(make):
     table = {scripts.DELETE_FILE: lambda args: deleted.append(args) or Behavior()}
     _fake, module = make(FakeDocker(responder=script_responder(table)))
     await _touch(module)
-    await module.sandbox.delete_file(WS, SID, "out/r.md")
+    await module.sandbox.delete_file(WS, SID, parse("out/r.md"))
     assert deleted == [["/workspace/out/r.md"]]
     for code, error in ((3, "不存在"), (4, "目录"), (5, "普通文件"), (6, "权限")):
         failing = {scripts.DELETE_FILE: lambda args, code=code: Behavior(exit_code=code)}
         _fake, broken = make(FakeDocker(responder=script_responder(failing)))
         await _touch(broken)
         with pytest.raises(SandboxError, match=error):
-            await broken.sandbox.delete_file(WS, SID, "a")
+            await broken.sandbox.delete_file(WS, SID, parse("a"))
     for bad in ("/workspace/input/a", "/etc/passwd", "/workspace"):
         with pytest.raises(SandboxError):
-            await module.sandbox.delete_file(WS, SID, bad)
+            await module.sandbox.delete_file(WS, SID, parse(bad))
 
 
 async def test_list_dir(make):
     table = {scripts.LIST_DIR: lambda args: Behavior(stdout=listing(("d", 0, "output"), ("d", 0, "input")))}
     _fake, module = make(FakeDocker(responder=script_responder(table)))
-    assert [e.name for e in await module.sandbox.list_dir(WS, SID, "/workspace")] == ["input", "output"]
+    assert [e.name for e in await module.sandbox.list_dir(WS, SID, parse("/workspace"))] == ["input", "output"]
     table[scripts.LIST_DIR] = lambda args: Behavior(exit_code=3)
     with pytest.raises(SandboxError, match="目录"):
-        await module.sandbox.list_dir(WS, SID, "nope")
+        await module.sandbox.list_dir(WS, SID, parse("nope"))
 
 
 @pytest.mark.parametrize("status", [500, 503])

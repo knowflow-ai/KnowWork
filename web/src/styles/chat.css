@@ -1,9 +1,104 @@
 /* 对话页：消息、回答正文、引用、执行过程、审批与提问卡片、文件卡片、输入框。 */
 /* ---------- 对话页 ---------- */
+/* 对话与并排的编辑区（照 ChatGPT Canvas）：平时只有对话一栏；能编辑的 Word 打开时对话收窄到左边，编辑区占其余 */
+.kw-chat-split {
+  display: flex;
+  height: 100%;
+}
+
+.kw-chat-split > .kw-chat {
+  flex: 1;
+  min-width: 0;
+}
+
+.kw-chat-split.is-open > .kw-chat {
+  flex: 0 0 clamp(320px, 28%, 480px);
+  border-right: 1px solid var(--color-border-subtle);
+}
+
 .kw-chat {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+/* 对话栏右上角的按钮（文件面板），浮在消息上面 */
+.kw-chat-tools {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+}
+
+/* 只开文件面板时：对话栏不收窄，右边一栏目录树（照官方的工作区文件） */
+.kw-chat-split.is-files > .kw-chat {
+  flex: 1;
+  border-right: 1px solid var(--color-border-subtle);
+}
+
+.kw-files-pane {
+  display: flex;
+  flex: 0 0 320px;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--color-surface);
+}
+
+/* 工作文件夹的位置：太长保留末尾、省略号在左边，悬停看全 */
+.kw-files-root {
+  padding: 8px 16px 4px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+}
+
+.kw-files-root > span {
+  unicode-bidi: plaintext;
+}
+
+.kw-files-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 8px 16px;
+  overflow-y: auto;
+}
+
+.kw-file-tree-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.kw-file-tree-name > span:last-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kw-file-tree-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-secondary);
+}
+
+.kw-file-tree .kw-tree-row.is-hidden .kw-tree-title {
+  color: var(--color-text-tertiary);
+}
+
+.kw-file-tree-note {
+  padding-top: 4px;
+  padding-bottom: 4px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+  list-style: none;
 }
 
 .kw-chat-scroll {

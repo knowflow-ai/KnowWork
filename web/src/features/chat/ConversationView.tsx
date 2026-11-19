@@ -27,6 +27,8 @@ import { PlaceLabel } from './components/PlaceSelect';
 import { useFeedback } from './hooks/useFeedback';
 import { resolveMentions } from './mentions/resolve';
 import { SERVER_SOURCE, type ConversationSource } from './sources';
+import { turnEnded } from './turnEnds';
+import { cx } from '../../ui/cx';
 
 // 运行详情（运行调试视图）不常用，点开时才加载
 const RunInspector = lazy(() => import('../debug/RunInspector'));
@@ -129,9 +131,13 @@ export function ConversationView({
   const running = selectRunState(state) !== 'idle';
   const wasRunning = useRef(false);
   useEffect(() => {
-    if (wasRunning.current && !running) onTurnEnd?.();
+    if (wasRunning.current && !running) {
+      onTurnEnd?.();
+      // 也按对话通知扩展的来源（例如云端在线编辑一轮结束查改动，turnEnds.ts）
+      turnEnded(conversationId);
+    }
     wasRunning.current = running;
-  }, [running, onTurnEnd]);
+  }, [running, onTurnEnd, conversationId]);
   const [inspecting, setInspecting] = useState<number>();
   // 加了附件就预热（宿主上的对话、沙箱容器空闲半小时会被回收），一分钟内只预热一次；结果不用管
   const warmedAt = useRef(0);
@@ -213,67 +219,79 @@ export function ConversationView({
   const ask = (text: string) => void onSend(text, 'followup', [], []);
   const opening = empty && intro !== undefined;
   // 有开场时开场和输入框一起居中（kw-chat-intro）；问过以后照常消息在上、输入框贴底，输入框在树里的位置不变、不会重新挂载
+  // 外面一层左右两栏：能编辑的文件打开时编辑区并排在右边、只开文件面板时右边是一栏目录树（useFileLinks 的 pane）。这层一直在，对话这一栏在树里的位置不变，
+  // 开关编辑区时输入框不重新挂载（草稿不丢）
   return (
-    <div className={opening ? 'kw-chat kw-chat-intro' : 'kw-chat'}>
-      {top}
-      <div className="kw-chat-scroll">
-        <ConnectionNotice state={connection} message={connectionMessage} />
-        {opening ? intro(ask) : null}
-        <FileLinks opener={fileLinks.opener}>
-          <MessageList
-            state={state}
-            onDecide={onDecide}
-            rememberable={actions.remembersApprovals === true}
-            onAnswer={onAnswer}
-            // 这里不能继续这段对话（在别的电脑上执行）：只能看，不给重新回答
-            onRegenerate={blocked === null ? onRegenerate : undefined}
-            onDropConditions={blocked === null ? onDropConditions : undefined}
-            onInspect={canInspect ? onInspect : undefined}
-            feedback={feedback}
-            onAsk={ask}
+    <div
+      className={cx(
+        'kw-chat-split',
+        fileLinks.paneMode === 'file' && 'is-open',
+        fileLinks.paneMode === 'files' && 'is-files',
+      )}
+    >
+      <div className={opening ? 'kw-chat kw-chat-intro' : 'kw-chat'}>
+        {fileLinks.tools ? <div className="kw-chat-tools">{fileLinks.tools}</div> : null}
+        {top}
+        <div className="kw-chat-scroll">
+          <ConnectionNotice state={connection} message={connectionMessage} />
+          {opening ? intro(ask) : null}
+          <FileLinks opener={fileLinks.opener}>
+            <MessageList
+              state={state}
+              onDecide={onDecide}
+              rememberable={actions.remembersApprovals === true}
+              onAnswer={onAnswer}
+              // 这里不能继续这段对话（在别的电脑上执行）：只能看，不给重新回答
+              onRegenerate={blocked === null ? onRegenerate : undefined}
+              onDropConditions={blocked === null ? onDropConditions : undefined}
+              onInspect={canInspect ? onInspect : undefined}
+              feedback={feedback}
+              onAsk={ask}
+            />
+          </FileLinks>
+        </div>
+        {fileLinks.preview}
+        {inspecting !== undefined ? (
+          <Suspense fallback={null}>
+            <RunInspector
+              source={ownRun(conversationId)}
+              turn={inspecting}
+              onClose={() => setInspecting(undefined)}
+            />
+          </Suspense>
+        ) : null}
+        <div className="kw-composer-dock">
+          {above}
+          <Composer
+            running={running}
+            onSend={onSend}
+            onStop={cancel}
+            initialMentions={firstMessage?.mentions}
+            disabled={connection === 'failed' || blocked !== null}
+            answerMode={answerMode}
+            limits={source.limits}
+            below={
+              server ? undefined : (
+                <div className="kw-place-row">
+                  <PlaceLabel source={source} />
+                  {source.Controls && blocked === null ? (
+                    <source.Controls conversationId={conversationId} />
+                  ) : null}
+                </div>
+              )
+            }
+            placeholder={blocked ?? (running ? undefined : placeholder)}
+            footnote={footnote ?? source.footnote}
+            conversationId={conversationId}
+            mentionScope={scoped ? { conversationId } : undefined}
+            fileReferences={references}
+            dropFiles={blocked === null ? dropFiles : undefined}
+            onAttach={warm}
+            chooseModel={chooseModel}
           />
-        </FileLinks>
+        </div>
       </div>
-      {fileLinks.preview}
-      {inspecting !== undefined ? (
-        <Suspense fallback={null}>
-          <RunInspector
-            source={ownRun(conversationId)}
-            turn={inspecting}
-            onClose={() => setInspecting(undefined)}
-          />
-        </Suspense>
-      ) : null}
-      <div className="kw-composer-dock">
-        {above}
-        <Composer
-          running={running}
-          onSend={onSend}
-          onStop={cancel}
-          initialMentions={firstMessage?.mentions}
-          disabled={connection === 'failed' || blocked !== null}
-          answerMode={answerMode}
-          limits={source.limits}
-          below={
-            server ? undefined : (
-              <div className="kw-place-row">
-                <PlaceLabel source={source} />
-                {source.Controls && blocked === null ? (
-                  <source.Controls conversationId={conversationId} />
-                ) : null}
-              </div>
-            )
-          }
-          placeholder={blocked ?? (running ? undefined : placeholder)}
-          footnote={footnote ?? source.footnote}
-          conversationId={conversationId}
-          mentionScope={scoped ? { conversationId } : undefined}
-          fileReferences={references}
-          dropFiles={blocked === null ? dropFiles : undefined}
-          onAttach={warm}
-          chooseModel={chooseModel}
-        />
-      </div>
+      {fileLinks.pane}
     </div>
   );
 }

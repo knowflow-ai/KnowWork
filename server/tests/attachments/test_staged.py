@@ -101,7 +101,7 @@ async def test_parsed_while_staged_goes_into_the_sandbox_with_the_original_on_se
     [turn] = await env.turns.for_turn(conv, [pdf["id"]])
     assert env.sandbox.inputs[("ws1", conv.id)] == {"合同.pdf": PDF, "合同.md": "# 合同\n付款 30 天".encode()}
     assert (turn.path, turn.extracted_path, turn.extraction_pending) == (
-        "/workspace/input/合同.pdf", "/workspace/input/合同.md", False)
+        "input/合同.pdf", "input/合同.md", False)
     assert [(v.status, v.parse_status) for v in await env.service.list(conv)] == [("ready", "ready")]
 
 
@@ -121,7 +121,7 @@ async def test_names_in_the_sandbox_avoid_files_already_in_the_conversation(env,
     assert direct.json()["items"][0]["status"] == "ready", "按会话上传的直接放进这个会话"
     [again] = (await env.stage(("合同.pdf", PDF)))["items"]
     [turn] = await env.turns.for_turn(conv, [again["id"]])
-    assert (turn.path, turn.extracted_path) == ("/workspace/input/合同 (2).pdf", "/workspace/input/合同 (2).md")
+    assert (turn.path, turn.extracted_path) == ("input/合同 (2).pdf", "input/合同 (2).md")
 
 
 async def test_only_my_unsent_files_can_be_claimed(env, files_db):

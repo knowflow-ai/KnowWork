@@ -6,20 +6,32 @@
  * 服务端的用 serverFile.tsx 包一层。知识库多传一个 locate 定位并高亮，产物不传。
  * 不要抽屉、直接嵌在页面里时用 PreviewPane。
  */
-import { lazy, Suspense, useState, type ReactNode } from 'react';
-import { FileBlank } from '@openai/apps-sdk-ui/components/Icon';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Button } from '@openai/apps-sdk-ui/components/Button';
+import { FileBlank, X } from '@openai/apps-sdk-ui/components/Icon';
 import { useQuery } from '@tanstack/react-query';
-import { readableError } from '../../api/http';
+import { ApiError, readableError } from '../../api/http';
 import { Empty } from '../../ui/Empty';
 import { Sheet } from '../../ui/Sheet';
 import { Skeleton } from '../../ui/Skeleton';
+import { toast } from '../../ui/toastStore';
 import { FileLinks, Markdown } from '../chat/components/Markdown';
 import { HtmlModeSwitch } from './HtmlModeSwitch';
 import { TextView } from './TextView';
 import type { PreviewLocate } from './locate';
-import { extensionOf, previewKindOf, type PreviewKind } from './previewKind';
+import { extensionOf, isEditableFormat, previewKindOf, type PreviewKind } from './previewKind';
+import { cx } from '../../ui/cx';
 import { FileKindIcon } from '../../ui/FileKindIcon';
 import { BlobImage } from './BlobImage';
+import {
+  busyMessage,
+  busyOf,
+  editorMessageOf,
+  IDLE,
+  isIdle,
+  type EditorAiEdit,
+  type EditorBusy,
+} from './editorBridge';
 
 const PdfView = lazy(() => import('./PdfView'));
 const DocxView = lazy(() => import('./DocxView'));
@@ -41,8 +53,25 @@ export interface PreviewFile {
   readonly docx?: Read;
   /** 原件可能随时被改（本机文件）：关掉抽屉就丢，下次打开重新读；不给就当原件不变，读一次缓存着 */
   readonly mutable?: boolean;
-  /** 顶部的操作（下载、打开）；不能预览、读不出来时也摆在说明下面 */
+  /** 这份文件为什么只能看、不能编辑（例如云端对话里的 Office 文件）：只读预览的上面写一行 */
+  readonly readOnlyNote?: string;
+  /** 顶部的操作（下载、打开）；不能预览、读不出来时也摆在说明下面；服务端说文件不在了（404、410）就都不摆 */
   readonly actions?: ReactNode;
+  /**
+   * 能在编辑器里打开时给（桌面端的本机对话、装了在线编辑的云端对话）：返回编辑器地址，抽屉里直接是编辑器（设计稿：预览直接
+   * 变编辑）；返回 null 照旧只读预览，出错时只读预览上方写明原因
+   */
+  readonly edit?: () => Promise<{ readonly url: string } | null>;
+  /** 编辑器里存了盘：云端把它存回对话，成为新的一版（本机不给，文件就在磁盘上） */
+  readonly saved?: () => Promise<void>;
+  /** 编辑器里的「AI 修改」：选中的原文与要求交给对话（editorBridge.ts） */
+  readonly aiEdit?: (request: EditorAiEdit) => void;
+  /** 编辑器外面（这一轮里 AI）改了这个文件：每轮结束通知一次；返回取消订阅 */
+  readonly editorChanges?: (
+    listener: (change: { readonly changed: boolean; readonly unsaved: boolean }) => void,
+  ) => () => void;
+  /** 丢掉编辑器里没存的改动，好重新载入磁盘上的版本 */
+  readonly discardEdits?: () => Promise<void>;
 }
 
 /** 用哪种阅读器：给了 docx 就按 Word，其余看扩展名；要转 PDF 的类型没给 pdf 就不能预览。 */
@@ -132,6 +161,7 @@ export function FilePreview({
   // HTML、PDF、Word 自己管滚动和留白（PDF 阅读器要贴边放缩放控件与页面底色，Word 的渲染自带灰底和页边）
   const edgeToEdge = html || (file !== undefined && ['pdf', 'docx'].includes(kindOf(file)));
   const scripted = file !== undefined && scriptedId === file.id;
+  const [actions, onGone] = useHeaderActions(file);
   if (!file) return null;
   return (
     <Sheet
@@ -149,12 +179,73 @@ export function FilePreview({
           {html ? (
             <HtmlModeSwitch scripted={scripted} onChange={(on) => setScriptedId(on ? file.id : undefined)} />
           ) : null}
-          {file.actions}
+          {actions}
         </>
       }
     >
-      <PreviewContent file={file} scripted={scripted} locate={locate} />
+      <PreviewContent file={file} scripted={scripted} locate={locate} onGone={onGone} />
     </Sheet>
+  );
+}
+
+/** 铺满不留边的阅读器（它们自己滚）：PDF、Word、网页 */
+const EDGE_TO_EDGE: readonly PreviewKind[] = ['pdf', 'docx', 'html'];
+
+/** 这个文件是不是在编辑器里打开（能编辑的 Office 文件）：对话页据此把它并排放在对话右边，而不是盖上抽屉 */
+export function opensInEditor(file: PreviewFile): boolean {
+  return file.edit !== undefined && file.docx === undefined && isEditableFormat(file.name);
+}
+
+/**
+ * 并排的编辑区（照 ChatGPT Canvas）：能编辑的本机 Office 文件打开在对话右边，对话一直看得到、能输入。编辑器里的「AI 修改」
+ * 发到对话，AI 的回答、追问、确认就在旁边，不用关掉文档去找。头部和抽屉一样：关闭在左上，标题，右边是文件的操作。
+ */
+export function FileEditPane({
+  file,
+  onClose,
+  tools,
+  aside,
+}: {
+  readonly file: PreviewFile;
+  readonly onClose: () => void;
+  /** 头部右边、文件操作之前的切换类控件（例如显示目录树） */
+  readonly tools?: ReactNode;
+  /** 正文右边的一栏（例如工作文件夹的目录树，照官方：预览旁边的目录树） */
+  readonly aside?: ReactNode;
+}) {
+  const [actions, onGone] = useHeaderActions(file);
+  return (
+    <section className="kw-file-pane" aria-label={file.name}>
+      <header className="kw-sheet-head">
+        <Button color="secondary" variant="ghost" size="sm" uniform aria-label="关闭" onClick={onClose}>
+          <X />
+        </Button>
+        <h2 className="kw-sheet-title">
+          <span className="kw-labeled">
+            <FileKindIcon name={file.name} />
+            {file.name}
+          </span>
+        </h2>
+        {tools || actions ? (
+          <div className="kw-sheet-extra">
+            {tools}
+            {actions}
+          </div>
+        ) : null}
+      </header>
+      <div className="kw-file-pane-main">
+        {/* 编辑器、PDF、Word、网页铺满（它们自己滚）；别的（Markdown、表格、文本、图片）同抽屉留边、在这里滚 */}
+        <div
+          className={cx(
+            'kw-file-pane-body',
+            !opensInEditor(file) && !EDGE_TO_EDGE.includes(kindOf(file)) && 'is-padded',
+          )}
+        >
+          <PreviewContent file={file} scripted={false} onGone={onGone} />
+        </div>
+        {aside ? <aside className="kw-file-pane-aside">{aside}</aside> : null}
+      </div>
+    </section>
   );
 }
 
@@ -176,18 +267,178 @@ export function PreviewPane({
   );
 }
 
-function PreviewContent({
-  file,
-  scripted,
-  locate,
-}: {
+/** 正文（编辑器、只读预览）共用的参数 */
+interface ContentProps {
   readonly file: PreviewFile;
   readonly scripted: boolean;
   readonly locate?: PreviewLocate;
+  /** 读文件时服务端说它不在了：告诉外层收起头部的下载（见 useHeaderActions） */
+  readonly onGone?: (id: string) => void;
+}
+
+/**
+ * 服务端说文件本身不在了（已随执行环境回收、内容不可用 410，找不到 404）：下载拿的是同一份，也拿不到，不给下载。
+ * 别的失败（转换失败、暂时读不了）原件可能还在，照旧给下载。
+ */
+function isFileGone(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 404 || error.status === 410);
+}
+
+/** 头部的文件操作：正文报告文件不在了就收起；按文件记，换一个文件自动复位 */
+function useHeaderActions(file: PreviewFile | undefined) {
+  const [goneId, setGoneId] = useState<string>();
+  const actions = file !== undefined && goneId !== file.id ? file.actions : undefined;
+  return [actions, setGoneId] as const;
+}
+
+function PreviewContent(props: ContentProps) {
+  // 能编辑的 Office 文件先试编辑器；知识库定位要高亮原文，只读预览才做得到
+  if (props.file.edit && opensInEditor(props.file) && props.locate === undefined)
+    return <EditableContent {...props} edit={props.file.edit} />;
+  return <ReadOnlyContent {...props} note={props.file.readOnlyNote} />;
+}
+
+/** AI 正在改的那几块上的标签 */
+const BUSY_LABEL = 'AI 正在改';
+
+/**
+ * 编辑器嵌在抽屉里（它在另一个来源，保存直接写回原件）；没有编辑器或打不开时退回只读预览。
+ * 和对话的联动：编辑器里选中一段点「AI 修改」交给对话，那几块标上「AI 正在改」，AI 的改动一落进文档就收掉；
+ * 这一轮结束，AI 改了文件就重新载入编辑器显示它的修订，编辑器里又有没存的改动就让用户选；没改就收掉标记。
+ */
+function EditableContent({
+  edit,
+  ...props
+}: ContentProps & {
+  readonly edit: () => Promise<{ readonly url: string } | null>;
+}) {
+  const { aiEdit, editorChanges, discardEdits, saved } = props.file;
+  // 重新载入：换一个新的编辑器页面（编辑器从磁盘重新读）
+  const [generation, setGeneration] = useState(0);
+  const [conflict, setConflict] = useState(false);
+  const frame = useRef<HTMLIFrameElement>(null);
+  const busy = useRef<EditorBusy>(IDLE);
+  const session = useQuery({
+    queryKey: ['file-editor', props.file.id, generation],
+    queryFn: edit,
+    // 每次打开重新要地址：编辑器可能重启过、换了端口
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+  const origin = session.data ? new URL(session.data.url).origin : null;
+  const post = useCallback(
+    (next: EditorBusy) => {
+      busy.current = next;
+      if (origin) frame.current?.contentWindow?.postMessage(busyMessage(next, BUSY_LABEL), origin);
+    },
+    [origin],
+  );
+  const reload = useCallback(() => {
+    busy.current = IDLE;
+    setConflict(false);
+    setGeneration((current) => current + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!origin) return;
+    const onMessage = (event: MessageEvent) => {
+      // 只认嵌在这里的那个编辑器发来的
+      if (event.origin !== origin || event.source !== frame.current?.contentWindow) return;
+      const message = editorMessageOf(event.data);
+      if (message === 'ready') {
+        if (!isIdle(busy.current)) post(busy.current);
+      } else if (message === 'disconnected') {
+        // 编辑服务断了（重启过、被结束）：重新要地址（桌面端会把它重新起来）再载入，用户看不到断线
+        reload();
+      } else if (message === 'agent-edited') {
+        // AI 的改动真的落进了文档（编辑器在工具确实改了文档时才发）：马上收掉标记，不等这一轮结束。
+        // 模型改完还在反复核对、想很久时，标记不再一直挂在已经改好的地方
+        post(IDLE);
+      } else if (message === 'saved') {
+        // 存了盘：云端把编辑器里的文件存回对话；存不回去要让人知道，编辑器里的改动还在，可以再存一次
+        saved?.().catch((error: unknown) =>
+          toast.error(readableError(error, '改动没能存回对话，请再保存一次')),
+        );
+      } else if (message !== null && aiEdit) {
+        aiEdit(message);
+        if (message.send) post(busyOf(message, BUSY_LABEL));
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [origin, aiEdit, saved, post, reload]);
+
+  useEffect(
+    () =>
+      editorChanges?.(({ changed, unsaved }) => {
+        if (!changed) post(IDLE);
+        else if (unsaved) {
+          post(IDLE);
+          setConflict(true);
+        } else reload();
+      }),
+    [editorChanges, post, reload],
+  );
+
+  const loadChanged = async () => {
+    try {
+      await discardEdits?.();
+      reload();
+    } catch (error) {
+      toast.error(readableError(error, '没能载入改过的版本，请稍后重试'));
+    }
+  };
+
+  if (session.isPending) return <Skeleton rows={8} className="kw-preview-state" />;
+  if (session.isError)
+    return <ReadOnlyContent {...props} note={readableError(session.error, '编辑器暂时打不开，先只读预览')} />;
+  if (session.data === null) return <ReadOnlyContent {...props} />;
+  return (
+    <div className="kw-editor">
+      {conflict ? (
+        <div className="kw-editor-notice" role="status">
+          <span>AI 改了这个文件，这里还有没保存的改动。</span>
+          <Button color="secondary" variant="outline" size="sm" onClick={() => void loadChanged()}>
+            载入 AI 改过的版本
+          </Button>
+          <Button color="secondary" variant="ghost" size="sm" onClick={() => setConflict(false)}>
+            保留我的
+          </Button>
+        </div>
+      ) : null}
+      <iframe
+        key={generation}
+        ref={frame}
+        className="kw-editor-frame"
+        src={session.data.url}
+        title={`编辑 ${props.file.name}`}
+        allow="clipboard-read; clipboard-write"
+      />
+    </div>
+  );
+}
+
+/**
+ * 只读预览。note 是上方的一句说明（为什么只能看：来源只给预览，或编辑器打不开的原因），只跟着读出来的内容一起显示：
+ * 文件本身也读不出来时（例如已随执行环境回收），编辑器打不开的原因和读不出来的原因往往是同一句，只说读不出来的那句。
+ */
+function ReadOnlyContent({
+  file,
+  scripted,
+  locate,
+  note,
+  onGone,
+}: ContentProps & {
+  readonly note?: string;
 }) {
   const kind = kindOf(file);
   const bytes = useBytes(file, kind);
-  const { actions } = file;
+  const gone = bytes.isError && isFileGone(bytes.error);
+  useEffect(() => {
+    if (gone) onGone?.(file.id);
+  }, [gone, onGone, file.id]);
+  const actions = gone ? undefined : file.actions;
   if (kind === 'none')
     return <Empty area icon={<FileBlank />} description="这种文件不能在这里预览" action={actions} />;
   if (bytes.isPending) return <Skeleton rows={8} className="kw-preview-state" />;
@@ -200,9 +451,16 @@ function PreviewContent({
         {actions ? <div className="kw-preview-problem-actions">{actions}</div> : null}
       </>
     );
-  return (
+  const body = (
     <Suspense fallback={<Skeleton rows={8} className="kw-preview-state" />}>
       <Body file={file} kind={kind} data={bytes.data} scripted={scripted} locate={locate} />
     </Suspense>
+  );
+  if (!note) return body;
+  return (
+    <div className="kw-preview-noted">
+      <p className="kw-preview-note">{note}</p>
+      <div className="kw-preview-noted-body">{body}</div>
+    </div>
   );
 }

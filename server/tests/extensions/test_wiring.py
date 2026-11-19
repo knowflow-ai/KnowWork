@@ -88,6 +88,28 @@ async def test_failing_internal_setup_drops_the_whole_extension():
         await runtime.stop()
 
 
+EDITING = EntryPoint("editing", "tests.extensions.demo:EDITING", ENTRY_GROUP)
+
+
+async def test_an_extension_can_provide_the_editor_app():
+    """扩展的编辑器是整个 ASGI 应用，挂在编辑器端口上（__main__ 起）；公开端口上没有它。"""
+    runtime = build_runtime(SETTINGS, extensions=discover(found(EDITING, verifier("granting_demo"))))
+    try:
+        assert runtime.editor_app is not None
+        assert (await get(runtime.editor_app, "/api/anything")).json() == {"editor": True, "path": "/api/anything"}
+        assert (await get(create_public_app(runtime), "/api/anything")).status_code == 404
+    finally:
+        await runtime.stop()
+
+
+async def test_no_editor_without_an_extension_providing_one():
+    runtime = build_runtime(SETTINGS, extensions=discover(found(DEMO, verifier("granting_demo"))))
+    try:
+        assert runtime.editor_app is None
+    finally:
+        await runtime.stop()
+
+
 # 开源自带的任务：附件的解析、长附件导读、没发出去的附件到期清理，没答上的问题核对
 BUILTIN_JOBS = {"attachment.parse", "attachment.digest", "attachment.expire", "knowledge.answer_check"}
 
@@ -118,3 +140,23 @@ def test_extensions_get_their_own_storage_namespaces(tmp_path):
     for taken in ("session-files", "sha256", "Bad", "x", "../up"):
         with pytest.raises(ValueError):
             namespaced_stores(settings, taken)
+
+
+async def test_extensions_share_the_one_office_runtime(monkeypatch, tmp_path):
+    """一人一个 Office 容器在业务服务里只建一份：格式转换用它，扩展的在线编辑经上下文拿到同一份，不另建一个池。"""
+    monkeypatch.delenv("KNOWWORK_OFFICE_IMAGE", raising=False)
+    runtime = build_runtime(SETTINGS, extensions=discover(found(DEMO, verifier("granting_demo"))))
+    try:
+        assert runtime.office is None
+        assert runtime.extensions.active[0].contexts[-1].office is None
+    finally:
+        await runtime.stop()
+
+    monkeypatch.setenv("KNOWWORK_OFFICE_UPSTREAM_MCP_URL", "http://127.0.0.1:3193/mcp")
+    monkeypatch.setenv("KNOWWORK_OFFICE_FILES_ROOT", str(tmp_path))
+    runtime = build_runtime(SETTINGS, extensions=discover(found(DEMO, verifier("granting_demo"))))
+    try:
+        assert runtime.office is not None
+        assert runtime.extensions.active[0].contexts[-1].office is runtime.office
+    finally:
+        await runtime.stop()

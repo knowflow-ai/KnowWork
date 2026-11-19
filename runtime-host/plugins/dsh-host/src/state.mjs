@@ -68,6 +68,8 @@ const BUFFER_BYTES = 8 * 1024 * 1024
  * @property {string | undefined} personaShown 系统提示里现在放着的那份身份（换了才重新注册）
  * @property {(() => void) | undefined} personaOff 撤掉系统提示里那份身份
  * @property {Map<string, string>} turnTexts 已收下、还没进入步骤的消息各自带的这一轮上下文，键是消息 id
+ * @property {Record<string, unknown> | undefined} extensionState 扩展随最近一轮交来的状态（按扩展名分，业务服务
+ *   conversations/turn_state.py 算、用户设备上执行的由设备补），扩展自己的宿主插件读；这一轮没带就沿用上一轮的
  * @property {string} answerMode 当前步骤按哪种回答方式（answer-mode）：agent、quick 或扩展登记的；随消息进入步骤切换
  * @property {{ tools: string[], prompt: string } | undefined} answerModeSpec 扩展登记的回答方式随消息带来的放行清单与指令
  * @property {(() => void) | undefined} modeMask 当前回答方式对官方全局工具的收窄（restrict 的撤销函数）
@@ -105,6 +107,7 @@ export function createSession(sessionId, policy) {
     timeZone: undefined, // 最近一条用户消息上的时区，子 Agent 沿用（subagent-policy）
     knowledgeCatalog: undefined,
     turnContext: undefined,
+    extensionState: undefined,
     persona: undefined,
     personaShown: undefined,
     personaOff: undefined,

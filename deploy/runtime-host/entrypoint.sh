@@ -1,7 +1,8 @@
 #!/bin/sh
 # 运行时宿主容器入口：
 # 1. 从 bootstrap 生成的只读文件读取宿主令牌（不进 compose 环境变量，不需要用户手填）；
-# 2. 按测试支撑同样的方式在 $DSH_HOME 下装配配置档：拷贝 profile 模板，KnowWork 插件以软链接入；
+# 2. 按测试支撑同样的方式在 $DSH_HOME 下装配配置档：拷贝 profile 模板，KnowWork 插件以软链接入，扩展的镜像多挂的配置层
+#    （KNOWWORK_HOST_BUNDLES）排在后面；
 #    每次启动整体替换，镜像升级后配置档随之更新（会话数据在 $DSH_HOME 的其他目录，不受影响）；
 # 3. 叠加容器部署层补丁后以前台进程运行 dsh。
 set -eu
@@ -32,6 +33,27 @@ for file in package.json cordis.yml cordis.patch.yml pnpm-workspace.yaml; do
 done
 ln -s "$APP_DIR/plugins/dsh-host" "$staging/node_modules/@knowwork/dsh-host"
 ln -s "$APP_DIR/plugins/host-bundle" "$staging/node_modules/@knowwork/dsh-host-bundle"
+# 扩展的镜像多挂的配置层（例如在线编辑的插件）：KNOWWORK_HOST_BUNDLES 是逗号分隔的包名，包装在 $APP_DIR/node_modules 下，
+# 链接进配置档、排在开源那几层之后（同 scripts/dev_stack.py）
+extra="$(printf '%s' "${KNOWWORK_HOST_BUNDLES:-}" | tr ',' ' ')"
+for name in $extra; do
+  case "$name" in
+    *[!@a-z0-9._/-]*|*..*) fail "配置层的包名不对：$name（KNOWWORK_HOST_BUNDLES）" ;;
+  esac
+  [ -d "$APP_DIR/node_modules/$name" ] || fail "找不到配置层 $name（KNOWWORK_HOST_BUNDLES），镜像里没装"
+  mkdir -p "$staging/node_modules/$(dirname "$name")"
+  ln -s "$APP_DIR/node_modules/$name" "$staging/node_modules/$name"
+done
+if [ -n "$extra" ]; then
+  # shellcheck disable=SC2086  # 按空格拆成一个个包名
+  node -e '
+    const fs = require("fs")
+    const [file, ...names] = process.argv.slice(1)
+    const manifest = JSON.parse(fs.readFileSync(file, "utf8"))
+    manifest.dsh.profile.bundles.push(...names)
+    fs.writeFileSync(file, JSON.stringify(manifest, null, 2))
+  ' "$staging/package.json" $extra
+fi
 rm -rf "$profile"
 mv "$staging" "$profile"
 

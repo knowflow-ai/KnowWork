@@ -49,7 +49,7 @@ test('官方 bash 写文件、read 读回、present 交付，全部经沙箱接�
     const exec = env.sandbox.requests.find(r => r.operation === 'exec')
     assert.ok(exec, 'bash 没有走沙箱接口')
     assert.deepEqual(exec.body.argv.slice(0, 2), ['bash', '-c'])
-    assert.equal(exec.body.cwd, '/sessions/re-1')
+    assert.equal(exec.body.cwd, '', '发给业务服务的是工作区路径（根是空串），不是宿主路径')
     assert.equal(exec.body.env.DSH_HOME, undefined, '宿主机路径被带进了容器')
     assert.ok(existsSync(join(env.sandbox.workspaceOf('re-1'), 'report.txt')), '文件没写进会话工作目录')
     assert.equal(readFileSync(join(env.sandbox.workspaceOf('re-1'), 'report.txt'), 'utf8'), '第一行\n')

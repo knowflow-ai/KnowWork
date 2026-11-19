@@ -90,8 +90,17 @@ export interface StreamOptions {
   readonly lastEventId?: string;
   readonly retryMs?: number;
   readonly maxRetryMs?: number;
+  /** 多久什么都没收到（事件、心跳都算）就当连接已断、重连；默认 IDLE_MS */
+  readonly idleMs?: number;
   readonly fetchImpl?: typeof fetch;
 }
+
+/**
+ * 服务端每 15 秒发一次心跳（conversations/api.py 的 ping=15）。这么久连心跳都没收到，说明连接已经悄悄断了：代理只断了
+ * 后端那一侧、浏览器这一侧还开着（开发时业务服务重启，Vite 代理就这样），或者电脑休眠、换网络后连接半开。不管它的话
+ * 页面一直等下去，对话停在「思考中」，这一轮的事件都收不到。
+ */
+const IDLE_MS = 45_000;
 
 class FatalStreamError extends Error {}
 class RetryableStreamError extends Error {}
@@ -111,6 +120,35 @@ async function readOnce(
   if (position.id) headers['Last-Event-ID'] = position.id;
   // 浏览器会话是 HttpOnly Cookie，同源请求自动带上；网页嵌入页带内存里的嵌入令牌（embedAuth.ts）
   const auth = credentialsFor(headers);
+  // 这一次连接自己的中止：关掉事件流时跟着中止；IDLE_MS 内什么都没收到也中止（连接已悄悄断开），外层照常重连续传
+  const attempt = new AbortController();
+  const stop = () => attempt.abort();
+  signal.addEventListener('abort', stop);
+  const idleMs = options.idleMs ?? IDLE_MS;
+  let idle = setTimeout(stop, idleMs);
+  const heard = () => {
+    clearTimeout(idle);
+    idle = setTimeout(stop, idleMs);
+  };
+  try {
+    await readUntilClosed(options, position, handlers, auth, attempt.signal, heard);
+  } catch (error) {
+    if (attempt.signal.aborted && !signal.aborted) throw new RetryableStreamError(NETWORK_MESSAGE);
+    throw error;
+  } finally {
+    clearTimeout(idle);
+    signal.removeEventListener('abort', stop);
+  }
+}
+
+async function readUntilClosed(
+  options: StreamOptions,
+  position: Position,
+  handlers: StreamHandlers,
+  auth: ReturnType<typeof credentialsFor>,
+  signal: AbortSignal,
+  heard: () => void,
+): Promise<void> {
   const response = await (options.fetchImpl ?? fetch)(options.url, {
     headers: auth.headers,
     signal,
@@ -128,9 +166,14 @@ async function readOnce(
   handlers.onStatus?.('connected');
   const parse = createSseParser();
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  // 中止时也要让正在等的 read 结束：响应体不一定跟着请求的中止报错（例如测试里的流、某些代理）
+  signal.addEventListener('abort', () => void reader.cancel().catch(() => undefined));
+  heard();
   for (;;) {
     const { done, value } = await reader.read();
+    if (signal.aborted) throw new RetryableStreamError(NETWORK_MESSAGE);
     if (done) return;
+    heard();
     for (const message of parse(value)) {
       // 先按事件名分流：解析器在没有 id 的消息上会沿用上一条的 id，片段不能走下面落库事件那条路
       if (message.event === 'live') {

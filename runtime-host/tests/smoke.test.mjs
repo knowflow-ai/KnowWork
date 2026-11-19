@@ -132,16 +132,19 @@ test('没有下发语言时不附语言规则；语言值不合法时拒收', as
   }
 })
 
-test('附件：每个文件在提问之后一行说明（逐字照官方 fileHandleText），会话历史里留着；路径不在 /workspace/input 拒收', async () => {
+test('附件：每个文件在提问之后一行说明（逐字照官方 fileHandleText），会话历史里留着；合同里给工作区路径、写给模型的是 /workspace/input/...，附件目录外的拒收', async () => {
   const host = await startHost({ sequence: ['success', 'success', 'success', 'success'], successText: '好' })
   try {
     await host.call('POST', '/v1/sessions', { sessionId: 'att-1' })
-    const file = { name: '合同 "终版".docx', path: '/workspace/input/合同 "终版".docx', bytes: 2048, sha256: 'a'.repeat(64) }
-    const bad = await host.call('POST', '/v1/sessions/att-1/messages', { text: '看看', attachments: [{ ...file, path: '/etc/passwd' }] })
-    assert.equal(bad.status, 400)
+    const file = { name: '合同 "终版".docx', path: 'input/合同 "终版".docx', bytes: 2048, sha256: 'a'.repeat(64) }
+    // 合同里是工作区路径：附件目录外的、越出工作区的、旧的容器写法都拒收
+    for (const path of ['/etc/passwd', '../input/a.docx', 'output/a.docx', '/workspace/input/a.docx', 'input/a/b.docx']) {
+      const bad = await host.call('POST', '/v1/sessions/att-1/messages', { text: '看看', attachments: [{ ...file, path }] })
+      assert.equal(bad.status, 400, path)
+    }
     await host.call('POST', '/v1/sessions/att-1/messages', {
       text: '帮我改一下付款条款',
-      attachments: [{ ...file, extractedPath: '/workspace/input/合同 "终版".md' }],
+      attachments: [{ ...file, extractedPath: 'input/合同 "终版".md' }],
     })
     await collectEvents(host, 'att-1', isTurnEnd)
     const first = modelInput(host, 0)
@@ -162,19 +165,19 @@ test('附件：每个文件在提问之后一行说明（逐字照官方 fileHan
     assert.equal(notAPath.status, 400, '没有 Markdown 路径时不能只说「还在解析」')
     await host.call('POST', '/v1/sessions/att-1/messages', {
       text: '总结一下',
-      attachments: [{ ...file, extractedPath: '/workspace/input/合同 "终版".md', extractionPending: true }],
+      attachments: [{ ...file, extractedPath: 'input/合同 "终版".md', extractionPending: true }],
     })
     await collectEvents(host, 'att-1', frame => isTurnEnd(frame) && host.llm.requests.length >= 3)
     const third = modelInput(host, 2)
     assert.ok(third.includes(inJson('[Markdown extracted from "合同 \\"终版\\".docx" by the document parser is not ready yet: parsing is still running and the result will be saved at "/workspace/input/合同 \\"终版\\".md"')))
 
     // 给模型读的文字：放得下的整篇跟在后面，放不下的给字数、页数和目录；格式不对的目录整条拒收
-    const small = { name: '说明.txt', path: '/workspace/input/说明.txt', bytes: 6, sha256: 'b'.repeat(64), text: '付款 30 天', textChars: 6 }
-    const scan = { name: '扫描.pdf', path: '/workspace/input/扫描.pdf', bytes: 9, sha256: 'c'.repeat(64), extractedPath: '/workspace/input/扫描.md', text: '# 承诺书', textChars: 6, textPages: 2 }
+    const small = { name: '说明.txt', path: 'input/说明.txt', bytes: 6, sha256: 'b'.repeat(64), text: '付款 30 天', textChars: 6 }
+    const scan = { name: '扫描.pdf', path: 'input/扫描.pdf', bytes: 9, sha256: 'c'.repeat(64), extractedPath: 'input/扫描.md', text: '# 承诺书', textChars: 6, textPages: 2 }
     const big = {
-      ...file, extractedPath: '/workspace/input/合同 "终版".md', textChars: 90000, textPages: 30,
+      ...file, extractedPath: 'input/合同 "终版".md', textChars: 90000, textPages: 30,
       outline: [{ line: 1, text: '第 1 页：封面' }, { line: 88, text: '## 第二章 付款' }],
-      digestPath: '/workspace/input/合同 "终版".导读.md',
+      digestPath: 'input/合同 "终版".导读.md',
     }
     const badOutline = await host.call('POST', '/v1/sessions/att-1/messages', {
       text: '看看', attachments: [{ ...big, outline: [{ line: 0, text: 'x' }] }],

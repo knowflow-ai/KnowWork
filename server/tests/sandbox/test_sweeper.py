@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from knowwork_server.sandbox.containers import LABEL_IDLE_TTL, LABEL_POSTURE, SandboxKey
-from knowwork_server.sandbox.sweeper import _timestamp
+from knowwork_server.sandbox.sweeper import IdleSweeper, _timestamp
 
 from .fake_docker import api_error
 from .helpers import SID, WS
@@ -78,6 +78,40 @@ async def test_busy_sandbox_is_not_deleted(make):
     assert KEY.name in fake.containers
 
 
+def hooked(module, before_remove):
+    return IdleSweeper(module.sweeper._engine, module.containers, default_ttl_seconds=1800, clock=lambda: NOW,
+                       before_remove=before_remove)
+
+
+async def test_before_remove_runs_under_the_lock_and_a_comeback_keeps_the_container(make):
+    """回收前的钩子（例如 Office 编辑器先存盘）在持锁时跑；钩子跑的时候又有人用了，就不删。"""
+    fake, module = make()
+    idle = owned(fake, marker=NOW - 5000)
+    back = owned(fake, SandboxKey.of(WS, "conv-2"), marker=NOW - 5000)
+    seen: list[tuple[str, bool]] = []
+
+    async def before_remove(item):
+        key = SandboxKey.from_labels(item["Labels"])
+        seen.append((item["Id"], module.containers.lock(key).locked()))
+        if item["Id"] == back["Id"]:
+            fake.markers[back["Id"]] = iso(NOW)
+
+    assert await hooked(module, before_remove).sweep() == 1
+    assert idle["Name"] not in fake.containers and back["Name"] in fake.containers
+    assert sorted(seen) == sorted([(idle["Id"], True), (back["Id"], True)])
+
+
+async def test_a_failing_before_remove_does_not_keep_an_idle_container(make):
+    fake, module = make()
+    idle = owned(fake, marker=NOW - 5000)
+
+    async def before_remove(item):
+        raise RuntimeError("编辑器没答话")
+
+    assert await hooked(module, before_remove).sweep() == 1
+    assert idle["Name"] not in fake.containers
+
+
 async def test_unparseable_managed_container_is_swept_and_unmanaged_is_ignored(make):
     fake, module = make()
     fake.add_container("kw-bad", {"io.knowwork.component": "sandbox", "io.knowwork.workspace": "bad id"},
@@ -106,7 +140,7 @@ async def test_use_triggers_background_sweep_at_most_once_per_interval(make):
     fake, module = make()
     owned(fake, SandboxKey.of(WS, "idle"), marker=NOW - 5000)
     clocked(module)
-    digest = module.containers._posture.digest
+    digest = module.containers._spec.digest
     fake.add_container(KEY.name, {**KEY.labels(), LABEL_POSTURE: digest})
     await module.sandbox.exec(WS, SID, ["true"], timeout_seconds=1, max_output_bytes=10)
     await module.sandbox.exec(WS, SID, ["true"], timeout_seconds=1, max_output_bytes=10)

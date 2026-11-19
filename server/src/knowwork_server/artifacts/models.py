@@ -4,8 +4,9 @@
   用来认出「上一轮已经收过、这一轮没变」的文件，不重复收；
 - 逻辑键 {workspace}/{session}/{artifact_id}/{filename} 由 workspace_id、conversation_id、id、filename 四列给出；
 - preview_digest 是预览用 PDF 在同一会话存储里的摘要（Word、PPT 第一次预览时在沙箱里转换，之后直接取）；
-- source_path 是交付时它在沙箱里的路径（/workspace/...）：对话里的文件按路径读时（documents/files.py），交付过的读收好的这份，
-  沙箱回收后也在；早于这一列收的是 None。
+- source_path 是它在对话工作区里的路径（工作区路径，workpath.py，例如 output/报告.docx；不存沙箱里的真实位置）：
+  对话里的文件按路径读时（documents/files.py），交付过的读收好的这份，沙箱回收后也在；同一路径多一行就是新的一版
+  （人在编辑器里存盘也是）；早于这一列收的是 None。
 """
 
 from datetime import datetime

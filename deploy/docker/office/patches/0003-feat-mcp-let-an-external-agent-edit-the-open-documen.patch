@@ -1,0 +1,2058 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: weizxfree <weizhangxiang2022@gmail.com>
+Date: Mon, 16 Nov 2026 21:40:05 -0800
+Subject: [PATCH 3/5] feat(mcp): let an external agent edit the open documents
+ like the built-in one
+
+- MCP commands reach the documents open in browser tabs, which join
+  open_documents (and can be closed from the server)
+- list_docx_tools / run_docx_tool run the editor's own document tools with
+  the in-app executor and stores; `track: true` records the edit as a
+  revision whatever the document's setting; `author` names the revisions'
+  and comments' author
+- list_xlsx_tools / run_xlsx_tool do the same for an open workbook with the
+  spreadsheet assistant's tools, its base prompt coming along as the guide;
+  worksheets may be named wherever a tool takes an id
+- slide_ops_guide gives apply_slide_ops callers the op reference the
+  in-app slides assistant loads
+- save_checkpoint / restore_checkpoint: whole-document rollback points
+- export_document converts in the running app, one at a time
+The agent commands live in mcp-agent-commands.ts (docs, sheets),
+docx-/xlsx-agent-tools.ts and slides-guide-tools.ts; the upstream files
+carry one routing or spread line each.
+---
+ apps/docs/src/renderer/ai/revision-author.ts  |  31 ++-
+ apps/docs/src/renderer/mcp-agent-commands.ts  | 228 ++++++++++++++++
+ apps/docs/src/renderer/mcp-bridge.ts          |  11 +-
+ apps/docs/src/shared/ipc.ts                   |   2 +
+ apps/docs/src/shared/mcp-agent.ts             |  17 ++
+ apps/docs/tests/mcp-bridge-run-tool.test.ts   | 248 ++++++++++++++++++
+ apps/sheets/src/renderer/App.tsx              |   2 +
+ .../sheets/src/renderer/mcp-agent-commands.ts |  87 ++++++
+ apps/sheets/src/renderer/mcp-bridge.ts        |  11 +
+ apps/sheets/src/shared/desktop-api.ts         |   3 +-
+ apps/sheets/src/shared/mcp-agent.ts           |  13 +
+ apps/sheets/tests/mcp-agent-commands.test.ts  | 107 ++++++++
+ apps/shell/src/main/index.ts                  |  55 ++--
+ apps/shell/src/main/mcp/app-mcp.ts            |   4 +
+ apps/shell/src/main/mcp/contents-by-id.ts     |  16 ++
+ apps/shell/src/main/mcp/docs-bridge.ts        |   9 +-
+ apps/shell/src/main/mcp/sheets-bridge.ts      |  12 +-
+ apps/shell/src/main/mcp/slides-bridge.ts      |   6 +-
+ .../src/main/mcp/tools/document-tools.ts      |   6 +
+ .../src/main/mcp/tools/docx-agent-tools.ts    |  88 +++++++
+ apps/shell/src/main/mcp/tools/export-tools.ts |  60 +++++
+ apps/shell/src/main/mcp/tools/sheets-tools.ts |   5 +-
+ .../src/main/mcp/tools/slides-guide-tools.ts  |  36 +++
+ apps/shell/src/main/mcp/tools/slides-tools.ts |   2 +
+ .../src/main/mcp/tools/xlsx-agent-tools.ts    |  50 ++++
+ apps/shell/src/web/open-documents.ts          | 114 ++++++++
+ apps/shell/src/web/tab-registry.ts            |  21 ++
+ apps/shell/src/web/web-contents.ts            |  16 +-
+ apps/shell/tests/mcp/document-tools.test.ts   |   4 +
+ apps/shell/tests/mcp/export-tools.test.ts     |  38 +++
+ apps/shell/tests/mcp/mcp-http-surface.test.ts |   7 +
+ .../tests/mcp/slides-guide-tools.test.ts      |  18 ++
+ apps/shell/tests/web-open-documents.test.ts   | 124 +++++++++
+ 33 files changed, 1405 insertions(+), 46 deletions(-)
+ create mode 100644 apps/docs/src/renderer/mcp-agent-commands.ts
+ create mode 100644 apps/docs/src/shared/mcp-agent.ts
+ create mode 100644 apps/docs/tests/mcp-bridge-run-tool.test.ts
+ create mode 100644 apps/sheets/src/renderer/mcp-agent-commands.ts
+ create mode 100644 apps/sheets/src/shared/mcp-agent.ts
+ create mode 100644 apps/sheets/tests/mcp-agent-commands.test.ts
+ create mode 100644 apps/shell/src/main/mcp/contents-by-id.ts
+ create mode 100644 apps/shell/src/main/mcp/tools/docx-agent-tools.ts
+ create mode 100644 apps/shell/src/main/mcp/tools/export-tools.ts
+ create mode 100644 apps/shell/src/main/mcp/tools/slides-guide-tools.ts
+ create mode 100644 apps/shell/src/main/mcp/tools/xlsx-agent-tools.ts
+ create mode 100644 apps/shell/src/web/open-documents.ts
+ create mode 100644 apps/shell/src/web/tab-registry.ts
+ create mode 100644 apps/shell/tests/mcp/export-tools.test.ts
+ create mode 100644 apps/shell/tests/mcp/slides-guide-tools.test.ts
+ create mode 100644 apps/shell/tests/web-open-documents.test.ts
+
+diff --git a/apps/docs/src/renderer/ai/revision-author.ts b/apps/docs/src/renderer/ai/revision-author.ts
+index 83909d52..76be6a80 100644
+--- a/apps/docs/src/renderer/ai/revision-author.ts
++++ b/apps/docs/src/renderer/ai/revision-author.ts
+@@ -1,6 +1,33 @@
+ import { authorName } from '../author-name'
+ 
+-/** AI edits are attributed to the Settings user name, as Word does for add-in edits */
++let override: string | null = null
++
++/**
++ * AI edits are attributed to the Settings user name, as Word does for add-in
++ * edits, unless an external agent names its own author for the command it is
++ * running (withAiRevisionAuthor).
++ */
+ export function aiRevisionAuthor(): string {
+-  return authorName()
++  return override ?? authorName()
++}
++
++/** the author the running external command named, if any */
++export function aiRevisionAuthorOverride(): string | null {
++  return override
++}
++
++/**
++ * Run `fn` with AI revisions and comments attributed to `name`: a host that
++ * drives the editor over MCP shows its agent as an author of its own
++ * ("Zhang San (AI)") next to the person ("Zhang San"). The bridge runs one
++ * command at a time, so the scope cannot leak into another command.
++ */
++export async function withAiRevisionAuthor<T>(name: string, fn: () => Promise<T>): Promise<T> {
++  const previous = override
++  override = name
++  try {
++    return await fn()
++  } finally {
++    override = previous
++  }
+ }
+diff --git a/apps/docs/src/renderer/mcp-agent-commands.ts b/apps/docs/src/renderer/mcp-agent-commands.ts
+new file mode 100644
+index 00000000..ee9fdd97
+--- /dev/null
++++ b/apps/docs/src/renderer/mcp-agent-commands.ts
+@@ -0,0 +1,228 @@
++import type { Node as PmNode } from '@tiptap/pm/model'
++import type { Editor } from '@tiptap/react'
++import type { McpAgentCommand } from '../shared/mcp-agent'
++import type { NumIds } from './ai/protocol'
++import {
++  withAiRevisionAuthor,
++  aiRevisionAuthor,
++  aiRevisionAuthorOverride,
++} from './ai/revision-author'
++import { AGENT_TOOLS, executeTool, markDocSeen } from './ai/tools'
++import { TABLE_TRAILING_SKIP } from './editor/extensions'
++
++/**
++ * MCP commands for an external agent that drives the open document the way the
++ * in-app assistant does (KnowWork). Kept in its own file: the MCP bridge only
++ * forwards the commands it does not know here, so following upstream changes to
++ * mcp-bridge.ts stays a matter of one forwarding line.
++ *
++ * - list_tools / run_tool: the built-in document tools (block edits, revisions,
++ *   comments, notes, headers/footers, page setup, styles, tables) with the same
++ *   executor, stores and stale-index guard as the in-app assistant; `track: true`
++ *   records the edit as a tracked revision even while Track Changes is off;
++ * - save_checkpoint / restore_checkpoint: whole-document rollback points, the
++ *   external counterpart of the assistant panel's per-turn snapshot;
++ * - `author` on any command: the name its revisions and comments go under.
++ */
++
++type ExecuteToolArgs = Parameters<typeof executeTool>
++
++/** what the built-in agent hands its executors besides the editor (see createDocsSkill) */
++export interface McpEditorAccess {
++  track?: ExecuteToolArgs[3]
++  comments?: ExecuteToolArgs[6]
++  hf?: ExecuteToolArgs[7]
++  pageSetup?: ExecuteToolArgs[9]
++  extras?: ExecuteToolArgs[10]
++  notes?: ExecuteToolArgs[11]
++}
++
++/**
++ * Built-in tools run_tool does not offer: the ones that reach GenOffice's own
++ * model or network (search, image generation, media analysis, image download),
++ * the panel-owned streaming writer, new-file creation, the mind-map card, and
++ * replace_selection (an external agent cannot know where the user's live
++ * selection has wandered; it addresses blocks by index instead).
++ */
++const RUN_TOOL_EXCLUDED = new Set([
++  'web_search',
++  'image_search',
++  'analyze_media',
++  'generate_image',
++  'insert_image',
++  'write_document',
++  'create_document',
++  'generate_mindmap',
++  'replace_selection',
++])
++
++/** rollback points kept per document; the oldest goes first */
++const CHECKPOINT_MAX = 20
++
++/** the document itself, not a JSON copy: it is immutable, so a kept point shares every unchanged
++ *  node with the live one (the agent saves a point per document every turn) */
++const checkpointsByEditor = new WeakMap<Editor, Map<string, PmNode>>()
++
++/** the built-in tool definitions an external agent may call through run_tool */
++export function externalToolDefs(): { name: string; description: string; inputSchema: unknown }[] {
++  return AGENT_TOOLS.filter((tool) => !RUN_TOOL_EXCLUDED.has(tool.name)).map((tool) => ({
++    name: tool.name,
++    description: tool.description,
++    inputSchema: tool.inputSchema,
++  }))
++}
++
++/**
++ * Auto-accept the external edit's "changed by AI" highlight, keeping undo
++ * history: a copy of mcp-bridge.ts's clearAiChangedFlags (itself a mirror of
++ * AiPanel's clearAiHighlights), so the upstream file need not export it.
++ */
++function clearAiChangedFlags(editor: Editor): void {
++  const view = editor.view
++  let tr = view.state.tr
++  let touched = false
++  view.state.doc.forEach((node, offset) => {
++    if (node.attrs.aiChanged) {
++      tr = tr.setNodeMarkup(offset, undefined, { ...node.attrs, aiChanged: false })
++      touched = true
++    }
++  })
++  if (!touched) return
++  tr = tr.setMeta('addToHistory', false)
++  view.dispatch(tr)
++  markDocSeen(editor)
++}
++
++/** the executors are shared with the in-app agent, whose re-read tool has another name on MCP */
++function mcpErrorText(output: string): string {
++  return output.replaceAll('get_document_context', 'read_document')
++}
++
++/** `author` on any command: the name its revisions and comments are recorded under */
++export function commandAuthor(payload: unknown): string | null {
++  const raw = (payload as { author?: unknown } | null)?.author
++  if (typeof raw !== 'string') return null
++  const name = raw.trim()
++  return name ? name.slice(0, 255) : null
++}
++
++/** run one bridge command under the author it names (if any) */
++export function withCommandAuthor<T>(payload: unknown, run: () => Promise<T>): Promise<T> {
++  const author = commandAuthor(payload)
++  return author ? withAiRevisionAuthor(author, run) : run()
++}
++
++function checkpointId(payload: unknown): string {
++  const id = (payload as { id?: unknown } | null)?.id
++  if (typeof id !== 'string' || !id.trim()) throw new Error('a checkpoint needs an "id"')
++  return id.trim()
++}
++
++function checkpointsOf(editor: Editor): Map<string, PmNode> {
++  let checkpoints = checkpointsByEditor.get(editor)
++  if (!checkpoints) {
++    checkpoints = new Map<string, PmNode>()
++    checkpointsByEditor.set(editor, checkpoints)
++  }
++  return checkpoints
++}
++
++function saveCheckpoint(editor: Editor, id: string): void {
++  const checkpoints = checkpointsOf(editor)
++  checkpoints.delete(id)
++  checkpoints.set(id, editor.state.doc)
++  while (checkpoints.size > CHECKPOINT_MAX) {
++    const oldest = checkpoints.keys().next().value as string
++    checkpoints.delete(oldest)
++  }
++}
++
++function restoreCheckpoint(editor: Editor, id: string): void {
++  const checkpoints = checkpointsOf(editor)
++  const snapshot = checkpoints.get(id)
++  if (snapshot === undefined)
++    throw new Error(`no checkpoint "${id}" (kept: the last ${CHECKPOINT_MAX})`)
++  // same rewind as the AI panel's rollback; it is one undoable step, and the
++  // changed document makes the agent re-read before its next indexed write
++  editor.chain().setMeta(TABLE_TRAILING_SKIP, true).setContent(snapshot.toJSON()).run()
++  // restoring rewinds every later point too: they describe a discarded future
++  let later = false
++  for (const key of [...checkpoints.keys()]) {
++    if (later) checkpoints.delete(key)
++    if (key === id) later = true
++  }
++}
++
++/** run one built-in tool with the same stores the in-app agent gets */
++function runTool(
++  editor: Editor,
++  numIds: NumIds,
++  access: McpEditorAccess,
++  name: string,
++  input: Record<string, unknown>,
++  forceTrack: boolean,
++): ReturnType<typeof executeTool> {
++  // a command may name its own author; otherwise the one App resolved. forceTrack
++  // records the edit as a revision even while the document's Track Changes is off
++  const named = aiRevisionAuthorOverride()
++  const track =
++    access.track || forceTrack
++      ? { author: named ?? access.track?.author ?? aiRevisionAuthor() }
++      : undefined
++  return executeTool(
++    editor,
++    { id: 'mcp', name, input },
++    numIds,
++    track,
++    undefined,
++    null,
++    access.comments,
++    access.hf,
++    undefined,
++    access.pageSetup,
++    access.extras,
++    access.notes,
++  )
++}
++
++/** handle an agent command (the bridge routes them here with isAgentCommand) */
++export async function runAgentCommand(
++  command: McpAgentCommand,
++  payload: unknown,
++  editor: Editor,
++  numIds: NumIds,
++  access: McpEditorAccess | null,
++): Promise<unknown> {
++  switch (command) {
++    case 'list_tools':
++      return { tools: externalToolDefs() }
++    case 'run_tool': {
++      const input = (payload ?? {}) as { name?: unknown; input?: unknown; track?: unknown }
++      const name = typeof input.name === 'string' ? input.name : ''
++      if (!AGENT_TOOLS.some((tool) => tool.name === name) || RUN_TOOL_EXCLUDED.has(name)) {
++        throw new Error(`run_tool cannot run "${name}"; list_tools gives the available tools`)
++      }
++      const args =
++        input.input && typeof input.input === 'object'
++          ? (input.input as Record<string, unknown>)
++          : {}
++      const outcome = await runTool(
++        editor,
++        numIds,
++        access ?? {},
++        name,
++        { ...args },
++        input.track === true,
++      )
++      if (outcome.isError) throw new Error(mcpErrorText(outcome.output))
++      if (outcome.mutated) clearAiChangedFlags(editor)
++      return { summary: outcome.summary, output: outcome.output, mutated: outcome.mutated }
++    }
++    case 'save_checkpoint':
++      saveCheckpoint(editor, checkpointId(payload))
++      return { ok: true }
++    case 'restore_checkpoint':
++      restoreCheckpoint(editor, checkpointId(payload))
++      return { ok: true }
++  }
++}
+diff --git a/apps/docs/src/renderer/mcp-bridge.ts b/apps/docs/src/renderer/mcp-bridge.ts
+index b0af21f5..52fc9d16 100644
+--- a/apps/docs/src/renderer/mcp-bridge.ts
++++ b/apps/docs/src/renderer/mcp-bridge.ts
+@@ -4,6 +4,8 @@ import type { McpCommandMessage, McpEditorCommand } from '../shared/ipc'
+ import { executeTool, markDocSeen } from './ai/tools'
+ import { findNumId, type NumIds } from './ai/protocol'
+ import { save, type FileActionContext } from './file-actions'
++import { isAgentCommand } from '../shared/mcp-agent'
++import { runAgentCommand, withCommandAuthor, type McpEditorAccess } from './mcp-agent-commands'
+ 
+ /**
+  * MCP bridge (renderer half).
+@@ -21,6 +23,8 @@ import { save, type FileActionContext } from './file-actions'
+ export interface McpBridgeDeps {
+   /** live file-action context (refreshed every render by App) */
+   getCtx: () => FileActionContext
++  /** live executor stores for agent commands (mcp-agent-commands.ts); absent = editor only */
++  getAccess?: () => McpEditorAccess | null
+ }
+ 
+ function numIdsFor(ctx: FileActionContext): NumIds {
+@@ -95,6 +99,9 @@ async function runCommand(
+   const ctx = deps.getCtx()
+   const editor = ctx.editor
+   if (!editor || !ctx.doc) throw new Error('the document is not ready')
++  if (isAgentCommand(command)) {
++    return runAgentCommand(command, payload, editor, numIdsFor(ctx), deps.getAccess?.() ?? null)
++  }
+ 
+   switch (command) {
+     case 'insert_content': {
+@@ -270,7 +277,9 @@ export function installMcpBridge(deps: McpBridgeDeps): () => void {
+     if (!message || typeof message.requestId !== 'string') return
+     queue = queue.then(async () => {
+       try {
+-        const result = await runCommand(deps, message.command, message.payload)
++        const result = await withCommandAuthor(message.payload, () =>
++          runCommand(deps, message.command, message.payload),
++        )
+         desktop.reportMcpResult({ requestId: message.requestId, ok: true, result })
+       } catch (error) {
+         desktop.reportMcpResult({
+diff --git a/apps/docs/src/shared/ipc.ts b/apps/docs/src/shared/ipc.ts
+index 731f822c..053b808a 100644
+--- a/apps/docs/src/shared/ipc.ts
++++ b/apps/docs/src/shared/ipc.ts
+@@ -83,6 +83,7 @@ export interface MergeOutputResponse {
+ 
+ // ---- AI provider settings/config/streaming: canonical types live in @genoffice/ai-provider ----
+ 
++import type { McpAgentCommand } from './mcp-agent'
+ import type {
+   AiChatRequest,
+   AiChatResponse,
+@@ -351,6 +352,7 @@ export type McpEditorCommand =
+   | 'read_document'
+   | 'read_blocks'
+   | 'save_document'
++  | McpAgentCommand
+ 
+ export interface McpCommandMessage {
+   requestId: string
+diff --git a/apps/docs/src/shared/mcp-agent.ts b/apps/docs/src/shared/mcp-agent.ts
+new file mode 100644
+index 00000000..6f51f8d1
+--- /dev/null
++++ b/apps/docs/src/shared/mcp-agent.ts
+@@ -0,0 +1,17 @@
++/**
++ * Editor commands of an external agent driving the open document (KnowWork;
++ * handled by renderer/mcp-agent-commands.ts). Their own union so the MCP
++ * bridge routes them out before its exhaustive switch over its own commands.
++ */
++export const MCP_AGENT_COMMANDS = [
++  'list_tools',
++  'run_tool',
++  'save_checkpoint',
++  'restore_checkpoint',
++] as const
++
++export type McpAgentCommand = (typeof MCP_AGENT_COMMANDS)[number]
++
++export function isAgentCommand(command: string): command is McpAgentCommand {
++  return (MCP_AGENT_COMMANDS as readonly string[]).includes(command)
++}
+diff --git a/apps/docs/tests/mcp-bridge-run-tool.test.ts b/apps/docs/tests/mcp-bridge-run-tool.test.ts
+new file mode 100644
+index 00000000..43fdd034
+--- /dev/null
++++ b/apps/docs/tests/mcp-bridge-run-tool.test.ts
+@@ -0,0 +1,248 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import { Editor } from '@tiptap/core'
++import { editorExtensions } from '../src/renderer/editor/extensions'
++import { installMcpBridge } from '../src/renderer/mcp-bridge'
++import type { McpEditorAccess } from '../src/renderer/mcp-agent-commands'
++import type { FileActionContext } from '../src/renderer/file-actions'
++import type { McpCommandMessage, McpCommandResult } from '../src/shared/ipc'
++
++/**
++ * The generic run_tool surface of the MCP bridge: an external agent gets the
++ * built-in assistant's document tools with the same stores (Track Changes
++ * author, comments, ...) the in-app agent passes, and decides when the yellow
++ * AI highlight goes away.
++ */
++
++interface JsonNode {
++  type: string
++  attrs?: Record<string, unknown>
++  content?: JsonNode[]
++  marks?: { type: string; attrs?: Record<string, unknown> }[]
++  text?: string
++}
++
++const para = (value: string): JsonNode => ({
++  type: 'docParagraph',
++  attrs: { docxIndex: null },
++  content: [{ type: 'text', text: value }],
++})
++
++const liveEditors: Editor[] = []
++
++function createEditor(content: JsonNode[]): Editor {
++  const editor = new Editor({
++    element: document.createElement('div'),
++    extensions: editorExtensions,
++    content: { type: 'doc', content },
++  })
++  liveEditors.push(editor)
++  return editor
++}
++
++afterEach(() => {
++  for (const editor of liveEditors.splice(0)) editor.destroy()
++})
++
++function install(editor: Editor, access?: McpEditorAccess) {
++  let handler: ((message: McpCommandMessage) => void) | undefined
++  let notify: ((result: McpCommandResult) => void) | undefined
++  window.desktop = {
++    onMcpCommand: (callback: (message: McpCommandMessage) => void) => {
++      handler = callback
++      return () => {
++        handler = undefined
++      }
++    },
++    reportMcpResult: (result: McpCommandResult) => notify?.(result),
++    signalMcpReady: () => {},
++  } as unknown as typeof window.desktop
++  const ctx = {
++    editor,
++    doc: { parsed: { blocks: [] }, isBlank: false },
++  } as unknown as FileActionContext
++  const uninstall = installMcpBridge({ getCtx: () => ctx, getAccess: () => access ?? null })
++  let seq = 0
++  const send = (command: McpCommandMessage['command'], payload: unknown) => {
++    const result = new Promise<McpCommandResult>((resolve) => {
++      notify = resolve
++    })
++    handler!({ requestId: `t-${++seq}`, command, payload })
++    return result
++  }
++  return { send, uninstall }
++}
++
++function insAuthors(node: JsonNode, out = new Set<string>()): Set<string> {
++  for (const mark of node.marks ?? []) {
++    if (mark.type === 'ins') out.add(String(mark.attrs?.author ?? ''))
++  }
++  for (const child of node.content ?? []) insAuthors(child, out)
++  return out
++}
++
++describe('MCP bridge list_tools', () => {
++  it('offers the document tools but not the ones that reach GenOffice’s own model or network', async () => {
++    const { send, uninstall } = install(createEditor([para('One')]))
++    try {
++      const result = await send('list_tools', {})
++      expect(result.ok).toBe(true)
++      const names = (result.result as { tools: { name: string }[] }).tools.map((t) => t.name)
++      expect(names).toEqual(
++        expect.arrayContaining(['replace_blocks', 'add_comment', 'accept_changes']),
++      )
++      for (const hidden of [
++        'web_search',
++        'generate_image',
++        'write_document',
++        'replace_selection',
++      ]) {
++        expect(names).not.toContain(hidden)
++      }
++    } finally {
++      uninstall()
++    }
++  })
++})
++
++describe('MCP bridge run_tool', () => {
++  it('runs a built-in tool and refuses excluded or unknown ones', async () => {
++    const editor = createEditor([para('One'), para('Two')])
++    const { send, uninstall } = install(editor)
++    try {
++      await send('read_document', {})
++      const done = await send('run_tool', {
++        name: 'replace_blocks',
++        input: { startBlockIndex: 1, endBlockIndex: 1, html: '<p>Second</p>' },
++      })
++      expect(done.ok).toBe(true)
++      expect(editor.state.doc.child(1).textContent).toBe('Second')
++
++      const searched = await send('run_tool', { name: 'web_search', input: { query: 'x' } })
++      expect(searched.ok).toBe(false)
++      expect(searched.error).toContain('cannot run')
++      const unknown = await send('run_tool', { name: 'format_disk', input: {} })
++      expect(unknown.ok).toBe(false)
++    } finally {
++      uninstall()
++    }
++  })
++
++  it('records the edit as a revision by the given author while Track Changes is on', async () => {
++    const editor = createEditor([para('One'), para('Two')])
++    const { send, uninstall } = install(editor, { track: { author: 'Zhang San (AI)' } })
++    try {
++      await send('read_document', {})
++      const done = await send('run_tool', {
++        name: 'insert_content',
++        input: { afterBlockIndex: 0, html: '<p>Inserted by the agent</p>' },
++      })
++      expect(done.ok).toBe(true)
++      expect([...insAuthors(editor.getJSON() as JsonNode)]).toEqual(['Zhang San (AI)'])
++    } finally {
++      uninstall()
++    }
++  })
++
++  it('records the revisions under the author a command names, then falls back', async () => {
++    const editor = createEditor([para('One'), para('Two')])
++    const { send, uninstall } = install(editor, { track: { author: 'Zhang San' } })
++    try {
++      await send('read_document', {})
++      const named = await send('run_tool', {
++        name: 'insert_content',
++        input: { afterBlockIndex: 0, html: '<p>By the agent</p>' },
++        author: 'Zhang San (AI)',
++      })
++      expect(named.ok).toBe(true)
++      expect([...insAuthors(editor.getJSON() as JsonNode)]).toEqual(['Zhang San (AI)'])
++
++      await send('run_tool', {
++        name: 'insert_content',
++        input: { afterBlockIndex: 0, html: '<p>No author named</p>' },
++      })
++      // the scope ended with the command: the next one falls back to the Settings name
++      expect([...insAuthors(editor.getJSON() as JsonNode)].sort()).toEqual([
++        'Zhang San',
++        'Zhang San (AI)',
++      ])
++    } finally {
++      uninstall()
++    }
++  })
++
++  it('tracks an edit on request even while Track Changes is off', async () => {
++    const editor = createEditor([para('One'), para('Two')])
++    const { send, uninstall } = install(editor)
++    try {
++      await send('read_document', {})
++      await send('run_tool', {
++        name: 'insert_content',
++        input: { afterBlockIndex: 0, html: '<p>Untracked</p>' },
++      })
++      expect([...insAuthors(editor.getJSON() as JsonNode)]).toEqual([])
++      await send('read_document', {})
++      const tracked = await send('run_tool', {
++        name: 'insert_content',
++        input: { afterBlockIndex: 0, html: '<p>Tracked</p>' },
++        track: true,
++        author: 'Zhang San (AI)',
++      })
++      expect(tracked.ok).toBe(true)
++      expect([...insAuthors(editor.getJSON() as JsonNode)]).toEqual(['Zhang San (AI)'])
++    } finally {
++      uninstall()
++    }
++  })
++
++  it('keeps a rollback point without copying the whole document', async () => {
++    // the agent saves one per document every turn: a full JSON copy of a long document,
++    // twenty kept, cost tens of MB in the tab and a pause each time; the document is
++    // immutable, so keeping it shares every unchanged node with the live one
++    const editor = createEditor([para('One'), para('Two')])
++    const { send, uninstall } = install(editor)
++    const serialize = vi.spyOn(editor, 'getJSON')
++    try {
++      expect((await send('save_checkpoint', { id: 'turn-1' })).ok).toBe(true)
++      expect(serialize).not.toHaveBeenCalled()
++    } finally {
++      serialize.mockRestore()
++      uninstall()
++    }
++  })
++
++  it('rewinds a whole agent turn and drops the later points', async () => {
++    const editor = createEditor([para('One'), para('Two')])
++    const { send, uninstall } = install(editor)
++    try {
++      expect((await send('save_checkpoint', { id: 'turn-1' })).ok).toBe(true)
++      await send('read_document', {})
++      await send('run_tool', {
++        name: 'replace_blocks',
++        input: { startBlockIndex: 0, endBlockIndex: 0, html: '<p>Changed</p>' },
++      })
++      await send('save_checkpoint', { id: 'turn-2' })
++      await send('read_document', {})
++      await send('run_tool', {
++        name: 'insert_content',
++        input: { afterBlockIndex: 1, html: '<p>Added</p>' },
++      })
++      expect(editor.state.doc.childCount).toBe(3)
++
++      expect((await send('restore_checkpoint', { id: 'turn-1' })).ok).toBe(true)
++      expect(editor.state.doc.textContent).toBe('OneTwo')
++      const gone = await send('restore_checkpoint', { id: 'turn-2' })
++      expect(gone.ok).toBe(false)
++      expect(gone.error).toContain('no checkpoint')
++
++      // the rewound document is new to the agent: indexed writes wait for a re-read
++      const stale = await send('run_tool', {
++        name: 'replace_blocks',
++        input: { startBlockIndex: 0, endBlockIndex: 0, html: '<p>x</p>' },
++      })
++      expect(stale.ok).toBe(false)
++      expect((await send('save_checkpoint', {})).ok).toBe(false)
++    } finally {
++      uninstall()
++    }
++  })
++})
+diff --git a/apps/sheets/src/renderer/App.tsx b/apps/sheets/src/renderer/App.tsx
+index 4b2e765a..31debae5 100644
+--- a/apps/sheets/src/renderer/App.tsx
++++ b/apps/sheets/src/renderer/App.tsx
+@@ -5615,6 +5615,7 @@ export function App({
+   // read/apply/save commands; they run through the same executors the built-in
+   // AI uses. Handlers go through a ref so the bridge never sees stale closures.
+   mcpSheetHandlersRef.current = {
++    skillDeps: () => sheetsSkillDeps(),
+     hasWorkbook: () =>
+       univerRef.current?.univerAPI.getActiveWorkbook() != null && lazyWorkbookRef.current != null,
+     context: () => getActiveSheetInfo(),
+@@ -5719,6 +5720,7 @@ export function App({
+     const handlers = mcpSheetHandlersRef
+     return installSheetsMcpBridge({
+       hasWorkbook: () => handlers.current?.hasWorkbook() ?? false,
++      skillDeps: () => handlers.current?.skillDeps?.() ?? null,
+       context: () => handlers.current?.context(),
+       readCells: (addresses, sheetId) => handlers.current?.readCells(addresses, sheetId) ?? {},
+       sheets: () => handlers.current?.sheets() ?? [],
+diff --git a/apps/sheets/src/renderer/mcp-agent-commands.ts b/apps/sheets/src/renderer/mcp-agent-commands.ts
+new file mode 100644
+index 00000000..471cd5b3
+--- /dev/null
++++ b/apps/sheets/src/renderer/mcp-agent-commands.ts
+@@ -0,0 +1,87 @@
++import type { SheetsAgentCommand } from '../shared/mcp-agent'
++import { WORKBOOK_TOOLS, executeWorkbookTool, type SheetsSkillDeps } from './ai/tools'
++import { createWorkbookSkill } from './ai/workbook-skill'
++import { normalizeSheetRefs } from './mcp-sheet-refs'
++
++/**
++ * MCP commands for an external agent that works on the open workbook the way
++ * the in-app assistant does (KnowWork). Kept in its own file: the MCP bridge
++ * only forwards these commands here, so following upstream changes to
++ * mcp-bridge.ts stays a matter of one forwarding line.
++ *
++ * - list_tools: the assistant's workbook tools (context, range/cell/format
++ *   readers, search, aggregates, formula audit, guides, propose_operations)
++ *   plus its base prompt as `guide` — the workflow and op catalog those tools
++ *   are written against;
++ * - run_tool: one of them, with the same executor and stores the assistant
++ *   gets, so an applied batch lands in the undo history like an AI edit.
++ *
++ * Worksheets may be named (`sheet`, `sourceSheet`, `targetSheet`) wherever the
++ * tools take an id, the same name addressing the other MCP tools accept.
++ */
++
++/**
++ * Tools run_tool does not offer: create_document writes a new file into the
++ * default save folder and opens a tab, which an external agent does with its
++ * own file tools.
++ */
++const RUN_TOOL_EXCLUDED = new Set(['create_document'])
++
++/** the assistant's tool definitions an external agent may call through run_tool */
++export function externalWorkbookTools(): { name: string; description: string; inputSchema: unknown }[] {
++  return WORKBOOK_TOOLS.filter((tool) => !RUN_TOOL_EXCLUDED.has(tool.name)).map((tool) => ({
++    name: tool.name,
++    description: tool.description,
++    inputSchema: tool.inputSchema,
++  }))
++}
++
++/** a read tool's `sheet` (a name) resolved to the `sheetId` it takes */
++function withSheetId(
++  input: Record<string, unknown>,
++  deps: SheetsSkillDeps,
++): Record<string, unknown> {
++  if (typeof input.sheet !== 'string' || input.sheetId !== undefined) return input
++  const resolved = normalizeSheetRefs([input], deps.getActiveSheetInfo().sheets)
++  if (!resolved.ok) throw new Error(resolved.error)
++  return (resolved.ops[0] as Record<string, unknown> | undefined) ?? input
++}
++
++/** propose_operations' ops with worksheet names resolved to ids */
++function withOperationSheetIds(
++  input: Record<string, unknown>,
++  deps: SheetsSkillDeps,
++): Record<string, unknown> {
++  if (!Array.isArray(input.operations)) return input
++  const resolved = normalizeSheetRefs(input.operations, deps.getActiveSheetInfo().sheets)
++  if (!resolved.ok) throw new Error(resolved.error)
++  return { ...input, operations: resolved.ops }
++}
++
++/** handle an agent command (the bridge routes them here with isSheetsAgentCommand) */
++export async function runSheetsAgentCommand(
++  command: SheetsAgentCommand,
++  payload: unknown,
++  deps: SheetsSkillDeps,
++): Promise<unknown> {
++  switch (command) {
++    case 'list_tools':
++      return { tools: externalWorkbookTools(), guide: createWorkbookSkill(deps).systemPrompt }
++    case 'run_tool': {
++      const request = (payload ?? {}) as { name?: unknown; input?: unknown }
++      const name = typeof request.name === 'string' ? request.name : ''
++      if (!WORKBOOK_TOOLS.some((tool) => tool.name === name) || RUN_TOOL_EXCLUDED.has(name)) {
++        throw new Error(`run_tool cannot run "${name}"; list_tools gives the available tools`)
++      }
++      const raw =
++        request.input && typeof request.input === 'object'
++          ? { ...(request.input as Record<string, unknown>) }
++          : {}
++      const input =
++        name === 'propose_operations' ? withOperationSheetIds(raw, deps) : withSheetId(raw, deps)
++      const outcome = await executeWorkbookTool({ id: 'mcp', name, input }, deps)
++      if (outcome.isError) throw new Error(outcome.output)
++      return { summary: outcome.summary, output: outcome.output, mutated: outcome.mutated }
++    }
++  }
++}
+diff --git a/apps/sheets/src/renderer/mcp-bridge.ts b/apps/sheets/src/renderer/mcp-bridge.ts
+index e6906279..20de04bb 100644
+--- a/apps/sheets/src/renderer/mcp-bridge.ts
++++ b/apps/sheets/src/renderer/mcp-bridge.ts
+@@ -6,6 +6,9 @@ import {
+   type WorkbookOperation,
+ } from '@genoffice/xlsx-gateway/domain/workbook-dsl'
+ import { normalizeSheetRefs, primaryCellOf, primarySheetId, type SheetRef } from './mcp-sheet-refs'
++import { isSheetsAgentCommand } from '../shared/mcp-agent'
++import { runSheetsAgentCommand } from './mcp-agent-commands'
++import type { SheetsSkillDeps } from './ai/tools'
+ 
+ /**
+  * Renderer half of the MCP → sheets-grid bridge.
+@@ -46,6 +49,8 @@ export interface McpSheetHandlers {
+     path: string,
+     overwrite: boolean,
+   ) => Promise<{ ok: boolean; path?: string; error?: string }>
++  /** the built-in assistant's stores, for agent commands (mcp-agent-commands.ts) */
++  skillDeps?: () => SheetsSkillDeps | null
+ }
+ 
+ export function installSheetsMcpBridge(handlers: McpSheetHandlers): () => void {
+@@ -130,6 +135,12 @@ export function installSheetsMcpBridge(handlers: McpSheetHandlers): () => void {
+     }
+     try {
+       const payload = (message.payload ?? {}) as Record<string, unknown>
++      if (isSheetsAgentCommand(message.command)) {
++        const deps = handlers.skillDeps?.()
++        if (!deps) throw new Error('the workbook is not ready')
++        reply(true, await runSheetsAgentCommand(message.command, message.payload, deps))
++        return
++      }
+       switch (message.command) {
+         case 'read_sheet': {
+           const addresses = Array.isArray(payload.addresses)
+diff --git a/apps/sheets/src/shared/desktop-api.ts b/apps/sheets/src/shared/desktop-api.ts
+index ad76b571..a5d87347 100644
+--- a/apps/sheets/src/shared/desktop-api.ts
++++ b/apps/sheets/src/shared/desktop-api.ts
+@@ -1,4 +1,5 @@
+ import { z } from 'zod'
++import type { SheetsAgentCommand } from './mcp-agent'
+ import { normalizeCustomProfile } from '@genoffice/ai-provider/browser'
+ 
+ import {
+@@ -3400,7 +3401,7 @@ export interface RecoveryPromptPayload {
+ /** MCP visible-grid bridge message (shell → renderer, correlated by requestId). */
+ export interface McpCommandMessage {
+   requestId: string
+-  command: 'apply_ops' | 'read_sheet' | 'save_sheet'
++  command: 'apply_ops' | 'read_sheet' | 'save_sheet' | SheetsAgentCommand
+   payload: unknown
+ }
+ 
+diff --git a/apps/sheets/src/shared/mcp-agent.ts b/apps/sheets/src/shared/mcp-agent.ts
+new file mode 100644
+index 00000000..699b89f0
+--- /dev/null
++++ b/apps/sheets/src/shared/mcp-agent.ts
+@@ -0,0 +1,13 @@
++/**
++ * Workbook commands of an external agent driving the open spreadsheet
++ * (KnowWork; handled by renderer/mcp-agent-commands.ts): the built-in
++ * assistant's own tools. Their own union so the MCP bridge routes them out
++ * before its switch over its own commands.
++ */
++export const SHEETS_AGENT_COMMANDS = ['list_tools', 'run_tool'] as const
++
++export type SheetsAgentCommand = (typeof SHEETS_AGENT_COMMANDS)[number]
++
++export function isSheetsAgentCommand(command: string): command is SheetsAgentCommand {
++  return (SHEETS_AGENT_COMMANDS as readonly string[]).includes(command)
++}
+diff --git a/apps/sheets/tests/mcp-agent-commands.test.ts b/apps/sheets/tests/mcp-agent-commands.test.ts
+new file mode 100644
+index 00000000..374feffd
+--- /dev/null
++++ b/apps/sheets/tests/mcp-agent-commands.test.ts
+@@ -0,0 +1,107 @@
++import { describe, expect, it } from 'vitest'
++import type { ActiveSheetInfo, SheetsSkillDeps } from '../src/renderer/ai/tools'
++import { runSheetsAgentCommand } from '../src/renderer/mcp-agent-commands'
++import { isSheetsAgentCommand } from '../src/shared/mcp-agent'
++
++function fakeDeps(overrides: Partial<SheetsSkillDeps> = {}): SheetsSkillDeps {
++  const info: ActiveSheetInfo = {
++    mode: 'demo',
++    sheetId: 'sheet-1',
++    sheetName: 'Sheet1',
++    revision: 0,
++    knownAddresses: ['A1'],
++    sheets: [
++      { id: 'sheet-1', name: 'Sheet1' },
++      { id: 'sheet-2', name: '明细' },
++    ],
++  }
++  return {
++    getActiveSheetInfo: () => info,
++    readCells: (addresses, sheetId) =>
++      Object.fromEntries(addresses.map((a) => [a, { value: `${sheetId ?? 'active'}:${a}` }])),
++    readFormats: () => ({}),
++    readSheetFeatures: () => '',
++    findCells: () => ({ matches: [], truncated: false, incompleteSheets: [] }),
++    selectRange: () => ({ ok: true, sheetName: 'Sheet1' }),
++    tracePrecedents: () => ({ refs: [] }),
++    traceDependents: () => ({ dependents: [], truncated: false, incompleteSheets: [] }),
++    proposeOperations: () => ({ ok: false, error: 'not configured' }),
++    ...overrides,
++  }
++}
++
++describe('sheets agent commands (external agent on the open workbook)', () => {
++  it('routes only its own commands', () => {
++    expect(isSheetsAgentCommand('list_tools')).toBe(true)
++    expect(isSheetsAgentCommand('run_tool')).toBe(true)
++    expect(isSheetsAgentCommand('apply_ops')).toBe(false)
++  })
++
++  it("lists the assistant's workbook tools without create_document, with its base prompt as the guide", async () => {
++    const listed = (await runSheetsAgentCommand('list_tools', {}, fakeDeps())) as {
++      tools: { name: string }[]
++      guide: string
++    }
++    const names = listed.tools.map((tool) => tool.name)
++    expect(names).toContain('propose_operations')
++    expect(names).toContain('read_range')
++    expect(names).toContain('load_guide')
++    expect(names).not.toContain('create_document')
++    expect(listed.guide).toContain('propose_operations')
++  })
++
++  it('resolves a worksheet name to its id for the readers', async () => {
++    const result = (await runSheetsAgentCommand(
++      'run_tool',
++      { name: 'read_cells', input: { addresses: ['B3'], sheet: '明细' } },
++      fakeDeps(),
++    )) as { output: string; mutated: boolean }
++    expect(result.output).toContain('sheet-2:B3')
++    expect(result.mutated).toBe(false)
++    await expect(
++      runSheetsAgentCommand('run_tool', { name: 'read_cells', input: { addresses: ['B3'], sheet: '没有' } }, fakeDeps()),
++    ).rejects.toThrow(/worksheet "没有"/)
++  })
++
++  it('resolves names inside propose_operations and reports the applied batch', async () => {
++    let seen: readonly unknown[] = []
++    const deps = fakeDeps({
++      proposeOperations: (operations) => {
++        seen = operations
++        return {
++          ok: true,
++          plan: {
++            transactionId: 't1',
++            baseRevision: 0,
++            cellChanges: [],
++            sheetRenames: [],
++            structuralChanges: [],
++            formatChanges: [],
++            warnings: [],
++          },
++          applied: Promise.resolve({ ok: true } as never),
++        }
++      },
++    })
++    const result = (await runSheetsAgentCommand(
++      'run_tool',
++      {
++        name: 'propose_operations',
++        input: { operations: [{ op: 'set_cell', sheet: '明细', address: 'B3', value: 1 }], summary: '写一格' },
++      },
++      deps,
++    )) as { mutated: boolean }
++    expect(seen).toEqual([expect.objectContaining({ op: 'set_cell', sheetId: 'sheet-2', address: 'B3' })])
++    expect(result.mutated).toBe(true)
++  })
++
++  it('refuses create_document and unknown tools, and surfaces tool errors', async () => {
++    await expect(runSheetsAgentCommand('run_tool', { name: 'create_document', input: {} }, fakeDeps())).rejects.toThrow(
++      /cannot run "create_document"/,
++    )
++    await expect(runSheetsAgentCommand('run_tool', { name: 'nope' }, fakeDeps())).rejects.toThrow(/cannot run "nope"/)
++    await expect(
++      runSheetsAgentCommand('run_tool', { name: 'read_range', input: { range: '' } }, fakeDeps()),
++    ).rejects.toThrow(/range must be a non-empty string/)
++  })
++})
+diff --git a/apps/shell/src/main/index.ts b/apps/shell/src/main/index.ts
+index e4e26cbd..08663485 100644
+--- a/apps/shell/src/main/index.ts
++++ b/apps/shell/src/main/index.ts
+@@ -37,6 +37,8 @@ import { installWebIpcCapture } from '../web/capture'
+ import { deliveredAsDownload } from '../web/embedded-files'
+ installWebIpcCapture()
+ import { parseWebServerArgv } from '../web/index'
++import { webOnlyRequested } from '../web/web-only'
++import { closeWebTab, isWebTabId, webOpenDocuments, webTabContentsFor } from '../web/open-documents'
+ import { startWebShare, stopWebShare, webShareStatus } from '../web/share'
+ import { openTrash } from './trash'
+ import { registerAiNamingIpc } from './ai-naming-service'
+@@ -491,6 +493,9 @@ if (headlessArgv.kind !== 'none') {
+ 
+ /** --web-server (or GENOFFICE_WEB=1): also serve the suite to browsers */
+ const webServerArgv = parseWebServerArgv(process.argv)
++/** --web-only: the browser surface only; the shell window is never shown (web/web-only.ts) */
++const webOnly = webServerArgv.enabled && webOnlyRequested(process.argv, process.env)
++if (webOnly) app.dock?.hide()
+ 
+ // The product rename from "AI Office" to GenOffice changed the userData path; migrate old user data once
+ if (app.isPackaged) {
+@@ -4283,6 +4288,8 @@ function createShellWindow(): void {
+     minWidth: SHELL_WINDOW_MIN_WIDTH,
+     minHeight: SHELL_WINDOW_MIN_HEIGHT,
+     title: 'GenOffice',
++    // a web-only run keeps the window for its tab manager but never puts it on screen
++    ...(webOnly ? { show: false } : {}),
+     // Paint the theme's surface before the renderer's first frame so the window
+     // does not flash white in dark mode. nativeTheme.themeSource is already set
+     // from the saved theme in app.whenReady, before this window is created.
+@@ -4373,7 +4380,7 @@ function createShellWindow(): void {
+       if (!win.isDestroyed()) win.webContents.send(TABS_CHANNELS.dockPreview, null)
+       manager.attachTab(tab, index)
+       if (win.isMinimized()) win.restore()
+-      win.show()
++      if (!webOnly) win.show()
+       win.focus()
+     },
+   })
+@@ -4592,7 +4599,7 @@ function notifyUnsupportedFile(filePath: string): void {
+ /** shell-hosted warning box; focused when a shell window exists, standalone otherwise */
+ function showAppWarning(message: string): void {
+   const options = { type: 'warning' as const, message }
+-  if (shellWindow) {
++  if (shellWindow && !webOnly) {
+     shellWindow.show()
+     shellWindow.focus()
+     void dialog.showMessageBox(shellWindow, options)
+@@ -7098,7 +7105,7 @@ function installBackToHomeItems(): void {
+  *  the renderer keeps one. */
+ function openSettingsView(): void {
+   const win = shellWindow ?? BrowserWindow.getFocusedWindow()
+-  if (!win || win.isDestroyed()) return
++  if (!win || win.isDestroyed() || webOnly) return
+   if (win.isMinimized()) win.restore()
+   win.show()
+   win.focus()
+@@ -7178,6 +7185,7 @@ let controlServer: ControlServer | null = null
+ // show() does not un-minimize, and on macOS ⌘W destroys the shell window while the
+ // app keeps running — either way a file opened from Finder would land out of sight.
+ function revealShellWindow(): void {
++  if (webOnly) return
+   if (!shellWindow) createShellWindow()
+   if (shellWindow?.isMinimized()) shellWindow.restore()
+   shellWindow?.show()
+@@ -7215,7 +7223,7 @@ installContextMenu(app, () => contextMenuLabels(currentLang()))
+ registerAiIpc()
+ const openHomeSettings = (section: 'aiModel' | 'skills'): void => {
+   const win = shellWindow
+-  if (!win || win.isDestroyed()) return
++  if (!win || win.isDestroyed() || webOnly) return
+   // the request may come from a detached window or while the shell is minimized
+   if (win.isMinimized()) win.restore()
+   win.show()
+@@ -7457,12 +7465,18 @@ app.whenReady().then(async () => {
+     openDocumentsControl: createOpenDocumentsControl({
+       list: async () => {
+         const tabs = tabManager ? await tabManager.openDocuments() : []
+-        return [...tabs, ...(await detachedOpenDocuments())]
++        return [...tabs, ...(await detachedOpenDocuments()), ...(await webOpenDocuments())]
+       },
+       webContentsFor: (tabId) =>
+-        tabManager?.webContentsForTab(tabId) ?? detachedWebContentsFor(tabId),
++        tabManager?.webContentsForTab(tabId) ??
++        detachedWebContentsFor(tabId) ??
++        webTabContentsFor(tabId),
++      // a browser tab's document session ends here and the page reloads from disk
+       closeTab: (tabId) =>
+-        closeDetachedWithoutPrompt(tabId) || (tabManager?.closeTabWithoutPrompt(tabId) ?? false),
++        isWebTabId(tabId)
++          ? closeWebTab(tabId)
++          : closeDetachedWithoutPrompt(tabId) ||
++            (tabManager?.closeTabWithoutPrompt(tabId) ?? false),
+       defaultSaveDir: () => defaultSaveDir(),
+       docs: mcpDocsControl,
+       sheets: mcpSheetsControl,
+@@ -7488,20 +7502,27 @@ app.whenReady().then(async () => {
+     resolveTarget: createOpenTargetResolver({
+       list: async () => {
+         const tabs = tabManager ? await tabManager.openDocuments() : []
+-        return [...tabs, ...(await detachedOpenDocuments())]
++        return [...tabs, ...(await detachedOpenDocuments()), ...(await webOpenDocuments())]
+       },
+       webContentsFor: (tabId) =>
+-        tabManager?.webContentsForTab(tabId) ?? detachedWebContentsFor(tabId),
++        tabManager?.webContentsForTab(tabId) ??
++        detachedWebContentsFor(tabId) ??
++        webTabContentsFor(tabId),
+       // an agent editing a background tab would otherwise work where nobody can
+       // see it: switch to that tab and bring its window forward first
++      // a browser tab is already where the user is looking; the hidden shell
++      // window of a web-server run must not pop up on the machine running it
+       activate: (tabId) => {
++        if (isWebTabId(tabId)) return
+         if (!activateDetached(tabId)) tabManager?.activateTab(tabId)
+       },
+       revealWindow: (tabId) => {
+-        if (!isDetachedTabId(tabId)) revealShellWindow()
++        if (!isDetachedTabId(tabId) && !isWebTabId(tabId)) revealShellWindow()
+       },
+     }),
+     logFilePath: join(app.getPath('userData'), 'mcp-log.txt'),
++    // the --headless-export pipeline without starting a second app per file
++    exportDocument: (request) => runHeadlessExport({ ...request, json: true }, headlessExporters),
+   })
+   void startMcpFromSettings(currentMcpSettings()).catch((error) => {
+     console.error('[mcp] failed to start on boot:', error)
+@@ -7514,12 +7535,14 @@ app.whenReady().then(async () => {
+   setUpdateCheckInvoker(() => void checkForUpdatesNow())
+   // every app's Settings entry (⌘, / Ctrl+,) lands on the shell's Settings view
+   setSettingsInvoker(() => openSettingsView())
+-  initAutoUpdater(
+-    () => shellWindow,
+-    currentUpdateChannel(),
+-    autoUpdateCheckEnabled,
+-    silentInstallUpdateEnabled,
+-  )
++  // a web-only run is an embedded service: whoever starts it ships and updates it
++  if (!webOnly)
++    initAutoUpdater(
++      () => shellWindow,
++      currentUpdateChannel(),
++      autoUpdateCheckEnabled,
++      silentInstallUpdateEnabled,
++    )
+   // resource watchdog: a renderer that stays hot for minutes gets diagnostics
+   // recorded and the user an offer to close the document (headless exports
+   // are short-lived and unattended)
+diff --git a/apps/shell/src/main/mcp/app-mcp.ts b/apps/shell/src/main/mcp/app-mcp.ts
+index fca08926..5066e608 100644
+--- a/apps/shell/src/main/mcp/app-mcp.ts
++++ b/apps/shell/src/main/mcp/app-mcp.ts
+@@ -3,6 +3,7 @@ import { McpLogger } from './mcp-logger'
+ import type { CliRunner } from './cli-runner'
+ import { createDocumentTools, documentDriver, type DocsControl } from './tools/document-tools'
+ import { createPdfTools } from './tools/pdf-tools'
++import { createExportTools, type ExportDocument } from './tools/export-tools'
+ import { createSlidesTools, slidesDriver, type SlidesControl } from './tools/slides-tools'
+ import { createSheetsTools, sheetsDriver, type SheetsControl } from './tools/sheets-tools'
+ import {
+@@ -51,6 +52,8 @@ export interface McpRuntimeDeps {
+   resolveTarget?: TargetResolver
+   /** where the MCP log file lives (userData); logging is unavailable without it */
+   logFilePath?: string
++  /** in-process exports through the editors' hidden windows (export_document) */
++  exportDocument?: ExportDocument
+ }
+ 
+ export interface McpSettings {
+@@ -177,6 +180,7 @@ function buildTools(): McpToolDefinition[] {
+     // headless, session-free read access (read_pdf); registered whenever the
+     // pdf workspace is bundled in, which the shell always does
+     ...createPdfTools(),
++    ...createExportTools(deps.exportDocument),
+     // documents the user has open, independent of the session above
+     ...createOpenDocumentTools({
+       defaultSaveDir: deps.defaultSaveDir,
+diff --git a/apps/shell/src/main/mcp/contents-by-id.ts b/apps/shell/src/main/mcp/contents-by-id.ts
+new file mode 100644
+index 00000000..e6e63981
+--- /dev/null
++++ b/apps/shell/src/main/mcp/contents-by-id.ts
+@@ -0,0 +1,16 @@
++import { webContents, type WebContents } from 'electron'
++import { webTabById } from '../../web/tab-registry'
++
++/**
++ * The renderer behind a webContents id, for the MCP bridges.
++ *
++ * In web-server mode an editor runs in a browser tab, and the WebTabContents
++ * standing in for it is not an Electron WebContents: `webContents.fromId`
++ * never finds it, so an MCP command for a browser tab would fail with "the
++ * document is no longer open" even while the user is looking at it. Browser
++ * tab ids start far above Electron's (see WebTabContents), so checking the
++ * web registry first cannot shadow a desktop view.
++ */
++export function contentsById(id: number): WebContents | undefined {
++  return webTabById(id)?.asWebContents() ?? webContents.fromId(id) ?? undefined
++}
+diff --git a/apps/shell/src/main/mcp/docs-bridge.ts b/apps/shell/src/main/mcp/docs-bridge.ts
+index c1ab23d9..3defe19e 100644
+--- a/apps/shell/src/main/mcp/docs-bridge.ts
++++ b/apps/shell/src/main/mcp/docs-bridge.ts
+@@ -1,5 +1,6 @@
+ import { existsSync } from 'node:fs'
+-import { ipcMain, webContents } from 'electron'
++import { ipcMain } from 'electron'
++import { contentsById } from './contents-by-id'
+ import type { DocsControl, McpEditorCommandName } from './tools/document-tools'
+ 
+ /**
+@@ -57,7 +58,7 @@ function markReady(wcId: number): void {
+ /** a closed tab can never become ready: fail its waiters instead of letting them time out */
+ function watchDestroyed(wcId: number): void {
+   if (watchedIds.has(wcId)) return
+-  const wc = webContents.fromId(wcId)
++  const wc = contentsById(wcId)
+   if (!wc || wc.isDestroyed()) return
+   watchedIds.add(wcId)
+   wc.once('destroyed', () => {
+@@ -77,7 +78,7 @@ function watchDestroyed(wcId: number): void {
+ 
+ function waitForReady(wcId: number): Promise<void> {
+   if (readyIds.has(wcId)) return Promise.resolve()
+-  const wc = webContents.fromId(wcId)
++  const wc = contentsById(wcId)
+   if (!wc || wc.isDestroyed()) return Promise.reject(new Error('the document tab was closed'))
+   watchDestroyed(wcId)
+   return new Promise((resolve, reject) => {
+@@ -152,7 +153,7 @@ export function createDocsControl(deps: DocsBridgeDeps): DocsControl {
+     command: McpEditorCommandName,
+     payload: unknown,
+   ): Promise<unknown> => {
+-    const wc = webContents.fromId(wcId)
++    const wc = contentsById(wcId)
+     if (!wc || wc.isDestroyed()) throw new Error('the target document is no longer open')
+     await waitForReady(wcId)
+     if (command === 'save_document') {
+diff --git a/apps/shell/src/main/mcp/sheets-bridge.ts b/apps/shell/src/main/mcp/sheets-bridge.ts
+index 67b1ffcd..ceb1b319 100644
+--- a/apps/shell/src/main/mcp/sheets-bridge.ts
++++ b/apps/shell/src/main/mcp/sheets-bridge.ts
+@@ -1,6 +1,8 @@
+ import { existsSync } from 'node:fs'
+-import { ipcMain, webContents } from 'electron'
++import { ipcMain } from 'electron'
++import { contentsById } from './contents-by-id'
+ import type { SheetsControl } from './tools/sheets-tools'
++import type { SheetsAgentCommand } from '../../../../sheets/src/shared/mcp-agent'
+ 
+ /**
+  * Shell-main half of the MCP → sheets-grid bridge.
+@@ -59,7 +61,7 @@ function markReady(wcId: number): void {
+ /** a closed tab can never become ready: fail its waiters instead of letting them time out */
+ function watchDestroyed(wcId: number): void {
+   if (watchedIds.has(wcId)) return
+-  const wc = webContents.fromId(wcId)
++  const wc = contentsById(wcId)
+   if (!wc || wc.isDestroyed()) return
+   watchedIds.add(wcId)
+   wc.once('destroyed', () => {
+@@ -79,7 +81,7 @@ function watchDestroyed(wcId: number): void {
+ 
+ function waitForReady(wcId: number): Promise<void> {
+   if (readyIds.has(wcId)) return Promise.resolve()
+-  const wc = webContents.fromId(wcId)
++  const wc = contentsById(wcId)
+   if (!wc || wc.isDestroyed()) return Promise.reject(new Error('the spreadsheet tab was closed'))
+   watchDestroyed(wcId)
+   return new Promise((resolve, reject) => {
+@@ -156,10 +158,10 @@ export interface SheetsBridgeDeps {
+ export function createSheetsControl(deps: SheetsBridgeDeps): SheetsControl {
+   const runCommand = async (
+     wcId: number,
+-    command: 'apply_ops' | 'read_sheet' | 'save_sheet',
++    command: 'apply_ops' | 'read_sheet' | 'save_sheet' | SheetsAgentCommand,
+     payload: unknown,
+   ): Promise<unknown> => {
+-    const wc = webContents.fromId(wcId)
++    const wc = contentsById(wcId)
+     if (!wc || wc.isDestroyed()) throw new Error('the target spreadsheet is no longer open')
+     await waitForReady(wcId)
+     if (command === 'save_sheet') {
+diff --git a/apps/shell/src/main/mcp/slides-bridge.ts b/apps/shell/src/main/mcp/slides-bridge.ts
+index 6e9f1638..093c9c4b 100644
+--- a/apps/shell/src/main/mcp/slides-bridge.ts
++++ b/apps/shell/src/main/mcp/slides-bridge.ts
+@@ -1,6 +1,6 @@
+ import { existsSync } from 'node:fs'
+ import { extname, isAbsolute } from 'node:path'
+-import { webContents } from 'electron'
++import { contentsById } from './contents-by-id'
+ import { elementDurableId, slideDurableId, type SlideElement } from '@genoffice/pptx-engine'
+ import { applySessionTxn, saveSessionDeckTo } from '../../../../slides/src/main/slides-main'
+ import { attachedIds, sessions, type Session } from '../../../../slides/src/main/session-state'
+@@ -34,7 +34,7 @@ async function waitSession(wcId: number): Promise<Session> {
+   for (;;) {
+     const session = sessions.get(wcId)
+     if (session) return session
+-    const wc = webContents.fromId(wcId)
++    const wc = contentsById(wcId)
+     if (!wc || wc.isDestroyed()) {
+       throw new Error('the presentation tab was closed before it became ready')
+     }
+@@ -159,7 +159,7 @@ export function createSlidesControl(deps: SlidesBridgeDeps): SlidesControl {
+             slides: result.slides,
+             size: { cx: session.opened.deck.size.cx, cy: session.opened.deck.size.cy },
+           }
+-          for (const id of ids) webContents.fromId(id)?.send('slides:deck-changed', payload)
++          for (const id of ids) contentsById(id)?.send('slides:deck-changed', payload)
+         }
+       }
+       // The render tree was only needed for the canvas push above: it carries
+diff --git a/apps/shell/src/main/mcp/tools/document-tools.ts b/apps/shell/src/main/mcp/tools/document-tools.ts
+index ffa20226..e0676d57 100644
+--- a/apps/shell/src/main/mcp/tools/document-tools.ts
++++ b/apps/shell/src/main/mcp/tools/document-tools.ts
+@@ -13,6 +13,7 @@ import type { McpToolDefinition } from '../mcp-server'
+ import { capabilityReport, generateExtension } from './formats'
+ import type { FamilyDriver, SessionHost, TargetResolver } from './session-tools'
+ import { contentTarget } from './session-tools'
++import { createDocxAgentTools } from './docx-agent-tools'
+ import type { CliRunner } from '../cli-runner'
+ 
+ /**
+@@ -59,6 +60,10 @@ export type McpEditorCommandName =
+   | 'read_document'
+   | 'read_blocks'
+   | 'save_document'
++  | 'list_tools'
++  | 'run_tool'
++  | 'save_checkpoint'
++  | 'restore_checkpoint'
+ 
+ /**
+  * Visible-editor control: opens a docs tab and pushes editor commands into it,
+@@ -483,6 +488,7 @@ function createDocxContentTools(deps: DocToolDeps, host: SessionHost): McpToolDe
+     )
+ 
+   return [
++    ...createDocxAgentTools(target, docs, documentField),
+     {
+       name: 'insert_content',
+       description:
+diff --git a/apps/shell/src/main/mcp/tools/docx-agent-tools.ts b/apps/shell/src/main/mcp/tools/docx-agent-tools.ts
+new file mode 100644
+index 00000000..bb647d57
+--- /dev/null
++++ b/apps/shell/src/main/mcp/tools/docx-agent-tools.ts
+@@ -0,0 +1,88 @@
++import { z } from 'zod'
++import type { McpToolDefinition } from '../mcp-server'
++import type { DocToolDeps } from './document-tools'
++import type { contentTarget } from './session-tools'
++
++/**
++ * MCP tools for an external agent that drives an open Word document the way
++ * the in-app assistant does (KnowWork): the editor's own document tools
++ * (list_docx_tools / run_docx_tool) and whole-document checkpoints. The editor
++ * side is mcp-agent-commands.ts in the docs app. Kept in their own file so
++ * document-tools.ts only carries one spread line.
++ */
++export function createDocxAgentTools(
++  target: ReturnType<typeof contentTarget>,
++  docs: NonNullable<DocToolDeps['docs']>,
++  documentField: z.ZodOptional<z.ZodString>,
++): McpToolDefinition[] {
++  return [
++    {
++      name: 'list_docx_tools',
++      description:
++        "List the Word editor's own document tools (name, description, JSON input schema) that " +
++        'run_docx_tool can call: revisions, comments, notes, headers/footers, page setup, styles, ' +
++        'tables, charts and the block edits. They are the tools the in-app assistant uses, so ' +
++        'their descriptions are written for an agent.',
++      inputSchema: { document: documentField },
++      handler: async (args) => {
++        const wc = await target(args.document)
++        return docs.runCommand(wc, 'list_tools', {})
++      },
++    },
++    {
++      name: 'run_docx_tool',
++      description:
++        "Run one of the Word editor's own document tools (see list_docx_tools) in the visible " +
++        'document, with the same executor, Track Changes attribution and stale-index guard as the ' +
++        'in-app assistant.',
++      inputSchema: {
++        tool: z.string().describe('tool name from list_docx_tools'),
++        input: z.record(z.string(), z.unknown()).optional().describe("the tool's input object"),
++        track: z
++          .boolean()
++          .optional()
++          .describe(
++            "record the edit as a tracked revision even while the document's Track Changes is off",
++          ),
++        author: z
++          .string()
++          .optional()
++          .describe(
++            'name the revisions and comments of this call are recorded under (default: the user name in Settings)',
++          ),
++        document: documentField,
++      },
++      handler: async (args) => {
++        const wc = await target(args.document)
++        return docs.runCommand(wc, 'run_tool', {
++          name: args.tool,
++          input: args.input ?? {},
++          ...(args.track === true ? { track: true } : {}),
++          ...(typeof args.author === 'string' ? { author: args.author } : {}),
++        })
++      },
++    },
++    {
++      name: 'save_checkpoint',
++      description:
++        'Remember the whole document under an id (for example before an agent turn) so ' +
++        'restore_checkpoint can undo everything done after it. The last 20 are kept per document.',
++      inputSchema: { id: z.string().describe('checkpoint id'), document: documentField },
++      handler: async (args) => {
++        const wc = await target(args.document)
++        return docs.runCommand(wc, 'save_checkpoint', { id: args.id })
++      },
++    },
++    {
++      name: 'restore_checkpoint',
++      description:
++        'Rewind the document to a checkpoint saved with save_checkpoint, as one undoable step. ' +
++        'Edits anyone made after it are rewound too; later checkpoints are dropped.',
++      inputSchema: { id: z.string().describe('checkpoint id'), document: documentField },
++      handler: async (args) => {
++        const wc = await target(args.document)
++        return docs.runCommand(wc, 'restore_checkpoint', { id: args.id })
++      },
++    },
++  ]
++}
+diff --git a/apps/shell/src/main/mcp/tools/export-tools.ts b/apps/shell/src/main/mcp/tools/export-tools.ts
+new file mode 100644
+index 00000000..adc3b576
+--- /dev/null
++++ b/apps/shell/src/main/mcp/tools/export-tools.ts
+@@ -0,0 +1,60 @@
++import { isAbsolute } from 'node:path'
++import { z } from 'zod'
++import type { HeadlessExportFormat, HeadlessExportOutcome } from '@genoffice/electron-utils'
++import type { McpToolDefinition } from '../mcp-server'
++
++/**
++ * export_document: render a document to PDF (or HTML / Markdown / docx where
++ * the editor supports it) inside the running app.
++ *
++ * The same hidden-window exporters `--headless-export` drives, but without
++ * starting a second app per file: the CLI path cold-starts GenOffice for every
++ * export (5-8 s each on a Linux server, where the conversion itself is a
++ * fraction of that), which rules it out for a conversion service. Exports run
++ * one at a time, so a burst of requests cannot open a pile of hidden windows.
++ */
++
++export type ExportDocument = (request: {
++  input: string
++  targetFormat: HeadlessExportFormat
++  outPath: string
++}) => Promise<HeadlessExportOutcome>
++
++export function createExportTools(exportDocument: ExportDocument | undefined): McpToolDefinition[] {
++  if (!exportDocument) return []
++  let queue: Promise<unknown> = Promise.resolve()
++  return [
++    {
++      name: 'export_document',
++      description:
++        'Export a document file to another format with the editors themselves, in the running app ' +
++        '(no window, no second process): docx to pdf/html/md, xlsx and pptx to pdf, md to pdf, ' +
++        'html to pdf/docx. The file is read from disk, so save an open document first.',
++      inputSchema: {
++        input: z.string().describe('absolute path of the document to export'),
++        to: z.enum(['pdf', 'docx', 'html', 'md']).describe('target format'),
++        out: z.string().describe('absolute path to write'),
++      },
++      handler: async (args) => {
++        const input = String(args.input ?? '')
++        const out = String(args.out ?? '')
++        if (!isAbsolute(input) || !isAbsolute(out)) {
++          throw new Error('input and out must be absolute paths')
++        }
++        const run = queue.then(async () => {
++          const startedAt = Date.now()
++          const outcome = await exportDocument({
++            input,
++            targetFormat: args.to as HeadlessExportFormat,
++            outPath: out,
++          })
++          if (!outcome.ok) throw new Error(outcome.message)
++          return { ok: true, out: outcome.outPath, ms: Date.now() - startedAt }
++        })
++        // a failed export must not wedge the ones queued behind it
++        queue = run.catch(() => undefined)
++        return run
++      },
++    },
++  ]
++}
+diff --git a/apps/shell/src/main/mcp/tools/sheets-tools.ts b/apps/shell/src/main/mcp/tools/sheets-tools.ts
+index 00118f43..4c33e419 100644
+--- a/apps/shell/src/main/mcp/tools/sheets-tools.ts
++++ b/apps/shell/src/main/mcp/tools/sheets-tools.ts
+@@ -8,6 +8,8 @@ import type { FamilyDriver, SessionHost, TargetResolver } from './session-tools'
+ import { contentTarget } from './session-tools'
+ import type { McpToolDefinition } from '../mcp-server'
+ import type { CliRunner } from '../cli-runner'
++import type { SheetsAgentCommand } from '../../../../../sheets/src/shared/mcp-agent'
++import { createXlsxAgentTools } from './xlsx-agent-tools'
+ 
+ /**
+  * Sheets (xlsx) tool surface for the MCP server.
+@@ -55,7 +57,7 @@ export interface SheetsControl {
+   /** run one command in that tab and resolve its result */
+   runCommand: (
+     wcId: number,
+-    command: 'apply_ops' | 'read_sheet' | 'save_sheet',
++    command: 'apply_ops' | 'read_sheet' | 'save_sheet' | SheetsAgentCommand,
+     payload: unknown,
+   ) => Promise<unknown>
+ }
+@@ -239,6 +241,7 @@ function createGridContentTools(deps: SheetsToolDeps, host: SessionHost): McpToo
+     )
+ 
+   return [
++    ...createXlsxAgentTools(target, sheets, documentField),
+     {
+       name: 'read_sheet',
+       description:
+diff --git a/apps/shell/src/main/mcp/tools/slides-guide-tools.ts b/apps/shell/src/main/mcp/tools/slides-guide-tools.ts
+new file mode 100644
+index 00000000..4d5948fd
+--- /dev/null
++++ b/apps/shell/src/main/mcp/tools/slides-guide-tools.ts
+@@ -0,0 +1,36 @@
++import { z } from 'zod'
++import { OP_GROUPS, opGuide, opGuideCatalog, opSignatureIndex } from '@genoffice/pptx-ops/op-docs'
++import type { McpToolDefinition } from '../mcp-server'
++
++/**
++ * The slide op reference for an external agent (KnowWork): what the in-app
++ * assistant's apply_ops description and load_guide tool carry, so a caller of
++ * apply_slide_ops learns each op's exact fields instead of guessing them from
++ * the op names. Same source as the assistant (packages/pptx-ops op-docs).
++ * Kept in its own file so slides-tools.ts only carries one spread line.
++ */
++export function createSlidesGuideTools(): McpToolDefinition[] {
++  return [
++    {
++      name: 'slide_ops_guide',
++      description:
++        'Reference for apply_slide_ops, the same one the in-app assistant uses. Without `groups`: ' +
++        "one signature line per op and the group catalog. With `groups`: those groups' field " +
++        'tables (types and units), runnable JSON examples and common mistakes — load the groups ' +
++        'of the ops a batch uses before sending it.',
++      inputSchema: {
++        groups: z
++          .array(z.enum(OP_GROUPS as [string, ...string[]]))
++          .optional()
++          .describe('op groups to load in full, e.g. ["text","element"]'),
++      },
++      handler: async (args) => {
++        const groups = Array.isArray(args.groups) ? [...new Set(args.groups.map(String))] : []
++        if (groups.length === 0) {
++          return { text: `${opSignatureIndex()}\n\nGroups:\n${opGuideCatalog()}` }
++        }
++        return { text: groups.map((group) => opGuide(group) ?? '').join('\n\n---\n\n') }
++      },
++    },
++  ]
++}
+diff --git a/apps/shell/src/main/mcp/tools/slides-tools.ts b/apps/shell/src/main/mcp/tools/slides-tools.ts
+index 5525c94e..b2371427 100644
+--- a/apps/shell/src/main/mcp/tools/slides-tools.ts
++++ b/apps/shell/src/main/mcp/tools/slides-tools.ts
+@@ -7,6 +7,7 @@ import type { FamilyDriver, SessionHost, TargetResolver } from './session-tools'
+ import { contentTarget } from './session-tools'
+ import type { McpToolDefinition } from '../mcp-server'
+ import type { CliRunner } from '../cli-runner'
++import { createSlidesGuideTools } from './slides-guide-tools'
+ 
+ /**
+  * Slides (pptx) tool surface for the MCP server.
+@@ -162,6 +163,7 @@ function createDeckContentTools(deps: SlidesToolDeps, host: SessionHost): McpToo
+     )
+ 
+   return [
++    ...createSlidesGuideTools(),
+     {
+       name: 'read_deck',
+       description:
+diff --git a/apps/shell/src/main/mcp/tools/xlsx-agent-tools.ts b/apps/shell/src/main/mcp/tools/xlsx-agent-tools.ts
+new file mode 100644
+index 00000000..4adf9835
+--- /dev/null
++++ b/apps/shell/src/main/mcp/tools/xlsx-agent-tools.ts
+@@ -0,0 +1,50 @@
++import { z } from 'zod'
++import type { McpToolDefinition } from '../mcp-server'
++import type { SheetsControl } from './sheets-tools'
++import type { contentTarget } from './session-tools'
++
++/**
++ * MCP tools for an external agent that works on an open spreadsheet the way
++ * the in-app assistant does (KnowWork): the assistant's own workbook tools
++ * (list_xlsx_tools / run_xlsx_tool). The renderer side is
++ * mcp-agent-commands.ts in the sheets app. Kept in their own file so
++ * sheets-tools.ts only carries one spread line.
++ */
++export function createXlsxAgentTools(
++  target: ReturnType<typeof contentTarget>,
++  sheets: SheetsControl,
++  documentField: z.ZodOptional<z.ZodString>,
++): McpToolDefinition[] {
++  return [
++    {
++      name: 'list_xlsx_tools',
++      description:
++        "List the spreadsheet assistant's own workbook tools (name, description, JSON input " +
++        'schema) that run_xlsx_tool can call — workbook context, range/cell/format readers, ' +
++        'search, aggregates, formula audit, guides and propose_operations — plus `guide`, the ' +
++        'workflow and op catalog they are written against.',
++      inputSchema: { document: documentField },
++      handler: async (args) => {
++        const wc = await target(args.document)
++        return sheets.runCommand(wc, 'list_tools', {})
++      },
++    },
++    {
++      name: 'run_xlsx_tool',
++      description:
++        "Run one of the spreadsheet assistant's own workbook tools (see list_xlsx_tools) on the " +
++        'visible workbook, with the same executor as the in-app assistant: propose_operations ' +
++        'applies its batch at once as one undo step. Worksheets may be named with `sheet` ' +
++        '(`sourceSheet`/`targetSheet`) wherever a tool takes a sheetId.',
++      inputSchema: {
++        tool: z.string().describe('tool name from list_xlsx_tools'),
++        input: z.record(z.string(), z.unknown()).optional().describe("the tool's input object"),
++        document: documentField,
++      },
++      handler: async (args) => {
++        const wc = await target(args.document)
++        return sheets.runCommand(wc, 'run_tool', { name: args.tool, input: args.input ?? {} })
++      },
++    },
++  ]
++}
+diff --git a/apps/shell/src/web/open-documents.ts b/apps/shell/src/web/open-documents.ts
+new file mode 100644
+index 00000000..709b0308
+--- /dev/null
++++ b/apps/shell/src/web/open-documents.ts
+@@ -0,0 +1,114 @@
++import { basename } from 'node:path'
++import type { WebContents } from 'electron'
++import { docsQueryDirty, teardownDocsRenderer } from '../../../docs/src/main/docs-main'
++import { sheetsPendingEditCount } from '../../../sheets/src/main/sheets-main'
++import { slidesIsDirty } from '../../../slides/src/main/slides-main'
++import { pdfIsDirty } from '../../../pdf/src/main/pdf-main'
++import { markdownIsDirty } from '../../../markdown/src/main/markdown-main'
++import { htmlIsDirty } from '../../../html/src/main/html-main'
++import type { DocumentTabKind, OpenDocumentTab } from '../shared/tabs-api'
++import type { WebTabContents } from './web-contents'
++import { unregisterWebTab, webTabById, webTabs } from './tab-registry'
++
++/**
++ * Browser tabs as open documents (web-server mode).
++ *
++ * The MCP open-documents tools and the `document` target resolver list the
++ * tab manager's views and the detached windows. In web-server mode the
++ * editors the user is looking at are browser tabs, which are neither, so an
++ * agent could not find or edit them. This lists them in the same shape as
++ * TabManager.openDocuments, under ids that cannot collide with the others.
++ *
++ * The path is the one the tab was opened with (`?path=`): a Save As inside
++ * the browser tab does not update it.
++ */
++
++const ID_PREFIX = 'web:'
++const KINDS: readonly DocumentTabKind[] = ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html']
++
++interface WebTabDocument {
++  kind: DocumentTabKind
++  filePath?: string
++}
++
++function describe(tab: WebTabContents): WebTabDocument | null {
++  let url: URL
++  try {
++    url = new URL(tab.url, 'http://localhost')
++  } catch {
++    return null
++  }
++  const kind = url.pathname.split('/')[1] as DocumentTabKind
++  if (!KINDS.includes(kind)) return null
++  const filePath = url.searchParams.get('path') || undefined
++  return { kind, ...(filePath ? { filePath } : {}) }
++}
++
++/** unsaved-changes state, the same per-family checks the tab manager uses */
++async function webTabIsDirty(kind: DocumentTabKind, wc: WebContents): Promise<boolean> {
++  switch (kind) {
++    case 'sheets':
++      return sheetsPendingEditCount(wc.id) > 0
++    case 'docs':
++      return docsQueryDirty(wc)
++    case 'slides':
++      return slidesIsDirty(wc.id)
++    case 'pdf':
++      return pdfIsDirty(wc.id)
++    case 'markdown':
++      return markdownIsDirty(wc.id)
++    case 'html':
++      return htmlIsDirty(wc.id)
++    default:
++      return false
++  }
++}
++
++export function isWebTabId(id: string): boolean {
++  return id.startsWith(ID_PREFIX)
++}
++
++/** the browser tab's stand-in webContents for an id from webOpenDocuments */
++export function webTabContentsFor(id: string): WebContents | undefined {
++  if (!isWebTabId(id)) return undefined
++  const tab = webTabById(Number(id.slice(ID_PREFIX.length)))
++  return tab && !tab.isDestroyed() ? tab.asWebContents() : undefined
++}
++
++/**
++ * Close a browser tab's document from the server side (open_documents close).
++ * As for a closed desktop tab, Docs drops the crash-recovery copy and the
++ * renderer loses write access, so its 30s recovery loop cannot bring
++ * discarded edits back. The tab leaves the open-documents list and the page
++ * reloads itself, opening the file fresh from disk.
++ * False when the tab is already gone.
++ */
++export function closeWebTab(id: string): boolean {
++  if (!isWebTabId(id)) return false
++  const tab = webTabById(Number(id.slice(ID_PREFIX.length)))
++  if (!tab || tab.isDestroyed()) return false
++  if (describe(tab)?.kind === 'docs') teardownDocsRenderer(tab.asWebContents())
++  tab.deliver('web:closed', [])
++  unregisterWebTab(tab)
++  tab.destroy()
++  return true
++}
++
++export async function webOpenDocuments(): Promise<OpenDocumentTab[]> {
++  const out: OpenDocumentTab[] = []
++  for (const tab of webTabs()) {
++    if (tab.isDestroyed()) continue
++    const doc = describe(tab)
++    if (!doc) continue
++    out.push({
++      id: ID_PREFIX + tab.id,
++      kind: doc.kind,
++      title: doc.filePath ? basename(doc.filePath) : doc.kind,
++      ...(doc.filePath ? { filePath: doc.filePath } : {}),
++      // a browser tab's focus is not visible from here; none is "the" active one
++      active: false,
++      dirty: await webTabIsDirty(doc.kind, tab.asWebContents()),
++    })
++  }
++  return out
++}
+diff --git a/apps/shell/src/web/tab-registry.ts b/apps/shell/src/web/tab-registry.ts
+new file mode 100644
+index 00000000..50b2074d
+--- /dev/null
++++ b/apps/shell/src/web/tab-registry.ts
+@@ -0,0 +1,21 @@
++import type { WebTabContents } from './web-contents'
++
++/** connected browser tabs by their stand-in webContents id */
++const tabsById = new Map<number, WebTabContents>()
++
++export function registerWebTab(tab: WebTabContents): void {
++  tabsById.set(tab.id, tab)
++}
++
++export function unregisterWebTab(tab: WebTabContents): void {
++  tabsById.delete(tab.id)
++}
++
++export function webTabById(id: number): WebTabContents | undefined {
++  return tabsById.get(id)
++}
++
++/** every connected browser tab (the MCP open-documents listing walks these) */
++export function webTabs(): WebTabContents[] {
++  return [...tabsById.values()]
++}
+diff --git a/apps/shell/src/web/web-contents.ts b/apps/shell/src/web/web-contents.ts
+index 081bf7f6..e55b6774 100644
+--- a/apps/shell/src/web/web-contents.ts
++++ b/apps/shell/src/web/web-contents.ts
+@@ -133,16 +133,6 @@ export class WebTabContents {
+   }
+ }
+ 
+-const tabsById = new Map<number, WebTabContents>()
+-
+-export function registerWebTab(tab: WebTabContents): void {
+-  tabsById.set(tab.id, tab)
+-}
+-
+-export function unregisterWebTab(tab: WebTabContents): void {
+-  tabsById.delete(tab.id)
+-}
+-
+-export function webTabById(id: number): WebTabContents | undefined {
+-  return tabsById.get(id)
+-}
++// the registry lives in its own Electron-free module so the MCP bridges can
++// look browser tabs up without importing Electron's session here
++export { registerWebTab, unregisterWebTab, webTabById, webTabs } from './tab-registry'
+diff --git a/apps/shell/tests/mcp/document-tools.test.ts b/apps/shell/tests/mcp/document-tools.test.ts
+index dd462e31..13e75c5b 100644
+--- a/apps/shell/tests/mcp/document-tools.test.ts
++++ b/apps/shell/tests/mcp/document-tools.test.ts
+@@ -352,12 +352,16 @@ describe('M6 visible-editing tools (docs control wired)', () => {
+       'get_app_info',
+       'insert_content',
+       'insert_picture',
++      'list_docx_tools',
+       'open_in_genoffice',
+       'read_blocks',
+       'read_document',
+       'read_docx',
+       'read_docx_properties',
+       'replace_blocks',
++      'restore_checkpoint',
++      'run_docx_tool',
++      'save_checkpoint',
+       'save_session',
+     ])
+   })
+diff --git a/apps/shell/tests/mcp/export-tools.test.ts b/apps/shell/tests/mcp/export-tools.test.ts
+new file mode 100644
+index 00000000..88e9fa12
+--- /dev/null
++++ b/apps/shell/tests/mcp/export-tools.test.ts
+@@ -0,0 +1,38 @@
++import { describe, expect, it } from 'vitest'
++import { createExportTools, type ExportDocument } from '../../src/main/mcp/tools/export-tools'
++
++describe('export_document', () => {
++  it('is only offered when the app can export in process', () => {
++    expect(createExportTools(undefined)).toEqual([])
++  })
++
++  it('runs exports one at a time and keeps going after a failure', async () => {
++    const order: string[] = []
++    let running = 0
++    const exportDocument: ExportDocument = async ({ input, outPath }) => {
++      running++
++      expect(running).toBe(1)
++      order.push(input)
++      await new Promise((resolve) => setTimeout(resolve, 5))
++      running--
++      if (input.endsWith('bad.docx')) return { ok: false, code: 3, message: 'conversion failed' }
++      return { ok: true, input, outPath }
++    }
++    const [tool] = createExportTools(exportDocument)
++    const results = await Promise.allSettled([
++      tool!.handler({ input: '/w/a.docx', to: 'pdf', out: '/w/a.pdf' }),
++      tool!.handler({ input: '/w/bad.docx', to: 'pdf', out: '/w/b.pdf' }),
++      tool!.handler({ input: '/w/c.pptx', to: 'pdf', out: '/w/c.pdf' }),
++    ])
++    expect(order).toEqual(['/w/a.docx', '/w/bad.docx', '/w/c.pptx'])
++    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'rejected', 'fulfilled'])
++    expect((results[2] as PromiseFulfilledResult<{ out: string }>).value.out).toBe('/w/c.pdf')
++  })
++
++  it('wants absolute paths', async () => {
++    const [tool] = createExportTools(async () => ({ ok: true, input: '', outPath: '' }))
++    await expect(tool!.handler({ input: 'a.docx', to: 'pdf', out: '/w/a.pdf' })).rejects.toThrow(
++      'absolute',
++    )
++  })
++})
+diff --git a/apps/shell/tests/mcp/mcp-http-surface.test.ts b/apps/shell/tests/mcp/mcp-http-surface.test.ts
+index b0236886..22a9c0f2 100644
+--- a/apps/shell/tests/mcp/mcp-http-surface.test.ts
++++ b/apps/shell/tests/mcp/mcp-http-surface.test.ts
+@@ -42,6 +42,8 @@ const DEFAULT_NAMES = [
+   'get_app_info',
+   'insert_content',
+   'insert_picture',
++  'list_docx_tools',
++  'list_xlsx_tools',
+   'open_documents',
+   'open_in_genoffice',
+   'read_blocks',
+@@ -52,7 +54,12 @@ const DEFAULT_NAMES = [
+   'read_pdf',
+   'read_sheet',
+   'replace_blocks',
++  'restore_checkpoint',
++  'run_docx_tool',
++  'run_xlsx_tool',
+   'sheet_links',
++  'slide_ops_guide',
++  'save_checkpoint',
+   'save_session',
+ ].sort()
+ 
+diff --git a/apps/shell/tests/mcp/slides-guide-tools.test.ts b/apps/shell/tests/mcp/slides-guide-tools.test.ts
+new file mode 100644
+index 00000000..7812d5c1
+--- /dev/null
++++ b/apps/shell/tests/mcp/slides-guide-tools.test.ts
+@@ -0,0 +1,18 @@
++import { describe, expect, it } from 'vitest'
++import { OP_GROUPS, opGuide } from '@genoffice/pptx-ops/op-docs'
++import { createSlidesGuideTools } from '../../src/main/mcp/tools/slides-guide-tools'
++
++const [tool] = createSlidesGuideTools()
++
++describe('slide_ops_guide', () => {
++  it('without groups: every op signature and the group catalog', async () => {
++    const { text } = (await tool!.handler({})) as { text: string }
++    expect(text).toContain('setText')
++    for (const group of OP_GROUPS) expect(text).toContain(group)
++  })
++
++  it('with groups: those groups in full, each once', async () => {
++    const { text } = (await tool!.handler({ groups: ['text', 'text', 'slide'] })) as { text: string }
++    expect(text).toBe([opGuide('text'), opGuide('slide')].join('\n\n---\n\n'))
++  })
++})
+diff --git a/apps/shell/tests/web-open-documents.test.ts b/apps/shell/tests/web-open-documents.test.ts
+new file mode 100644
+index 00000000..eb95920f
+--- /dev/null
++++ b/apps/shell/tests/web-open-documents.test.ts
+@@ -0,0 +1,124 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++
++const fromId = vi.fn()
++vi.mock('electron', () => ({
++  session: { defaultSession: {} },
++  webContents: { fromId: (id: number) => fromId(id) },
++}))
++const teardownDocsRenderer = vi.fn()
++vi.mock('../../docs/src/main/docs-main', () => ({
++  docsQueryDirty: vi.fn(async () => true),
++  teardownDocsRenderer: (contents: { id: number }) => teardownDocsRenderer(contents.id),
++}))
++vi.mock('../../sheets/src/main/sheets-main', () => ({
++  sheetsPendingEditCount: vi.fn(() => 0),
++}))
++vi.mock('../../slides/src/main/slides-main', () => ({ slidesIsDirty: vi.fn(() => false) }))
++vi.mock('../../pdf/src/main/pdf-main', () => ({ pdfIsDirty: vi.fn(() => false) }))
++vi.mock('../../markdown/src/main/markdown-main', () => ({ markdownIsDirty: vi.fn(() => false) }))
++vi.mock('../../html/src/main/html-main', () => ({ htmlIsDirty: vi.fn(() => false) }))
++
++import { registerWebTab, unregisterWebTab, WebTabContents } from '../src/web/web-contents'
++import {
++  closeWebTab,
++  isWebTabId,
++  webOpenDocuments,
++  webTabContentsFor,
++} from '../src/web/open-documents'
++import { contentsById } from '../src/main/mcp/contents-by-id'
++
++const opened: WebTabContents[] = []
++function open(url: string): WebTabContents {
++  const tab = new WebTabContents(url)
++  registerWebTab(tab)
++  opened.push(tab)
++  return tab
++}
++
++afterEach(() => {
++  for (const tab of opened.splice(0)) unregisterWebTab(tab)
++  fromId.mockReset()
++})
++
++describe('closing a browser tab from the server', () => {
++  it('tears the Docs session down, drops the tab from the list and tells the page to reload', async () => {
++    const doc = open(`/docs/?path=${encodeURIComponent('/work/报告.docx')}`)
++    const delivered: string[] = []
++    doc.deliver = (channel) => delivered.push(channel)
++    const [listed] = await webOpenDocuments()
++    expect(closeWebTab(listed?.id ?? '')).toBe(true)
++    expect(teardownDocsRenderer).toHaveBeenCalledWith(doc.id)
++    expect(delivered).toEqual(['web:closed'])
++    expect(doc.isDestroyed()).toBe(true)
++    expect(await webOpenDocuments()).toEqual([])
++    expect(closeWebTab(listed?.id ?? '')).toBe(false)
++    expect(closeWebTab('3')).toBe(false)
++  })
++
++  it('a sheet has no Docs teardown', async () => {
++    teardownDocsRenderer.mockClear()
++    const sheet = open('/sheets/?path=/work/a.xlsx')
++    sheet.deliver = () => undefined
++    const [listed] = await webOpenDocuments()
++    expect(closeWebTab(listed?.id ?? '')).toBe(true)
++    expect(teardownDocsRenderer).not.toHaveBeenCalled()
++  })
++})
++
++describe('browser tabs as open documents', () => {
++  it('lists editor tabs with their path, kind and dirtiness', async () => {
++    const doc = open(`/docs/?path=${encodeURIComponent('/work/files/报告.docx')}`)
++    const sheet = open('/sheets/?path=/work/files/a.xlsx')
++    open('/') // the home page is not a document
++    const docs = await webOpenDocuments()
++    expect(docs).toEqual([
++      {
++        id: `web:${doc.id}`,
++        kind: 'docs',
++        title: '报告.docx',
++        filePath: '/work/files/报告.docx',
++        active: false,
++        dirty: true,
++      },
++      {
++        id: `web:${sheet.id}`,
++        kind: 'sheets',
++        title: 'a.xlsx',
++        filePath: '/work/files/a.xlsx',
++        active: false,
++        dirty: false,
++      },
++    ])
++  })
++
++  it('skips tabs that already went away', async () => {
++    const tab = open('/docs/?path=/work/files/x.docx')
++    tab.destroy()
++    expect(await webOpenDocuments()).toEqual([])
++    expect(webTabContentsFor(`web:${tab.id}`)).toBeUndefined()
++  })
++
++  it('resolves only its own ids', () => {
++    const tab = open('/slides/?path=/work/files/d.pptx')
++    expect(isWebTabId(`web:${tab.id}`)).toBe(true)
++    expect(isWebTabId('detached:3')).toBe(false)
++    expect(webTabContentsFor(`web:${tab.id}`)).toBe(tab)
++    expect(webTabContentsFor('3')).toBeUndefined()
++  })
++})
++
++describe('MCP bridge lookup', () => {
++  it('finds a browser tab that Electron does not know', () => {
++    const tab = open('/docs/?path=/work/files/x.docx')
++    expect(contentsById(tab.id)).toBe(tab)
++    expect(fromId).not.toHaveBeenCalled()
++  })
++
++  it('falls back to Electron views', () => {
++    const view = { id: 7 }
++    fromId.mockReturnValue(view)
++    expect(contentsById(7)).toBe(view)
++    fromId.mockReturnValue(null)
++    expect(contentsById(8)).toBeUndefined()
++  })
++})

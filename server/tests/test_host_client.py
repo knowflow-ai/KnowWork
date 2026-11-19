@@ -125,14 +125,14 @@ async def test_send_carries_turn_attachments_only_when_present():
 
     client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
     kernel = HostKernel("http://h", "t" * 32, client=client)
-    file = TurnAttachment(name="合同.docx", path="/workspace/input/合同.docx", bytes=10, sha256="a" * 64,
-                          extracted_path="/workspace/input/合同.md")
+    file = TurnAttachment(name="合同.docx", path="input/合同.docx", bytes=10, sha256="a" * 64,
+                          extracted_path="input/合同.md")
     pending = file.model_copy(update={"extraction_pending": True})
     await kernel.send("s1", TurnInput(text="改一下", attachments=(file,)))
     await kernel.send("s1", TurnInput(text="再看看"))
     await kernel.send("s1", TurnInput(text="还在解析", attachments=(pending,)))
-    assert seen[0]["attachments"] == [{"name": "合同.docx", "path": "/workspace/input/合同.docx", "bytes": 10,
-                                       "sha256": "a" * 64, "extractedPath": "/workspace/input/合同.md"}]
+    assert seen[0]["attachments"] == [{"name": "合同.docx", "path": "input/合同.docx", "bytes": 10,
+                                       "sha256": "a" * 64, "extractedPath": "input/合同.md"}]
     assert "attachments" not in seen[1]
     assert seen[2]["attachments"][0]["extractionPending"] is True, "解析还没完成要告诉宿主，那个文件现在还没有"
     assert "extractionPending" not in seen[0]["attachments"][0]
@@ -149,18 +149,18 @@ async def test_send_carries_the_reading_plan():
 
     client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
     kernel = HostKernel("http://h", "t" * 32, client=client)
-    small = TurnAttachment(name="说明.txt", path="/workspace/input/说明.txt", bytes=6, sha256="a" * 64,
+    small = TurnAttachment(name="说明.txt", path="input/说明.txt", bytes=6, sha256="a" * 64,
                            text="付款 30 天", text_chars=6)
-    big = TurnAttachment(name="年报.pdf", path="/workspace/input/年报.pdf", bytes=9, sha256="b" * 64,
-                         extracted_path="/workspace/input/年报.md", text_chars=90000, text_pages=30,
-                         outline=(OutlineEntry(line=1, text="第 1 页：封面"),), digest_path="/workspace/input/年报.导读.md",
+    big = TurnAttachment(name="年报.pdf", path="input/年报.pdf", bytes=9, sha256="b" * 64,
+                         extracted_path="input/年报.md", text_chars=90000, text_pages=30,
+                         outline=(OutlineEntry(line=1, text="第 1 页：封面"),), digest_path="input/年报.导读.md",
                          digest_pending=True)
     await kernel.send("s1", TurnInput(text="看看", attachments=(small, big)))
     first, second = seen[0]["attachments"]
     assert (first["text"], first["textChars"]) == ("付款 30 天", 6) and "outline" not in first
     assert (second["textChars"], second["textPages"], second["outline"]) == (90000, 30, [{"line": 1, "text": "第 1 页：封面"}])
     assert "text" not in second
-    assert (second["digestPath"], second["digestPending"]) == ("/workspace/input/年报.导读.md", True)
+    assert (second["digestPath"], second["digestPending"]) == ("input/年报.导读.md", True)
     assert "digestPath" not in first
     await kernel.aclose()
     await kernel.aclose()

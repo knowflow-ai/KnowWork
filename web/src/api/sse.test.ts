@@ -13,8 +13,33 @@ function streamOf(chunks: readonly string[]): ReadableStream<Uint8Array> {
   });
 }
 
+/** 发完给定的片段就不再出声、也不关闭：连接悄悄断了（代理只断了一侧、电脑休眠后连接半开）的样子 */
+function silentAfter(chunks: readonly string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      chunks.forEach((c) => controller.enqueue(encoder.encode(c)));
+    },
+  });
+}
+
+/** 一直在发心跳（服务端每隔一会儿发一行 SSE 注释）、没有事件的流 */
+function pingingEvery(ms: number): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  return new ReadableStream({
+    start(controller) {
+      timer = setInterval(() => controller.enqueue(encoder.encode(': ping\n\n')), ms);
+    },
+    cancel() {
+      clearInterval(timer);
+    },
+  });
+}
+
 afterEach(() => {
   useSessionStore.getState().reset();
+  vi.useRealTimers();
 });
 
 describe('createSseParser', () => {
@@ -173,6 +198,41 @@ describe('openEventStream', () => {
     );
     await vi.waitFor(() => expect(fatal).toHaveBeenCalled());
     expect(useSessionStore.getState().expired).toBe(true);
+  });
+
+  it('连接悄悄断了（收不到事件也收不到心跳）：过一阵子就断开重连，从收到的位置续传', async () => {
+    vi.useFakeTimers();
+    const calls: Array<Record<string, string>> = [];
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      calls.push({ ...(init?.headers as Record<string, string>) });
+      return new Response(silentAfter(calls.length === 1 ? [frame('5', 5)] : [frame('6', 6)]), {
+        status: 200,
+      });
+    });
+    const events: WireEvent[] = [];
+    const close = openEventStream(
+      { url: '/e', retryMs: 1, idleMs: 1000, fetchImpl: fetchImpl as typeof fetch },
+      { onEvent: (e) => events.push(e) },
+    );
+    await vi.advanceTimersByTimeAsync(900);
+    expect(calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.['Last-Event-ID']).toBe('5');
+    expect(events.map((e) => e.id)).toEqual(['5', '6']);
+    close();
+  });
+
+  it('心跳一直在：没有事件也不断开', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => new Response(pingingEvery(400), { status: 200 }));
+    const close = openEventStream(
+      { url: '/e', retryMs: 1, idleMs: 1000, fetchImpl: fetchImpl as unknown as typeof fetch },
+      { onEvent: () => undefined },
+    );
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    close();
   });
 
   it('没有响应体时按可重试处理', async () => {

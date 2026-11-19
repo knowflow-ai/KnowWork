@@ -13,6 +13,13 @@ const SHEETS = ['xlsx', 'xls', 'csv', 'tsv', 'ods'];
 const TEXTS = ['txt', 'log', 'json', 'yaml', 'yml', 'xml', 'py', 'js', 'ts', 'sql', 'sh', 'css'];
 const IMAGES = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
 
+/** 编辑器能开的格式：Word、Excel、PowerPoint（旧格式、知识库转出来的 Word 只读预览），不看来源给不给编辑 */
+const EDITABLE = ['docx', 'xlsx', 'pptx'];
+
+export function isEditableFormat(name: string): boolean {
+  return EDITABLE.includes(extensionOf(name));
+}
+
 export function extensionOf(name: string): string {
   return name.includes('.') ? (name.split('.').pop()?.toLowerCase() ?? '') : '';
 }

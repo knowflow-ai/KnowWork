@@ -1,17 +1,13 @@
 /**
  * 远程执行器（remote-fs、remote-subprocess）回调业务服务沙箱接口的客户端。
  *
- * 执行世界：每个会话的工作目录是 `/sessions/<根会话 id>`，业务服务把它对到该会话容器的 /workspace，
- * 容器里同一路径是指向 /workspace 的符号链接。DSH 的 fs 与 subprocess 服务只认路径，所以会话从路径里认：
- * 子 Agent 继承父会话的工作目录，落到同一个容器。
+ * 执行世界：每个会话的工作目录是 `/sessions/<根会话 id>`（workpath.mjs 的 hostMount），会话从路径里认，
+ * 请求里的路径一律是工作区路径（相对写法，根是空串）：宿主路径在发出之前换掉，业务服务按沙箱的挂载点放到容器里。
  * 令牌用本会话的工具令牌（受众 tools），业务服务按当前授权再判一次。
  */
 
-import { posix } from 'node:path'
 import { getSession } from './state.mjs'
 
-export const SESSIONS_ROOT = '/sessions'
-const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/
 const DEFAULT_TIMEOUT_MS = 30_000
 
 /** 业务服务拒绝或不可达。status 为 HTTP 状态（不可达时为 0），code 取业务服务的错误码。 */
@@ -21,19 +17,6 @@ export class SandboxCallError extends Error {
     this.code = code
     this.status = status
   }
-}
-
-export function sessionRoot(sessionId) {
-  return `${SESSIONS_ROOT}/${sessionId}`
-}
-
-/** 规范化一个绝对路径；不是 `/sessions/<id>` 下的返回 undefined。 */
-export function sessionPath(path) {
-  if (typeof path !== 'string' || !path.startsWith('/') || path.includes('\0')) return undefined
-  const normal = posix.normalize(path).replace(/\/+$/, '') || '/'
-  const parts = normal.split('/')
-  if (parts[1] !== SESSIONS_ROOT.slice(1) || parts[2] === undefined || !ID_PATTERN.test(parts[2])) return undefined
-  return { path: normal, sessionId: parts[2] }
 }
 
 /** @param {{ baseUrl?: string, timeoutMs?: number }} [options] */

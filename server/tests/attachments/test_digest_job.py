@@ -80,7 +80,7 @@ async def test_long_text_gets_a_digest_that_goes_into_the_sandbox_on_send(files_
     assert (state.digest_status, state.digest_done, state.digest_total) == ("ready", 5, 5)
     conv = await files_db.conversation()
     [turn] = await TurnAttachments(service).for_turn(conv, [item.id])
-    assert (turn.digest_path, turn.digest_pending, turn.text) == ("/workspace/input/采购.导读.md", False, None)
+    assert (turn.digest_path, turn.digest_pending, turn.text) == ("input/采购.导读.md", False, None)
     digest = sandbox.inputs[("ws1", conv.id)]["采购.导读.md"].decode()
     assert digest.startswith("# 《采购.md》导读") and "按行号读 采购.md" in digest
     assert "## 全文摘要\n\n这是一份采购合同，共五章。" in digest
@@ -96,7 +96,7 @@ async def test_long_pdf_is_digested_after_extraction_and_sent_early_it_is_placed
     assert (await runner.run_once("ws1")).status == "succeeded"   # 提取文字，接着排导读
     conv = await files_db.conversation()
     [turn] = await TurnAttachments(service).for_turn(conv, [item.id])
-    assert (turn.digest_path, turn.digest_pending) == ("/workspace/input/年报.导读.md", True)
+    assert (turn.digest_path, turn.digest_pending) == ("input/年报.导读.md", True)
     await run_all(runner)
     assert sandbox.inputs[("ws1", conv.id)]["年报.导读.md"].startswith("# 《年报.pdf》导读".encode()), "发出去以后做完的由任务放进会话"
 

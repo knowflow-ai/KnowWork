@@ -27,7 +27,8 @@ import { Duplex, PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import SshConnection from '@deepseek-ai/dsh-ssh'
 import SshSubprocessRuntime from '@deepseek-ai/dsh-subprocess-ssh'
-import { createSandboxClient, sessionRoot } from './sandbox-client.mjs'
+import { createSandboxClient } from './sandbox-client.mjs'
+import { hostMount } from './workpath.mjs'
 import { generateSshKey } from './ssh-key.mjs'
 import { getSession } from './state.mjs'
 
@@ -266,7 +267,7 @@ export function createSshWorlds(ctx, options = {}) {
       fork.plugin(SshConnection, {
         host: `${identity.user}@${alias}`,
         launch: { kind: 'node-script', node: REMOTE_NODE, bootstrapPath: REMOTE_PTC_BOOTSTRAP, bootstrapHash: local.bootstrapHash },
-        helper: REMOTE_HELPER, helperHash: local.helperHash, workspace: sessionRoot(sessionId),
+        helper: REMOTE_HELPER, helperHash: local.helperHash, workspace: hostMount(sessionId).root,
       }),
       fork.plugin(SshSubprocessRuntime, {}),
     ]

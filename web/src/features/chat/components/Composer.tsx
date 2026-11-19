@@ -11,6 +11,7 @@
  * 上传中、解析中），好了自动发出去，这一轮模型就拿得到解析出的全文。等不及解析可以点「直接发送」。
  */
 import {
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -23,6 +24,7 @@ import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { ArrowUp, AtSign, PlusComposer, StopSm } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
 import { validateMessage, type AnswerMode, type SendMode } from '../../../api/conversations';
+import { useComposerInbox } from '../editRequest';
 import type { AttachmentChip, SentAttachment } from '../../../api/attachments';
 import { mentionKey, type Mention } from '../../../api/mentions';
 import { effectiveAnswerMode, useAnswerMode } from '../../../stores/answerMode';
@@ -316,12 +318,13 @@ export function Composer({
     else addFiles(files);
   };
 
-  const submit = async (mode: SendMode) => {
+  /** 发出去：text 不给就发输入框里的（别处交来的一句话直接发时给 text） */
+  const submit = async (mode: SendMode, text: string = value) => {
     if (blocked) {
       toast.warning(blocked);
       return;
     }
-    const problem = validateMessage(value);
+    const problem = validateMessage(text);
     if (problem) {
       toast.warning(problem);
       return;
@@ -337,7 +340,6 @@ export function Composer({
       const ready = await settle(draft.latest, skip.signal);
       // 发出去这一刻就清空（消息已经摆进对话、显示「思考中」），不等发送接口返回：接口要认领附件、可能还要重开宿主上的
       // 对话、现建沙箱容器，冷的时候两三秒，输入框一直留着像没发出去。发送失败再把文字和附件放回来
-      const text = value;
       const items = draft.latest();
       setValue('');
       setCaret(0);
@@ -358,6 +360,23 @@ export function Composer({
       skipWaiting.current = null;
     }
   };
+  // 别处交来的一句话（编辑器里的「AI 修改」，editRequest.ts）：输入框空着、要直接发就发；否则接在已有内容后面，等用户发
+  const request = useComposerInbox((state) => state.request);
+  const take = useComposerInbox((state) => state.take);
+  useEffect(() => {
+    if (request === null || conversationId === undefined || request.conversationId !== conversationId) return;
+    take(request.id);
+    const current = input.current?.value ?? value;
+    if (request.send && !current.trim() && !sending && !disabled) {
+      void submit('followup', request.text);
+      return;
+    }
+    const next = current.trim() ? `${current.trimEnd()}\n\n${request.text}` : request.text;
+    setValue(next);
+    placeCaret(next.length);
+    // 只在来了新的一句时处理；submit、value 每次渲染都变，不跟着它们重跑
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request, conversationId]);
   const skipParsing = () => {
     skipWaiting.current?.abort();
     setSkipped(true);

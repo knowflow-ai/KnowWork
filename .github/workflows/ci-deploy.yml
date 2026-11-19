@@ -33,7 +33,13 @@ jobs:
           # 昇腾 MinerU 是叠加文件，要和主编排一起校验
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.sandbox.yml -f deploy/docker-compose.mineru-ascend.yml config --quiet
       - name: shellcheck
-        run: shellcheck -s sh deploy/install.sh deploy/runtime-host/entrypoint.sh deploy/postgres/initdb/*.sh .github/scripts/*.sh
+        run: |
+          shellcheck -s sh deploy/install.sh deploy/runtime-host/entrypoint.sh deploy/postgres/initdb/*.sh .github/scripts/*.sh
+          # GenOffice 补丁集的维护脚本是 bash，跟进它们读的 UPSTREAM
+          shellcheck -x deploy/docker/office/*.sh
+      - name: Office 镜像脚本
+        # 容器入口写 GenOffice 设置的脚本（新容器不起 Electron、拉起的容器照旧合并）
+        run: node --test deploy/docker/office/tests/settings.test.mjs
       - name: hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:

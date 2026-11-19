@@ -1,0 +1,1466 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: weizxfree <weizhangxiang2022@gmail.com>
+Date: Mon, 16 Nov 2026 21:40:05 -0800
+Subject: [PATCH 1/5] fix(web): web-mode and engine fixes found while embedding
+ the editor
+
+Bugs found while embedding the editor in a host page, each small enough to
+report upstream:
+- slide media is served same-origin in web-server mode
+- a browser dialog's answer reaches the main process (it only closed itself)
+- Ctrl/Cmd+S saves in Sheets and Slides browser tabs
+- saved decks no longer use streamed zip entries LibreOffice cannot read
+- ribbon tab labels stay on one line in a narrow window
+- the header/footer link and Zotero questions use the editor's own dialog:
+  window.confirm's buttons are fixed English in Electron
+- the missing-font notice never names one of the editor's own declared
+  faces ("Cambria Cyrillic GO") as the substitute
+- an opened workbook keeps the user's file name: the engine opened a snapshot
+  whose random name showed in the status bar and export file names
+- the browser dialogs read the options when a parent window comes first
+  (dialog.showSaveDialog(window, options)): the default name, filters and
+  title were lost, and a file exported to PDF came out without its name
+- web mode's PDF export no longer opens its render as a document: the hidden
+  export window's output is an intermediate the caller reads and deletes
+---
+ apps/docs/src/main/docs-main.ts               |   4 +
+ apps/docs/src/renderer/App.tsx                |   7 +-
+ .../src/renderer/components/page-confirm.css  |  10 ++
+ .../src/renderer/components/page-confirm.ts   |  61 ++++++++
+ apps/docs/src/renderer/font-check.ts          |  20 ++-
+ apps/docs/src/renderer/styles.css             |   4 +
+ apps/docs/src/renderer/zotero/controller.ts   |   7 +-
+ apps/docs/tests/font-check.test.ts            |  17 +++
+ apps/docs/tests/zotero-controller.test.ts     |  29 ++--
+ apps/sheets/src/main/sheets-main.ts           |   3 +
+ apps/shell/src/web/asset-etag.ts              |  28 ++++
+ apps/shell/src/web/bridge.ts                  |   7 +-
+ apps/shell/src/web/schemes.ts                 |   1 +
+ apps/shell/src/web/serialize.ts               | 131 ++++++++++++------
+ apps/shell/src/web/shim/client.ts             |  16 ++-
+ apps/shell/src/web/shim/dialog-answer.ts      |  34 +++++
+ apps/shell/src/web/shim/menu-shortcuts.ts     |  59 ++++++++
+ apps/shell/src/web/shim/outbox.ts             |  39 ++++++
+ apps/shell/src/web/static.ts                  |  59 +++++++-
+ apps/shell/src/web/web-dialogs.ts             |  25 +++-
+ apps/shell/tests/web-api.test.ts              |   3 +
+ apps/shell/tests/web-bridge.test.ts           |  40 ++++--
+ apps/shell/tests/web-dialog-answer.test.ts    |  29 ++++
+ apps/shell/tests/web-guard.test.ts            |   3 +
+ apps/shell/tests/web-menu-shortcuts.test.ts   |  39 ++++++
+ apps/shell/tests/web-outbox.test.ts           |  41 ++++++
+ apps/shell/tests/web-serialize.test.ts        |  54 ++++++++
+ apps/shell/tests/web-static.test.ts           |  46 +++++-
+ packages/pptx-engine/src/index.ts             |  19 ++-
+ .../pptx-engine/tests/save-streaming.test.ts  |  24 ++++
+ 30 files changed, 760 insertions(+), 99 deletions(-)
+ create mode 100644 apps/docs/src/renderer/components/page-confirm.css
+ create mode 100644 apps/docs/src/renderer/components/page-confirm.ts
+ create mode 100644 apps/shell/src/web/asset-etag.ts
+ create mode 100644 apps/shell/src/web/shim/dialog-answer.ts
+ create mode 100644 apps/shell/src/web/shim/menu-shortcuts.ts
+ create mode 100644 apps/shell/src/web/shim/outbox.ts
+ create mode 100644 apps/shell/tests/web-dialog-answer.test.ts
+ create mode 100644 apps/shell/tests/web-menu-shortcuts.test.ts
+ create mode 100644 apps/shell/tests/web-outbox.test.ts
+
+diff --git a/apps/docs/src/main/docs-main.ts b/apps/docs/src/main/docs-main.ts
+index eee6f971..e80ce029 100644
+--- a/apps/docs/src/main/docs-main.ts
++++ b/apps/docs/src/main/docs-main.ts
+@@ -6896,6 +6896,9 @@ export async function exportDocsHeadless(
+   pendingWindowOpens.set(wcId, input)
+   headlessExportTargets.set(wcId, { outPath, format })
+   allowPdfWrite(wcId, outPath)
++  // the output belongs to the caller (the CLI, or web mode's PDF export, which
++  // reads it and deletes it): never open it as a document like a user export
++  imageExportTemps.set(wcId, new Set([outPath]))
+   let timer: ReturnType<typeof setTimeout> | undefined
+   try {
+     const report = await new Promise<HeadlessExportReport>((resolve) => {
+@@ -6914,6 +6917,7 @@ export async function exportDocsHeadless(
+     if (timer) clearTimeout(timer)
+     headlessExportWaiters.delete(wcId)
+     headlessExportTargets.delete(wcId)
++    imageExportTemps.delete(wcId)
+     pendingWindowOpens.delete(wcId)
+     if (!win.isDestroyed()) win.destroy()
+   }
+diff --git a/apps/docs/src/renderer/App.tsx b/apps/docs/src/renderer/App.tsx
+index 462c487e..0dad962b 100644
+--- a/apps/docs/src/renderer/App.tsx
++++ b/apps/docs/src/renderer/App.tsx
+@@ -423,6 +423,7 @@ import { stepHangingIndent, stepParagraphIndent } from './editor/indent'
+ import { PasswordDialog } from './components/PasswordDialog'
+ import { ProtectDialog, type ProtectDialogResult } from './components/ProtectDialog'
+ import { t, useI18n } from './i18n/locale'
++import { askInPage } from './components/page-confirm'
+ import {
+   getActiveSubEditor,
+   setActiveSubEditor,
+@@ -1791,10 +1792,10 @@ export function App() {
+     dirtyRef.current = true
+     return picked.length
+   }
+-  const setHfLink = (si: number, kind: 'header' | 'footer', variant: HfView, on: boolean) => {
++  const setHfLink = async (si: number, kind: 'header' | 'footer', variant: HfView, on: boolean) => {
+     if (
+       on &&
+-      !window.confirm(t(kind === 'header' ? 'appHfLinkConfirmHeader' : 'appHfLinkConfirmFooter'))
++      !(await askInPage(t(kind === 'header' ? 'appHfLinkConfirmHeader' : 'appHfLinkConfirmFooter')))
+     )
+       return
+     // the open editor holds the strip being discarded: it must not commit it anywhere
+@@ -7121,7 +7122,7 @@ export function App() {
+         }
+         break
+       case 'linkToPrevious':
+-        if (cur) setHfLink(cur.section, cur.kind, cur.variant, action.on)
++        if (cur) void setHfLink(cur.section, cur.kind, cur.variant, action.on)
+         if (!action.on) refocus()
+         break
+       case 'distance':
+diff --git a/apps/docs/src/renderer/components/page-confirm.css b/apps/docs/src/renderer/components/page-confirm.css
+new file mode 100644
+index 00000000..8a3070c2
+--- /dev/null
++++ b/apps/docs/src/renderer/components/page-confirm.css
+@@ -0,0 +1,10 @@
++/* askInPage (page-confirm.ts): the message of an in-page OK/Cancel question */
++.page-confirm {
++  width: 400px;
++}
++
++.page-confirm-message {
++  margin: 0;
++  white-space: pre-wrap;
++  line-height: 1.6;
++}
+diff --git a/apps/docs/src/renderer/components/page-confirm.ts b/apps/docs/src/renderer/components/page-confirm.ts
+new file mode 100644
+index 00000000..111d9d17
+--- /dev/null
++++ b/apps/docs/src/renderer/components/page-confirm.ts
+@@ -0,0 +1,61 @@
++import { t } from '../i18n/locale'
++import './page-confirm.css'
++
++/**
++ * An OK/Cancel question (or an OK-only notice) in the editor's own modal style.
++ * window.confirm / window.alert open the browser's or Electron's native box,
++ * whose buttons are fixed English "OK"/"Cancel" in Electron and not the editor's
++ * language; inside an embedding page they also block every frame. Plain DOM so
++ * any caller (React or not, e.g. the Zotero controller) can await it.
++ */
++export function askInPage(message: string, options: { cancel?: boolean } = {}): Promise<boolean> {
++  const withCancel = options.cancel !== false
++  return new Promise((resolve) => {
++    const backdrop = document.createElement('div')
++    backdrop.className = 'modal-backdrop'
++    const box = document.createElement('div')
++    box.className = 'modal gs-form page-confirm'
++    box.setAttribute('role', withCancel ? 'alertdialog' : 'dialog')
++    box.setAttribute('aria-modal', 'true')
++    const text = document.createElement('p')
++    text.className = 'page-confirm-message'
++    text.textContent = message
++    const actions = document.createElement('div')
++    actions.className = 'modal-actions'
++    const button = (label: string, primary: boolean): HTMLButtonElement => {
++      const element = document.createElement('button')
++      element.type = 'button'
++      element.textContent = label
++      if (primary) element.className = 'primary'
++      return element
++    }
++    const ok = button(t('appOk'), true)
++    const cancel = withCancel ? button(t('appCancel'), false) : null
++    const done = (answer: boolean): void => {
++      document.removeEventListener('keydown', onKey, true)
++      backdrop.remove()
++      resolve(answer)
++    }
++    const onKey = (event: KeyboardEvent): void => {
++      if (event.key === 'Escape') {
++        event.preventDefault()
++        done(false)
++      } else if (event.key === 'Enter') {
++        event.preventDefault()
++        done(true)
++      }
++    }
++    ok.addEventListener('click', () => done(true))
++    cancel?.addEventListener('click', () => done(false))
++    backdrop.addEventListener('mousedown', (event) => {
++      if (event.target === backdrop) done(false)
++    })
++    if (cancel) actions.append(cancel)
++    actions.append(ok)
++    box.append(text, actions)
++    backdrop.append(box)
++    document.body.append(backdrop)
++    document.addEventListener('keydown', onKey, true)
++    ok.focus()
++  })
++}
+diff --git a/apps/docs/src/renderer/font-check.ts b/apps/docs/src/renderer/font-check.ts
+index 6a9b1466..f955b98b 100644
+--- a/apps/docs/src/renderer/font-check.ts
++++ b/apps/docs/src/renderer/font-check.ts
+@@ -117,10 +117,25 @@ export interface FontSubstitution {
+  * Declared fonts that don't resolve on this system, with the family that
+  * actually renders instead (substitution used to be silent).
+  */
++/**
++ * Families the editor declares itself (@font-face): metric twins and coverage
++ * aliases drawn from bundled files ("Cambria Cyrillic GO", "GenOffice YaHei
++ * Latin"…). They are internal names, never "the font this machine shows
++ * instead", and BUNDLED_FONTS lists only some of them.
++ */
++function declaredFamilies(): Set<string> {
++  const families = new Set<string>()
++  for (const face of document.fonts ?? []) {
++    families.add(face.family.replace(/^["']|["']$/g, '').toLowerCase())
++  }
++  return families
++}
++
+ export function checkMissingFonts(names: string[]): FontSubstitution[] {
+   if (typeof document === 'undefined') return []
+   const cx = ctx2d()
+   if (!cx) return []
++  const declared = declaredFamilies()
+   const out: FontSubstitution[] = []
+   for (const name of names) {
+     // a declared bundled face resolves in canvas yet still renders the subset fallback — report it
+@@ -129,7 +144,10 @@ export function checkMissingFonts(names: string[]): FontSubstitution[] {
+       .split(',')
+       .map((s) => s.trim().replace(/^'|'$/g, ''))
+       .filter((c) => c !== name && !GENERIC.has(c))
+-    const substitute = chain.find((c) => !BUNDLED_FONTS.has(c) && fontAvailableIn(cx, c)) ?? null
++    const substitute =
++      chain.find(
++        (c) => !BUNDLED_FONTS.has(c) && !declared.has(c.toLowerCase()) && fontAvailableIn(cx, c),
++      ) ?? null
+     out.push({ name, substitute })
+   }
+   return out
+diff --git a/apps/docs/src/renderer/styles.css b/apps/docs/src/renderer/styles.css
+index f6dbd9a0..55f5d518 100644
+--- a/apps/docs/src/renderer/styles.css
++++ b/apps/docs/src/renderer/styles.css
+@@ -487,6 +487,10 @@ html.genoffice-popover-open .ribbon-tabs {
+ 
+ .ribbon-tab {
+   position: relative;
++  /* a narrow window (or an editor pane next to a host page's chat) must not
++     wrap a two-character label onto two lines */
++  flex: none;
++  white-space: nowrap;
+   border: none;
+   background: none;
+   padding: 7px 9px 6px;
+diff --git a/apps/docs/src/renderer/zotero/controller.ts b/apps/docs/src/renderer/zotero/controller.ts
+index 05e6c9e2..b5a97535 100644
+--- a/apps/docs/src/renderer/zotero/controller.ts
++++ b/apps/docs/src/renderer/zotero/controller.ts
+@@ -4,6 +4,7 @@ import { Fragment, Slice, type Mark, type Node as PmNode } from '@tiptap/pm/mode
+ import type { ZoteroRendererRequest } from '../../shared/ipc'
+ import { parseZoteroRtf, zoteroRtfToText, type ZoteroRtfParagraph, type ZoteroRtfRun } from './rtf'
+ import { fieldTypeForDisk, fieldTypeForSession } from './field-type'
++import { askInPage } from '../components/page-confirm'
+ 
+ const ZOTERO_INSTR_RE = /^\s*(?:ADDIN\s+)?(?:ZOTERO_|CSL_)(?:ITEM|BIBL|TEMP)\b/i
+ 
+@@ -457,9 +458,9 @@ export class ZoteroDocumentController {
+ 
+   /** Zotero button sets: 0 OK, 1 OK/Cancel, 2 Yes/No, 3 Yes/No/Cancel; the reply is the
+    *  button index counted from Cancel/No = 0, so Yes is 2 in the three-button set */
+-  private displayAlert(message: string, buttons: number): number {
+-    if (buttons > 0) return window.confirm(message) ? (buttons === 3 ? 2 : 1) : 0
+-    window.alert(message)
++  private async displayAlert(message: string, buttons: number): Promise<number> {
++    if (buttons > 0) return (await askInPage(message)) ? (buttons === 3 ? 2 : 1) : 0
++    await askInPage(message, { cancel: false })
+     return 0
+   }
+ }
+diff --git a/apps/docs/tests/font-check.test.ts b/apps/docs/tests/font-check.test.ts
+index 72eb75de..d2619f36 100644
+--- a/apps/docs/tests/font-check.test.ts
++++ b/apps/docs/tests/font-check.test.ts
+@@ -65,6 +65,23 @@ describe('checkMissingFonts', () => {
+     expect(checkMissingFonts(['黑体'])).toEqual([])
+   })
+ 
++  it('never names one of the editor own declared faces as the substitute', () => {
++    // 'Cambria Cyrillic GO' is a bundled coverage alias the editor declares in
++    // @font-face: it resolves, but it is an internal name, not a font on this machine
++    stubCanvas(['Cambria Cyrillic GO'])
++    const fonts = Object.getOwnPropertyDescriptor(document, 'fonts')
++    Object.defineProperty(document, 'fonts', {
++      value: [{ family: '"Cambria Cyrillic GO"' }],
++      configurable: true,
++    })
++    try {
++      expect(checkMissingFonts(['Cambria'])).toEqual([{ name: 'Cambria', substitute: null }])
++    } finally {
++      if (fonts) Object.defineProperty(document, 'fonts', fonts)
++      else delete (document as { fonts?: unknown }).fonts
++    }
++  })
++
+   it('declared bundled subset faces still count as missing', () => {
+     // 'GenOffice Songti SC' (internal alias) resolves but is never reported
+     stubCanvas(['Noto Sans CJK SC', 'GenOffice Songti SC', 'STSong'])
+diff --git a/apps/docs/tests/zotero-controller.test.ts b/apps/docs/tests/zotero-controller.test.ts
+index 312a88b1..5f5c41cd 100644
+--- a/apps/docs/tests/zotero-controller.test.ts
++++ b/apps/docs/tests/zotero-controller.test.ts
+@@ -245,16 +245,27 @@ describe('ZoteroDocumentController', () => {
+     const controller = new ZoteroDocumentController(editor, { get: () => '', set: () => {} })
+     const call = (command: string, args: unknown[]) =>
+       controller.handle({ requestId: 'test', command, args })
+-    const confirm = window.confirm
+-    try {
+-      window.confirm = () => true
+-      expect(await call('Document_displayAlert', [1, 'Replace?', 2, 3])).toBe(2)
+-      expect(await call('Document_displayAlert', [1, 'Continue?', 2, 1])).toBe(1)
+-      window.confirm = () => false
+-      expect(await call('Document_displayAlert', [1, 'Replace?', 2, 3])).toBe(0)
+-    } finally {
+-      window.confirm = confirm
++    // the question shows as the editor's own dialog (not window.confirm, whose
++    // Electron buttons are fixed English); answer it by clicking
++    const reply = async (args: unknown[], ok: boolean) => {
++      const pending = call('Document_displayAlert', args)
++      const box = document.querySelector('.page-confirm')
++      expect(box?.textContent).toContain(String(args[1]))
++      const buttons = [...(box?.querySelectorAll('button') ?? [])]
++      const pick = ok ? buttons.find((b) => b.classList.contains('primary')) : buttons[0]
++      pick?.click()
++      const answer = await pending
++      expect(document.querySelector('.page-confirm')).toBeNull()
++      return answer
+     }
++    expect(await reply([1, 'Replace?', 2, 3], true)).toBe(2)
++    expect(await reply([1, 'Continue?', 2, 1], true)).toBe(1)
++    expect(await reply([1, 'Replace?', 2, 3], false)).toBe(0)
++    // a notice has only OK
++    const notice = call('Document_displayAlert', [1, 'Done', 0, 0])
++    expect(document.querySelectorAll('.page-confirm button')).toHaveLength(1)
++    ;(document.querySelector('.page-confirm button') as HTMLButtonElement).click()
++    expect(await notice).toBe(0)
+   })
+ 
+   it('inserts Zotero text literally instead of parsing it as HTML', async () => {
+diff --git a/apps/sheets/src/main/sheets-main.ts b/apps/sheets/src/main/sheets-main.ts
+index 4d88de46..1285c76d 100644
+--- a/apps/sheets/src/main/sheets-main.ts
++++ b/apps/sheets/src/main/sheets-main.ts
+@@ -5385,6 +5385,9 @@ async function openWorkbookSession(
+       // The renderer-facing path is what the user opened: for a restored
+       // recovery copy that is the original file, not the copy under userData.
+       path: restoreTarget ?? path,
++      // so is its name: the engine opened the private snapshot, whose name is
++      // a random id (it showed in the status bar and export file names)
++      name: basename(restoreTarget ?? path),
+       sha256: digest,
+       fileBytes,
+       readOnly: false,
+diff --git a/apps/shell/src/web/asset-etag.ts b/apps/shell/src/web/asset-etag.ts
+new file mode 100644
+index 00000000..4bc79ba8
+--- /dev/null
++++ b/apps/shell/src/web/asset-etag.ts
+@@ -0,0 +1,28 @@
++/**
++ * Revalidation for renderer files served in web mode (static.ts). Text bundles
++ * are rewritten on the way out (scheme → same-origin path), so what is sent is
++ * not fixed by the hashed file name alone — a newer shell may rewrite the same
++ * file differently — and they went out no-store: every open of the editor
++ * fetched the whole bundle again (21 MB for sheets) and re-read and re-rewrote
++ * it. Each file now gets an ETag from what decides its output (path, size,
++ * mtime, the app's rewrite rules) without reading it, and a request carrying
++ * that ETag is answered 304.
++ */
++import { createHash } from 'node:crypto'
++import { statSync } from 'node:fs'
++
++/** the ETag of a renderer file as served with these rewrite rules */
++export function assetEtag(file: string, rules: unknown): string {
++  const stat = statSync(file)
++  const basis = JSON.stringify([file, stat.size, stat.mtimeMs, rules ?? null])
++  return `"${createHash('sha256').update(basis).digest('base64url').slice(0, 32)}"`
++}
++
++/** whether an If-None-Match header names this ETag (weak or strong), or is * */
++export function stillFresh(header: string | string[] | undefined, etag: string): boolean {
++  const value = Array.isArray(header) ? header.join(',') : (header ?? '')
++  return value.split(',').some((raw) => {
++    const tag = raw.trim()
++    return tag === '*' || tag.replace(/^W\//, '') === etag
++  })
++}
+diff --git a/apps/shell/src/web/bridge.ts b/apps/shell/src/web/bridge.ts
+index 73deff81..19b29ba0 100644
+--- a/apps/shell/src/web/bridge.ts
++++ b/apps/shell/src/web/bridge.ts
+@@ -22,7 +22,7 @@ import { getInvokeHandler, getSendListeners } from './capture'
+ /**
+  * The browser-side IPC transport. One WebSocket per browser tab; the tab is a
+  * WebTabContents whose id keys the same per-tab state maps the desktop views
+- * use. Frames are JSON text (encodeFrame/decodeFrame carry binaries as base64):
++ * use. Frames are JSON text, or binary when they carry binaries (encodeFrame/decodeFrame):
+  *
+  *   client → server: invoke (request/reply), send (fire-and-forget),
+  *                    dialog-response / dialog-list (the web dialog overlay)
+@@ -170,10 +170,11 @@ export function attachWebBridge(
+     registerWebTab(tab)
+     seedTabFromUrl(tab)
+ 
+-    ws.on('message', (data: Buffer) => {
++    ws.on('message', (data: Buffer, isBinary: boolean) => {
+       let frame: Record<string, unknown>
+       try {
+-        frame = decodeFrame(data.toString('utf8'))
++        // frames carrying binaries come as binary messages (serialize.ts)
++        frame = decodeFrame(isBinary ? data : data.toString('utf8'))
+       } catch {
+         return
+       }
+diff --git a/apps/shell/src/web/schemes.ts b/apps/shell/src/web/schemes.ts
+index 2d4e08d5..6c5ff2d3 100644
+--- a/apps/shell/src/web/schemes.ts
++++ b/apps/shell/src/web/schemes.ts
+@@ -9,6 +9,7 @@
+ 
+ export const SCHEME_REWRITES: Record<string, [string, string][]> = {
+   docs: [['genoffice-docx-media', '/__media']],
++  slides: [['genoffice-slide-media', '/__slidemedia']],
+   markdown: [['md-asset', '/__mdasset']],
+   html: [
+     ['html-preview', '/__preview'],
+diff --git a/apps/shell/src/web/serialize.ts b/apps/shell/src/web/serialize.ts
+index 334980eb..92ec96f4 100644
+--- a/apps/shell/src/web/serialize.ts
++++ b/apps/shell/src/web/serialize.ts
+@@ -1,9 +1,16 @@
+ /**
+  * Wire codec for the web bridge. Electron's IPC moves values by structured
+- * clone; the web bridge moves them as JSON text frames, so binary values
+- * travel as base64 markers. Shared by the server dispatch and the browser
+- * shim — isomorphic: no node/electron builtins (btoa/atob are globals in
+- * Node 22 and in every browser this targets).
++ * clone; the web bridge moves them over one WebSocket. Shared by the server
++ * dispatch and the browser shim — isomorphic: no node/electron builtins.
++ *
++ * A frame without binaries is JSON text. A frame carrying binaries goes as one
++ * binary message: the 4 bytes "GOB1", then u32s (little endian) for the number
++ * of binaries, each binary's length and the header's length, the header (UTF-8
++ * JSON of the frame with each binary replaced by a marker naming its index),
++ * then the binaries back to back. Binaries used to travel
++ * as base64 inside the JSON: a third bigger on the wire, and both ends built
++ * and parsed strings of tens of MB for a document with large pictures. Text
++ * frames with base64 markers are still decoded (a page loaded before an update).
+  *
+  * Semantics mirror structured clone as Electron delivers it: binaries arrive
+  * as typed-array views (Uint8Array), which is exactly what a main-process
+@@ -15,26 +22,19 @@
+  * their contents.
+  */
+ 
++const BLOB_TAG = '__genofficeBlob'
++/** the older text encoding of a binary (still decoded) */
+ const BYTES_TAG = '__genofficeBytes'
+-const VIEW_TAG = '__genofficeBytesView'
+-
+-interface BytesMarker {
+-  [BYTES_TAG]: string
+-  [VIEW_TAG]?: true
+-}
++const MAGIC = [0x47, 0x4f, 0x42, 0x31] // "GOB1"
++const U32 = 4
+ 
+ /** base64 chunks must split on group boundaries: 32766 bytes is 3-aligned,
+  *  and the decode side slices the text on 4-aligned lengths */
+ const BYTE_CHUNK = 0x7ffe
+ const B64_CHUNK = (BYTE_CHUNK * 4) / 3
+ 
+-function bytesToBase64(bytes: Uint8Array): string {
+-  let out = ''
+-  for (let i = 0; i < bytes.length; i += BYTE_CHUNK) {
+-    out += btoa(String.fromCharCode(...bytes.subarray(i, i + BYTE_CHUNK)))
+-  }
+-  return out
+-}
++const utf8 = new TextEncoder()
++const fromUtf8 = new TextDecoder()
+ 
+ function base64ToBytes(b64: string): Uint8Array {
+   const out = new Uint8Array((b64.length * 3) / 4)
+@@ -46,55 +46,94 @@ function base64ToBytes(b64: string): Uint8Array {
+   return out.subarray(0, written)
+ }
+ 
+-export function encodeDeep(value: unknown): unknown {
++/** the frame with each binary moved into `blobs` and replaced by its index */
++function encodeDeep(value: unknown, blobs: Uint8Array[]): unknown {
+   if (value instanceof ArrayBuffer) {
+-    return { [BYTES_TAG]: bytesToBase64(new Uint8Array(value)) } satisfies BytesMarker
++    blobs.push(new Uint8Array(value))
++    return { [BLOB_TAG]: blobs.length - 1 }
+   }
+   if (ArrayBuffer.isView(value)) {
+     const view = value as ArrayBufferView
+-    // Buffer shares its backing store; copy the live byte range only
+-    return {
+-      [BYTES_TAG]: bytesToBase64(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)),
+-      [VIEW_TAG]: true,
+-    } satisfies BytesMarker
++    // Buffer shares its backing store; send the live byte range only
++    blobs.push(new Uint8Array(view.buffer, view.byteOffset, view.byteLength))
++    return { [BLOB_TAG]: blobs.length - 1 }
+   }
+   if (value === null || typeof value !== 'object') return value
+-  if (Array.isArray(value)) return value.map(encodeDeep)
++  if (Array.isArray(value)) return value.map((entry) => encodeDeep(entry, blobs))
+   if (value instanceof Date || value instanceof Map || value instanceof Set) {
+     // structured clone keeps these; the JSON wire would mangle them — say so
+     throw new Error(`web bridge cannot carry a ${value.constructor.name} over IPC`)
+   }
+   const out: Record<string, unknown> = {}
+   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+-    out[key] = encodeDeep(entry)
++    out[key] = encodeDeep(entry, blobs)
+   }
+   return out
+ }
+ 
+-function isBytesMarker(value: unknown): value is BytesMarker {
+-  return (
+-    typeof value === 'object' &&
+-    value !== null &&
+-    BYTES_TAG in value &&
+-    typeof (value as BytesMarker)[BYTES_TAG] === 'string'
++export function encodeFrame(payload: unknown): string | Uint8Array {
++  const blobs: Uint8Array[] = []
++  const encoded = encodeDeep(payload, blobs)
++  if (blobs.length === 0) return JSON.stringify(encoded)
++  const head = utf8.encode(JSON.stringify(encoded))
++  const fixed = MAGIC.length + U32 * (blobs.length + 2)
++  const out = new Uint8Array(
++    blobs.reduce((total, blob) => total + blob.byteLength, fixed + head.byteLength),
+   )
+-}
+-
+-/** JSON.parse reviver for frames encoded by encodeValue. Every binary arrives
+- *  as a Uint8Array view: Electron's IPC delivers a renderer ArrayBuffer to
+- *  main-process handlers the same way, and the handlers' Buffer.from(data)
+- *  calls depend on it (Buffer.from(arrayBuffer) one-arg throws). */
+-export function decodeValue(_key: string, value: unknown): unknown {
+-  if (isBytesMarker(value)) {
+-    return base64ToBytes(value[BYTES_TAG])
++  const view = new DataView(out.buffer)
++  out.set(MAGIC, 0)
++  const lengths = [blobs.length, ...blobs.map((blob) => blob.byteLength), head.byteLength]
++  lengths.forEach((length, i) => view.setUint32(MAGIC.length + U32 * i, length, true))
++  out.set(head, fixed)
++  let at = fixed + head.byteLength
++  for (const blob of blobs) {
++    out.set(blob, at)
++    at += blob.byteLength
+   }
+-  return value
++  return out
+ }
+ 
+-export function encodeFrame(payload: unknown): string {
+-  return JSON.stringify(encodeDeep(payload))
++/** every binary arrives as a Uint8Array view: Electron's IPC delivers a renderer
++ *  ArrayBuffer to main-process handlers the same way, and the handlers'
++ *  Buffer.from(data) calls depend on it (Buffer.from(arrayBuffer) one-arg throws) */
++function reviver(blobs: Uint8Array[]) {
++  return (_key: string, value: unknown): unknown => {
++    if (typeof value !== 'object' || value === null) return value
++    const marker = value as Record<string, unknown>
++    if (typeof marker[BLOB_TAG] === 'number') {
++      const blob = blobs[marker[BLOB_TAG]]
++      if (!blob) throw new Error('web bridge frame names a binary it does not carry')
++      return blob
++    }
++    if (typeof marker[BYTES_TAG] === 'string') return base64ToBytes(marker[BYTES_TAG])
++    return value
++  }
+ }
+ 
+-export function decodeFrame<T>(text: string): T {
+-  return JSON.parse(text, decodeValue) as T
++/** a text frame, or a binary one as the browser (ArrayBuffer) or Node's ws (Buffer) hands it over */
++export function decodeFrame<T>(data: string | ArrayBuffer | Uint8Array): T {
++  if (typeof data === 'string') return JSON.parse(data, reviver([])) as T
++  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
++  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
++  const u32 = (i: number): number => {
++    const at = MAGIC.length + U32 * i
++    if (at + U32 > bytes.byteLength) throw new Error('web bridge frame is cut short')
++    return view.getUint32(at, true)
++  }
++  if (bytes.byteLength < MAGIC.length || MAGIC.some((byte, i) => bytes[i] !== byte)) {
++    throw new Error('not a web bridge frame')
++  }
++  const count = u32(0)
++  const headLength = u32(count + 1)
++  let at = MAGIC.length + U32 * (count + 2)
++  const head = bytes.subarray(at, at + headLength)
++  at += headLength
++  const blobs: Uint8Array[] = []
++  for (let i = 1; i <= count; i++) {
++    const length = u32(i)
++    if (at + length > bytes.byteLength) throw new Error('web bridge frame is cut short')
++    blobs.push(bytes.subarray(at, at + length))
++    at += length
++  }
++  return JSON.parse(fromUtf8.decode(head), reviver(blobs)) as T
+ }
+diff --git a/apps/shell/src/web/shim/client.ts b/apps/shell/src/web/shim/client.ts
+index a10ba6e8..c4a0b297 100644
+--- a/apps/shell/src/web/shim/client.ts
++++ b/apps/shell/src/web/shim/client.ts
+@@ -1,4 +1,5 @@
+ import { decodeFrame, encodeFrame } from '../serialize'
++import { Outbox } from './outbox'
+ 
+ /**
+  * The one WebSocket per browser tab. Connects to the URL the page was served
+@@ -45,8 +46,11 @@ function wsUrl(): string {
+   return `${proto}//${location.host}${location.pathname}${location.search}`
+ }
+ 
++// frames sent before the socket opens wait for it (outbox.ts)
++const outbox = new Outbox()
++
+ function call(frame: Record<string, unknown>): void {
+-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(encodeFrame(frame))
++  outbox.send(ws, encodeFrame(frame))
+ }
+ 
+ function invoke(channel: string, args: unknown[]): Promise<unknown> {
+@@ -68,10 +72,10 @@ function failAllPending(err: Error): void {
+   dialogResolver = null
+ }
+ 
+-function onMessage(text: string): void {
++function onMessage(data: string | ArrayBuffer): void {
+   let frame: Record<string, unknown>
+   try {
+-    frame = decodeFrame(text) as Record<string, unknown>
++    frame = decodeFrame(data) as Record<string, unknown>
+   } catch {
+     return
+   }
+@@ -111,9 +115,13 @@ function connect(): void {
+   bootedAt = Date.now()
+   const socket = new WebSocket(wsUrl())
+   ws = socket
+-  socket.onmessage = (ev) => onMessage(String(ev.data))
++  // frames carrying binaries come as binary messages (serialize.ts)
++  socket.binaryType = 'arraybuffer'
++  socket.onmessage = (ev: MessageEvent<string | ArrayBuffer>) => onMessage(ev.data)
++  socket.onopen = () => outbox.flush(socket)
+   socket.onclose = () => {
+     ws = null
++    outbox.drop()
+     failAllPending(new Error('web bridge closed'))
+     // a fresh load re-seeds the tab's pending state cleanly; a boot that never
+     // connected (server gone) would loop, so only reload a page that worked
+diff --git a/apps/shell/src/web/shim/dialog-answer.ts b/apps/shell/src/web/shim/dialog-answer.ts
+new file mode 100644
+index 00000000..6c555edd
+--- /dev/null
++++ b/apps/shell/src/web/shim/dialog-answer.ts
+@@ -0,0 +1,34 @@
++/**
++ * What a browser dialog overlay sends back when the user acts on it. The main
++ * process holds the Electron dialog call open (web-dialogs.ts serveWebDialog)
++ * until a `dialog-response` frame with the request's id arrives from the tab
++ * the dialog was served to; an overlay that only closes itself leaves that
++ * call — and whatever awaited it, e.g. opening a document behind the
++ * "recovered version found" prompt — pending until the tab disconnects.
++ */
++
++export type DialogAnswer =
++  { kind: 'message'; response: number } | { kind: 'file'; path: string | null }
++
++export type DialogResponseFrame = {
++  t: 'dialog-response'
++  id: number
++  result:
++    | { canceled: true }
++    | { canceled: false; response: number }
++    | { canceled: false; filePath: string; filePaths: string[] }
++}
++
++export function dialogResponseFrame(id: number, answer: DialogAnswer): DialogResponseFrame {
++  if (answer.kind === 'message') {
++    return { t: 'dialog-response', id, result: { canceled: false, response: answer.response } }
++  }
++  return {
++    t: 'dialog-response',
++    id,
++    result:
++      answer.path === null
++        ? { canceled: true }
++        : { canceled: false, filePath: answer.path, filePaths: [answer.path] },
++  }
++}
+diff --git a/apps/shell/src/web/shim/menu-shortcuts.ts b/apps/shell/src/web/shim/menu-shortcuts.ts
+new file mode 100644
+index 00000000..f2eadf41
+--- /dev/null
++++ b/apps/shell/src/web/shim/menu-shortcuts.ts
+@@ -0,0 +1,59 @@
++/**
++ * Save shortcuts for the editors whose Save lives on the native menu.
++ *
++ * Sheets and Slides bind Ctrl/Cmd+S (Shift for Save As) as accelerators of the
++ * Electron application menu. A browser tab has no such menu, so in web-server
++ * mode the keys did nothing there and only the toolbar button saved (Docs
++ * handles the keys in its own renderer and needs nothing). This maps the keys
++ * to the same push the menu item sends to the editor.
++ */
++
++export interface MenuPush {
++  channel: string
++  args: unknown[]
++}
++
++export interface ShortcutKey {
++  key: string
++  ctrlKey: boolean
++  metaKey: boolean
++  shiftKey: boolean
++  altKey: boolean
++}
++
++/** menu channel per app; the strings are the ones the menus send (sheets IPC_CHANNELS.menuAction, slides 'slides:menu') */
++const MENU_CHANNEL: Record<string, string> = {
++  sheets: 'menu:action',
++  slides: 'slides:menu',
++}
++
++/** the menu push for this key press in this app, or null to leave the key alone */
++export function menuShortcut(app: string, key: ShortcutKey): MenuPush | null {
++  const channel = MENU_CHANNEL[app]
++  if (!channel) return null
++  if (key.altKey || !(key.ctrlKey || key.metaKey)) return null
++  if (key.key.toLowerCase() !== 's') return null
++  return { channel, args: [key.shiftKey ? 'save-as' : 'save'] }
++}
++
++/** the app a web-mode page belongs to: /<app>/?path=… */
++export function appOfPage(pathname: string): string {
++  return pathname.split('/')[1] ?? ''
++}
++
++/** Ctrl/Cmd+S in the editors whose Save is a native-menu accelerator (menu-shortcuts.ts) */
++export function installMenuShortcuts(): void {
++  const app = appOfPage(window.location.pathname)
++  window.addEventListener(
++    'keydown',
++    (ev) => {
++      const push = menuShortcut(app, ev)
++      if (!push) return
++      ev.preventDefault()
++      const dispatch = (window as unknown as Record<string, unknown>).__genofficeWebDispatch as
++        ((channel: string, args: unknown[]) => void) | undefined
++      dispatch?.(push.channel, push.args)
++    },
++    true,
++  )
++}
+diff --git a/apps/shell/src/web/shim/outbox.ts b/apps/shell/src/web/shim/outbox.ts
+new file mode 100644
+index 00000000..df7a663d
+--- /dev/null
++++ b/apps/shell/src/web/shim/outbox.ts
+@@ -0,0 +1,39 @@
++/**
++ * Frames the page sends before its bridge socket has opened. A page whose
++ * bundle comes from the browser cache boots faster than the socket connects;
++ * a frame sent while it was still connecting used to be dropped, its invoke
++ * was never answered and the editor stayed blank. Frames wait here and go out
++ * in order once the socket opens; a socket that closes first drops them (their
++ * invokes fail with the close, as before).
++ */
++
++export interface OutboxSocket {
++  readonly readyState: number
++  send(data: string | Uint8Array): void
++}
++
++// WebSocket.CONNECTING / OPEN, spelled out so the module also loads where the
++// WebSocket global is absent (tests)
++const CONNECTING = 0
++const OPEN = 1
++
++export class Outbox {
++  private waiting: (string | Uint8Array)[] = []
++
++  send(socket: OutboxSocket | null, frame: string | Uint8Array): void {
++    if (!socket) return
++    if (socket.readyState === OPEN) socket.send(frame)
++    else if (socket.readyState === CONNECTING) this.waiting = [...this.waiting, frame]
++  }
++
++  /** the socket just opened: send what waited for it */
++  flush(socket: OutboxSocket): void {
++    const waiting = this.waiting
++    this.waiting = []
++    for (const frame of waiting) socket.send(frame)
++  }
++
++  drop(): void {
++    this.waiting = []
++  }
++}
+diff --git a/apps/shell/src/web/static.ts b/apps/shell/src/web/static.ts
+index 39a3fe68..99d8da84 100644
+--- a/apps/shell/src/web/static.ts
++++ b/apps/shell/src/web/static.ts
+@@ -8,7 +8,9 @@ import { takeHandoff } from '../../../docs/src/main/byte-handoff'
+ import { serveMarkdownAsset } from '../../../markdown/src/main/markdown-main'
+ import { serveHtmlAsset, previewEntryFor } from '../../../html/src/main/html-main'
+ import { buildPreviewDocument } from '../../../html/src/main/preview-document'
++import { readSlideMedia } from '../../../slides/src/main/session-state'
+ import { SCHEME_REWRITES } from './schemes'
++import { assetEtag, stillFresh } from './asset-etag'
+ 
+ /**
+  * Static front end for the web mode: the six editor renderers are the exact
+@@ -60,7 +62,11 @@ const MIME: Record<string, string> = {
+   '.map': 'application/json',
+ }
+ 
+-const REWRITTEN_APPS = new Set(Object.keys(SCHEME_REWRITES))
++// slides only gets its media URLs over the bridge (built in the main process),
++// so the bridge rewrite is enough; its bundle tests the scheme inside a regex
++// literal (/^genoffice-slide-media:…/) that a text rewrite to a path would break
++const BRIDGE_ONLY_APPS = new Set(['slides'])
++const REWRITTEN_APPS = new Set(Object.keys(SCHEME_REWRITES).filter((a) => !BRIDGE_ONLY_APPS.has(a)))
+ 
+ /** extensions served as text (and therefore scheme-rewritten); everything
+  *  else is bytes — fonts corrupted badly through a utf8 round trip (OTS
+@@ -85,12 +91,29 @@ function rewriteText(app: string, text: string): string {
+ const injectionFor = (app: string): string =>
+   `<script src="/__web/client.js"></script><script src="/__web/preload-${app}.js"></script>`
+ 
+-function serveFile(res: ServerResponse, file: string, app: string, reqHost: string): void {
++function serveFile(
++  res: ServerResponse,
++  file: string,
++  app: string,
++  reqHost: string,
++  ifNoneMatch?: string | string[],
++): void {
+   const ext = extname(file).toLowerCase()
+   const mime = MIME[ext] ?? 'application/octet-stream'
+   const asText = TEXT_EXTS.has(ext)
+-  let body: string | Buffer = asText ? readFileSync(file, 'utf8') : readFileSync(file)
+   const rewritten = asText && REWRITTEN_APPS.has(app)
++  // pages carry the address they were asked on: they stay as below; everything
++  // else revalidates by ETag instead of being fetched again (asset-etag.ts)
++  const etag = ext === '.html' ? null : assetEtag(file, rewritten ? SCHEME_REWRITES[app] : null)
++  const caching = etag
++    ? { ETag: etag, 'Cache-Control': rewritten ? 'no-cache' : 'public, max-age=3600' }
++    : null
++  if (etag && caching && stillFresh(ifNoneMatch, etag)) {
++    res.writeHead(304, caching)
++    res.end()
++    return
++  }
++  let body: string | Buffer = asText ? readFileSync(file, 'utf8') : readFileSync(file)
+   if (rewritten) body = rewriteText(app, body as string)
+   if (ext === '.html') {
+     body = injectIntoHtml(body as string, injectionFor(app), reqHost)
+@@ -98,7 +121,7 @@ function serveFile(res: ServerResponse, file: string, app: string, reqHost: stri
+   res.writeHead(200, {
+     'Content-Type': mime,
+     // rewritten files must revalidate; binaries are content-hashed by Vite
+-    'Cache-Control': rewritten ? 'no-store' : 'public, max-age=3600',
++    ...(caching ?? { 'Cache-Control': rewritten ? 'no-store' : 'public, max-age=3600' }),
+   })
+   res.end(body)
+ }
+@@ -112,7 +135,7 @@ export function injectIntoHtml(html: string, injection: string, reqHost: string)
+   // rewritten path appears in the CSP more than once, so the scheme-source is
+   // removed wherever it occurs (anchor-free); the index.html carries no other
+   // `/__media:`-shaped text (the bundles are separate files).
+-  html = html.replace(/\/__(?:media|mdasset|preview|htmlasset):/g, '')
++  html = html.replace(/\/__(?:media|slidemedia|mdasset|preview|htmlasset):/g, '')
+   const wsSource = `ws://${reqHost}`
+   html = html.replace(/connect-src ([^"]*?)(?=")/, (m, list: string) =>
+     list.includes(wsSource) ? m : `connect-src ${list} ${wsSource}`,
+@@ -170,6 +193,27 @@ async function serveDocsMedia(res: ServerResponse, pathname: string): Promise<bo
+   return true
+ }
+ 
++/** GET /__slidemedia://<id> → the same in-memory media the desktop's
++ *  genoffice-slide-media: protocol handler serves (images of an open deck) */
++function serveSlideMedia(res: ServerResponse, pathname: string, search: string): boolean {
++  const rest = pathname.replace(/^\/__slidemedia:\/\//, '')
++  if (rest === pathname) return false
++  // the desktop registry is keyed by the full URL, ?mime=… included
++  const media = readSlideMedia(`genoffice-slide-media://${rest}${search}`)
++  if (!media) {
++    res.writeHead(404)
++    res.end()
++    return true
++  }
++  res.writeHead(200, {
++    'Content-Type': media.mime,
++    'Content-Length': String(media.body.byteLength),
++    'Cache-Control': 'no-store',
++  })
++  res.end(Buffer.from(media.body))
++  return true
++}
++
+ /** GET /__mdasset://<absolute path> → images next to an open markdown note */
+ async function serveMarkdownMedia(res: ServerResponse, pathname: string): Promise<boolean> {
+   const rest = pathname.replace(/^\/__mdasset:\/\//, '')
+@@ -359,6 +403,7 @@ export async function serveWebStatic(
+   const reqHost = req.headers.host ?? '127.0.0.1'
+   const media = await serveDocsMedia(res, pathname)
+   if (media) return true
++  if (serveSlideMedia(res, pathname, url.search)) return true
+   if (await serveMarkdownMedia(res, pathname)) return true
+   if (await serveHtmlMedia(res, pathname)) return true
+   if (servePreview(res, pathname)) return true
+@@ -393,7 +438,7 @@ export async function serveWebStatic(
+     if (rest === '/' || rest === '') {
+       const index = join(root, 'index.html')
+       if (existsSync(index)) {
+-        serveFile(res, index, appName, reqHost)
++        serveFile(res, index, appName, reqHost, req.headers['if-none-match'])
+         return true
+       }
+       res.writeHead(404, { 'Content-Type': 'text/plain' })
+@@ -403,7 +448,7 @@ export async function serveWebStatic(
+     const schemeUrl = `http://${appName}${rest}`
+     const file = resolveRendererFile(new Map(Object.entries(options.roots)), schemeUrl)
+     if (file && existsSync(file) && statSync(file).isFile()) {
+-      serveFile(res, file, appName, reqHost)
++      serveFile(res, file, appName, reqHost, req.headers['if-none-match'])
+       return true
+     }
+   }
+diff --git a/apps/shell/src/web/web-dialogs.ts b/apps/shell/src/web/web-dialogs.ts
+index 3a5e73fd..8d6bd318 100644
+--- a/apps/shell/src/web/web-dialogs.ts
++++ b/apps/shell/src/web/web-dialogs.ts
+@@ -93,6 +93,16 @@ function webDispatchTab(): WebTabContents | null {
+   return dispatchStorage.getStore() ?? null
+ }
+ 
++/**
++ * Electron's dialogs take an optional parent window first:
++ * showSaveDialog([window, ]options). Most handlers pass the parent (via
++ * dialogParent), so reading the first argument as the options would lose the
++ * default name, filters and title.
++ */
++function optionsOf<T>(first: unknown, second: unknown): T {
++  return (second === undefined ? first : second) as T
++}
++
+ type ShowSave = (options: SaveDialogOptions) => Promise<{ canceled: boolean; filePath?: string }>
+ type ShowOpen = (options: OpenDialogOptions) => Promise<{ canceled: boolean; filePaths: string[] }>
+ type ShowMessage = (options: MessageBoxOptions) => Promise<{ response: number }>
+@@ -115,7 +125,8 @@ export function installWebDialogPatch(): void {
+   const nativeOpen = d.showOpenDialog.bind(d)
+   const nativeMessage = d.showMessageBox.bind(d)
+ 
+-  d.showSaveDialog = (options: SaveDialogOptions) => {
++  d.showSaveDialog = ((first: unknown, second?: unknown) => {
++    const options = optionsOf<SaveDialogOptions>(first, second)
+     const tab = webDispatchTab()
+     if (!tab) return nativeSave(options)
+     return serveWebDialog(tab, saveOptionsOf(options)).then((result) =>
+@@ -123,8 +134,9 @@ export function installWebDialogPatch(): void {
+         ? { canceled: true }
+         : { canceled: false, filePath: result.filePath },
+     )
+-  }
+-  d.showOpenDialog = (options: OpenDialogOptions) => {
++  }) as ShowSave
++  d.showOpenDialog = ((first: unknown, second?: unknown) => {
++    const options = optionsOf<OpenDialogOptions>(first, second)
+     const tab = webDispatchTab()
+     if (!tab) return nativeOpen(options)
+     return serveWebDialog(tab, {
+@@ -139,8 +151,9 @@ export function installWebDialogPatch(): void {
+         ? { canceled: true, filePaths: [] }
+         : { canceled: false, filePaths: result.filePaths },
+     )
+-  }
+-  d.showMessageBox = (options: MessageBoxOptions) => {
++  }) as ShowOpen
++  d.showMessageBox = ((first: unknown, second?: unknown) => {
++    const options = optionsOf<MessageBoxOptions>(first, second)
+     const tab = webDispatchTab()
+     if (!tab) return nativeMessage(options)
+     return serveWebDialog(tab, {
+@@ -154,7 +167,7 @@ export function installWebDialogPatch(): void {
+         ? { response: 0 }
+         : { response: result.response, checkboxChecked: result.checkboxChecked },
+     ) as Promise<{ response: number }>
+-  }
++  }) as ShowMessage
+ }
+ 
+ function saveOptionsOf(options: SaveDialogOptions): WebDialogOptions {
+diff --git a/apps/shell/tests/web-api.test.ts b/apps/shell/tests/web-api.test.ts
+index 0b11c20e..0479fc87 100644
+--- a/apps/shell/tests/web-api.test.ts
++++ b/apps/shell/tests/web-api.test.ts
+@@ -16,6 +16,9 @@ vi.mock('../../html/src/main/html-main', () => ({
+   serveHtmlAsset: async () => new Response(null),
+   previewEntryFor: () => null,
+ }))
++// slide media is read through the slides session, whose engine pulls in a wasm font
++// shaper the test runner cannot load; the static server only needs the lookup
++vi.mock('../../slides/src/main/session-state', () => ({ readSlideMedia: async () => null }))
+ vi.mock('../../html/src/main/preview-document', () => ({ buildPreviewDocument: (t: string) => t }))
+ 
+ import { handleApiRequest, type WebApiDeps } from '../src/web/api'
+diff --git a/apps/shell/tests/web-bridge.test.ts b/apps/shell/tests/web-bridge.test.ts
+index 13aabbb4..82dd24ec 100644
+--- a/apps/shell/tests/web-bridge.test.ts
++++ b/apps/shell/tests/web-bridge.test.ts
+@@ -63,6 +63,7 @@ const otherSeeds: [string, unknown, unknown][] = []
+ import { WebSocketServer } from 'ws'
+ import { installWebIpcCapture } from '../src/web/capture'
+ import { attachWebBridge } from '../src/web/bridge'
++import { decodeFrame, encodeFrame } from '../src/web/serialize'
+ import { webTabById } from '../src/web/web-contents'
+ import type { AddressInfo } from 'node:net'
+ 
+@@ -75,8 +76,8 @@ async function connect(path: string): Promise<{
+   const ws = new WS(`ws://127.0.0.1:${port}${path}`)
+   const frames: Record<string, unknown>[] = []
+   const waiters: ((f: Record<string, unknown>) => void)[] = []
+-  ws.on('message', (data: Buffer) => {
+-    const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>
++  ws.on('message', (data: Buffer, isBinary: boolean) => {
++    const frame = decodeFrame<Record<string, unknown>>(isBinary ? data : data.toString('utf8'))
+     const waiter = waiters.shift()
+     if (waiter) waiter(frame)
+     else frames.push(frame)
+@@ -206,29 +207,42 @@ describe('web bridge', () => {
+     await stopBridge()
+   })
+ 
+-  it('hands binary invoke args and results through the codec', async () => {
++  it('hands binary invoke args and results over as binary frames', async () => {
+     await startBridge()
+     ipcMainMock.handle('test:save', (_event, data: unknown) => {
+-      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : (data as Uint8Array)
+-      expect([...bytes]).toEqual([1, 2, 3])
++      expect(data).toBeInstanceOf(Uint8Array)
++      expect([...(data as Uint8Array)]).toEqual([1, 2, 3])
+       return { saved: true, echo: Buffer.from([4, 5]) }
+     })
+     const client = await connect('/docs/')
+-    const payload = new Uint8Array([1, 2, 3]).buffer
++    const binary = new Promise<boolean>((resolve) =>
++      client.ws.once('message', (_data: Buffer, isBinary: boolean) => resolve(isBinary)),
++    )
++    client.ws.send(
++      encodeFrame({ t: 'invoke', id: 9, channel: 'test:save', args: [new Uint8Array([1, 2, 3])] }),
++    )
++    const reply = await client.next()
++    expect(await binary).toBe(true)
++    expect(reply.ok).toBe(true)
++    expect([...(reply.value as { echo: Uint8Array }).echo]).toEqual([4, 5])
++    client.ws.close()
++    await stopBridge()
++  })
++
++  it('still takes base64 text frames from a page loaded before an update', async () => {
++    await startBridge()
++    ipcMainMock.handle('test:save', (_event, data: unknown) => [...(data as Uint8Array)])
++    const client = await connect('/docs/')
+     client.ws.send(
+       JSON.stringify({
+         t: 'invoke',
+-        id: 9,
++        id: 10,
+         channel: 'test:save',
+-        args: [{ __genofficeBytes: Buffer.from(new Uint8Array(payload)).toString('base64') }],
++        args: [{ __genofficeBytes: Buffer.from([1, 2, 3]).toString('base64') }],
+       }),
+     )
+     const reply = await client.next()
+-    expect(reply.ok).toBe(true)
+-    const value = reply.value as {
+-      echo: { __genofficeBytes: string; __genofficeBytesView?: boolean }
+-    }
+-    expect(Buffer.from(value.echo.__genofficeBytes, 'base64')).toEqual(Buffer.from([4, 5]))
++    expect(reply.value).toEqual([1, 2, 3])
+     client.ws.close()
+     await stopBridge()
+   })
+diff --git a/apps/shell/tests/web-dialog-answer.test.ts b/apps/shell/tests/web-dialog-answer.test.ts
+new file mode 100644
+index 00000000..7b7060a5
+--- /dev/null
++++ b/apps/shell/tests/web-dialog-answer.test.ts
+@@ -0,0 +1,29 @@
++import { describe, expect, it } from 'vitest'
++import { dialogResponseFrame } from '../src/web/shim/dialog-answer'
++
++describe('web dialog answers', () => {
++  it('a message box answers with the clicked button index', () => {
++    expect(dialogResponseFrame(7, { kind: 'message', response: 1 })).toEqual({
++      t: 'dialog-response',
++      id: 7,
++      result: { canceled: false, response: 1 },
++    })
++  })
++
++  it('a file dialog answers with the chosen path, or canceled', () => {
++    expect(dialogResponseFrame(3, { kind: 'file', path: '/data/报告.docx' })).toEqual({
++      t: 'dialog-response',
++      id: 3,
++      result: {
++        canceled: false,
++        filePath: '/data/报告.docx',
++        filePaths: ['/data/报告.docx'],
++      },
++    })
++    expect(dialogResponseFrame(3, { kind: 'file', path: null })).toEqual({
++      t: 'dialog-response',
++      id: 3,
++      result: { canceled: true },
++    })
++  })
++})
+diff --git a/apps/shell/tests/web-guard.test.ts b/apps/shell/tests/web-guard.test.ts
+index 5715002f..99b8a2b0 100644
+--- a/apps/shell/tests/web-guard.test.ts
++++ b/apps/shell/tests/web-guard.test.ts
+@@ -15,6 +15,9 @@ vi.mock('../../sheets/src/main/sheets-main', () => ({
+   createSheetsWebTab: () => {},
+   setSheetsNewBlank: () => {},
+ }))
++// slide media is read through the slides session, whose engine pulls in a wasm font
++// shaper the test runner cannot load; the static server only needs the lookup
++vi.mock('../../slides/src/main/session-state', () => ({ readSlideMedia: async () => null }))
+ vi.mock('../../slides/src/main/slides-main', () => ({ trackWebSlidesTab: () => {} }))
+ vi.mock('../../markdown/src/main/markdown-main', () => ({ trackWebTab: () => {} }))
+ vi.mock('../../pdf/src/main/pdf-main', () => ({ trackWebTab: () => {} }))
+diff --git a/apps/shell/tests/web-menu-shortcuts.test.ts b/apps/shell/tests/web-menu-shortcuts.test.ts
+new file mode 100644
+index 00000000..a7149d1c
+--- /dev/null
++++ b/apps/shell/tests/web-menu-shortcuts.test.ts
+@@ -0,0 +1,39 @@
++import { describe, expect, it } from 'vitest'
++import { appOfPage, menuShortcut } from '../src/web/shim/menu-shortcuts'
++
++const key = (
++  k: string,
++  mods: Partial<Record<'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey', boolean>> = {},
++) => ({
++  key: k,
++  ctrlKey: false,
++  metaKey: false,
++  shiftKey: false,
++  altKey: false,
++  ...mods,
++})
++
++describe('web-mode save shortcuts', () => {
++  it('sends the menu push the native accelerator would', () => {
++    expect(menuShortcut('sheets', key('s', { ctrlKey: true }))).toEqual({
++      channel: 'menu:action',
++      args: ['save'],
++    })
++    expect(menuShortcut('slides', key('S', { metaKey: true, shiftKey: true }))).toEqual({
++      channel: 'slides:menu',
++      args: ['save-as'],
++    })
++  })
++
++  it('leaves other keys and Docs alone', () => {
++    expect(menuShortcut('docs', key('s', { ctrlKey: true }))).toBeNull()
++    expect(menuShortcut('sheets', key('s'))).toBeNull()
++    expect(menuShortcut('sheets', key('s', { ctrlKey: true, altKey: true }))).toBeNull()
++    expect(menuShortcut('slides', key('p', { ctrlKey: true }))).toBeNull()
++  })
++
++  it('reads the app from the page path', () => {
++    expect(appOfPage('/sheets/')).toBe('sheets')
++    expect(appOfPage('/')).toBe('')
++  })
++})
+diff --git a/apps/shell/tests/web-outbox.test.ts b/apps/shell/tests/web-outbox.test.ts
+new file mode 100644
+index 00000000..edf05f22
+--- /dev/null
++++ b/apps/shell/tests/web-outbox.test.ts
+@@ -0,0 +1,41 @@
++import { describe, expect, it } from 'vitest'
++import { Outbox } from '../src/web/shim/outbox'
++
++// a page whose bundle comes from the browser cache boots faster than the bridge
++// socket connects: a frame sent while it was still connecting used to be
++// dropped, its invoke never answered, and the editor stayed blank
++function fakeSocket(readyState: number) {
++  const sent: (string | Uint8Array)[] = []
++  return { readyState, sent, send: (frame: string | Uint8Array) => sent.push(frame) }
++}
++
++describe('web bridge outbox', () => {
++  it('holds frames sent while the socket connects and sends them in order once open', () => {
++    const outbox = new Outbox()
++    const socket = fakeSocket(0)
++    outbox.send(socket, 'first')
++    outbox.send(socket, new Uint8Array([1, 2]))
++    expect(socket.sent).toEqual([])
++    socket.readyState = 1
++    outbox.flush(socket)
++    outbox.send(socket, 'third')
++    expect(socket.sent).toEqual(['first', new Uint8Array([1, 2]), 'third'])
++  })
++
++  it('sends right away on an open socket', () => {
++    const socket = fakeSocket(1)
++    new Outbox().send(socket, 'now')
++    expect(socket.sent).toEqual(['now'])
++  })
++
++  it('drops what waited for a socket that closed before opening', () => {
++    const outbox = new Outbox()
++    const closing = fakeSocket(0)
++    outbox.send(closing, 'lost')
++    outbox.drop()
++    const next = fakeSocket(1)
++    outbox.flush(next)
++    outbox.send(fakeSocket(3), 'closed')
++    expect(next.sent).toEqual([])
++  })
++})
+diff --git a/apps/shell/tests/web-serialize.test.ts b/apps/shell/tests/web-serialize.test.ts
+index 7861615e..aff0942a 100644
+--- a/apps/shell/tests/web-serialize.test.ts
++++ b/apps/shell/tests/web-serialize.test.ts
+@@ -44,4 +44,58 @@ describe('web bridge serialization', () => {
+     expect(out.b).toBeInstanceOf(Uint8Array)
+     expect([...out.b]).toEqual([7, 8, 9])
+   })
++
++  it('sends binaries as raw bytes in a binary frame, not as base64 text', () => {
++    // base64 inside JSON made every file a third bigger on the wire and left both
++    // ends parsing strings of tens of MB
++    const data = new Uint8Array(1024 * 1024)
++    for (let i = 0; i < data.length; i += 997) data[i] = i % 256
++    const frame = encodeFrame({
++      t: 'invoke',
++      id: 1,
++      channel: 'docs:save',
++      args: ['/w/a.docx', data],
++    })
++    expect(frame).toBeInstanceOf(Uint8Array)
++    expect((frame as Uint8Array).byteLength).toBeLessThan(data.byteLength + 1024)
++    const out = decodeFrame(frame) as { args: [string, Uint8Array] }
++    expect(out.args[0]).toBe('/w/a.docx')
++    expect(out.args[1]).toBeInstanceOf(Uint8Array)
++    expect(Buffer.from(out.args[1]).equals(Buffer.from(data))).toBe(true)
++  })
++
++  it('keeps frames without binaries as text', () => {
++    expect(typeof encodeFrame({ t: 'reply', id: 2, ok: true, value: { a: [1, 'x'] } })).toBe(
++      'string',
++    )
++  })
++
++  it('carries several binaries, live view ranges and Buffers in one frame', () => {
++    const backing = new Uint8Array([10, 20, 30, 40, 50])
++    const frame = encodeFrame({
++      a: new Uint8Array([1, 2]).buffer,
++      nested: [{ view: backing.subarray(1, 4) }, Buffer.from([7, 8, 9])],
++      empty: new Uint8Array(0),
++    })
++    const out = decodeFrame(frame) as {
++      a: Uint8Array
++      nested: [{ view: Uint8Array }, Uint8Array]
++      empty: Uint8Array
++    }
++    expect([...out.a]).toEqual([1, 2])
++    expect([...out.nested[0].view]).toEqual([20, 30, 40])
++    expect(out.nested[1]).toBeInstanceOf(Uint8Array)
++    expect([...out.nested[1]]).toEqual([7, 8, 9])
++    expect(out.empty.byteLength).toBe(0)
++  })
++
++  it('decodes a binary frame as each end receives it', () => {
++    const frame = encodeFrame({ data: new Uint8Array([4, 5, 6]) }) as Uint8Array
++    // the browser asks for ArrayBuffer messages; Node's ws hands over a Buffer
++    const copy = frame.slice()
++    const fromBrowser = decodeFrame(copy.buffer) as { data: Uint8Array }
++    const fromNode = decodeFrame(Buffer.from(frame)) as { data: Uint8Array }
++    expect([...fromBrowser.data]).toEqual([4, 5, 6])
++    expect([...fromNode.data]).toEqual([4, 5, 6])
++  })
+ })
+diff --git a/apps/shell/tests/web-static.test.ts b/apps/shell/tests/web-static.test.ts
+index 39c18c15..516ae1c1 100644
+--- a/apps/shell/tests/web-static.test.ts
++++ b/apps/shell/tests/web-static.test.ts
+@@ -12,6 +12,11 @@ vi.mock('../../docs/src/main/lazy-media', () => ({
+       ? { body: new Uint8Array([1, 2, 3]), mime: 'image/png' }
+       : null,
+ }))
++// slide media is read through the slides session, whose engine pulls in a wasm font
++// shaper the test runner cannot load; the static server only needs the lookup
++vi.mock('../../slides/src/main/session-state', () => ({
++  readSlideMedia: async () => null,
++}))
+ vi.mock('../../markdown/src/main/markdown-main', () => ({
+   serveMarkdownAsset: async (url: string) =>
+     new Response(`asset:${url}`, { status: url.includes('ok.png') ? 200 : 403 }),
+@@ -34,8 +39,9 @@ async function get(
+   url: string,
+   token: string | null = 'sekret',
+   cookie = 'genoffice_web_token_8931=sekret',
++  extra: Record<string, string> = {},
+ ): Promise<Res> {
+-  const req = { url, headers: { cookie, host: '127.0.0.1:8931' } } as never
++  const req = { url, headers: { cookie, host: '127.0.0.1:8931', ...extra } } as never
+   const resMock = {
+     headers: {} as Record<string, string | undefined>,
+     head: null as unknown as [number, Record<string, string>] | null,
+@@ -110,6 +116,44 @@ describe('web static serving', () => {
+     expect(js).toContain('startsWith("/__media://")')
+   })
+ 
++  it('lets the browser revalidate a bundle instead of downloading it again', async () => {
++    // rewritten bundles were sent no-store: every open of the editor fetched the
++    // whole thing again (21 MB for sheets); an ETag lets a repeat open cost a 304
++    const roots = fixtureRoot()
++    const first = await get(roots, '/docs/assets/index-abc.js')
++    const etag = first.headers['etag']
++    expect(etag).toMatch(/^"[^"]+"$/)
++    expect(first.headers['cache-control']).toBe('no-cache')
++    const again = await get(roots, '/docs/assets/index-abc.js', 'sekret', undefined, {
++      'if-none-match': etag as string,
++    })
++    expect(again.status).toBe(304)
++    expect(again.body.length).toBe(0)
++    expect(again.headers['etag']).toBe(etag)
++  })
++
++  it('answers a changed bundle in full even for an old ETag', async () => {
++    const roots = fixtureRoot()
++    const first = await get(roots, '/docs/assets/index-abc.js')
++    writeFileSync(
++      join(dir, 'assets', 'index-abc.js'),
++      'const changed = "genoffice-docx-media://x/y"',
++    )
++    const again = await get(roots, '/docs/assets/index-abc.js', 'sekret', undefined, {
++      'if-none-match': first.headers['etag'] as string,
++    })
++    expect(again.status).toBe(200)
++    expect(String(again.body)).toContain('/__media://x/y')
++    expect(again.headers['etag']).not.toBe(first.headers['etag'])
++  })
++
++  it('keeps the page itself uncached: it carries the address it was asked on', async () => {
++    const roots = fixtureRoot()
++    const res = await get(roots, '/docs/')
++    expect(res.headers['cache-control']).toBe('no-store')
++    expect(res.headers['etag']).toBeUndefined()
++  })
++
+   it('maps the media path back onto the lazy-media reader', async () => {
+     const roots = fixtureRoot()
+     const res = await get(roots, '/__media://abc/media/image1.png')
+diff --git a/packages/pptx-engine/src/index.ts b/packages/pptx-engine/src/index.ts
+index 503f37e4..6a05ed1e 100644
+--- a/packages/pptx-engine/src/index.ts
++++ b/packages/pptx-engine/src/index.ts
+@@ -776,11 +776,16 @@ export async function savePptx(opened: OpenedPptx): Promise<Uint8Array> {
+ export async function savePptxToFile(opened: OpenedPptx, filePath: string): Promise<void> {
+   const { createWriteStream } = await import('node:fs')
+   const { pipeline } = await import('node:stream/promises')
++  // No streamFiles: it writes every entry with a trailing data descriptor
++  // (sizes after the data), and a STORED entry written that way is one
++  // LibreOffice ("source file could not be loaded") and Java's ZipInputStream
++  // cannot read. Without it JSZip still streams the package entry by entry,
++  // holding one entry at a time to size it, so peak memory is the largest
++  // entry, not the whole deck.
+   const source = buildZip(opened).generateNodeStream({
+     type: 'nodebuffer',
+     compression: 'DEFLATE',
+     compressionOptions: { level: 6 },
+-    streamFiles: true,
+   })
+   try {
+     await pipeline(source, createWriteStream(filePath))
+@@ -867,12 +872,20 @@ function buildZip(opened: OpenedPptx): JSZip {
+   const zip = new JSZip()
+   for (const [path, data] of archive.entries) {
+     const xml = patched.get(path)
++    // createFolders: OPC packages carry no folder entries; JSZip would add one
++    // per directory, which the source decks never had
+     if (xml !== undefined) {
+-      zip.file(path, xml)
++      zip.file(path, xml, { createFolders: false })
+       continue
+     }
+     const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+-    zip.file(path, data, COMPRESSED_EXTENSIONS.has(ext) ? {} : { compression: 'STORE' })
++    zip.file(
++      path,
++      data,
++      COMPRESSED_EXTENSIONS.has(ext)
++        ? { createFolders: false }
++        : { compression: 'STORE', createFolders: false },
++    )
+   }
+   return zip
+ }
+diff --git a/packages/pptx-engine/tests/save-streaming.test.ts b/packages/pptx-engine/tests/save-streaming.test.ts
+index 02785660..b341bf5a 100644
+--- a/packages/pptx-engine/tests/save-streaming.test.ts
++++ b/packages/pptx-engine/tests/save-streaming.test.ts
+@@ -156,4 +156,28 @@ describe('savePptxToFile error containment', () => {
+     }
+     expect(uncaught).toBeNull()
+   })
++
++  it('writes sizes up front and no folder entries, so LibreOffice can read it', async () => {
++    const opened = await openPptx(fx('01_standard_business.pptx'))
++    const target = out()
++    await savePptxToFile(opened, target)
++
++    // walk the local file headers: general-purpose flag bit 3 means the sizes
++    // follow the data (a data descriptor), which a STORED entry must not use
++    const bytes = readFileSync(target)
++    const names: string[] = []
++    let offset = 0
++    while (bytes.readUInt32LE(offset) === 0x04034b50) {
++      const flags = bytes.readUInt16LE(offset + 6)
++      const compressedSize = bytes.readUInt32LE(offset + 18)
++      const nameLength = bytes.readUInt16LE(offset + 26)
++      const extraLength = bytes.readUInt16LE(offset + 28)
++      const name = bytes.toString('utf8', offset + 30, offset + 30 + nameLength)
++      names.push(name)
++      expect(flags & 0x0008, `${name} has a data descriptor`).toBe(0)
++      offset += 30 + nameLength + extraLength + compressedSize
++    }
++    expect(names.length).toBeGreaterThan(0)
++    expect(names.filter((name) => name.endsWith('/'))).toEqual([])
++  })
+ })

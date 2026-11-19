@@ -117,3 +117,66 @@ async def test_starts_without_fixed_upstream_and_disables_fallback():
         assert "authorization" not in runtime.upstream.headers
     finally:
         await runtime.stop()
+
+
+async def _with_editor_port(fresh_url, monkeypatch, use):
+    """起生产入口（配编辑器端口、挂测试用的编辑器扩展），等编辑器端口通了跑 use(编辑器端口)，再停掉；返回 use 的结果。"""
+    import knowwork_server.__main__ as entry
+    from knowwork_server.extensions import discover
+
+    from .extensions.test_loader import found, verifier
+    from .extensions.test_wiring import EDITING
+
+    real_build = entry.build_runtime
+    monkeypatch.setattr(entry, "build_runtime", lambda settings: real_build(
+        settings, extensions=discover(found(EDITING, verifier("granting_demo")))))
+    editor_port = free_port()
+    host_port, public_port, internal_port = free_port(), free_port(), free_port()
+    settings = Settings(database_url=fresh_url, master_key=secrets.token_hex(32), create_schema=True,
+                        host_base_url=f"http://127.0.0.1:{host_port}", host_token="h" * 32,
+                        model_upstream_api_key="sk-x", public_host="127.0.0.1", public_port=public_port,
+                        internal_host="127.0.0.1", internal_port=internal_port,
+                        editor_host="127.0.0.1", editor_port=editor_port)
+    stop = asyncio.Event()
+    async with Served(stub_host([]), host_port):
+        task = asyncio.create_task(serve(settings, stop))
+        try:
+            async with httpx.AsyncClient(trust_env=False) as client:
+                async with asyncio.timeout(15):
+                    while True:
+                        try:
+                            await client.get(f"http://127.0.0.1:{public_port}/health")
+                            await client.get(f"http://127.0.0.1:{editor_port}/")
+                            break
+                        except httpx.ConnectError:
+                            await asyncio.sleep(0.05)
+            return await use(editor_port)
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, 15)
+
+
+async def test_editor_port_serves_the_extension_editor(fresh_url, monkeypatch):
+    """配了编辑器端口、又有扩展提供编辑器时，第三个端口上是扩展的编辑器，路径原样（// 不合并）；停止时一起停。"""
+    async def fetch(port):
+        async with httpx.AsyncClient(trust_env=False) as client:
+            return await client.get(f"http://127.0.0.1:{port}/__media://a/b")
+
+    editor = await _with_editor_port(fresh_url, monkeypatch, fetch)
+    assert editor.json() == {"editor": True, "path": "/__media://a/b"}
+
+
+async def test_editor_port_takes_large_websocket_messages(fresh_url, monkeypatch):
+    """编辑器经 WebSocket 一次传整块内容：GenOffice 网页模式把二进制转成 base64 放进一帧 JSON，上次保存后新贴的图片跟着保存那一帧走。
+    编辑器端口的消息上限要和 GenOffice 自己的一样大（100MiB）。用 uvicorn 默认的 16MiB 时，贴一张 22MB 的图再保存，连接被断开（1009），
+    保存失败，编辑器还把这份文档当成关掉了（2026-11-17 实测）。"""
+    from websockets.asyncio.client import connect
+
+    size = 20 * 1024 * 1024
+
+    async def send_large(port):
+        async with connect(f"ws://127.0.0.1:{port}/", max_size=None) as ws:
+            await ws.send("x" * size)
+            return await ws.recv()
+
+    assert await _with_editor_port(fresh_url, monkeypatch, send_large) == str(size)

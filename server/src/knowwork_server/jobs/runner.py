@@ -198,6 +198,10 @@ class JobRunner:
                     error.message, detail)
         internal = error.error_class == "internal"
         delays = INTERNAL_DELAYS if internal else reg.kind.retry_delays
+        if error.waits and error.retryable:  # 等资源：不算一次尝试
+            delay = error.retry_after if error.retry_after is not None else (delays[0] if delays else 0.0)
+            return Outcome(await self._store.requeue(claim, delay, error, refund=True, on_retry=reg.on_retry),
+                           error.code)
         limit = min(claim.max_tries, len(INTERNAL_DELAYS) + 1) if internal else claim.max_tries
         if error.retryable and claim.tries < limit:
             delay = error.retry_after

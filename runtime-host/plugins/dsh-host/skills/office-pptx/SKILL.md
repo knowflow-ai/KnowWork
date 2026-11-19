@@ -14,8 +14,11 @@ description: 只要涉及 .pptx / .potx 文件就用——不论它是输入、�
 | **读取**内容 | `markitdown 文件.pptx`（每页一段，以 `<!-- Slide number: N -->` 分隔）；看版式：`python3 office/thumbnail.py 文件.pptx 前缀` |
 
 > 命令里的 `office/…` 是本技能资源目录（加载技能时给出的 Base directory）下的辅助脚本，运行时按资源目录写成完整路径；其余相对路径都相对当前工作目录。
-> **解释器与库：** 工具列表里有 `load_workspace_dependencies`（本机对话）就先调一次：Python 脚本（包括 `office/` 下的）都用它返回的 `python` 跑，`markitdown` 写成 `"<python>" -m markitdown`；Node 脚本用它返回的 `node` 跑，`NODE_PATH` 设成它返回的 `nodePackages`。没有这个工具（云端对话的沙箱）就直接用 `python3`、`node`、`markitdown`，下面的命令按这种写法写。用到的库都已带好，不要 `pip install`、`npm install`，也不要另找系统里的解释器。
+> **解释器与库：** 工具列表里有 `load_workspace_dependencies` 就先调一次：Python 脚本（包括 `office/` 下的）都用它返回的 `python` 跑，`markitdown` 写成 `"<python>" -m markitdown`；Node 脚本用它返回的 `node` 跑，`NODE_PATH` 设成它返回的 `nodePackages`。没有这个工具就直接用 `python3`、`node`、`markitdown`，下面的命令按这种写法写。用到的库都已带好，不要 `pip install`、`npm install`，也不要另找系统里的解释器。
+> **开在编辑器里的文件：** 消息写着「在编辑器里修改」、工具列表里又有 `office_edit` 时，那份文件正开在用户的编辑器里，用
+> `office_edit` 直接改它，不用本技能的脚本。
 > **文件放哪：** 用户给的原文件只读、不要原地改（云端对话的附件在 `input/`；本机对话的原文件就在工作文件夹里，用用户说的路径）。成品存进当前工作目录（用户指定了位置就照用户说的），按内容起名、不和已有文件重名；生成用的脚本也放工作目录，按用途起名（如 `生成报告.js`；Python 脚本别叫 `docx.py`、`pptx.py` 这类会挡住库的名字）。
+> **脚本分几个文件写：** 写文件时写进去的内容全部算在模型这一次的输出里，单次输出有上限（私有化部署常见 8K token），一个长脚本写到一半被截断，这一步就白做了、文件也没写成。所以生成用的脚本按块拆开：配色、样式、公用函数放一个文件，每一块内容（演示稿每一页、文档每一节、表格每张表）一个文件，最后一个入口文件把它们串起来运行；单个文件控制在 150 行左右。大段数据单独存成 JSON 或 CSV，分几次写，不要整段写进脚本。要改哪一块，只重写那一个文件。
 > **中间文件：** 解压出来的部件、渲染的页面图这类一次性的东西，放进这次新建的隐藏临时目录：`mktemp -d ./.dsh-office.XXXXXXXX` 会打印出目录名（下文写作 `<临时目录>`），之后的命令都直接写这个名字（每条命令是新的 shell，变量留不下来）。用完——失败了也一样——只删这个目录（`rm -rf <临时目录>`）；不要用固定的目录名，不要删工作目录本身，回答里不要链接已经删掉的图片。
 > 写好后调用 `present` 交付成品（例如 `present({"files":[{"path":"演示稿.pptx"}]})`），中间文件不交付。
 
@@ -37,6 +40,7 @@ description: 只要涉及 .pptx / .potx 文件就用——不论它是输入、�
 `pptxgenjs` 已经带好，直接 `require('pptxgenjs')`（本机对话照开头的写法设 `NODE_PATH`）。
 API 你是知道的，要当心的是这些：
 
+- **按页拆文件写**（理由见开头「脚本分几个文件写」）：`theme.js` 导出配色、字体和画标题、页脚这类公用函数；每页一个文件（`slides/01.js`、`slides/02.js`……），各自导出 `(pres, theme) => { const slide = pres.addSlide(); … }`；`build.js` 只负责 `new pptxgen()`、设 `layout`、按顺序 `require` 各页并调用，最后 `writeFile`。一次写一两个文件，不要一次把十几页全写进一个脚本。
 - **先设 `pres.layout` 再加页。** 默认画布 `LAYOUT_16x9` 是 **10 × 5.625 英寸**，不是 13.3 英寸宽。
   超出边界的坐标照样写进去、不会被截断——形状只是不在页面上。（`LAYOUT_WIDE` 是 13.3 × 7.5 英寸。）
 - **颜色：不带 `#`，不要 8 位。** 写 `color: "FF0000"`。`"#FF0000"` 和把透明度写进颜色

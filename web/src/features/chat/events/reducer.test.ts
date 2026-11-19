@@ -196,9 +196,11 @@ describe('chatReducer 结束原因', () => {
     expect(state.runs['run-1']!.status).toBe('failed');
   });
 
-  it('回答过长被截断时说明', () => {
+  it('输出到单次上限被截断时，说明原因和接下来能怎么办', () => {
     const state = fold([ev.runStarted(1), ev.runCompleted(2, 1, undefined, { reason: 'max_tokens' })]);
-    expect(state.runs['run-1']!.endReason?.message).toBe('回答过长，已被截断');
+    expect(state.runs['run-1']!.endReason?.message).toBe(
+      '这一步要输出的内容超过了模型单次输出的上限，没写完就停了。回复「继续」，AI 会拆小接着做；也可以请管理员调高这个模型的「最大输出」。',
+    );
   });
 
   it('只有结束事件时也建立轮次', () => {

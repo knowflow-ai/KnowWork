@@ -386,3 +386,94 @@
 .kw-preview-problem-actions {
   padding: 0 20px 20px;
 }
+
+/* 并排在对话右边的编辑区（FileEditPane）：头部同抽屉，正文是编辑器，铺满 */
+.kw-file-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--color-surface);
+}
+
+.kw-file-pane-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.kw-file-pane-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: clip;
+}
+
+.kw-file-pane-body.is-padded {
+  padding: 16px 20px 24px;
+  overflow: auto;
+}
+
+/* 文件旁边的目录树（照官方：预览旁边的目录树，默认 260 宽） */
+.kw-file-pane-aside {
+  display: flex;
+  flex: 0 0 260px;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--color-border-subtle);
+}
+
+/* 抽屉里的在线编辑器（本机 Word）：铺满抽屉正文，编辑器自己管滚动与工具栏 */
+.kw-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* AI 改了文件、编辑器里又有没存的改动时的一行说明（使用端不上色：文字加两个按钮） */
+.kw-editor-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-editor-notice > span {
+  margin-right: auto;
+}
+
+.kw-editor-frame {
+  flex: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 70vh;
+  border: 0;
+  background: var(--color-surface-secondary, #f4f4f4);
+}
+
+/* 只读预览上面的一行说明（PreviewFile.readOnlyNote）：说明在上、预览占其余 */
+.kw-preview-noted {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.kw-preview-note {
+  flex: none;
+  margin: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-preview-noted-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}

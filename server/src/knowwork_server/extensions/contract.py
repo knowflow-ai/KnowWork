@@ -25,6 +25,8 @@ from ..conversations.quota import QuotaPolicies
 from ..conversations.scopes import ConversationScopes
 from ..conversations.summaries import Contributor
 from ..conversations.turn_context import TurnContextHook
+from ..conversations.turn_state import TurnStateHook
+from ..documents.editing import ConversationFileEditing
 from ..identity.directory_accounts import DirectoryAccounts
 from ..identity.im_identities import ImIdentities
 from ..identity.methods import LoginMethods
@@ -40,12 +42,14 @@ from ..knowledge.links import LinkSigner
 from ..knowledge.provided import ProvidedSources
 from ..models.client import ModelClient
 from ..models.recorder import UsageReader
+from ..office import OfficeRuntime
 from ..sandbox.contract import SessionSandbox
 from ..sessionfiles.storage import SessionStores
 from ..skills.platform import PlatformSkillAdmin
 from ..tools.mcp.enterprise import EnterpriseMcpAdmin
 from ..tools.provided import ProvidedTools
 from ..tools.results import ResultSources
+from ..tools.tokens import ToolTokenClaims
 
 ENTRY_GROUP = "knowwork.extensions"
 VERIFIER_GROUP = "knowwork.license"
@@ -80,6 +84,9 @@ class ApiContext:
     tools: ProvidedTools = field(default_factory=ProvidedTools)
     # 登记每轮补上下文的提供者（conversations/turn_context.py，turn_context.add），例如记忆、问数的示例；按登记顺序拼
     turn_context: TurnContextHook = field(default_factory=TurnContextHook)
+    # 登记每轮交给宿主插件的状态（conversations/turn_state.py，turn_state.add(名字, 提供者)），例如 Office 编辑：这段对话此刻
+    # 在编辑器里开着哪几份；提供者在交出状态之前可以先做这一轮开始前的事（存盘）。按名字放进这一轮的 extension_state
+    turn_state: TurnStateHook = field(default_factory=TurnStateHook)
     # 登记回答方式（conversations/answer_modes.py，answer_modes.add）：输入框下拉里多一项，选了它这一轮按它收窄官方工具、
     # 注入指令；业务工具在不在这种方式里由工具自己的 answer_modes 声明
     answer_modes: AnswerModes = field(default_factory=AnswerModes)
@@ -147,6 +154,14 @@ class ApiContext:
     quota: QuotaPolicies = field(default_factory=QuotaPolicies)
     # 只读的用量汇总（models/recorder.py 的 summary）：按人、按模型、按天，「哪一天」按 settings.usage_timezone 切
     usage: UsageReader | None = None
+    # 编辑对话里的文件（documents/editing.py）：核对对话归本人、读最新的一份、存盘成新的一版并写回会话沙箱。
+    # 扩展的编辑器（例如网页里的 Office 编辑）用它把文件放进编辑器、存回来；能编辑哪些格式由扩展决定
+    file_editing: ConversationFileEditing | None = None
+    # 认宿主回调带的工具令牌（同沙箱、工具的内部接口）：扩展在内部端口上的路由（setup_internal）据此知道是哪段对话、谁的；
+    # 令牌无效抛 ToolAccessError（401），是不是空间成员由扩展自己再判
+    verify_host_token: Callable[[str], ToolTokenClaims] | None = None
+    # 一人一个 Office 容器（knowwork_server.office）：扩展的在线编辑用它，业务服务只建这一份；没配置时为 None
+    office: OfficeRuntime | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +200,10 @@ class Extension(Protocol):
     def setup_api(self, ctx: ApiContext) -> Sequence[APIRouter]:
         """业务服务启动时调用，返回要挂的路由。"""
         ...
+
+    # 可选：def setup_editor(self, ctx: ApiContext) -> ASGI 应用 | None
+    # 返回挂在编辑器端口（settings.editor_port）上的整个 ASGI 应用：在线编辑器单独一个来源，路径、方法、WebSocket
+    # 都由它自己处理（例如原样转发给编辑器服务）。返回 None 表示这次不提供；同时只认一个扩展的编辑器。
 
     # 可选：def setup_internal(self, ctx: ApiContext) -> Sequence[APIRouter]
     # 返回挂在内部端口的路由（只给宿主、扩展自己部署的服务回调，网关不转发）。没有这个方法就不挂；

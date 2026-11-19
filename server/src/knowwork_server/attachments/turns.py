@@ -1,6 +1,7 @@
 """把本轮消息带的附件 id 换成交给宿主的文件说明（kernel.contract.TurnAttachment）。
 
-原件在 /workspace/input/<input_name>；配了文档解析的另给解析出的 Markdown 路径。还在解析时也给，并标明现在还没有：
+原件在工作区的附件目录 input/<input_name>（合同里传工作区路径，给模型看哪种写法由宿主定）；配了文档解析的另给解析出的
+Markdown 路径。还在解析时也给，并标明现在还没有：
 网页发送前会等解析完，用户点了「直接发送」、或经接口发来的消息才会赶上解析没完，模型知道它会出现在哪，
 过一会儿能自己去看，不然只能拿原件从头转一遍。
 迁移 0013 之前的旧行（PDF、Word、PPT 只放了 Markdown，parsed_name 等于 input_name）照它实际放的那份给路径。
@@ -14,20 +15,23 @@ from collections.abc import Sequence
 from ..conversations.models import Conversation
 from ..conversations.service import AttachmentUnavailable
 from ..kernel.contract import OutlineEntry, TurnAttachment
+from ..workpath import INPUT
 from .reading import plan
 from .service import AttachmentService, AttachmentView
 from .types import AttachmentRejected
 
-INPUT_DIR = "/workspace/input/"
+
+def _input(name: str) -> str:
+    return INPUT.child(name).relative
 
 
 def turn_attachment(item: AttachmentView) -> TurnAttachment:
     separate = bool(item.parsed_name) and item.parsed_name != item.input_name
     pending = separate and item.parse_status == "parsing"
-    extracted = INPUT_DIR + item.parsed_name if separate and (pending or item.parse_status == "ready") else None
+    extracted = _input(item.parsed_name) if separate and (pending or item.parse_status == "ready") else None
     digesting = item.digest_status == "digesting"
-    digest = INPUT_DIR + item.digest_name if item.digest_name and (digesting or item.digest_status == "ready") else None
-    return TurnAttachment(name=item.filename, path=INPUT_DIR + item.input_name, bytes=item.size,
+    digest = _input(item.digest_name) if item.digest_name and (digesting or item.digest_status == "ready") else None
+    return TurnAttachment(name=item.filename, path=_input(item.input_name), bytes=item.size,
                           sha256=item.digest, extracted_path=extracted, extraction_pending=pending,
                           digest_path=digest, digest_pending=digest is not None and digesting)
 

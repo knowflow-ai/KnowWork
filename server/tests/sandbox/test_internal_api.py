@@ -27,34 +27,35 @@ class FakeTokens:
 class FakeSandbox:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
-        self.files: dict[str, bytes] = {"/workspace/a.txt": "第一行\n".encode()}
+        # 按工作区路径存：宿主发来的就是工作区路径，业务服务原样交给沙箱
+        self.files: dict[str, bytes] = {"a.txt": "第一行\n".encode()}
 
     async def exec(self, ws, sid, argv, *, timeout_seconds, max_output_bytes, workdir, env):
-        self.calls.append(("exec", ws, sid, tuple(argv), workdir, dict(env), timeout_seconds))
+        self.calls.append(("exec", ws, sid, tuple(argv), workdir.relative, dict(env), timeout_seconds))
         return ExecResult(exit_code=0, stdout="ok\n", stderr="", timed_out=False, truncated=False)
 
     async def stat_path(self, ws, sid, path, *, follow):
-        self.calls.append(("stat", path, follow))
-        data = self.files.get(path)
+        self.calls.append(("stat", path.relative, follow))
+        data = self.files.get(path.relative)
         return None if data is None else PathStat(kind="f", size=len(data), version="v1")
 
     async def read_file(self, ws, sid, path, *, offset, limit):
-        if path not in self.files:
+        if path.relative not in self.files:
             raise SandboxFileError("文件不存在", "not_found")
-        data = self.files[path]
+        data = self.files[path.relative]
         return FileChunk(path=path, size=len(data), offset=offset, data=data[offset:offset + limit])
 
     async def list_dir(self, ws, sid, path):
         raise SandboxError("目录不存在或无法读取")
 
     async def write_file(self, ws, sid, path, data):
-        self.files[path] = data
+        self.files[path.relative] = data
         return len(data)
 
     async def delete_file(self, ws, sid, path):
-        if path not in self.files:
+        if path.relative not in self.files:
             raise SandboxFileError("文件不存在", "not_found")
-        del self.files[path]
+        del self.files[path.relative]
 
 
 def _client(sandbox: FakeSandbox, *, member: bool = True) -> httpx.AsyncClient:
@@ -71,16 +72,18 @@ async def test_exec_maps_the_session_path_to_the_workspace_and_caps_the_timeout(
     sandbox = FakeSandbox()
     async with _client(sandbox) as client:
         response = await client.post(f"{PREFIX}/exec", headers=_auth(), json={
-            "argv": ["bash", "-c", "pwd"], "cwd": "/sessions/s1/sub", "timeoutMs": 3_600_000,
+            "argv": ["bash", "-c", "pwd"], "cwd": "sub", "timeoutMs": 3_600_000,
             "maxOutputBytes": 1024, "env": {"DSH_SESSION_ID": "s1"}})
     assert response.status_code == 200, response.text
     assert response.json()["stdout"] == "ok\n"
     _, ws, sid, argv, workdir, env, timeout = sandbox.calls[0]
-    assert (ws, sid, argv, workdir, env) == ("ws1", "s1", ("bash", "-c", "pwd"), "/workspace/sub", {"DSH_SESSION_ID": "s1"})
+    assert (ws, sid, argv, workdir, env) == ("ws1", "s1", ("bash", "-c", "pwd"), "sub", {"DSH_SESSION_ID": "s1"})
     assert timeout == 600
 
 
-@pytest.mark.parametrize("path", ["/sessions/s2/a.txt", "/etc/passwd", "/sessions/s1/../s2/a.txt", "relative.txt"])
+# 宿主发来的是工作区路径（相对写法）：绝对路径（不管是哪个会话的）、越出工作区的一律拒绝
+@pytest.mark.parametrize("path", ["/sessions/s2/a.txt", "/sessions/s1/a.txt", "/etc/passwd", "../s2/a.txt",
+                                  "a/../../b.txt", "/workspace/a.txt"])
 async def test_paths_outside_this_session_are_refused(path):
     sandbox = FakeSandbox()
     async with _client(sandbox) as client:
@@ -93,10 +96,10 @@ async def test_paths_outside_this_session_are_refused(path):
 async def test_bad_token_and_non_member_are_refused():
     sandbox = FakeSandbox()
     async with _client(sandbox) as client:
-        assert (await client.post(f"{PREFIX}/stat", headers=_auth("bad"), json={"path": "/sessions/s1"})).status_code == 401
-        assert (await client.post(f"{PREFIX}/stat", json={"path": "/sessions/s1"})).status_code == 401
+        assert (await client.post(f"{PREFIX}/stat", headers=_auth("bad"), json={"path": ""})).status_code == 401
+        assert (await client.post(f"{PREFIX}/stat", json={"path": ""})).status_code == 401
     async with _client(sandbox, member=False) as client:
-        response = await client.post(f"{PREFIX}/stat", headers=_auth(), json={"path": "/sessions/s1"})
+        response = await client.post(f"{PREFIX}/stat", headers=_auth(), json={"path": ""})
         assert response.status_code == 403 and response.json()["error"]["code"] == "forbidden"
     assert sandbox.calls == []
 
@@ -104,28 +107,28 @@ async def test_bad_token_and_non_member_are_refused():
 async def test_stat_read_write_round_trip_and_error_codes():
     sandbox = FakeSandbox()
     async with _client(sandbox) as client:
-        stat = (await client.post(f"{PREFIX}/stat", headers=_auth(), json={"path": "/sessions/s1/a.txt"})).json()
+        stat = (await client.post(f"{PREFIX}/stat", headers=_auth(), json={"path": "a.txt"})).json()
         assert stat == {"stat": {"kind": "f", "size": len("第一行\n".encode()), "version": "v1"}}
-        assert (await client.post(f"{PREFIX}/stat", headers=_auth(), json={"path": "/sessions/s1/none"})).json() == {"stat": None}
+        assert (await client.post(f"{PREFIX}/stat", headers=_auth(), json={"path": "none"})).json() == {"stat": None}
 
         read = (await client.post(f"{PREFIX}/read", headers=_auth(),
-                                  json={"path": "/sessions/s1/a.txt", "offset": 0, "length": 100})).json()
+                                  json={"path": "a.txt", "offset": 0, "length": 100})).json()
         assert base64.b64decode(read["data"]).decode() == "第一行\n"
-        missing = await client.post(f"{PREFIX}/read", headers=_auth(), json={"path": "/sessions/s1/x", "offset": 0, "length": 1})
+        missing = await client.post(f"{PREFIX}/read", headers=_auth(), json={"path": "x", "offset": 0, "length": 1})
         assert missing.status_code == 404 and missing.json()["error"]["code"] == "not_found"
 
         written = await client.post(f"{PREFIX}/write", headers=_auth(),
-                                    json={"path": "/sessions/s1/b.txt", "data": base64.b64encode(b"x").decode()})
-        assert written.status_code == 200 and sandbox.files["/workspace/b.txt"] == b"x"
-        bad = await client.post(f"{PREFIX}/write", headers=_auth(), json={"path": "/sessions/s1/b.txt", "data": "%%%"})
+                                    json={"path": "b.txt", "data": base64.b64encode(b"x").decode()})
+        assert written.status_code == 200 and sandbox.files["b.txt"] == b"x"
+        bad = await client.post(f"{PREFIX}/write", headers=_auth(), json={"path": "b.txt", "data": "%%%"})
         assert bad.status_code == 400
 
-        deleted = await client.post(f"{PREFIX}/delete", headers=_auth(), json={"path": "/sessions/s1/b.txt"})
-        assert deleted.status_code == 200 and "/workspace/b.txt" not in sandbox.files, "官方 apply_patch 的删除与移动"
-        gone = await client.post(f"{PREFIX}/delete", headers=_auth(), json={"path": "/sessions/s1/b.txt"})
+        deleted = await client.post(f"{PREFIX}/delete", headers=_auth(), json={"path": "b.txt"})
+        assert deleted.status_code == 200 and "b.txt" not in sandbox.files, "官方 apply_patch 的删除与移动"
+        gone = await client.post(f"{PREFIX}/delete", headers=_auth(), json={"path": "b.txt"})
         assert gone.status_code == 404 and gone.json()["error"]["code"] == "not_found"
 
-        listing = await client.post(f"{PREFIX}/list", headers=_auth(), json={"path": "/sessions/s1/none"})
+        listing = await client.post(f"{PREFIX}/list", headers=_auth(), json={"path": "none"})
         assert listing.status_code == 400 and listing.json()["error"]["code"] == "sandbox_error"
 
 
@@ -147,7 +150,7 @@ async def test_exec_adds_env_of_loaded_skills_and_masks_their_values_in_output()
     app = FastAPI()
     app.include_router(build_internal_router(sandbox, FakeTokens(), lambda _u, _w: True, max_timeout_seconds=600,
                                              skill_env=skill_env))
-    body = {"argv": ["bash", "-c", "printenv"], "cwd": "/sessions/s1", "timeoutMs": 1000, "maxOutputBytes": 1024}
+    body = {"argv": ["bash", "-c", "printenv"], "cwd": "", "timeoutMs": 1000, "maxOutputBytes": 1024}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://internal") as client:
         plain = await client.post(f"{PREFIX}/exec", headers=_auth(), json=body)
         loaded = await client.post(f"{PREFIX}/exec", headers=_auth(), json={**body, "skills": ["report-sync"]})

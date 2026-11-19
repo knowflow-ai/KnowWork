@@ -27,7 +27,7 @@ def session_body(spec: SessionSpec) -> dict:
 
 
 def turn_body(turn: TurnInput) -> dict:
-    """发一轮的请求体：原话、插话与否、语言时区、回答方式、模型、附件、知识库目录、扩展补的上下文、@。"""
+    """发一轮的请求体：原话、插话与否、语言时区、回答方式、模型、附件、知识库目录、扩展补的上下文、@、扩展的状态。"""
     body: dict = {"text": turn.text, "mode": turn.mode, "language": resolve_turn_language(turn.text, turn.language),
                   "answerMode": turn.answer_mode}
     if turn.answer_mode_spec is not None:
@@ -48,6 +48,8 @@ def turn_body(turn: TurnInput) -> dict:
                            "persona": turn.context.persona}
     if turn.mentions:
         body["mentions"] = host_mentions(turn.mentions)
+    if turn.extension_state is not None:
+        body["extensionState"] = turn.extension_state
     return body
 
 

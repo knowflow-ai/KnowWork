@@ -1,6 +1,9 @@
 """一会话一个长驻容器：按需创建、按 label 找回、停了就拉起、
 配置变了重建、销毁时连匿名卷一起删。
 
+找回、新建、收养、重建这套做法写在通用的 ManagedContainers 里，容器长什么样由「容器规格」（ContainerSpec）给：
+沙箱是 SandboxSpec（一会话一个），扩展里的长驻容器（例如一人一个的 Office 编辑器）传自己的规格，同一套逻辑只写一次。
+
 - 工作区不挂卷，就在容器自己的文件系统里（容器被删后之前的文件不保留）。容器被空闲清扫或配置变更删掉后，下一次使用会新建一个空的；新建时调用 on_created 钩子，
   主线把它接到附件的 restage 上，把已就绪的附件重新放进去。产物在每轮结束时已收走，不受影响。
 - 容器名由（工作空间, 会话）的摘要确定，同一会话不管哪个进程来找都落到同一个名字上；找到同名容器时再核对
@@ -17,12 +20,12 @@ import re
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
+from ..workpath import SANDBOX, host_mount
 from .config import ContainerPosture
 from .contract import SandboxError
 from .docker_engine import DockerConflict, DockerEngine
-from .paths import WORKSPACE_DIR, session_root
 from .scripts import ENTRYPOINT, ENTRYPOINT_SSH
 
 log = logging.getLogger(__name__)
@@ -47,6 +50,25 @@ START_READY_SECONDS = 15.0
 START_READY_POLL = 0.05
 
 CreatedHook = Callable[[str, str], Awaitable[object]]
+
+
+class ContainerSpec[K](Protocol):
+    """一类长驻容器长什么样：名字、归属标记、创建参数，和写在标记上的配置摘要（对不上就重建）。"""
+
+    @property
+    def noun(self) -> str: ...  # 给人看的提示里怎么称呼它（「沙箱」「编辑器」）
+
+    @property
+    def image(self) -> str: ...
+
+    @property
+    def digest(self) -> str: ...
+
+    def name(self, key: K) -> str: ...
+
+    def labels(self, key: K) -> dict[str, str]: ...
+
+    def options(self, key: K) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -89,8 +111,8 @@ def container_options(key: SandboxKey, posture: ContainerPosture, *, idle_ttl_se
         # 用 entrypoint 而不是 command，并把 command 清空：否则镜像自带的 ENTRYPOINT 会接管 PID 1
         "entrypoint": list(ENTRYPOINT_SSH if posture.ssh else ENTRYPOINT), "command": [],
         # PID 1 固定 uid 0：入口要在 /var/lib 下建活动标记；镜像最后一行是非 root USER 时也照样成立
-        "user": "0", "working_dir": WORKSPACE_DIR,
-        "environment": ["LANG=C.UTF-8", "PYTHONUNBUFFERED=1", f"KW_SESSION_ROOT={session_root(key.session_id)}"],
+        "user": "0", "working_dir": SANDBOX.root,
+        "environment": ["LANG=C.UTF-8", "PYTHONUNBUFFERED=1", f"KW_SESSION_ROOT={host_mount(key.session_id).root}"],
         "labels": {**key.labels(), LABEL_POSTURE: posture.digest, LABEL_IDLE_TTL: str(idle_ttl_seconds)},
         "cap_drop": ["ALL"], "cap_add": [*CAPABILITIES, *(SSH_CAPABILITIES if posture.ssh else ())],
         "security_opt": ["no-new-privileges"],
@@ -106,28 +128,59 @@ def container_options(key: SandboxKey, posture: ContainerPosture, *, idle_ttl_se
     return options
 
 
+@dataclass(frozen=True)
+class SandboxSpec:
+    """会话沙箱：一会话一个，参数见 container_options。"""
+
+    posture: ContainerPosture
+    idle_ttl_seconds: int
+    noun: str = "沙箱"
+
+    @property
+    def image(self) -> str:
+        return self.posture.image
+
+    @property
+    def digest(self) -> str:
+        return self.posture.digest
+
+    def name(self, key: SandboxKey) -> str:
+        return key.name
+
+    def labels(self, key: SandboxKey) -> dict[str, str]:
+        return key.labels()
+
+    def options(self, key: SandboxKey) -> dict[str, Any]:
+        return container_options(key, self.posture, idle_ttl_seconds=self.idle_ttl_seconds)
+
+
 def _status(info: dict[str, Any]) -> str:
     return str((info.get("State") or {}).get("Status") or "").lower()
 
 
-class ContainerManager:
-    def __init__(self, engine: DockerEngine, posture: ContainerPosture, *, idle_ttl_seconds: int) -> None:
+class ManagedContainers[K]:
+    """按规格管一类长驻容器：按需创建、按名字找回（核对归属标记）、停了拉起、配置变了重建、销毁。"""
+
+    def __init__(self, engine: DockerEngine, spec: ContainerSpec[K]) -> None:
         self._engine = engine
-        self._posture = posture
-        self._idle_ttl = idle_ttl_seconds
+        self._spec = spec
         self.on_sweep: Callable[[], None] | None = None  # 装配时接空闲清扫的 trigger
-        self._locks: weakref.WeakValueDictionary[SandboxKey, asyncio.Lock] = weakref.WeakValueDictionary()
-        self._busy: dict[SandboxKey, int] = {}
+        self._locks: weakref.WeakValueDictionary[K, asyncio.Lock] = weakref.WeakValueDictionary()
+        self._busy: dict[K, int] = {}
         self._created_hooks: list[CreatedHook] = []
 
-    def lock(self, key: SandboxKey) -> asyncio.Lock:
+    def _owns(self, key: K, labels: dict[str, str] | None) -> bool:
+        labels = labels or {}
+        return all(labels.get(name) == value for name, value in self._spec.labels(key).items())
+
+    def lock(self, key: K) -> asyncio.Lock:
         lock = self._locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
             self._locks[key] = lock
         return lock
 
-    def is_busy(self, key: SandboxKey) -> bool:
+    def is_busy(self, key: K) -> bool:
         return bool(self._busy.get(key))
 
     def add_created_hook(self, hook: CreatedHook) -> None:
@@ -135,7 +188,7 @@ class ContainerManager:
         self._created_hooks.append(hook)
 
     @contextlib.asynccontextmanager
-    async def using(self, key: SandboxKey, *, create: bool = True) -> AsyncIterator[str | None]:
+    async def using(self, key: K, *, create: bool = True) -> AsyncIterator[str | None]:
         """拿到运行中的容器 ID（create=False 且不存在时为 None）；使用期间不会被空闲清扫删掉。"""
         self._busy[key] = self._busy.get(key, 0) + 1
         try:
@@ -153,15 +206,18 @@ class ContainerManager:
             else:
                 self._busy.pop(key, None)
 
-    async def _run_created_hooks(self, key: SandboxKey) -> None:
+    async def _run_created_hooks(self, key: K) -> None:
         for hook in self._created_hooks:
             try:
-                await hook(key.workspace_id, key.session_id)
+                await hook(*self._hook_args(key))
             except Exception:  # 钩子失败（例如附件重放失败）不影响这次操作，失败由钩子自己记录与告知
                 log.warning("沙箱新建后的钩子执行失败", exc_info=True)
 
-    async def _ensure(self, key: SandboxKey, *, create: bool) -> tuple[str | None, bool]:
-        info = await self._engine.inspect_container(key.name)
+    def _hook_args(self, key: K) -> tuple[str, str]:
+        raise NotImplementedError
+
+    async def _ensure(self, key: K, *, create: bool) -> tuple[str | None, bool]:
+        info = await self._engine.inspect_container(self._spec.name(key))
         if info is not None:
             existing = await self._reuse(key, info)
             if existing is not None:
@@ -172,21 +228,21 @@ class ContainerManager:
         if container_id is not None:
             return container_id, True
         # 另一个进程抢先建了同名容器（见模块说明）：找回它接着用，新建钩子由真正建的那边跑
-        info = await self._engine.inspect_container(key.name)
+        info = await self._engine.inspect_container(self._spec.name(key))
         existing = await self._reuse(key, info) if info is not None else None
         if existing is None:
-            raise SandboxError("沙箱正在准备中，请稍后重试")
+            raise SandboxError(f"{self._spec.noun}正在准备中，请稍后重试")
         return existing, False
 
-    async def _reuse(self, key: SandboxKey, info: dict[str, Any]) -> str | None:
-        """按名字找到的容器：不是我们为这个会话建的就拒绝；配置没变、没坏的拉起来接着用，否则删掉、返回 None 让调用方新建。"""
+    async def _reuse(self, key: K, info: dict[str, Any]) -> str | None:
+        """按名字找到的容器：不是我们为这个键建的就拒绝；配置没变、没坏的拉起来接着用，否则删掉、返回 None 让调用方新建。"""
         labels = (info.get("Config") or {}).get("Labels")
-        if not key.owns(labels):
-            log.warning("沙箱容器名被占用且 label 不符，拒绝收养")
+        if not self._owns(key, labels):
+            log.warning("%s容器名被占用且 label 不符，拒绝收养", self._spec.noun)
             raise SandboxError(CONFLICT)
-        if (labels or {}).get(LABEL_POSTURE) == self._posture.digest and _status(info) != "dead":
+        if (labels or {}).get(LABEL_POSTURE) == self._spec.digest and _status(info) != "dead":
             return await self._connect(info)
-        log.info("沙箱配置已变更或容器已失效，删除重建（工作区不保留）")
+        log.info("%s配置已变更或容器已失效，删除重建（容器里的文件不保留）", self._spec.noun)
         await self._engine.remove_container(str(info["Id"]))
         return None
 
@@ -213,16 +269,16 @@ class ContainerManager:
             if status == "running":
                 return
             if status in ("exited", "paused", "dead", "missing") or loop.time() >= deadline:
-                log.warning("沙箱容器未能进入运行状态：%s", status)
-                raise SandboxError("沙箱启动失败，请稍后重试")
+                log.warning("%s容器未能进入运行状态：%s", self._spec.noun, status)
+                raise SandboxError(f"{self._spec.noun}启动失败，请稍后重试")
             await asyncio.sleep(START_READY_POLL)
 
-    async def _create(self, key: SandboxKey) -> str | None:
+    async def _create(self, key: K) -> str | None:
         """新建并拉起；同名容器已经存在（另一个进程刚建了）时返回 None。"""
-        await self._engine.ensure_image(self._posture.image)
-        options = container_options(key, self._posture, idle_ttl_seconds=self._idle_ttl)
+        await self._engine.ensure_image(self._spec.image)
+        options = self._spec.options(key)
         try:
-            container_id = await self._engine.create_container(key.name, options)
+            container_id = await self._engine.create_container(self._spec.name(key), options)
         except DockerConflict:
             return None
         try:
@@ -235,11 +291,21 @@ class ContainerManager:
             raise
         return container_id
 
-    async def destroy(self, key: SandboxKey) -> None:
+    async def destroy(self, key: K) -> None:
         async with self.lock(key):
-            ids = {str(item["Id"]) for item in await self._engine.list_containers(key.labels())}
-            info = await self._engine.inspect_container(key.name)
-            if info is not None and key.owns((info.get("Config") or {}).get("Labels")):
+            ids = {str(item["Id"]) for item in await self._engine.list_containers(self._spec.labels(key))}
+            info = await self._engine.inspect_container(self._spec.name(key))
+            if info is not None and self._owns(key, (info.get("Config") or {}).get("Labels")):
                 ids.add(str(info["Id"]))
             for container_id in ids:
                 await self._engine.remove_container(container_id)
+
+
+class ContainerManager(ManagedContainers[SandboxKey]):
+    """会话沙箱的容器：沙箱规格 + 通用逻辑；新建钩子的参数是（工作空间, 会话）。"""
+
+    def __init__(self, engine: DockerEngine, posture: ContainerPosture, *, idle_ttl_seconds: int) -> None:
+        super().__init__(engine, SandboxSpec(posture, idle_ttl_seconds))
+
+    def _hook_args(self, key: SandboxKey) -> tuple[str, str]:
+        return key.workspace_id, key.session_id

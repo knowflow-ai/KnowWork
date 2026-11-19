@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '../test/user';
 import { jsonResponse, ME, renderWithApp, routeFetch } from '../test/render';
 import { AdminLayout } from './AdminLayout';
@@ -13,7 +13,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   window.localStorage.clear();
   useReplyLanguage.setState({ language: 'zh' });
-  useSidebar.setState({ collapsed: false });
+  useSidebar.setState({ collapsed: false, folded: false });
 });
 
 const page1 = {
@@ -65,6 +65,19 @@ describe('AppLayout 与侧栏', () => {
     await waitFor(() => expect(nav).toHaveClass('is-collapsed'));
     fireEvent.keyDown(window, { key: 's', metaKey: true, shiftKey: true });
     await waitFor(() => expect(nav).not.toHaveClass('is-collapsed'));
+  });
+
+  it('文档并排打开时侧栏暂时收起：不改用户的选择；这时点展开只取消暂时收起', async () => {
+    renderWithApp(<AppLayout />, { route: '/chat', path: '*' });
+    const nav = await screen.findByRole('navigation', { name: '主导航' });
+    expect(nav).not.toHaveClass('is-collapsed');
+    act(() => useSidebar.getState().fold(true));
+    expect(nav).toHaveClass('is-collapsed');
+    expect(window.localStorage.getItem('kw.sidebarCollapsed')).not.toBe('1');
+    await userEvent.click(screen.getByRole('button', { name: '展开侧栏' }));
+    expect(nav).not.toHaveClass('is-collapsed');
+    expect(useSidebar.getState()).toMatchObject({ collapsed: false, folded: false });
+    act(() => useSidebar.getState().fold(false));
   });
 
   it('显示新对话、分页的最近会话与用户；管理入口不在侧栏，在用户菜单里', async () => {

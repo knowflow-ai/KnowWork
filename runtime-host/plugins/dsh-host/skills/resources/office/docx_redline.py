@@ -17,6 +17,7 @@ import argparse
 import copy
 import datetime
 import json
+import os
 import sys
 
 from docx import Document
@@ -199,7 +200,8 @@ def main(argv=None):
     parser.add_argument("edits")
     parser.add_argument("output")
     parser.add_argument("--no-track", action="store_true", help="直接改，不留修订痕迹")
-    parser.add_argument("--author", default="KnowWork Agent")
+    # 修订作者：宿主给了 KNOWWORK_REVISION_AUTHOR（桌面端是「登录的人（AI）」）就用它，人和 AI 的修订分得开
+    parser.add_argument("--author", default=os.environ.get("KNOWWORK_REVISION_AUTHOR") or "KnowWork Agent")
     args = parser.parse_args(argv)
 
     with open(args.edits, encoding="utf-8") as handle:

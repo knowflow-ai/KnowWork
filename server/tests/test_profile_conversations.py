@@ -12,6 +12,7 @@ from knowwork_server.conversations.replay import EventFeed
 from knowwork_server.conversations.service import ConversationService
 from knowwork_server.conversations.tool_credentials import ToolCredentials
 from knowwork_server.conversations.turn_context import TurnContextHook, TurnContextRequest
+from knowwork_server.conversations.turn_state import TurnStateHook
 from knowwork_server.conversations.writer import BatchWriter
 from knowwork_server.kernel.contract import (
     KernelError,
@@ -21,6 +22,7 @@ from knowwork_server.kernel.contract import (
     TurnContext,
     TurnInput,
 )
+from knowwork_server.kernel.wire import turn_body
 from knowwork_server.profile.clearance import AuthorizedToolRegistry, ToolClearance
 from knowwork_server.profile.errors import ProfileUnavailable
 from knowwork_server.profile.snapshot import NO_SELECTION, PinnedScope, TurnSelection
@@ -59,7 +61,7 @@ async def db(sessionmaker):
 
 
 class Env:
-    def __init__(self, sessionmaker, kernel=None, knowledge_catalog=None, turn_context=None):
+    def __init__(self, sessionmaker, kernel=None, knowledge_catalog=None, turn_context=None, turn_state=None):
         from knowwork_server.profile.assembly import build_profiles
 
         self.kernel = kernel or FakeKernel()
@@ -80,7 +82,8 @@ class Env:
                                            EventFeed(sessionmaker, writer, broadcaster, self.pump.produced_upto),
                                            tool_credentials=ToolCredentials(self.kernel, issue),
                                            profiles=self.profiles, knowledge_catalog=knowledge_catalog,
-                                           turn_context=turn_context, resume_retry_delays=(0.01,))
+                                           turn_context=turn_context, turn_state=turn_state,
+                                           resume_retry_delays=(0.01,))
 
     def deny(self, index=-1):
         return set(self.kernel.opened[index].policy.deny)
@@ -339,6 +342,57 @@ async def test_turns_carry_the_extension_context_only_when_one_is_provided(db):
     await env.service.send(conversation, TurnInput(text="补充一句", mode="steer"))
     assert env.kernel.sent[-1].context is None and asked == [(USER, "招标还剩几天", "quick")]
     await env.pump.close()
+
+
+async def test_turns_carry_extension_state_by_name_and_a_failing_provider_drops_only_its_own(db):
+    """扩展给宿主插件的状态（turn_state.py）：按名字放进这一轮；出错、超时的只少它那一项；插话不另算；没登记时不带。"""
+    asked = []
+
+    async def office(request):
+        asked.append((request.user_id, request.conversation_id, request.source, request.answer_mode))
+        return {"documents": ["output/报告.docx"]}
+
+    async def nothing(request):
+        return None
+
+    async def broken(request):
+        raise RuntimeError("编辑器连不上")
+
+    async def slow(request):
+        await asyncio.sleep(5)
+        return {"x": 1}
+
+    env = Env(db)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="改一下"))
+    assert env.kernel.sent[-1].extension_state is None
+    await env.pump.close()
+
+    hook = TurnStateHook(timeout=0.05)
+    for name, provider in (("office", office), ("quiet", nothing), ("broken", broken), ("slow", slow)):
+        hook.add(name, provider)
+    with pytest.raises(ValueError):
+        hook.add("office", office)
+    with pytest.raises(ValueError):
+        hook.add("Bad Name", office)
+    env = Env(db, turn_state=hook)
+    conversation = await env.service.create(workspace_id=WS, user_id=USER)
+    await env.service.send(conversation, TurnInput(text="改一下"))
+    sent = env.kernel.sent[-1]
+    assert sent.extension_state == {"office": {"documents": ["output/报告.docx"]}}
+    assert turn_body(sent)["extensionState"] == {"office": {"documents": ["output/报告.docx"]}}
+    assert asked == [(USER, conversation.id, conversation.source, "agent")]
+    await env.service.send(conversation, TurnInput(text="补一句", mode="steer"))
+    assert env.kernel.sent[-1].extension_state is None and len(asked) == 1
+    await env.pump.close()
+
+
+def test_extension_state_names_and_size_are_checked():
+    assert TurnInput(text="x", extension_state={"office": {"documents": []}}).extension_state is not None
+    with pytest.raises(ValueError):
+        TurnInput(text="x", extension_state={"Office": {}})
+    with pytest.raises(ValueError):
+        TurnInput(text="x", extension_state={"office": {"blob": "x" * 70_000}})
 
 
 async def test_context_from_several_providers_joins_text_and_keeps_the_first_persona(db):
