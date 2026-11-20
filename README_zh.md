@@ -390,3 +390,16 @@ KnowWork 以 [Apache License 2.0](LICENSE) 发布。
 - **微信公众号** - KnowFlow 企业知识库
 - **交流群** - 加微信 `skycode007`，备注「加群」
 - **问题反馈** - [GitHub Issues](https://github.com/knowflow-ai/KnowWork/issues)
+
+### 公众号历史文章
+
+按发布时间从新到旧：
+
+- 2026-11-20 [DeepSeek Harness + Office 人机双写，人和 AI 在同一份 Word、Excel、PPT 里改，不用跳来跳去｜KnowWork v0.1.2](https://mp.weixin.qq.com/s/Ou1wodZMd53zt0GSs4x8Pg)
+- 2026-11-17 [DeepSeek Harness 桌面端、昇腾 ARM 适配、用量配额、问数知识库专家嵌入网页｜KnowWork 新版本预览](https://mp.weixin.qq.com/s/3fVGFkB8OuXfbuw0jZOBng)
+- 2026-11-11 [基于 DeepSeek Harness 的 Data Agent 新增问数一键诊断、Apache Doris 接入；Agent 新增支持创建专家、选择模型、部署性能优化](https://mp.weixin.qq.com/s/OF-S--G4657e3ezwIRpG0g)
+- 2026-11-08 [KnowWork Data Agent：DeepSeek Harness 起草语义模型、智能问数，每个数都追得到口径和 SQL，还能下钻、归因、做看板](https://mp.weixin.qq.com/s/u48AHwN595pQ9239ExJ9lg)
+- 2026-11-05 [基于 DeepSeek Harness 的企业私有化 Agent 平台 KnowWork v0.0.5，技能、MCP、记忆分三层](https://mp.weixin.qq.com/s/Xgu8XAfA9JsOsy_9JY6YYw)
+- 2026-11-02 [从 KnowFlow 到 KnowWork，我们为什么基于 DeepSeek Harness 重构知识库，让智能体自己去翻资料](https://mp.weixin.qq.com/s/z44uCuYLbZvruWFcL2b0oQ)
+- 2026-10-29 [KnowWork v0.0.3 发布：智能体底座全部开源，知识库为什么闭源](https://mp.weixin.qq.com/s/mwcGw9SKNk1UaL0u-DsFuQ)
+- 2026-10-23 [基于 DeepSeek Harness 的企业私有化 Agent 平台 KnowWork 开源，多租户、权限、沙箱、审计都已做好](https://mp.weixin.qq.com/s/Ett1XB2F13H-e3BbTOO8WA)
