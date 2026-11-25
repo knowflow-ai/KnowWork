@@ -70,7 +70,7 @@ export function GrantDialog({ dir, onClose }: { readonly dir: Directory; readonl
   const patch = (next: Partial<GrantInput>) => setValue((v) => ({ ...v, ...next }));
   const action = useAction(
     (input: GrantInput) => grantMany(input.subjects, resourceKeys(input), input.action),
-    { invalidate: [KEYS.grants], success: '已授权', failure: '授权没有成功，请稍后重试' },
+    { invalidate: [KEYS.grants], success: '已授权', failure: '没能授权，请稍后重试' },
   );
   const submit = async () => {
     const found = validateGrant(value);

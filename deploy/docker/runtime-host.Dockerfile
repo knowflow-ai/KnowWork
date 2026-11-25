@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
-# 运行时宿主镜像：Node 24 + DSH（所有 DSH 包锁在 0.2.2-rc.5，由 package-lock.json 固定）。
+# 运行时宿主镜像：Node 24 + DSH（所有 DSH 包锁在 0.2.3-alpha.2，由 package-lock.json 固定）。
 # 构建上下文为仓库根目录：docker build -f deploy/docker/runtime-host.Dockerfile .
-ARG NODE_IMAGE=node:24.18.0-bookworm-slim
+ARG NODE_IMAGE=node:24.22.3-bookworm-slim
 
 # FROM 都经 ARG 指定镜像，版本钉在 ARG 默认值里；hadolint 看不穿 ARG，按行忽略 DL3006。
 # hadolint ignore=DL3006
@@ -11,7 +11,7 @@ COPY runtime-host/package.json runtime-host/package-lock.json ./
 # 只装生产依赖：官方模拟模型服务与回放工具是测试用的 devDependencies
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --omit=dev --no-audit --no-fund \
- && test "$(node -p "require('@deepseek-ai/dsh/package.json').version")" = "0.2.2-rc.5"
+ && test "$(node -p "require('@deepseek-ai/dsh/package.json').version")" = "0.2.3-alpha.2"
 
 # hadolint ignore=DL3006
 FROM ${NODE_IMAGE} AS runtime

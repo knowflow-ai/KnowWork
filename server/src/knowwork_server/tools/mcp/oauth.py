@@ -282,7 +282,7 @@ class OAuthProtocol:
         except httpx2.HTTPError as error:
             raise OAuthFailure(f"连不上对方的注册地址：{type(error).__name__}") from error
         except OAuthRegistrationError as error:
-            raise OAuthFailure(f"自动注册没有成功：{_short(str(error))}") from error
+            raise OAuthFailure(f"没能自动注册：{_short(str(error))}") from error
         # 对方没写认证方式时：发了 secret 按 RFC 7591 的默认 basic，没发就是 none
         default = "client_secret_basic" if info.client_secret else "none"
         return OAuthClient(client_id=info.client_id, client_secret=info.client_secret,

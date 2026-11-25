@@ -68,8 +68,9 @@ const nextKey = () => {
 export const sendable = (items: readonly DraftAttachment[]): readonly SentAttachment[] =>
   items.flatMap((item) => (item.id ? [{ id: item.id, name: item.name, size: item.size }] : []));
 
-export function useDraftAttachments(): DraftAttachments {
-  const [items, setItems] = useState<readonly DraftAttachment[]>([]);
+/** initial：接着用的（新对话页点了输入框里的附件、建好对话进会话页时带过来的，都已传上去） */
+export function useDraftAttachments(initial: readonly DraftAttachment[] = []): DraftAttachments {
+  const [items, setItems] = useState<readonly DraftAttachment[]>(initial);
   // 异步流程（上传回来、发送前等待）里要读最新的列表
   const current = useRef(items);
   useLayoutEffect(() => {

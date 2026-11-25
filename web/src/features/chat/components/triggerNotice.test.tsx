@@ -45,7 +45,7 @@ describe('定时任务发起的一轮', () => {
     expect(screen.getByText('写日报：列出今天的进展')).toBeInTheDocument();
   });
 
-  it('后台任务做完开的一轮同样显示；Agent 忙时塞进用户这一轮的通知不算发起', () => {
+  it('后台任务做完开的一轮同样显示；智能体忙时塞进用户这一轮的通知不算发起', () => {
     const notice = (id: string, run: number) =>
       wire({
         id,

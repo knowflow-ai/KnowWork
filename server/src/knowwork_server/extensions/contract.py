@@ -17,6 +17,7 @@ from ..access.service import AccessService
 from ..attachments.mineru import MinerUProvider
 from ..channels.targets import ChannelTargets
 from ..config import Settings
+from ..content_safety.sources import WordSources
 from ..conversations.answer_modes import AnswerModes
 from ..conversations.background import BackgroundTurns, LocalBackground
 from ..conversations.device import DeviceConversations
@@ -162,6 +163,9 @@ class ApiContext:
     verify_host_token: Callable[[str], ToolTokenClaims] | None = None
     # 一人一个 Office 容器（knowwork_server.office）：扩展的在线编辑用它，业务服务只建这一份；没配置时为 None
     office: OfficeRuntime | None = None
+    # 内容安全的现成词表（content_safety/sources.py）：扩展登记一份（例如内置的常见违规词），配置页列出来、每个空间自己勾，
+    # 勾上的和管理员填的自定义词合起来查。没登记时只有自定义词表
+    content_safety_sources: WordSources = field(default_factory=WordSources)
 
 
 @dataclass(frozen=True)

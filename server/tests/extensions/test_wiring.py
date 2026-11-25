@@ -98,6 +98,8 @@ async def test_an_extension_can_provide_the_editor_app():
         assert runtime.editor_app is not None
         assert (await get(runtime.editor_app, "/api/anything")).json() == {"editor": True, "path": "/api/anything"}
         assert (await get(create_public_app(runtime), "/api/anything")).status_code == 404
+        # 有在线编辑器才可能有附件的工作副本：发消息时才去查
+        assert runtime.service._attachments.checks_working_copies
     finally:
         await runtime.stop()
 
@@ -106,6 +108,7 @@ async def test_no_editor_without_an_extension_providing_one():
     runtime = build_runtime(SETTINGS, extensions=discover(found(DEMO, verifier("granting_demo"))))
     try:
         assert runtime.editor_app is None
+        assert not runtime.service._attachments.checks_working_copies, "没有编辑器的部署发消息不多查工作副本"
     finally:
         await runtime.stop()
 

@@ -16,7 +16,7 @@ export function DevicesSection() {
   const signOut = useAction((id: string) => signOutDevice(id), {
     invalidate: [DEVICES],
     success: '已让这台设备退出登录',
-    failure: '退出登录没有成功，请稍后重试',
+    failure: '没能退出登录，请稍后重试',
   });
   const rows = devices.data ?? [];
   if (rows.length === 0) return null;

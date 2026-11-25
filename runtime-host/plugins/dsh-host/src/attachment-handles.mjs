@@ -2,11 +2,11 @@
  * 本轮消息附带的文件：给模型的说明块。
  *
  * 照官方 dsh-attachment 的模型体验：非图片文件不把字节塞进请求，每个文件给一行确定的说明（文件名、字节数、
- * 摘要前缀、只读路径），模型需要时用文件工具读。说明文字逐字照搬 dsh-llm 的 fileHandleText（0.2.1-rc.2）。
+ * 摘要前缀、只读路径），模型需要时用文件工具读。这一行直接用 dsh-llm 公开导出的 fileHandleText，不另写。
  * 不同的只是存放位置：官方存在宿主目录里，靠执行环境的 processPathFromHostPath 映射；我们的执行环境是
  * 每个会话一个容器，不能把宿主目录挂进去（会破坏会话隔离），所以文件由业务服务放进本会话工作区的附件目录 input/，
  * 合同里给的是工作区路径（workpath.mjs），这里按沙箱的挂载点换成模型在会话里看到的写法（/workspace/input/...）
- * 写给模型。配了文档解析的，另外一行说明解析出的 Markdown。
+ * 写给模型。配了文档解析的，另外一行说明解析出的 Markdown；用户在编辑器里打开过的，另外一行说明它的工作副本在哪。
  *
  * 每个文件单独一个文本块跟在用户原话后面：会话历史里持久保留（后面几轮模型仍知道有这些文件），
  * 业务服务投影时按固定格式把它们从显示文字里拿出来，换成附件卡片。
@@ -15,6 +15,7 @@
  * 字数、页数和目录（行号），让模型按需分段读，不从头一段段往下读。
  */
 
+import { fileHandleText as officialFileHandleText } from '@deepseek-ai/dsh-llm'
 import { INPUT, SANDBOX, decode, within } from './workpath.mjs'
 
 export const MAX_ATTACHMENTS = 20
@@ -32,6 +33,15 @@ function inputPath(value, field) {
   const name = relative === undefined ? '' : relative.slice(INPUT.length + 1)
   if (relative === undefined || !within(relative, INPUT) || name === '' || name.includes('/') || name.length > MAX_NAME) {
     throw invalid(`attachments.${field} 必须是附件目录 ${INPUT}/ 下的文件`)
+  }
+  return SANDBOX.at(relative)
+}
+
+/** 附件的工作副本（人在编辑器里改的那份）：工作目录根上的一个文件；交回模型看到的写法 */
+function workingCopyPath(value) {
+  const relative = decode(value)
+  if (relative === undefined || relative === '' || relative.includes('/') || relative.length > MAX_NAME) {
+    throw invalid('attachments.workingCopyPath 必须是工作目录根上的文件')
   }
   return SANDBOX.at(relative)
 }
@@ -55,9 +65,10 @@ export function attachmentsOf(raw) {
     if (item.digestPending !== undefined && (typeof item.digestPending !== 'boolean' || digestPath === undefined)) {
       throw invalid('attachments.digestPending 格式错误')
     }
+    const workingCopy = item.workingCopyPath === undefined ? undefined : workingCopyPath(item.workingCopyPath)
     return {
       name, bytes, sha256, path, extractedPath, extractionPending: pending === true,
-      digestPath, digestPending: item.digestPending === true, ...readingOf(item),
+      digestPath, digestPending: item.digestPending === true, workingCopy, ...readingOf(item),
     }
   })
 }
@@ -79,10 +90,9 @@ function readingOf(item) {
   return { text: item.text, textChars: item.textChars, textPages: item.textPages, outline }
 }
 
-/** 官方 fileHandleText 的同一句话（quoted 即 JSON.stringify，摘要取 8 位）。 */
+/** 官方的文件说明：附件引用照官方的形状给（编号是 `sha256:` 加摘要），只读路径是模型在会话里看到的那份 */
 export function fileHandleText(file) {
-  const identity = `File ${JSON.stringify(file.name)} (${file.bytes} bytes, sha256:${file.sha256.slice(0, 8)})`
-  return `[${identity}: verbatim read-only copy saved at ${JSON.stringify(file.path)}. Read that path with your file tools when its contents are needed; copy it to a writable location before modifying it. When delegating file work, include this saved path in the delegation prompt; only subagents sharing this execution environment can read it.]`
+  return officialFileHandleText({ attachmentId: `sha256:${file.sha256}`, name: file.name, bytes: file.bytes }, file.path)
 }
 
 /** 解析出的 Markdown：读长文档优先用它，原件仍是准绳。 */
@@ -128,10 +138,19 @@ function digestHint(file) {
   return ` A digest of it is at ${digest}: an overall summary, then each section's key points with line ranges. For questions about the whole document, read the digest first, then the lines it points to.`
 }
 
-/** 用户原话之后，每个文件一个说明块（有解析结果、或解析还在进行的再跟一块，有可读文字的再跟内容或目录）。 */
+/**
+ * 用户在编辑器里打开过这个附件（附件只读，打开的是工作目录根上的同名副本，人可能已经改过）：要改文档就改那份，
+ * 不然模型照只读原件另起一份，人手改的内容就丢了。开头固定是「[Working copy of 」，业务服务投影时同一条规则把它从显示文字里拿掉。
+ */
+export function workingCopyText(file) {
+  return `[Working copy of ${JSON.stringify(file.name)} at ${JSON.stringify(file.workingCopy)}: the user opened this file in the document editor, so that copy may already hold their edits. When the user asks to change the document, change that working copy in place; the read-only original above stays as first uploaded.]`
+}
+
+/** 用户原话之后，每个文件一个说明块（有工作副本、有解析结果、或解析还在进行的再跟一块，有可读文字的再跟内容或目录）。 */
 export function attachmentBlocks(files) {
   return files.flatMap((file) => [
     { type: 'text', text: fileHandleText(file) },
+    ...(file.workingCopy === undefined ? [] : [{ type: 'text', text: workingCopyText(file) }]),
     ...(file.extractedPath === undefined
       ? []
       : [{ type: 'text', text: file.extractionPending ? pendingText(file) : extractedText(file) }]),

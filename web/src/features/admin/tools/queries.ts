@@ -23,21 +23,21 @@ export function useMcpActions() {
     sync: useAction((server: McpServer) => api.sync(server.id), {
       invalidate,
       success: '已刷新工具清单',
-      failure: '刷新没有成功',
+      failure: '没能刷新',
     }),
     toggle: useAction(
       ({ server, enabled }: { server: McpServer; enabled: boolean }) => api.setEnabled(server.id, enabled),
-      { invalidate, failure: '没有切换成功' },
+      { invalidate, failure: '没能切换' },
     ),
     remove: useAction((server: McpServer) => api.remove(server.id), {
       invalidate,
       success: '已删除 MCP 服务',
-      failure: '没有删除成功',
+      failure: '没能删除',
     }),
     configure: useAction(
       ({ server, tool, settings }: { server: McpServer; tool: string; settings: ToolSettings }) =>
         api.configureTool(server.id, tool, settings),
-      { invalidate, failure: '设置没有保存成功' },
+      { invalidate, failure: '设置没能保存' },
     ),
   };
 }
@@ -55,13 +55,13 @@ export function useEnterpriseHereActions() {
       {
         invalidate: [ENTERPRISE_HERE_KEY],
         success: '已切换，新对话里生效',
-        failure: '没有切换成功',
+        failure: '没能切换',
       },
     ),
     users: useAction(
       ({ serverId, subjects }: { serverId: string; subjects: readonly string[] }) =>
         setEnterpriseHereUsers(serverId, subjects),
-      { invalidate: [ENTERPRISE_HERE_KEY, KEYS.grants], success: '已保存给谁用', failure: '没有保存成功' },
+      { invalidate: [ENTERPRISE_HERE_KEY, KEYS.grants], success: '已保存给谁用', failure: '没能保存' },
     ),
   };
 }

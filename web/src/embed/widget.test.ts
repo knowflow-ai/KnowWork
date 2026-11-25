@@ -108,7 +108,9 @@ describe('认证访问的登录信息', () => {
   const TOKEN_URL = '/api/knowwork-token';
   const fetcher = (token: Response) =>
     vi.fn(async (url: RequestInfo | URL) =>
-      String(url) === TOKEN_URL ? token : new Response(JSON.stringify({ title: 'BI 助手' }), { status: 200 }),
+      String(url) === TOKEN_URL
+        ? token
+        : new Response(JSON.stringify({ title: 'BI 智能体' }), { status: 200 }),
     );
 
   async function ask(build: () => ReturnType<typeof mount>) {

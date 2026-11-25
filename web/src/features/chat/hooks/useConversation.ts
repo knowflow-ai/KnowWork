@@ -31,6 +31,8 @@ export interface ConversationApi {
   readonly cancel: () => Promise<void>;
   readonly decide: (approvalId: string, allow: boolean, remember?: boolean) => Promise<void>;
   readonly answer: (questionId: string, answers: readonly QuestionAnswer[]) => Promise<void>;
+  /** 执行一行 / 命令（不发给模型） */
+  readonly runCommand: (line: string) => Promise<void>;
 }
 
 let localCounter = 0;
@@ -155,7 +157,7 @@ export function useConversation(
       try {
         await actions.decide(conversationId, approvalId, allow, remember);
       } catch (error) {
-        rethrow(error, '审批没有提交成功，请稍后重试');
+        rethrow(error, '审批没能提交，请稍后重试');
       }
     },
     [conversationId, actions],
@@ -171,11 +173,37 @@ export function useConversation(
         if (error instanceof ApiError && error.code === 'question_not_found') {
           dispatch({ type: 'local/question-expired', questionId });
         }
-        rethrow(error, '回答没有提交成功，请稍后重试');
+        rethrow(error, '回答没能提交，请稍后重试');
       }
     },
     [conversationId, actions],
   );
 
-  return { state, connection, connectionMessage, send, cancel, decide, answer };
+  /** 执行一行 / 命令：结果当场摆进对话（随后事件里那条以事件为准）；来源不支持命令时报错 */
+  const runCommand = useCallback(
+    async (line: string) => {
+      if (!conversationId) return;
+      if (!actions.runCommand) throw new Error('这里用不了命令');
+      const [, name = '', args] = /^\/([a-z0-9_-]+)([\s\S]*)$/.exec(line) ?? [];
+      try {
+        const outcome = await actions.runCommand(conversationId, line);
+        dispatch({
+          type: 'local/command',
+          command: {
+            id: outcome.commandId || `local-${nextLocalId()}`,
+            name,
+            ...(args ? { args } : {}),
+            status: outcome.kind,
+            ...(outcome.text ? { text: outcome.text } : {}),
+            time: Date.now(),
+          },
+        });
+      } catch (error) {
+        rethrow(error, '命令没能执行，请稍后重试');
+      }
+    },
+    [conversationId, actions],
+  );
+
+  return { state, connection, connectionMessage, send, cancel, decide, answer, runCommand };
 }

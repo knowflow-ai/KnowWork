@@ -14,8 +14,11 @@ IdleSweeper），只换规格：镜像、参数、按人的名字与标记；活
 每份文件「和对话里的版本一致」时的摘要也记在容器里（/work/.knowwork/<对话>/<路径>.sha256，放进去、存回成功时写）：
 在线编辑据此分清一轮结束时是外面改了，还是编辑器里有没存进对话的。记在容器里而不是进程内存里，是因为业务服务会开
 多个进程；容器回收了，记录跟着没了，正好对应容器里的文件也没了。
-回收前（空闲清扫删容器之前）把这个人容器的 MCP 和读文件的办法交给 before_reclaim（在线编辑接上它，替人存盘）：
+回收前（空闲清扫停、删容器之前）把这个人容器的 MCP 和读文件的办法交给 before_reclaim（在线编辑接上它，替人存盘）：
 直接用容器信息，不经容器池（清扫持着这个人的锁），也不算一次活动。
+空闲先停、停满保留期才删（keep_stopped_seconds，配置 KNOWWORK_OFFICE_KEEP_STOPPED_DAYS）：停着的不占内存，人回来再打开时
+拉起来约 1 秒，新建要几秒到十秒（2026-11-24 本机实测 0.8 秒对 3.7 秒）。顺带的查看（智能体找 MCP、一轮结束查改动、取回文件、
+记一致）不把停着的拉起来（revive=False）。删对话时清掉这段对话在编辑器里的目录（erase），停着的拉起来删完再停回去。
 """
 
 import asyncio
@@ -58,6 +61,9 @@ ENDPOINT_TTL_SECONDS = 30.0
 READY_TIMEOUT_SECONDS = 60.0
 # 等网页服务答话、等发布的端口出现时隔多久问一次：冷启动只有几秒，隔太久起来了人还要白等（以前 0.5 秒，平均多等 0.25 秒）
 READY_POLL_SECONDS = 0.1
+ERASE_TIMEOUT = 30  # 删一段对话在编辑器里的目录
+# 提前起编辑器时给真要打开的人留的名额：别人在跑的到了「上限 − 预留」就不再提前起（上限 20 时留 4 个，至少留 1 个）
+PREWARM_RESERVE_FRACTION = 0.2
 # 到了人数上限时先等一次清扫最多这么久（回收前要替人存盘）；没跑完的接着在后台跑
 CAPACITY_SWEEP_SECONDS = 15.0
 # 刚起来的容器，地址最多等这么久出现在容器信息里
@@ -293,8 +299,10 @@ class OfficeContainers:
     def __init__(self, engine: DockerEngine, spec: OfficeSpec, *, max_containers: int, http: httpx.AsyncClient,
                  author_of: Callable[[str], Awaitable[str]] | None = None,
                  clock: Callable[[], float] = time.time, sweep_interval_seconds: float = 60.0,
-                 run: Runner = execution.run) -> None:
+                 run: Runner = execution.run, prewarm: bool = True,
+                 keep_stopped_seconds: int | None = None) -> None:
         self._engine = engine
+        self._prewarm = prewarm
         self._run = run
         self._spec = spec
         self._max = max_containers
@@ -318,14 +326,14 @@ class OfficeContainers:
                                    min_interval_seconds=sweep_interval_seconds, clock=clock,
                                    labels={LABEL_COMPONENT: COMPONENT}, key_of=OfficeKey.from_labels,
                                    activity=self._activity, before_remove=self._before_remove,
-                                   name="office-idle-sweep")
+                                   keep_stopped_seconds=keep_stopped_seconds, name="office-idle-sweep")
         self._containers.on_sweep = self.sweeper.trigger
 
     async def _before_remove(self, item: dict[str, Any]) -> None:
         """空闲要删了：在跑的编辑器交给 before_reclaim 存盘（清扫持着锁，这里不经容器池、不记活动）。"""
         key = OfficeKey.from_labels(item.get("Labels"))
         if key is not None:
-            self.forget(key)  # 要删了：缓存的地址不再能用
+            self.forget(key)  # 要停或删了：缓存的地址不再能用（拉起来地址可能变）
         if self.before_reclaim is None or key is None or str(item.get("State") or "").lower() != "running":
             return
         container_id = str(item["Id"])
@@ -360,7 +368,7 @@ class OfficeContainers:
 
     async def _mark_later(self, key: OfficeKey, at: float) -> None:
         try:
-            async with self._containers.using(key, create=False) as container_id:
+            async with self._containers.using(key, create=False, revive=False) as container_id:
                 if container_id is None:
                     self._unmark(key, at)
                     return
@@ -539,7 +547,7 @@ class OfficeContainers:
         """这个人编辑器的 MCP（经容器里的门卫，带口令）；编辑器没在跑是 None，不为此起一个。"""
         found = self._fresh(key)  # 刚查过就直接用：智能体一轮几十次调用，不每次问 Docker
         if found is None:
-            async with self._containers.using(key, create=False) as container_id:
+            async with self._containers.using(key, create=False, revive=False) as container_id:
                 if container_id is None:
                     return None
                 found = await self._address(str(container_id))
@@ -549,6 +557,21 @@ class OfficeContainers:
     async def ready(self, key: OfficeKey) -> None:
         """打开文件前：编辑器建好、能答话（同时在用的到了上限抛 OfficeBusy）。"""
         await self.endpoint(key)
+
+    async def prewarm(self, key: OfficeKey) -> bool:
+        """提前起这个人的编辑器：页面上出现了能在线编辑的文件，他很可能要点开，点开时就不用再等编辑器起来（冷启动要几秒
+        到十秒）。起来以后和打开过的一样按空闲回收。关着（KNOWWORK_OFFICE_PREWARM=false）不起；已经在跑只算一次使用；
+        要新起时，别人在跑的到了「上限 − 预留」就不起，也不为它先清扫一遍——提前起的不跟真要打开的人抢名额。
+        返回这个人的编辑器现在是不是在跑。"""
+        if not self._prewarm:
+            return False
+        if self._fresh(key) is None:
+            info = await self._engine.inspect_container(self._spec.name(key))
+            reserve = max(1, int(self._max * PREWARM_RESERVE_FRACTION))
+            if not self._running_as_configured(info) and await self._others_running(key) >= self._max - reserve:
+                return False
+        await self.endpoint(key)
+        return True
 
     async def place(self, key: OfficeKey, conversation_id: str, path: WorkPath, data: bytes) -> str:
         """把文件放进这个人的编辑器容器（按对话分目录），连同「和对话一致」的记录，返回编辑器里的路径。"""
@@ -564,7 +587,7 @@ class OfficeContainers:
     async def mark(self, key: OfficeKey, conversation_id: str, path: WorkPath, value: str) -> None:
         """记下这份此刻和对话里的版本一致（存回成功之后）；容器已经没了就不记，不为此新建。"""
         record = sync_record(conversation_id, path)
-        async with self._containers.using(key, create=False) as container_id:
+        async with self._containers.using(key, create=False, revive=False) as container_id:
             if container_id is not None:
                 await self._engine.put_archive(str(container_id), WORK_DIR, _tar({record: value.encode()}))
 
@@ -573,7 +596,7 @@ class OfficeContainers:
         """这几份在编辑器里的样子（摘要与记录），在容器里一次算完、不搬文件；编辑器没在跑是 None，不为此新建。"""
         mount = office_mount(conversation_id)
         args = [item for path in paths for item in (mount.at(path), f"{WORK_DIR}/{sync_record(conversation_id, path)}")]
-        async with self._containers.using(key, create=False) as container_id:
+        async with self._containers.using(key, create=False, revive=False) as container_id:
             if container_id is None:
                 return None
             request = ExecRequest(argv=("sh", "-c", COPIES_SCRIPT, "kw", *args), user=OFFICE_USER, workdir=WORK_DIR,
@@ -586,10 +609,32 @@ class OfficeContainers:
     async def fetch(self, key: OfficeKey, conversation_id: str, path: WorkPath, *, max_bytes: int) -> bytes | None:
         """取回编辑器里的文件（存盘后存成新的一版用）；容器已经没了或文件不在是 None。不为此新建容器。"""
         target = office_mount(conversation_id).at(path)
-        async with self._containers.using(key, create=False) as container_id:
+        async with self._containers.using(key, create=False, revive=False) as container_id:
             if container_id is None:
                 return None
             return await self._engine.read_file(str(container_id), target, max_bytes=max_bytes)
+
+    async def erase(self, key: OfficeKey, conversation_id: str) -> None:
+        """删对话时清掉这个人编辑器里这段对话的目录与一致记录。没有编辑器就没事；停着的拉起来删，删完再停回去（这期间有人
+        用起来就不停）。删不掉抛 SandboxError：对话留着可以再删，不留下对话删了、文件还在编辑器里的情况。"""
+        mount = office_mount(conversation_id)
+        info = await self._engine.inspect_container(self._spec.name(key))
+        if info is None:
+            return
+        was_running = self._running_as_configured(info)
+        began = self._clock()
+        async with self._containers.using(key, create=False) as container_id:
+            if container_id is None:
+                return
+            request = ExecRequest(argv=("rm", "-rf", "--", mount.root, f"{WORK_DIR}/{SYNC_DIR}/{conversation_id}"),
+                                  user=OFFICE_USER, workdir=WORK_DIR, timeout_seconds=ERASE_TIMEOUT,
+                                  max_output_bytes=4096)
+            result = await self._run(self._engine, str(container_id), request)
+            if result.exit_code != 0 or result.timed_out:
+                raise SandboxError("编辑器里这段对话的文件没能删掉，请稍后重试")
+            if not was_running and self._seen.get(key, 0.0) < began:
+                self.forget(key)
+                await self._engine.stop_container(str(container_id))
 
     async def aclose(self) -> None:
         for task in [self._timer, *self._background]:

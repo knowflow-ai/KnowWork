@@ -32,6 +32,8 @@ AllTools = Callable[[ToolContext], Awaitable[list[ToolSpec]]]
 KnowledgeOf = Callable[[str, str], Awaitable[tuple[KnowledgeEntry, ...]]]
 # (workspace_id, session_id) → 扩展给这段对话的范围收窄（conversations/scopes.py）；None 不收窄
 NarrowingOf = Callable[[str, str], Awaitable[ProfileNarrowing | None]]
+# (workspace_id, user_id) → 这个人此刻生效的预置插件键
+PluginsOf = Callable[[str, str], Awaitable[tuple[str, ...]]]
 
 
 class SkillSource(Protocol):
@@ -65,6 +67,7 @@ class ProfileSources:
     # 宿主里的官方工具（不经工具桥）中这一部署一律收掉的，例如没开沙箱时的 bash、文件工具与 present
     host_denied: tuple[str, ...] = ()
     narrowing_of: NarrowingOf | None = None
+    plugins_of: PluginsOf | None = None
 
 
 class ProfileCompiler:
@@ -99,7 +102,8 @@ class ProfileCompiler:
             builtin_tools=clearance.builtin_names(), skills=tuple(await self._s.skills.for_session(workspace_id, user_id)),
             knowledge=await self._s.knowledge(user_id, workspace_id), selection=selection,
             host_denied=host_denied,
-            narrowing=await self._s.narrowing_of(workspace_id, session_id) if self._s.narrowing_of else None)
+            narrowing=await self._s.narrowing_of(workspace_id, session_id) if self._s.narrowing_of else None,
+            plugins=await self._s.plugins_of(workspace_id, user_id) if self._s.plugins_of else ())
 
 
 def knowledge_from_admin(admin: SourceLister) -> KnowledgeOf:

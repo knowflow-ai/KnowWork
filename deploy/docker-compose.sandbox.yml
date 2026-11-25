@@ -10,6 +10,17 @@ services:
       KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-true}
       # 流式执行（默认关）：见 .env.example
       KNOWWORK_SANDBOX_SSH_ENABLED: ${KNOWWORK_SANDBOX_SSH_ENABLED:-false}
+      # 个人专属宿主（默认关，见 .env.example）：用了上传插件的人，云端对话跑在他自己的宿主容器里。
+      # 容器由 api 经同一个 Docker 创建，用宿主的镜像、接在宿主那张内部网络上，回调与调模型的地址同 runtime-host
+      KNOWWORK_PLUGIN_HOSTS: ${KNOWWORK_PLUGIN_HOSTS:-off}
+      KNOWWORK_PLUGIN_HOST_IMAGE: ${KNOWWORK_PLUGIN_HOST_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.1.3}}
+      KNOWWORK_PLUGIN_HOST_NETWORK: ${KNOWWORK_PLUGIN_HOST_NETWORK:-knowwork_host-link}
+      KNOWWORK_PLUGIN_HOST_CALLBACK_URL: http://api:8001
+      KNOWWORK_PLUGIN_HOST_MODEL_BASE_URL: http://model-gateway:8002/internal/model/v1
+      KNOWWORK_PLUGIN_HOST_MAX: ${KNOWWORK_PLUGIN_HOST_MAX:-50}
+      KNOWWORK_PLUGIN_HOST_IDLE_SECONDS: ${KNOWWORK_PLUGIN_HOST_IDLE_SECONDS:-600}
+      KNOWWORK_PLUGIN_HOST_RETENTION_DAYS: ${KNOWWORK_PLUGIN_HOST_RETENTION_DAYS:-90}
+      KNOWWORK_PLUGIN_HOST_MEMORY_MB: ${KNOWWORK_PLUGIN_HOST_MEMORY_MB:-768}
     volumes:
       - ${KNOWWORK_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
   worker:
@@ -17,5 +28,12 @@ services:
       KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-true}
       # 必须与 api 一致：流式执行改容器姿态，两边不一致会互相把对方建的容器删掉重建（工作区清空）
       KNOWWORK_SANDBOX_SSH_ENABLED: ${KNOWWORK_SANDBOX_SSH_ENABLED:-false}
+      # 开了个人专属宿主时，上传的插件在 worker 里试装：起一个一次性的宿主容器加载一遍，和 api 用同一套配置
+      KNOWWORK_PLUGIN_HOSTS: ${KNOWWORK_PLUGIN_HOSTS:-off}
+      KNOWWORK_PLUGIN_HOST_IMAGE: ${KNOWWORK_PLUGIN_HOST_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.1.3}}
+      KNOWWORK_PLUGIN_HOST_NETWORK: ${KNOWWORK_PLUGIN_HOST_NETWORK:-knowwork_host-link}
+      KNOWWORK_PLUGIN_HOST_CALLBACK_URL: http://api:8001
+      KNOWWORK_PLUGIN_HOST_MODEL_BASE_URL: http://model-gateway:8002/internal/model/v1
+      KNOWWORK_PLUGIN_HOST_MEMORY_MB: ${KNOWWORK_PLUGIN_HOST_MEMORY_MB:-768}
     volumes:
       - ${KNOWWORK_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock

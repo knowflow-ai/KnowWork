@@ -25,6 +25,16 @@ def test_a_grouped_result_becomes_a_list_with_its_caliber():
                                         "口径：销售额 · 2026-07-01 至 2026-09-30 · 按区域")
 
 
+def test_no_data_is_said_in_one_line():
+    """没有数据的结果（工具标了 empty，或一行都没有）同网页上的卡片：标题后面一句没有符合条件的数据，不列「—」。"""
+    totals = {**TABLE, "title": "缺陷数量合计", "columns": [TABLE["columns"][1]], "rows": [[None]], "row_count": 1,
+              "empty": True}
+    assert render([totals, CALIBER]) == ("**缺陷数量合计**（2026-07-01 至 2026-09-30）\n- 没有符合条件的数据\n\n"
+                                         "口径：销售额 · 2026-07-01 至 2026-09-30 · 按区域")
+    assert render([{**TABLE, "rows": [], "row_count": 0}]) == (
+        "**销售额 · 按区域**（2026-07-01 至 2026-09-30）\n- 没有符合条件的数据")
+
+
 def test_several_numbers_per_row_and_totals_without_groups():
     table = {"type": "table", "title": "销售额、订单数 · 按月",
              "columns": [{"name": "month", "label": "月", "kind": "date"}, {"name": "region", "label": "区域"},

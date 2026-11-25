@@ -86,6 +86,6 @@ export function useUsersAction() {
   return useAction(
     ({ resource, subjects }: { resource: string; subjects: readonly string[] }) =>
       setResourceUsers(resource, subjects),
-    { invalidate: [KEYS.grants], success: '已保存给谁用', failure: '没有保存成功' },
+    { invalidate: [KEYS.grants], success: '已保存给谁用', failure: '没能保存' },
   );
 }

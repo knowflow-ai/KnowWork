@@ -69,7 +69,7 @@ export function SourceDialog({
     {
       invalidate: [KEYS.sources, KEYS.knowledgeBases],
       success: editing ? '已保存' : '已添加知识源',
-      failure: '保存没有成功，请检查后重试',
+      failure: '没能保存，请检查后重试',
     },
   );
   const submit = async () => {

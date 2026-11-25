@@ -2,6 +2,8 @@
 
 - 子密钥由部署主密钥经 HKDF 按用途派生，各用途互不通用；
 - 令牌带受众（aud）、工作空间、过期时间；校验时三者都核对；
+- 可以另带归属（own）：个人专属宿主拿到的模型令牌记着这台宿主归哪个空间的哪个人。专属宿主里跑着没审过的上传插件，
+  宿主侧的内容检查可能被绕开，模型网关见到带归属的令牌就按那个空间的策略再查一遍（gateway/content_guard.py）；
 - 格式：base64url(载荷 JSON).base64url(HMAC-SHA256)。
 """
 
@@ -43,11 +45,24 @@ def _unb64(text: str) -> bytes:
 
 
 @dataclass(frozen=True)
+class TokenOwner:
+    workspace_id: str
+    user_id: str
+
+
+@dataclass(frozen=True)
 class TokenClaims:
     audience: str
     workspace_id: str
     expires_at: int
     token_id: str
+    owner: TokenOwner | None = None
+
+
+def _owner_of(value: object) -> TokenOwner | None:
+    if (isinstance(value, list) and len(value) == 2 and all(isinstance(item, str) and item for item in value)):
+        return TokenOwner(workspace_id=value[0], user_id=value[1])
+    return None
 
 
 class TokenSigner:
@@ -56,9 +71,12 @@ class TokenSigner:
             raise ValueError("签名密钥至少 32 字节")
         self._key = key
 
-    def issue(self, *, audience: str, workspace_id: str, ttl_seconds: int, now: float | None = None) -> str:
+    def issue(self, *, audience: str, workspace_id: str, ttl_seconds: int, now: float | None = None,
+              owner: TokenOwner | None = None) -> str:
         issued = int(now if now is not None else time.time())
         payload = {"aud": audience, "ws": workspace_id, "exp": issued + ttl_seconds, "jti": secrets.token_hex(8)}
+        if owner is not None:
+            payload = {**payload, "own": [owner.workspace_id, owner.user_id]}
         body = _b64(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
         return f"{body}.{self._sign(body)}"
 
@@ -77,7 +95,8 @@ class TokenSigner:
         if payload.get("aud") != audience or not isinstance(payload.get("exp"), int) or payload["exp"] <= current:
             raise TokenError("invalid token")
         return TokenClaims(audience=payload["aud"], workspace_id=str(payload.get("ws", "")),
-                           expires_at=payload["exp"], token_id=str(payload.get("jti", "")))
+                           expires_at=payload["exp"], token_id=str(payload.get("jti", "")),
+                           owner=_owner_of(payload.get("own")))
 
     def _sign(self, body: str) -> str:
         return _b64(hmac.new(self._key, body.encode(), hashlib.sha256).digest())

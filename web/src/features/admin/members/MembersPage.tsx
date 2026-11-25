@@ -27,7 +27,7 @@ function MemberList() {
   const remove = useAction((userId: string) => removeMember(userId), {
     invalidate: [KEYS.members],
     success: '已移出',
-    failure: '移出没有成功，请稍后重试',
+    failure: '没能移出，请稍后重试',
   });
   const rows = useMemo(
     () =>
@@ -109,7 +109,7 @@ function MemberList() {
           rows={rows}
           loading={members.isFetching}
           empty={
-            members.isError ? '成员列表加载失败，请刷新重试' : keyword ? '没有找到匹配的成员' : '还没有成员'
+            members.isError ? '没能加载成员列表，请刷新重试' : keyword ? '没有找到匹配的成员' : '还没有成员'
           }
         />
       )}

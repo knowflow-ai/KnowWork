@@ -97,6 +97,7 @@ function table(value: Record<string, unknown>): TableCard | undefined {
     moreRows: value.more_rows === true,
     ...(drawn ? { chart: drawn } : {}),
     ...(drilled ? { drill: drilled } : {}),
+    ...(value.empty === true ? { empty: true } : {}),
   };
 }
 

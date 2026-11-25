@@ -80,6 +80,12 @@ export interface OAuthInput {
   readonly scope: string;
 }
 
+/**
+ * 工具怎么给模型：eager 随每次对话发给模型；on_demand 按需加载（不常驻请求，系统提示里只列名字和一句说明，
+ * 模型要用时再加载，照 DSH 官方 MCP 客户端的同名配置）
+ */
+export type ToolLoading = 'eager' | 'on_demand';
+
 export interface McpServer {
   readonly id: string;
   readonly name: string;
@@ -88,6 +94,7 @@ export interface McpServer {
   readonly headers: readonly { readonly name: string; readonly last4: string }[];
   readonly timeoutSeconds: number;
   readonly enabled: boolean;
+  readonly toolLoading: ToolLoading;
   readonly tools: readonly McpTool[];
   /** 按服务授权用的资源 id，例如 mcp__github__*。 */
   readonly grantPattern: string;
@@ -140,6 +147,7 @@ export function parseServer(value: unknown): McpServer | undefined {
     headers: listOf(value.headers, parseHeader),
     timeoutSeconds: num(value.timeoutSeconds) ?? 60,
     enabled: bool(value.enabled, true),
+    toolLoading: value.toolLoading === 'on_demand' ? 'on_demand' : 'eager',
     tools: listOf(value.tools, parseTool),
     grantPattern: str(value.grantPattern) ?? `mcp__${name}__*`,
     syncedAt: text(value.syncedAt) ?? null,
@@ -183,6 +191,8 @@ export interface ServerInput {
   readonly title: string;
   readonly url: string;
   readonly timeoutSeconds: number;
+  /** 工具怎么给模型；修改时 undefined 表示不改，新建时不填按 eager */
+  readonly toolLoading?: ToolLoading;
   /** undefined 表示不改（修改时）；新建时不填即没有请求头。 */
   readonly headers?: readonly HeaderInput[];
   /** 认证方式；修改时 undefined 表示不改 */
@@ -279,6 +289,7 @@ export function createBody(input: ServerInput): Record<string, unknown> {
     title: input.title.trim(),
     url: input.url.trim(),
     timeoutSeconds: input.timeoutSeconds,
+    toolLoading: input.toolLoading ?? 'eager',
     headers: shared ? headersBody(input.headers ?? []) : {},
     ...authBody(input),
   };
@@ -298,6 +309,7 @@ export function mcpAdminApi(base: (path?: string) => string) {
         url: input.url.trim(),
         timeoutSeconds: input.timeoutSeconds,
       };
+      if (input.toolLoading !== undefined) body.toolLoading = input.toolLoading;
       if (input.headers !== undefined && input.auth !== 'user_token')
         body.headers = headersBody(input.headers);
       Object.assign(body, authBody(input));

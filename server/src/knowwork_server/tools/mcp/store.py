@@ -52,6 +52,7 @@ class McpServerRecord:
     scope: str = "workspace"  # workspace | enterprise
     audience: tuple[str, ...] = ()  # 企业服务发给哪些空间
     origin_server_id: str | None = None  # 企业服务从哪个空间服务收上来的
+    tool_loading: str = "eager"  # eager | on_demand（见 models.McpServerRow.tool_loading）
 
     @property
     def per_user(self) -> bool:
@@ -77,6 +78,7 @@ class McpChanges:
     oauth_client: str | None = None  # OAuth 授权的 client（明文 JSON，入库前加密）；给出时替换
     clear_oauth_client: bool = False
     audience: list[str] | None = None  # 企业服务发给哪些空间
+    tool_loading: str | None = None
 
 
 def new_server_id() -> str:
@@ -99,7 +101,8 @@ def _record(row: McpServerRow) -> McpServerRecord:
                            updated_at=row.updated_at, auth=row.auth or "shared",
                            auth_config=dict(row.auth_config) if row.auth_config else None,
                            oauth_client_ciphertext=row.oauth_client_ciphertext, scope=row.scope or "workspace",
-                           audience=tuple(row.audience or ()), origin_server_id=row.origin_server_id)
+                           audience=tuple(row.audience or ()), origin_server_id=row.origin_server_id,
+                           tool_loading=row.tool_loading or "eager")
 
 
 def headers_context(workspace_id: str, server_id: str) -> str:
@@ -126,13 +129,13 @@ class McpServerStore:
                      also: Callable[[AsyncSession, str], Awaitable[T]], auth: str = "shared",
                      auth_config: dict | None = None, oauth_client: str | None = None,
                      server_id: str | None = None, scope: str = "workspace",
-                     origin_server_id: str | None = None) -> tuple[McpServerRecord, T]:
+                     origin_server_id: str | None = None, tool_loading: str = "eager") -> tuple[McpServerRecord, T]:
         """新建服务；also(session, 服务名) 在同一事务里执行（默认给全体成员用），返回它的结果。"""
         server_id = server_id or new_server_id()
         row = McpServerRow(id=server_id, workspace_id=workspace_id, name=name, title=title, url=url,
                            timeout_seconds=timeout_seconds, enabled=True, tools=dump(tools), synced_at=synced_at,
                            created_by=created_by, auth=auth, auth_config=auth_config, scope=scope,
-                           origin_server_id=origin_server_id)
+                           origin_server_id=origin_server_id, tool_loading=tool_loading)
         self._seal(row, headers)
         if oauth_client is not None:
             row.oauth_client_ciphertext = self._box.seal(oauth_client,

@@ -21,7 +21,7 @@ export function DepartmentsTab() {
   const create = useAction((name: string) => createDepartment(name, null), {
     invalidate: [KEYS.departments],
     success: '已新建部门',
-    failure: '新建没有成功，请稍后重试',
+    failure: '没能新建，请稍后重试',
   });
   const tree = useMemo(() => toTreeData(departments.data ?? []), [departments.data]);
   const current = selected ? findDepartment(departments.data ?? [], selected) : undefined;
@@ -41,7 +41,7 @@ export function DepartmentsTab() {
         <Empty
           area
           icon={departments.isError ? <Warning /> : <Groups />}
-          description={departments.isError ? '部门加载失败，请刷新重试' : '还没有部门'}
+          description={departments.isError ? '没能加载部门，请刷新重试' : '还没有部门'}
         />
       ) : (
         <div className="kw-org-layout">

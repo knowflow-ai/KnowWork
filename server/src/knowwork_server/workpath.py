@@ -13,15 +13,11 @@
 import posixpath
 from dataclasses import dataclass
 
-from .sandbox.contract import SandboxError
-
 MAX_PATH = 4096
 MAX_NAME_BYTES = 255
 SESSIONS_DIR = "/sessions"
 
-
-class InvalidPath(SandboxError):
-    """路径不合法或越出工作区。沙箱的内部接口把它回成 403（宿主据此说没有权限），所以算沙箱错误的一种。"""
+# InvalidPath（沙箱错误的一种）定义在文件末尾，见那里的说明
 
 
 def _checked(raw: object) -> str:
@@ -140,3 +136,12 @@ def check_name(name: str) -> str:
             or len(name.encode("utf-8")) > MAX_NAME_BYTES):
         raise InvalidPath("文件名不合法")
     return name
+
+
+# 放在最后导入：sandbox 包初始化时（containers.py、docker_sandbox.py）要从这里取 SANDBOX、INPUT 等，先导入本模块的一方
+# （例如单独跑事件投影的测试）若在开头就导入 sandbox，会绕回这个还没定义完的模块。上面的函数都是调用时才用 InvalidPath
+from .sandbox.contract import SandboxError
+
+
+class InvalidPath(SandboxError):
+    """路径不合法或越出工作区。沙箱的内部接口把它回成 403（宿主据此说没有权限），所以算沙箱错误的一种。"""

@@ -163,6 +163,13 @@ async def test_the_api_says_why_and_when_it_comes_back(world):
         activated = await http.post("/internal/host/v1/activations", headers={"Authorization": f"Bearer {HOST_TOKEN}"},
                                     json={"kind": "schedule", "sessionId": conversation.id,
                                           "owner": {"workspaceId": "default", "userId": OWNER}})
+        # 长任务目标自动接着做的下一轮：同样过额度，算成目标续跑发起的
+        gate.asked.clear()
+        goal_round = await http.post("/internal/host/v1/activations", headers={"Authorization": f"Bearer {HOST_TOKEN}"},
+                                     json={"kind": "goal", "sessionId": conversation.id,
+                                           "owner": {"workspaceId": "default", "userId": OWNER}})
     expected = {"code": "quota_exceeded", "message": USED_UP, "scope": "personal", "resets_on": "2026-12-01"}
     assert (sent.status_code, sent.json()["detail"]) == (429, expected)
     assert (activated.status_code, activated.json()["detail"]) == (429, expected)
+    assert (goal_round.status_code, goal_round.json()["detail"]) == (429, expected)
+    assert [start.trigger for start in gate.asked] == ["goal"]

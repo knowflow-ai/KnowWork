@@ -16,6 +16,7 @@ pytestmark = pytest.mark.anyio
 PUBLIC_MODEL = "/api/model/v1/chat/completions"
 PUBLIC_TOOLS = "/api/extensions/tools/list"
 PUBLIC_SKILLS = "/api/extensions/skills/catalog"
+PUBLIC_CONTENT_SAFETY = "/api/extensions/content-safety/policy"
 
 
 class NativeAppExtension:
@@ -63,6 +64,7 @@ async def test_without_native_apps_nothing_extra_is_mounted():
     assert await entry_status(runtime, PUBLIC_MODEL) == 404
     assert await entry_status(runtime, PUBLIC_TOOLS) == 404
     assert await entry_status(runtime, PUBLIC_SKILLS) == 404
+    assert await entry_status(runtime, PUBLIC_CONTENT_SAFETY) == 404
     assert runtime.identity.oauth_exchangers.get("model") is None
 
 
@@ -73,6 +75,7 @@ async def test_a_registered_native_app_gets_the_public_entries_and_the_model_aud
     assert await entry_status(runtime, PUBLIC_MODEL) == 401
     assert await entry_status(runtime, PUBLIC_TOOLS) == 401
     assert await entry_status(runtime, PUBLIC_SKILLS) == 401
+    assert await entry_status(runtime, PUBLIC_CONTENT_SAFETY) == 401, "本机宿主送文字来查敏感词的公开入口"
     assert runtime.identity.oauth_exchangers.get("model") is not None
 
 

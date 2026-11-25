@@ -106,7 +106,7 @@ export function createAnswers(ctx, { agentOf }) {
     try {
       accepted = service.answer(agent, question.callId, answer)
     } catch (error) {
-      if (error?.code === 'REPLY_QUEUED') throw new HostError(409, 'reply_queued', '这个问题的回答已在排队，等 Agent 接收')
+      if (error?.code === 'REPLY_QUEUED') throw new HostError(409, 'reply_queued', '这个问题的回答已在排队，等智能体接收')
       if (error?.code === 'BAD_ANSWER') throw new HostError(400, 'invalid_answer', '每个问题都要有一条回答')
       throw error
     }

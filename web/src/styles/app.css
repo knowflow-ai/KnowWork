@@ -11,7 +11,7 @@ body,
 
 body {
   background: var(--kw-content-bg);
-  color: var(--kw-text);
+  color: var(--color-text);
 }
 
 .kw-root {
@@ -68,8 +68,8 @@ body {
 
 .kw-brand-name {
   overflow: hidden;
-  color: var(--kw-text);
-  font-weight: 600;
+  color: var(--color-text);
+  font-weight: var(--font-weight-semibold);
   line-height: 1;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -79,8 +79,8 @@ body {
 .kw-wordmark {
   align-items: baseline;
   gap: 0;
-  color: #1d2433;
-  font-weight: 700;
+  color: var(--kw-brand-ink);
+  font-weight: var(--font-weight-bold);
   line-height: 1;
   letter-spacing: -0.01em;
   white-space: nowrap;
@@ -242,9 +242,9 @@ body {
   height: 40px;
   margin-bottom: 8px;
   border: none;
-  border-radius: var(--kw-radius-control);
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--kw-text-secondary);
+  color: var(--color-text-secondary);
   cursor: pointer;
 }
 
@@ -293,8 +293,8 @@ body {
   padding: 1px 8px;
   border-radius: var(--radius-full);
   background: var(--color-surface-tertiary);
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-sidebar-section {
@@ -303,8 +303,8 @@ body {
 
 .kw-sidebar-label {
   padding: 0 12px 4px;
-  font-size: var(--kw-font-xs);
-  color: var(--kw-text-secondary);
+  font-size: var(--font-text-xs-size);
+  color: var(--color-text-secondary);
 }
 
 .kw-sidebar-scroll {
@@ -320,10 +320,10 @@ body {
   width: 100%;
   padding: 8px 12px;
   border: none;
-  border-radius: var(--kw-radius-control);
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--kw-text);
-  font-size: var(--kw-font-base);
+  color: var(--color-text);
+  font-size: var(--font-text-sm-size);
   text-align: left;
   cursor: pointer;
   text-decoration: none;
@@ -333,7 +333,7 @@ body {
 .kw-sidebar-link:hover,
 .kw-sidebar-link.is-active {
   background: var(--kw-hover-bg);
-  color: var(--kw-text);
+  color: var(--color-text);
 }
 
 .kw-sidebar-link .kw-ellipsis {
@@ -344,12 +344,12 @@ body {
 
 .kw-sidebar-empty {
   padding: 4px 12px;
-  font-size: var(--kw-font-sm);
-  color: var(--kw-text-secondary);
+  font-size: var(--font-text-sm-size);
+  color: var(--color-text-secondary);
 }
 
 .kw-sidebar-footer {
-  border-top: 1px solid var(--kw-border-secondary);
+  border-top: 1px solid var(--color-border-subtle);
   padding-top: 8px;
 }
 
@@ -361,8 +361,8 @@ body {
 }
 
 .kw-user-meta small {
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-main {
@@ -383,7 +383,7 @@ body {
 }
 
 .kw-menu-value {
-  color: var(--kw-text-secondary);
+  color: var(--color-text-secondary);
 }
 
 /* ---------- 侧栏会话项 ---------- */
@@ -399,8 +399,8 @@ body {
 .kw-conversation-source {
   flex-shrink: 0;
   margin-left: 6px;
-  color: var(--kw-text-tertiary, var(--kw-text-secondary));
-  font-size: 12px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-conversation-item .kw-conversation-more {
@@ -440,10 +440,10 @@ body {
   margin-left: auto;
   min-width: 18px;
   padding: 0 6px;
-  border-radius: 9px;
+  border-radius: var(--radius-full);
   background: var(--color-surface-tertiary);
   color: var(--color-text-secondary);
   font-size: var(--font-text-xs-size);
-  line-height: 18px;
+  line-height: var(--font-text-xs-line-height);
   text-align: center;
 }

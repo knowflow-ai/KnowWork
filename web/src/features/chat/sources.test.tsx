@@ -8,6 +8,7 @@ import { register } from '../../slots/registry';
 import ChatPage from './ChatPage';
 import type { ConversationFiles, ConversationSource } from './sources';
 import { useSidebar } from '../../stores/sidebar';
+import { useFileTabsStore } from './hooks/fileTabs';
 
 vi.mock('../preview/PdfView', () => ({
   default: ({ data }: { data: ArrayBuffer }) => <div>PDF 阅读器：{new TextDecoder().decode(data)}</div>,
@@ -46,6 +47,10 @@ const listFiles = vi.fn<NonNullable<ConversationFiles['list']>>(async (_id, path
       : [],
 }));
 const watchFiles = vi.fn<NonNullable<ConversationFiles['watch']>>(() => () => undefined);
+// 附件编辑用的副本：工作目录根上的同名文件
+const copyFile = vi.fn<NonNullable<ConversationFiles['workingCopy']>>(async (_id, source) =>
+  'path' in source ? (source.path.split('/').pop() ?? source.path) : null,
+);
 let blocked = false;
 // 能不能在这里继续：null 能，字符串是不能的原因，ApiError 是问不到（例如本机执行环境没起来）
 let here: string | null | Error = null;
@@ -87,6 +92,7 @@ const OTHER: ConversationSource = {
     save: saveFile,
     open: openFile,
     edit: editFile,
+    workingCopy: copyFile,
     list: listFiles,
     watch: watchFiles,
   },
@@ -96,24 +102,36 @@ register('chat.sources', OTHER);
 let device: string | null = null;
 register('chat.place', { describe: async () => device });
 
-/** 业务服务的事件流里有一条助手消息（对话的内容不管在哪执行都从这里来）。 */
-function eventsWith(text: string) {
-  const event = {
-    schema_version: 'events.v1',
-    type: 'item.completed',
-    seq: 1,
-    run_id: 'run-1',
-    time: 1,
-    item_id: 'm1',
-    kind: 'message',
-    data: { role: 'assistant', text },
-  };
-  return new Response(`id: 1.0\nevent: message\ndata: ${JSON.stringify(event)}\n\n`, {
-    headers: { 'content-type': 'text/event-stream' },
-  });
+/** 用户消息带的附件（服务端投影成名字、大小与工作区里的路径） */
+interface SentFile {
+  readonly name: string;
+  readonly size: number;
+  readonly path?: string;
 }
 
-function server(source = 'elsewhere', answer = '业务服务里的回答') {
+/** 业务服务的事件流里有一条助手消息（对话的内容不管在哪执行都从这里来）；给了附件，前面先有一条带附件的用户消息。 */
+function eventsWith(text: string, attachments?: readonly SentFile[]) {
+  const item = (seq: number, id: string, data: Record<string, unknown>) => ({
+    schema_version: 'events.v1',
+    type: 'item.completed',
+    seq,
+    run_id: 'run-1',
+    time: seq,
+    item_id: id,
+    kind: 'message',
+    data,
+  });
+  const events = [
+    ...(attachments ? [item(1, 'u1', { role: 'user', text: '看看这几份', attachments })] : []),
+    item(2, 'm1', { role: 'assistant', text }),
+  ];
+  const body = events
+    .map((event) => `id: ${event.seq}.0\nevent: message\ndata: ${JSON.stringify(event)}\n\n`)
+    .join('');
+  return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+}
+
+function server(source = 'elsewhere', answer = '业务服务里的回答', attachments?: readonly SentFile[]) {
   routeFetch({
     'GET /api/auth/me': jsonResponse(ME),
     'GET /api/workspaces/default/conversations/mention-options': jsonResponse({
@@ -126,7 +144,7 @@ function server(source = 'elsewhere', answer = '业务服务里的回答') {
     'GET /api/workspaces/default/conversations/x1': jsonResponse({ id: 'x1', title: '', source }),
     'GET /api/workspaces/default/conversations/x1/scope': jsonResponse(null),
     'GET /api/workspaces/default/conversations/x1/feedback': jsonResponse([]),
-    'GET /api/workspaces/default/conversations/x1/events': () => eventsWith(answer),
+    'GET /api/workspaces/default/conversations/x1/events': () => eventsWith(answer, attachments),
     'GET /api/workspaces/default/conversations/x1/artifacts': jsonResponse([]),
     'GET /api/workspaces/default/conversations/x1/citations': jsonResponse({ items: [] }),
   });
@@ -293,7 +311,8 @@ describe('对话的来源：同一个对话页、都读业务服务，只有在�
         addEventListener: () => undefined,
         removeEventListener: () => undefined,
       }));
-      server('elsewhere', '改好了：[季度报告](report.docx)');
+      editFile.mockClear();
+      server('elsewhere', '改好了：[季度报告](report.docx)，还有[预算](budget.xlsx)');
       here = null;
       renderWithApp(<ChatPage />, { route: '/chat/x1', path: '/chat/:conversationId' });
       await userEvent.click(await screen.findByRole('button', { name: '季度报告' }));
@@ -310,10 +329,84 @@ describe('对话的来源：同一个对话页、都读业务服务，只有在�
       await userEvent.type(input, '把第二段改短');
       expect(input).toHaveValue('把第二段改短');
       expect(useSidebar.getState().folded).toBe(true);
-      await userEvent.click(within(pane).getByRole('button', { name: '关闭' }));
+      // 再点开一个：照官方右侧栏加在标签条最后、切过去；切走的编辑器照样挂着，切回来不用重开
+      await userEvent.click(screen.getByRole('button', { name: '预算' }));
+      const tabs = await screen.findByRole('tablist', { name: '打开的文件' });
+      expect(
+        within(tabs)
+          .getAllByRole('tab')
+          .map((tab) => tab.textContent),
+      ).toEqual(['report.docx', 'budget.xlsx']);
+      expect(within(tabs).getByRole('tab', { name: /budget\.xlsx/ })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      expect(await screen.findByRole('region', { name: 'budget.xlsx' })).toBeInTheDocument();
+      await userEvent.click(within(tabs).getByRole('tab', { name: /report\.docx/ }));
+      expect(await screen.findByRole('region', { name: 'report.docx' })).toBeInTheDocument();
+      expect(editFile).toHaveBeenCalledTimes(2);
+      // 再点已经开着的：不另开，切过去
+      await userEvent.click(screen.getByRole('button', { name: '预算' }));
+      expect(within(tabs).getAllByRole('tab')).toHaveLength(2);
+      expect(within(tabs).getByRole('tab', { name: /budget\.xlsx/ })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      // 每个标签自己关：关掉当前的切到左边那个；关掉最后一个整栏收起
+      await userEvent.click(screen.getByRole('button', { name: '关闭 budget.xlsx' }));
+      expect(await screen.findByRole('region', { name: 'report.docx' })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: '关闭 report.docx' }));
       expect(screen.queryByRole('region', { name: 'report.docx' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('tablist', { name: '打开的文件' })).not.toBeInTheDocument();
       expect(useSidebar.getState().folded).toBe(false);
       expect(screen.getByRole('textbox')).toHaveValue('把第二段改短');
+    });
+
+    it('照官方右侧栏保留打开过的文件：收起不关标签，对话头上的按钮展开回来、编辑器不用重开；离开再回来、刷新后都还在', async () => {
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: query.includes('min-width'),
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }));
+      editFile.mockClear();
+      server('elsewhere', '改好了：[季度报告](report.docx)，还有[预算](budget.xlsx)');
+      here = null;
+      const page = renderWithApp(<ChatPage />, { route: '/chat/x1', path: '/chat/:conversationId' });
+      await userEvent.click(await screen.findByRole('button', { name: '季度报告' }));
+      await userEvent.click(screen.getByRole('button', { name: '预算' }));
+      expect(await screen.findByRole('region', { name: 'budget.xlsx' })).toBeInTheDocument();
+      expect(editFile).toHaveBeenCalledTimes(2);
+
+      // 收起：这一栏不见了、侧栏恢复，标签还在；对话头上换成展开按钮
+      await userEvent.click(screen.getByRole('button', { name: '收起打开的文件' }));
+      expect(screen.queryByRole('region', { name: 'budget.xlsx' })).not.toBeInTheDocument();
+      expect(useSidebar.getState().folded).toBe(false);
+      await userEvent.click(screen.getByRole('button', { name: '展开打开的文件' }));
+      expect(await screen.findByRole('region', { name: 'budget.xlsx' })).toBeInTheDocument();
+      expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+        'report.docx',
+        'budget.xlsx',
+      ]);
+      expect(editFile).toHaveBeenCalledTimes(2);
+
+      // 收起着点开别的文件：进标签、展开这一栏
+      await userEvent.click(screen.getByRole('button', { name: '收起打开的文件' }));
+      await userEvent.click(screen.getByRole('button', { name: '季度报告' }));
+      expect(await screen.findByRole('region', { name: 'report.docx' })).toBeInTheDocument();
+
+      // 离开这段对话再回来（刷新同理：内存里的没了，从这台浏览器的存储里恢复）：标签和当前那个都在，
+      // 只打开当前那个，没点到的不先开编辑器
+      page.unmount();
+      useFileTabsStore.setState({ byConversation: {} });
+      editFile.mockClear();
+      renderWithApp(<ChatPage />, { route: '/chat/x1', path: '/chat/:conversationId' });
+      expect(await screen.findByRole('region', { name: 'report.docx' })).toBeInTheDocument();
+      expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+        'report.docx',
+        'budget.xlsx',
+      ]);
+      await waitFor(() => expect(editFile).toHaveBeenCalledTimes(1));
+      expect(editFile).toHaveBeenCalledWith('x1', 'report.docx');
     });
 
     it('文件面板：右上角「文件」或 ⌘P 打开目录树；点开的文件在右边打开、旁边留着目录树，关掉文件回到目录树', async () => {
@@ -339,14 +432,58 @@ describe('对话的来源：同一个对话页、都读业务服务，只有在�
       await userEvent.click(within(pane).getByRole('button', { name: 'notes.md' }));
       expect(await screen.findByRole('region', { name: 'notes.md' })).toBeInTheDocument();
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      // 关掉文件回到目录树；⌘P 关掉文件面板
-      await userEvent.click(
-        within(screen.getByRole('region', { name: 'notes.md' })).getAllByRole('button', { name: '关闭' })[0]!,
-      );
+      // 两个都成了标签；关掉一个回到另一个，都关掉回到目录树；⌘P 关掉文件面板
+      expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['report.docx', 'notes.md']);
+      await userEvent.click(screen.getByRole('button', { name: '关闭 notes.md' }));
+      expect(await screen.findByRole('region', { name: 'report.docx' })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: '关闭 report.docx' }));
       expect(await screen.findByRole('region', { name: '文件' })).toBeInTheDocument();
       await userEvent.keyboard('{Meta>}p{/Meta}');
       expect(screen.queryByRole('region', { name: '文件' })).not.toBeInTheDocument();
       expect(listFiles).toHaveBeenCalledWith('x1', '');
+    });
+
+    it('消息上带的附件点得开：Word 先要一份同名副本、按副本在编辑器里打开；PDF 只读预览原件；没有路径的只是文字', async () => {
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: query.includes('min-width'),
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }));
+      copyFile.mockClear();
+      server('elsewhere', '收到', [
+        { name: '简介.docx', size: 10, path: 'input/简介.docx' },
+        { name: '合同.pdf', size: 5, path: 'input/合同.pdf' },
+        { name: '旧的.docx', size: 1 },
+      ]);
+      here = null;
+      renderWithApp(<ChatPage />, { route: '/chat/x1', path: '/chat/:conversationId' });
+      const chips = await screen.findByRole('list', { name: '这条消息带的附件' });
+      expect(within(chips).queryByRole('button', { name: /旧的\.docx/ })).not.toBeInTheDocument();
+      expect(within(chips).getByText('旧的.docx')).toBeInTheDocument();
+
+      await userEvent.click(await within(chips).findByRole('button', { name: /简介\.docx/ }));
+      const pane = await screen.findByRole('region', { name: '简介.docx' });
+      expect(copyFile).toHaveBeenCalledWith('x1', { path: 'input/简介.docx' });
+      expect(await within(pane).findByTitle('编辑 简介.docx')).toBeInTheDocument();
+      expect(editFile).toHaveBeenCalledWith('x1', '简介.docx');
+      await userEvent.click(within(pane).getByRole('button', { name: '关闭 简介.docx' }));
+
+      await userEvent.click(within(chips).getByRole('button', { name: /合同\.pdf/ }));
+      expect(await screen.findByRole('dialog', { name: /合同\.pdf/ })).toBeInTheDocument();
+      await waitFor(() => expect(readFile).toHaveBeenCalledWith('x1', 'input/合同.pdf'));
+      expect(copyFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('拿不到附件的副本（这里没开在线编辑）：照旧只读预览原件', async () => {
+      copyFile.mockResolvedValueOnce(null);
+      server('elsewhere', '收到', [{ name: '报价.xlsx', size: 10, path: 'input/报价.xlsx' }]);
+      here = null;
+      renderWithApp(<ChatPage />, { route: '/chat/x1', path: '/chat/:conversationId' });
+      const chips = await screen.findByRole('list', { name: '这条消息带的附件' });
+      await userEvent.click(await within(chips).findByRole('button', { name: /报价\.xlsx/ }));
+      expect(await screen.findByRole('dialog', { name: /报价\.xlsx/ })).toBeInTheDocument();
+      expect(copyFile).toHaveBeenCalledWith('x1', { path: 'input/报价.xlsx' });
+      expect(editFile).toHaveBeenLastCalledWith('x1', 'input/报价.xlsx');
     });
 
     it('窗口太窄放不下两栏：能编辑的 Word 也照旧开在抽屉里', async () => {

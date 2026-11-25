@@ -24,6 +24,7 @@ import {
   type ServerAuth,
   type ServerInput,
   type TokenConfig,
+  type ToolLoading,
 } from '../../../api/mcp';
 import { Dialog, DialogActions } from '../../../ui/Dialog';
 import { Field } from '../../../ui/Field';
@@ -46,6 +47,7 @@ interface Values {
   readonly name: string;
   readonly url: string;
   readonly timeoutSeconds: number;
+  readonly toolLoading: ToolLoading;
   readonly headers: readonly HeaderInput[];
   readonly auth: Auth;
   readonly tokenConfig: TokenConfig;
@@ -71,6 +73,7 @@ function initialValues(server?: McpServer): Values {
       name: '',
       url: '',
       timeoutSeconds: 60,
+      toolLoading: 'eager',
       headers: [{ name: 'Authorization', value: '' }],
       auth: 'user_token',
       tokenConfig: DEFAULT_TOKEN_CONFIG,
@@ -82,6 +85,7 @@ function initialValues(server?: McpServer): Values {
     name: server.name,
     url: server.url,
     timeoutSeconds: server.timeoutSeconds,
+    toolLoading: server.toolLoading,
     headers: [],
     auth: choiceOf(server),
     tokenConfig: server.tokenConfig ?? DEFAULT_TOKEN_CONFIG,
@@ -186,7 +190,7 @@ export function ServerDialog({
     {
       invalidate: [scope.key],
       success: editing ? '已保存' : oauthNow ? '已添加，正在跳到对方页面授权' : '已添加，工具清单已拉取',
-      failure: '保存没有成功',
+      failure: '没能保存',
     },
   );
   /** 填完地址探一次定默认的认证方式（管理员自己选过就不动）。探不到不提示，按原来的选。 */
@@ -215,6 +219,7 @@ export function ServerDialog({
       title: values.title,
       url: values.url,
       timeoutSeconds: values.timeoutSeconds,
+      toolLoading: values.toolLoading,
       headers,
       ...authChanges(server, values),
     };
@@ -333,6 +338,16 @@ export function ServerDialog({
             onChange={(n) => form.set('timeoutSeconds', n ?? 60)}
           />
         )}
+      </Field>
+      <Field
+        label="工具加载"
+        help="工具多、说明长的服务适合按需加载：工具不随每次对话发给模型，只列名字和一句说明，模型要用时再加载，省上下文"
+      >
+        <Checkbox
+          label="按需加载"
+          checked={form.values.toolLoading === 'on_demand'}
+          onCheckedChange={(on) => form.set('toolLoading', on ? 'on_demand' : 'eager')}
+        />
       </Field>
     </Dialog>
   );

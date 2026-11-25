@@ -9,6 +9,7 @@
  */
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { pluginKeysOf } from './plugin-catalog.mjs'
 import { attachmentBlocks, attachmentsOf } from './attachment-handles.mjs'
 import { catalogOf } from './knowledge-catalog.mjs'
 import { mentionBlocks, mentionsOf } from './mentions.mjs'
@@ -92,7 +93,7 @@ function ownerOf(raw) {
 /**
  * 开会话的合同 → 校验过的样子。恢复会话必须重新给出策略：宿主不保存策略，每次打开都以业务服务此刻的为准。
  * @returns {{ sessionId: string, resume: boolean, policy: object, toolAccess?: { token: string },
- *   skillAccess?: { token: string }, owner?: { workspaceId: string, userId: string } }}
+ *   skillAccess?: { token: string }, owner?: { workspaceId: string, userId: string }, plugins: string[] }}
  */
 export function sessionContractOf(body) {
   objectOf(body, '开会话的合同')
@@ -108,6 +109,16 @@ export function sessionContractOf(body) {
     toolAccess: accessOf(body.tools, 'tools'),
     skillAccess: accessOf(body.skills, 'skills'),
     owner: ownerOf(body.owner),
+    plugins: pluginsOf(body.plugins),
+  }
+}
+
+/** 这段对话启用的预置插件键（plugin-catalog.mjs）；不带就是没有。本机宿主用官方预设，不认这一项 */
+function pluginsOf(raw) {
+  try {
+    return pluginKeysOf(raw)
+  } catch (error) {
+    throw new HostError(400, 'invalid_request', error.message)
   }
 }
 
@@ -206,7 +217,6 @@ export function createTurnIntake({ models, provider, fallbackTimeZone = deployme
     if (state !== undefined && extensions !== undefined && mode === 'followup') state.extensionState = extensions
     const content = [{ type: 'text', text }, ...attachmentBlocks(files), ...mentionBlocks(mentions)]
     const source = userSource(body.timeZone, fallbackTimeZone)
-    if (state !== undefined) state.timeZone = source.clientTimeZone
     const message = createUserMessage({ content, source })
     // 回答方式等这条消息进入步骤时才生效（answer-mode）：排队到下一轮的消息不改正在跑的这一轮
     state?.answerModes.set(String(message.id), { mode: answerMode, spec: answerModeSpec })

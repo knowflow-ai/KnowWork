@@ -103,6 +103,9 @@ export interface TableCard {
   readonly chart?: TableChart;
   /** 能下钻时哪几列能点 */
   readonly drill?: TableDrill;
+  /** 没有数据（工具判断的：一行都没有，或只做了汇总、汇总出来全是空值）：只写一句没有符合条件的数据，不画表和图；
+   * 0 行的表也这么画（旧卡片、别的工具没标的） */
+  readonly empty?: boolean;
 }
 
 /** 出处：一行说明（最前面一个词，如「口径」），点开看明细与代码。 */
@@ -190,7 +193,9 @@ export interface TodoView {
 export type TrailEntry =
   | { readonly type: 'thinking'; readonly text: string }
   | { readonly type: 'note'; readonly text: string }
-  | { readonly type: 'step'; readonly callId: string };
+  | { readonly type: 'step'; readonly callId: string }
+  /** 中途向用户提问（编号同 QuestionView.id）：一轮回答在这里切成两段显示（events/segments.ts） */
+  | { readonly type: 'question'; readonly id: string };
 
 export interface AskedMessage {
   readonly id: string;
@@ -250,6 +255,9 @@ export interface QuestionView {
   readonly status: 'pending' | 'answered' | 'closed';
   /** 前台等待已结束，Agent 先继续了；回答后会开新一轮接着处理。 */
   readonly continued: boolean;
+  /** 提出、答上的时间：一轮在提问处切成两段时，各段的用时从这里算 */
+  readonly askedAt?: number;
+  readonly answeredAt?: number;
   readonly answers?: readonly QuestionAnswerView[];
   readonly closedReason?: QuestionClosedReason;
 }
@@ -305,9 +313,58 @@ export interface SentMessage {
   readonly mentions?: readonly Mention[];
 }
 
+/** 用户执行的一条 / 命令（events/commands.ts）：不经模型，不归任何一轮 */
+export interface CommandView {
+  /** 官方的 commandId（同一条命令的开始与结束共用） */
+  readonly id: string;
+  readonly name: string;
+  /** 名字后面的参数，原样（可能带开头的空格） */
+  readonly args?: string;
+  readonly status: 'running' | 'success' | 'error';
+  /** 命令给人看的结果文字 */
+  readonly text?: string;
+  readonly time: number;
+  /** 执行时已有几轮：时间线上排在这些轮次之后 */
+  readonly afterRuns: number;
+}
+
+/** 上下文压缩（官方 dsh-compaction，events/compactions.ts）：一次压缩一条，对话里画成一行 */
+export interface CompactionView {
+  /** 官方的 compactionId */
+  readonly id: string;
+  /** ended：结束了但没写出摘要（没东西可压），不显示 */
+  readonly status: 'running' | 'completed' | 'error' | 'ended';
+  /** 压掉了几条历史记录 */
+  readonly items?: number;
+  /** 压掉的大约多少 token */
+  readonly tokens?: number;
+  /** 摘要正文（模型从这里往后看的就是它） */
+  readonly summary?: string;
+  readonly error?: string;
+  readonly time: number;
+  /** 时间线上排在这么多轮之后 */
+  readonly afterRuns: number;
+}
+
+/** 长任务目标（官方 dsh-goal，events/goal.ts）：对话里当前的目标，常驻显示在输入框上方 */
+export interface GoalView {
+  readonly objective: string;
+  readonly phase: 'active' | 'paused' | 'blocked' | 'complete';
+  /** 卡住的原因（只在 blocked 时有） */
+  readonly blockedReason?: string;
+  /** 自动接着做了几轮 */
+  readonly rounds: number;
+  /** 最多自动接着做几轮 */
+  readonly maxRounds: number;
+  /** 自动续跑开着没有（宿主重启、会话重开后官方先关上）；不知道是 undefined（本机对话没有这个信息） */
+  readonly armed?: boolean;
+}
+
 export type TimelineEntry =
   | { readonly type: 'user'; readonly message: SentMessage }
   | { readonly type: 'trigger'; readonly trigger: RunTrigger }
+  | { readonly type: 'command'; readonly command: CommandView }
+  | { readonly type: 'compaction'; readonly compaction: CompactionView }
   | { readonly type: 'run'; readonly runId: string };
 
 export type RunState = 'idle' | 'running' | 'waiting-approval';
@@ -331,6 +388,16 @@ export interface ChatState {
   /** 当前未结束的轮次。 */
   readonly openRun?: string;
   readonly sent: readonly SentMessage[];
+  /** 一轮还在跑时发的、排在收件箱里随停止一起取消的用户消息 id（来自事件流）：它们没进对话，本页对应的那条不再显示 */
+  readonly discarded: readonly string[];
+  /** 用户执行的 / 命令（来自事件流） */
+  readonly commands: readonly CommandView[];
+  /** 上下文压缩（来自事件流） */
+  readonly compactions: readonly CompactionView[];
+  /** 本页刚执行完、事件还没到的命令；不来自事件流，重算时保留 */
+  readonly localCommands: readonly CommandView[];
+  /** 当前的长任务目标；没有或清除了是 undefined */
+  readonly goal?: GoalView;
   /** 正在逐字输出的那一步（events/live.ts）：片段拼成，不进事件日志，这一步的正式消息到了就清掉。 */
   readonly live?: LiveText;
 }
@@ -384,4 +451,6 @@ export type ChatAction =
   | { readonly type: 'citations/loaded'; readonly citations: Readonly<Record<number, CitationSource>> }
   /** 逐字片段（不来自事件日志）。 */
   | { readonly type: 'live'; readonly live: LivePiece }
+  /** 本页刚执行完一条 / 命令（结果当场返回；随后事件流里也会有） */
+  | { readonly type: 'local/command'; readonly command: Omit<CommandView, 'afterRuns'> }
   | { readonly type: 'reset' };

@@ -37,7 +37,7 @@ describe('用量', () => {
     );
   });
 
-  it('没有用量与加载失败时说明', async () => {
+  it('没能加载没有用量与时说明', async () => {
     routeFetch({ [`GET ${B}/usage`]: jsonResponse([]), [`GET ${B}/members`]: jsonResponse([]) });
     renderWithApp(<UsagePage />);
     expect(await screen.findByText('这段时间没有用量')).toBeInTheDocument();

@@ -19,7 +19,7 @@ describe('messageForStatus', () => {
   it('字段校验数组不给人看，未知状态按类别兜底', () => {
     expect(messageForStatus(422, { detail: [{ loc: ['body'] }] })).toBe('提交的内容有误，请检查后重试');
     expect(messageForStatus(503)).toBe('服务暂时不可用，请稍后重试');
-    expect(messageForStatus(418)).toBe('请求没有成功，请稍后重试');
+    expect(messageForStatus(418)).toBe('没能请求，请稍后重试');
     expect(messageForStatus(409)).toBe('操作冲突，请刷新后重试');
   });
 });

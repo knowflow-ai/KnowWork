@@ -49,10 +49,12 @@ class Claim:
     result: ActionResult | None = None
 
 
-def _result_of(receipt: ActionReceipt, *, replayed: bool) -> ActionResult:
-    return ActionResult(action_id=receipt.action_id, status=receipt.status, content=receipt.result_inline or "",
-                        truncated=receipt.truncated, result_ref=receipt.result_ref, replayed=replayed,
-                        presentation=receipt.presentation)
+def _capped(content: str, limit: int) -> tuple[str, bool]:
+    """回给宿主的全文：超过上限截到上限（按字节，不切坏字），并标明截过。"""
+    raw = content.encode()
+    if len(raw) <= limit:
+        return content, False
+    return raw[:limit].decode(errors="ignore"), True
 
 
 def _preview(content: str) -> str:
@@ -60,8 +62,23 @@ def _preview(content: str) -> str:
 
 
 class ReceiptStore:
-    def __init__(self, sessionmaker: async_sessionmaker) -> None:
+    """result_limit：回给宿主的结果最多多少字节。
+    - 不给（宿主那边没有地方放大结果，例如没开会话沙箱）：同以前，超过 64KB 只回 16KB 预览；
+    - 给了：回全文，超过上限才截。模型看多少、全文怎么放，由宿主的官方大输出溢出策略决定（dsh-spill-policy，完整内容写进
+      会话工作区），业务服务先截掉的部分它就找不回来了。上限取会话沙箱单个文件的写入上限，全文写得进去。
+    回执照旧：超过 64KB 存预览加全文引用（审计、调试视图用）。"""
+
+    def __init__(self, sessionmaker: async_sessionmaker, *, result_limit: int | None = None) -> None:
         self._sessionmaker = sessionmaker
+        self._result_limit = result_limit
+
+    def _result_of(self, receipt: ActionReceipt, full: str | None, *, replayed: bool) -> ActionResult:
+        """回执 → 回给宿主的结果。full 是全文（回执里只有预览时从全文存档取来），给了上限才用它。"""
+        content, truncated = receipt.result_inline or "", receipt.truncated
+        if self._result_limit is not None:
+            content, truncated = _capped(full if full is not None else content, self._result_limit)
+        return ActionResult(action_id=receipt.action_id, status=receipt.status, content=content, truncated=truncated,
+                            result_ref=receipt.result_ref, replayed=replayed, presentation=receipt.presentation)
 
     async def discard_session(self, session_id: str) -> None:
         """删除会话时清掉它的回执与完整结果（都可能含业务内容）。"""
@@ -84,11 +101,15 @@ class ReceiptStore:
                 return Claim(kind="new", action_id=inserted)
             existing = (await session.execute(
                 select(ActionReceipt).where(ActionReceipt.idempotency_key == call.idempotency_key))).scalar_one()
+            full = None
+            if self._result_limit is not None and existing.result_ref is not None:
+                blob = await session.get(ActionResultBlob, existing.result_ref)
+                full = blob.content if blob is not None else None
         if existing.tool_name != call.tool_name or existing.arguments_digest != call.arguments_digest:
             return Claim(kind="conflict", action_id=existing.action_id)
         if existing.status == "running":
             return Claim(kind="in_progress", action_id=existing.action_id)
-        return Claim(kind="replay", action_id=existing.action_id, result=_result_of(existing, replayed=True))
+        return Claim(kind="replay", action_id=existing.action_id, result=self._result_of(existing, full, replayed=True))
 
     async def settle(self, call: ActionCall, action_id: str, status: Literal["succeeded", "failed"],
                      content: str, presentation: dict[str, Any] | None = None) -> ActionResult:
@@ -101,5 +122,6 @@ class ReceiptStore:
             await session.execute(update(ActionReceipt).where(ActionReceipt.action_id == action_id).values(
                 status=status, result_digest=digest(content), result_inline=inline, result_ref=result_ref,
                 truncated=truncated, presentation=presentation))
-        return ActionResult(action_id=action_id, status=status, content=inline, truncated=truncated,
+        returned, cut = (inline, truncated) if self._result_limit is None else _capped(content, self._result_limit)
+        return ActionResult(action_id=action_id, status=status, content=returned, truncated=cut,
                             result_ref=result_ref, replayed=False, presentation=presentation)

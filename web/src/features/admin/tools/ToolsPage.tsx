@@ -181,7 +181,7 @@ export function ServerList({
           loading={servers.isFetching}
           empty={
             servers.isError
-              ? 'MCP 服务加载失败，请刷新重试'
+              ? 'MCP 没能加载服务，请刷新重试'
               : keyword
                 ? '没有找到匹配的 MCP 服务'
                 : '还没有 MCP 服务。添加一个 Streamable HTTP 地址开始'
@@ -207,7 +207,7 @@ export default function ToolsPage() {
   return (
     <AdminPage
       title="工具与 MCP"
-      description="登记 MCP 服务，Agent 就能调用它提供的工具。新登记的服务默认全体成员可用；每个工具可以设成允许、需确认或禁用。"
+      description="登记 MCP 服务，智能体就能调用它提供的工具。新登记的服务默认全体成员可用；每个工具可以设成允许、需确认或禁用。"
     >
       {enterprise ? (
         <Tabs items={items} value={value} onChange={(tab) => setParams({ tab }, { replace: true })} />

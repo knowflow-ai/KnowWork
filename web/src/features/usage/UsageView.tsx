@@ -112,7 +112,7 @@ export function UsageView({ queryKey, fetcher, groupings, labelOf }: Props) {
           rows={rows}
           pageSize={20}
           summary={summary}
-          empty={usage.isError ? '用量加载失败，请刷新重试' : '这段时间没有用量'}
+          empty={usage.isError ? '没能加载用量，请刷新重试' : '这段时间没有用量'}
         />
       )}
     </>

@@ -9,13 +9,55 @@
  * - 只存运行期数据，持久事实在业务服务。
  */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
-/** 本宿主进程的实例号。宿主重启后变化，客户端据此判断游标是否还有效。 */
+/** 本宿主进程的实例号，宿主重启后变化。业务服务只用它判断要不要补发令牌，不当续读的游标（游标是官方会话日志的序号）。 */
 export const EPOCH = randomUUID()
 
-const BUFFER_FRAMES = 2000
-const BUFFER_BYTES = 8 * 1024 * 1024
+/**
+ * 推给业务服务的帧的来源：根会话自己的官方事件记 host，子 Agent 的记 host:<子会话>（子 Agent 是另一个会话、序号另起），
+ * 游标是官方会话日志的序号；同桌面端上传事件的记法（业务服务 conversations/device.py 的 device、device:<子会话>）。
+ * 进程内的帧记 live、不带序号。
+ */
+export const ROOT_SOURCE = 'host'
+export const LIVE_SOURCE = 'live'
+export const sourceOf = (state, sessionId) => (sessionId === state.id ? ROOT_SOURCE : `${ROOT_SOURCE}:${childKeyOf(sessionId)}`)
+
+/** 子会话编号直接当来源用的写法（同业务服务 device.py 的 SUB_SESSION：来源整个存进 run_event.host_epoch，最长 64） */
+const PLAIN_CHILD = /^[A-Za-z0-9_.-]{1,56}$/
+
+/**
+ * 子会话在来源里的写法：官方子会话编号一般是 UUID，原样用；官方只要求它是非空字符串，不合上面写法的换成「~」加 40 位摘要，
+ * 宿主自己发出的来源宿主自己一定认（不然业务服务带着它续读，整个请求被拒，泵会一直重试）
+ */
+export function childKeyOf(sessionId) {
+  return PLAIN_CHILD.test(sessionId) ? sessionId : `~${createHash('sha256').update(sessionId).digest('hex').slice(0, 40)}`
+}
+
+/** 来源里写的子会话 → 子会话编号：原样写的就是编号；摘要写法的反推不回来（只能从内存里的子会话算来源去对） */
+export function childIdOfKey(key) {
+  return PLAIN_CHILD.test(key) ? key : undefined
+}
+
+/**
+ * 几个来源的积压按时间合成一串：同一个来源里保持官方序号的先后（续读按序号去重，同一来源里后到的小序号会被当成重复丢掉，
+ * 不能按时间把同一来源里的打乱），来源之间按时间穿插，时间一样时先排前面的来源
+ * @param {object[][]} lists 每个来源一串帧，各自已按序号从小到大
+ */
+export function mergeByTime(lists) {
+  const merged = []
+  const next = lists.map(() => 0)
+  for (;;) {
+    let pick = -1
+    for (let i = 0; i < lists.length; i += 1) {
+      if (next[i] >= lists[i].length) continue
+      if (pick < 0 || lists[i][next[i]].time < lists[pick][next[pick]].time) pick = i
+    }
+    if (pick < 0) return merged
+    merged.push(lists[pick][next[pick]])
+    next[pick] += 1
+  }
+}
 
 /**
  * @typedef {object} SessionPolicy
@@ -44,7 +86,6 @@ const BUFFER_BYTES = 8 * 1024 * 1024
  * @typedef {object} SessionState
  * @property {string} id
  * @property {SessionPolicy} policy
- * @property {{ frames: object[], bytes: number }} buffer
  * @property {Set<Subscriber>} subscribers
  * @property {Map<string, { id: string, sessionId: string, toolName: string, callId?: string, reason?: string, resolve: (outcome: string) => void }>} approvals
  * @property {Map<string, PendingQuestion>} questions 正在前台等待回答的提问，键是 ask_user_question 的工具调用 id
@@ -82,7 +123,6 @@ const BUFFER_BYTES = 8 * 1024 * 1024
 
 /** @type {Map<string, SessionState>} */
 const sessions = new Map()
-let frameSeq = 0
 
 /** @returns {SessionState} */
 export function createSession(sessionId, policy) {
@@ -90,7 +130,6 @@ export function createSession(sessionId, policy) {
   const state = {
     id: sessionId,
     policy,
-    buffer: { frames: [], bytes: 0 },
     subscribers: new Set(),
     approvals: new Map(),
     questions: new Map(),
@@ -104,7 +143,6 @@ export function createSession(sessionId, policy) {
     loadedSkills: new Set(),
     skillEnv: Object.freeze({}),
     language: undefined,
-    timeZone: undefined, // 最近一条用户消息上的时区，子 Agent 沿用（subagent-policy）
     knowledgeCatalog: undefined,
     turnContext: undefined,
     extensionState: undefined,
@@ -201,45 +239,49 @@ export function dropSession(state) {
   }
 }
 
-/** 当前缓冲里最早一帧的游标；缓冲为空时返回 undefined。 */
-export function oldestCursor(state) {
-  return state.buffer.frames[0]?.cursor
-}
-
-/** 向会话推送一帧并放进缓冲；会话不存在时丢弃。 */
-export function publish(sessionId, kind, data) {
-  const state = sessions.get(sessionId)
-  if (state === undefined) return undefined
-  const frame = { epoch: EPOCH, cursor: ++frameSeq, kind, time: Date.now(), data }
-  const size = Buffer.byteLength(JSON.stringify(frame))
-  const buffer = state.buffer
-  buffer.frames.push({ ...frame, size })
-  buffer.bytes += size
-  while (buffer.frames.length > BUFFER_FRAMES || buffer.bytes > BUFFER_BYTES) {
-    const dropped = buffer.frames.shift()
-    buffer.bytes -= dropped.size
-  }
+/**
+ * 官方会话日志里的事件（带官方序号的持久事件）推给这段会话的订阅方。订阅方按来源记着给到哪，积压与实时重叠的部分跳过
+ * （http-host.mjs 的 streamEvents），不重复也不断档。
+ */
+export function deliver(state, frame) {
   for (const subscriber of [...state.subscribers]) {
     if (!subscriber.write(frame)) subscriber.end()
   }
-  return frame
 }
 
 /**
- * 推一帧临时帧：只给当前订阅方，不进回放缓冲、不占新游标（带的是当前最后一个游标）。
- * 用于官方逐字输出：片段量大、只对正在看的人有用，断线重连后由这一步的正式消息补齐。
+ * 进程内的帧（Agent 状态、子 Agent 状态、目标自动续跑的开关、逐字输出）：照官方不带序号，只推给当前订阅方，不缓冲；
+ * 业务服务不靠它们续读（同官方会话控制器 follow 里不带序号的 assistant-stream 帧）。会话不存在或没人订阅时丢弃。
  */
-export function publishLive(sessionId, kind, data) {
+export function publish(sessionId, kind, data) {
   const state = sessions.get(sessionId)
   if (state === undefined || state.subscribers.size === 0) return undefined
-  const frame = { epoch: EPOCH, cursor: frameSeq, kind, time: Date.now(), data }
+  const frame = { epoch: LIVE_SOURCE, cursor: 0, kind, time: Date.now(), data }
   for (const subscriber of [...state.subscribers]) {
     if (!subscriber.write(frame)) subscriber.end()
   }
   return frame
 }
 
-/** 缓冲里游标大于 after 的帧（去掉内部字段）。 */
-export function framesAfter(state, after) {
-  return state.buffer.frames.filter(f => f.cursor > after).map(({ size, ...frame }) => frame)
+/** 逐字输出（官方 agent/assistant-stream）：同 publish，片段量大、只对正在看的人有用，断线后由这一步的正式消息补齐 */
+export const publishLive = publish
+
+/**
+ * 宿主插件要留下、业务服务要逐条落库的事实（自动批准、技能加载、技能门）：照官方插件的做法写进根会话的会话日志
+ * （同敏感词的 content-safety/blocked、官方 dsh-llm-retry 的 llm/retry：持久、带官方序号、不进模型看到的历史），
+ * 和官方事件走同一条续读的路，业务服务按事件类型还原（conversations/pump.py 的 HOST_FACTS）。
+ * 根会话没有活的 Agent 时（不应发生）退回只推给当前订阅方。
+ */
+export function recordFact(state, type, data) {
+  const session = state.agent?.session
+  if (session !== undefined) {
+    session.append(type, data)
+    return
+  }
+  publish(state.id, type, data)
+}
+
+/** 内存里记着的、属于这个根会话的子 Agent 会话（续读积压时一并读它们的官方日志） */
+export function childSessionsOf(rootId) {
+  return [...lineage.keys()].filter(id => rootSessionIdOf(id) === rootId)
 }

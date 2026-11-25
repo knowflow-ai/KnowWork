@@ -6,8 +6,8 @@
 
 import json
 import re
-from collections.abc import AsyncIterator
-from typing import Any, Literal, Protocol
+from collections.abc import AsyncIterator, Mapping
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -51,6 +51,9 @@ class SessionSpec(_Frozen):
     skills_token: str | None = Field(default=None, min_length=16, repr=False)
     # 属主：不给时宿主上属主级插件（定时任务等）对这个会话不可用
     owner: SessionOwner | None = None
+    # 这段对话启用的预置插件键（plugins/catalog.py），业务服务已按档位与个人开关算好、排序。宿主按它装官方 Agent 预设；
+    # 不带就是没有。设备上的本机宿主用官方预设，不认这一项
+    plugins: tuple[Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,47}$")], ...] = Field(default=(), max_length=32)
 
 
 class OutlineEntry(_Frozen):
@@ -81,6 +84,9 @@ class TurnAttachment(_Frozen):
     # 导读（附件 digest_job.py）：全文摘要与各段要点（带原文行号），放不进对话的长文档才有；还在生成时 digest_pending
     digest_path: str | None = Field(default=None, pattern=r"^input/[^/]{1,200}$")
     digest_pending: bool = False
+    # 用户在编辑器里打开过这个附件：附件只读，打开的是工作目录根上的同名副本（documents/editing.py 的 working_copy），
+    # 人可能已经改过。宿主告诉模型要改文档就改这份，别照只读原件另起一份把人改的盖掉
+    working_copy_path: str | None = Field(default=None, pattern=r"^[^/]{1,200}$")
 
 
 class KnowledgeEntry(_Frozen):
@@ -201,7 +207,13 @@ class KernelEvent(_Frozen):
 
 
 INVALID_FRAME_KIND = "kernel.invalid"
-GAP_FRAME_KIND = "gap"
+# 宿主事件帧的来源（KernelEvent.epoch）：根会话自己的官方事件是 host、子 Agent 的是 host:<子会话>，游标是官方会话日志的序号，
+# 宿主重启后照旧有效（同设备上传的 device、device:<子会话>）。进程内的帧（Agent 状态、逐字输出、目标自动续跑的开关、
+# 宿主实例号）来源是 live、不带序号，不落库、不推进续读位置
+ROOT_SOURCE = "host"
+LIVE_SOURCE = "live"
+# 事件流开头宿主给的实例号（宿主重启后变）：只用来判断要不要补发令牌，不当游标
+HOST_INSTANCE_KIND = "host/instance"
 # 逐字输出的临时帧（官方 agent/assistant-stream 的正文片段）：宿主只推给当前订阅方、不进回放缓冲，
 # 游标是当时最后一个，业务服务不落库、不推进续读位置（conversations/live.py）
 LIVE_FRAME_KIND = "assistant/stream"
@@ -277,6 +289,23 @@ class CancelResult(_Frozen):
     status: str
 
 
+class HostCommand(_Frozen):
+    """用户能在输入框敲 / 的一个命令（官方 dsh-commands，插件登记，宿主按会话列出；有几个官方命令宿主不放出来）。"""
+
+    name: str = Field(pattern=r"^[a-z0-9_-]{1,64}$")
+    description: str = Field(default="", max_length=500)
+    hint: str | None = Field(default=None, max_length=200)
+    definition_id: str | None = Field(default=None, max_length=200)  # 官方命令的稳定编号，插件自己的没有
+
+
+class CommandOutcome(_Frozen):
+    """执行一行命令的结果（官方 command/done）：不经过模型，文字原样给用户看。"""
+
+    command_id: str = Field(max_length=200)
+    kind: Literal["success", "error"]
+    text: str | None = Field(default=None, max_length=20000)
+
+
 class KernelError(Exception):
     """宿主返回的错误。code 是宿主的稳定错误码，业务服务据此决定怎么处理。"""
 
@@ -290,12 +319,12 @@ class SessionNotFound(KernelError):
     pass
 
 
+class CommandUnknown(KernelError):
+    """这段会话里没有这个命令（没开对应的插件、名字写错了，或是宿主不放出来的那几个）。"""
+
+
 class SessionBusy(KernelError):
     pass
-
-
-class EpochMismatch(KernelError):
-    """宿主重启过，旧游标失效。调用方应从头重新读取。"""
 
 
 class ModelUnknown(KernelError):
@@ -308,6 +337,9 @@ class AgentKernel(Protocol):
     async def send(self, session_id: str, turn: TurnInput) -> str: ...
 
     async def cancel(self, session_id: str) -> CancelResult: ...
+
+    # 用户改了对话标题：写进宿主的官方会话标题（来源是用户，之后官方不再自动改）。会话不在宿主上时抛 SessionNotFound
+    async def retitle(self, session_id: str, title: str) -> None: ...
 
     async def dispose(self, session_id: str) -> None: ...
 
@@ -329,4 +361,12 @@ class AgentKernel(Protocol):
 
     async def sync_models(self, models: tuple[HostModel, ...]) -> None: ...
 
-    def subscribe(self, session_id: str, *, after: int = 0, epoch: str | None = None) -> AsyncIterator[KernelEvent]: ...
+    async def commands(self, session_id: str) -> tuple[HostCommand, ...]: ...
+
+    async def run_command(self, session_id: str, line: str) -> CommandOutcome: ...
+
+    # 长任务目标的自动续跑此刻开着没有（官方 dsh-goal 只记在宿主内存里、不进会话日志）；没有目标时 False
+    async def goal_armed(self, session_id: str) -> bool: ...
+
+    # positions：各来源已经收到的官方序号（来源见 ROOT_SOURCE），宿主从那之后接着给（先补积压、再接实时，不断档）
+    def subscribe(self, session_id: str, *, positions: Mapping[str, int] | None = None) -> AsyncIterator[KernelEvent]: ...

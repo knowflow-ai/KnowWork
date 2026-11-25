@@ -89,7 +89,7 @@ export function mount({ key, base, tokenUrl, win = window, fetchImpl = fetch }: 
   button.hidden = true;
   button.innerHTML = ICON;
   button.setAttribute('aria-expanded', 'false');
-  button.setAttribute('aria-label', '打开智能助手');
+  button.setAttribute('aria-label', '打开智能体');
   button.style.background = DEFAULT_COLOR;
   const panel = doc.createElement('div');
   panel.className = 'panel right';
@@ -100,7 +100,7 @@ export function mount({ key, base, tokenUrl, win = window, fetchImpl = fetch }: 
 
   const page = `${base}/embed/${encodeURIComponent(key)}`;
   let frame: HTMLIFrameElement | null = null;
-  let title = '智能助手';
+  let title = '智能体';
 
   const apply = (config: Config) => {
     if (typeof config.title === 'string' && config.title) {

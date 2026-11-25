@@ -122,7 +122,7 @@ class McpAdmin:
             headers=body.headers if body.auth == "shared" else {}, timeout_seconds=body.timeout_seconds, tools=tools,
             synced_at=synced_at, created_by=actor, also=also, auth=body.auth, auth_config=auth_config,
             oauth_client=oauth_client.dump() if oauth_client else None, server_id=server_id, scope=self.SCOPE,
-            origin_server_id=template.id if template is not None else None)
+            origin_server_id=template.id if template is not None else None, tool_loading=body.tool_loading)
         if change is not None:
             await self._access.settle(change)
         return record
@@ -132,7 +132,7 @@ class McpAdmin:
         current = await self._current(workspace_id, server_id)
         auth = body.auth or current.auth
         changes = McpChanges(title=body.title, url=body.url, timeout_seconds=body.timeout_seconds, enabled=body.enabled,
-                             auth=body.auth)
+                             auth=body.auth, tool_loading=body.tool_loading)
         if auth == "oauth":
             changes, relogin = await self._login_changes(current, body, changes)
         else:

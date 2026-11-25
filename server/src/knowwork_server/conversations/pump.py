@@ -15,7 +15,9 @@
 
 import asyncio
 import contextlib
+import hashlib
 import logging
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -25,16 +27,17 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from ..db.base import enter_workspace
 from ..kernel.contract import (
-    GAP_FRAME_KIND,
+    HOST_INSTANCE_KIND,
     LIVE_FRAME_KIND,
+    LIVE_SOURCE,
+    ROOT_SOURCE,
     AgentKernel,
-    EpochMismatch,
     KernelError,
     KernelEvent,
     SessionNotFound,
 )
 from ..models.usage import model_from_header
-from .events_v1 import GAP_KIND, ProjectionState, project
+from .events_v1 import ProjectionState, project
 from .listeners import Broadcaster, StoredEvent
 from .live import LiveText, advance, snapshot
 from .models import RunEvent
@@ -71,8 +74,10 @@ class _Stream:
     workspace_id: str
     loaded: bool = False
     seq: int = 0
-    epoch: str | None = None
-    cursor: int = 0
+    # 各来源已收到的官方序号（根会话、各个子 Agent 的会话各有各的序号；来源见 kernel/contract.py 的 ROOT_SOURCE，
+    # 设备送来的是 device.py 的 DEVICE_EPOCH）：宿主从那之后接着给，设备从那之后接着送；宿主重启后照旧有效
+    positions: dict[str, int] = field(default_factory=dict)
+    instance: str | None = None  # 这条流上次见到的宿主实例号：变了就是宿主重启过，请上层补发令牌
     running: bool = False
     demand: int = 0
     active: bool = False
@@ -83,9 +88,57 @@ class _Stream:
     # 帧由外面送进来（会话在用户设备上执行，device.py）：不去宿主拉，送帧的请求按顺序一个一个处理
     pushed: bool = False
     push_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # 各来源已收到的最后一个游标（根会话、各个子 Agent 的会话各有各的序号）
-    pushed_cursors: dict[str, int] = field(default_factory=dict)
 
+
+# 宿主插件写进会话日志的事实（宿主 state.mjs 的 recordFact）：自动批准、技能加载、技能门。到这里还原成原来的帧
+# （kind 是事件类型、data 是事件内容），投影、技能运行事实照旧按它们认；从设备上传来的同样还原
+HOST_FACTS = frozenset({"approval/auto", "skill/loaded", "skill-gate/passed", "skill-gate/failed", "skill-gate/nudged"})
+
+
+def _host_fact(kind: str, data: object) -> tuple[str, object]:
+    if kind == "session/event" and isinstance(data, dict) and data.get("type") in HOST_FACTS:
+        return str(data["type"]), data.get("data")
+    return kind, data
+
+def _from_host(epoch: str) -> bool:
+    return epoch == ROOT_SOURCE or epoch.startswith(f"{ROOT_SOURCE}:")
+
+
+async def _positions(session, conversation_id: str, *, pushed: bool) -> dict[str, int]:
+    """各来源已收到的官方序号：按来源取库里最大的游标。云端对话改用官方序号之前落的行，来源是宿主的启动编号、游标是
+    宿主进程里的帧号，不能拿来续读：有这种行的对话，再从已落库的事件帧里取官方序号（会话事件的 seq、子 Agent 事件里子会话
+    事件的 seq），和新行的位置合在一起、各来源取大的（只有老行的子 Agent 也要有位置，不然它的事件会重收一遍）。"""
+    rows = (await session.execute(
+        select(RunEvent.host_epoch, func.max(RunEvent.host_cursor))
+        .where(RunEvent.conversation_id == conversation_id).group_by(RunEvent.host_epoch))).all()
+    positions = {epoch: cursor for epoch, cursor in rows if pushed or _from_host(epoch)}
+    if pushed or all(_from_host(epoch) for epoch, _ in rows):
+        return positions
+    root = (await session.execute(
+        select(func.max(RunEvent.data["seq"].as_integer()))
+        .where(RunEvent.conversation_id == conversation_id, RunEvent.kind == "session/event"))).scalar()
+    # 按别名分组：同一个取字段表达式写两遍，参数占位不同，PostgreSQL 认不出是同一个
+    child = RunEvent.data["sessionId"].as_string().label("child")
+    children = (await session.execute(
+        select(child, func.max(RunEvent.data["event"]["seq"].as_integer()))
+        .where(RunEvent.conversation_id == conversation_id, RunEvent.kind == "subagent/event")
+        .group_by(child))).all()
+    # 子会话编号照宿主的写法放进来源（宿主 state.mjs 的 childKeyOf：原样，或不合写法时「~」加摘要）
+    legacy = {f"{ROOT_SOURCE}:{_child_key(child)}": seq for child, seq in children if child and seq is not None}
+    if root is not None:
+        legacy[ROOT_SOURCE] = root
+    return {source: max(seq, positions.get(source, -1)) for source, seq in legacy.items()} | {
+        source: seq for source, seq in positions.items() if source not in legacy}
+
+
+_PLAIN_CHILD = re.compile(r"^[A-Za-z0-9_.-]{1,56}$")
+
+
+def _child_key(child: str) -> str:
+    """同宿主 state.mjs 的 childKeyOf：UUID 这类原样用，不合写法的换成「~」加 40 位 sha256 摘要。"""
+    if _PLAIN_CHILD.fullmatch(child):
+        return child
+    return "~" + hashlib.sha256(child.encode()).hexdigest()[:40]
 
 class _Exit(Exception):
     """泵决定空闲退出。"""
@@ -139,23 +192,22 @@ class EventPump:
         async with self._pushed_stream(conversation_id, workspace_id) as stream:
             last = None
             for frame in frames:
-                if frame.cursor > stream.pushed_cursors.get(frame.epoch, -1):
+                if frame.cursor > stream.positions.get(frame.epoch, -1):
                     await self._accept(stream, frame)
-                    stream.pushed_cursors[frame.epoch] = frame.cursor
-                last = stream.pushed_cursors[frame.epoch]
+                last = stream.positions[frame.epoch]
             return last
 
     async def push_live(self, conversation_id: str, workspace_id: str, frames: Sequence[object]) -> None:
         """收下外面送来的逐字片段（和宿主发的临时帧同一种）：只推给正在看的页面，不落库、不占序号。"""
         async with self._pushed_stream(conversation_id, workspace_id) as stream:
             for data in frames:
-                await self._accept(stream, KernelEvent(epoch=stream.epoch or "live", cursor=0, kind=LIVE_FRAME_KIND,
+                await self._accept(stream, KernelEvent(epoch=LIVE_SOURCE, cursor=0, kind=LIVE_FRAME_KIND,
                                                        data=data))
 
     async def pushed_upto(self, conversation_id: str, workspace_id: str) -> dict[str, int]:
         """外面送帧的会话各来源已收到哪（业务服务重启过就从库里恢复）；没收到过的来源不在里面。"""
         async with self._pushed_stream(conversation_id, workspace_id) as stream:
-            return dict(stream.pushed_cursors)
+            return dict(stream.positions)
 
     @contextlib.asynccontextmanager
     async def _pushed_stream(self, conversation_id: str, workspace_id: str):
@@ -165,15 +217,7 @@ class EventPump:
             enter_workspace(workspace_id)
             if not stream.loaded:
                 await self._load(stream)
-                await self._load_pushed(stream)
             yield stream
-
-    async def _load_pushed(self, stream: _Stream) -> None:
-        async with self._sessionmaker() as session:
-            rows = (await session.execute(
-                select(RunEvent.host_epoch, func.max(RunEvent.host_cursor))
-                .where(RunEvent.conversation_id == stream.conversation_id).group_by(RunEvent.host_epoch))).all()
-        stream.pushed_cursors = {epoch: cursor for epoch, cursor in rows}
 
     async def _pushed(self, conversation_id: str, workspace_id: str) -> _Stream:
         stream = self._streams.get(conversation_id)
@@ -235,10 +279,6 @@ class EventPump:
                 return
             except asyncio.CancelledError:
                 raise
-            except EpochMismatch:
-                stream.epoch, stream.cursor = None, 0
-                await self._host_restarted()
-                continue
             except SessionNotFound:
                 # 宿主上没有这段对话（空闲释放了、还没打开）：泵不在这里等，打开它的一方（发消息、回答提问、到点激活）
                 # 打开后会再 ensure。原来每 0.5 秒重试、一分钟没人要才退出，浏览器开着对话页时事件流每次重连都算有人要，
@@ -269,8 +309,7 @@ class EventPump:
         mark, received = stream.demand, 0
         try:
             async with asyncio.timeout(None if stream.running else self._t.idle_timeout) as timer:
-                async for frame in self._kernel.subscribe(stream.conversation_id, after=stream.cursor,
-                                                          epoch=stream.epoch):
+                async for frame in self._kernel.subscribe(stream.conversation_id, positions=dict(stream.positions)):
                     await self._accept(stream, frame)
                     received += 1
                     mark = stream.demand
@@ -298,13 +337,10 @@ class EventPump:
             if payload is not None:
                 self._broadcaster.publish_live(stream.conversation_id, payload)
             return
-        if stream.epoch is not None and frame.epoch != stream.epoch and not stream.pushed:
-            await self._host_restarted()
-        kind = frame.kind
-        if kind == GAP_FRAME_KIND:
-            log.warning("event pump %s: host buffer dropped frames %s", stream.conversation_id, frame.data)
-            kind = GAP_KIND
-        data = clean_json(frame.data)
+        if frame.epoch == LIVE_SOURCE:
+            await self._accept_live(stream, frame)
+            return
+        kind, data = _host_fact(frame.kind, clean_json(frame.data))
         await self._follow_model(stream, kind, data)
         seq = stream.seq + 1
         projection, ui = project(stream.projection, kind, data, seq=seq, time=frame.time)
@@ -315,10 +351,22 @@ class EventPump:
                                           host_epoch=frame.epoch, host_cursor=frame.cursor))
         # 从这里到推送之间没有 await：待写缓冲与推送对新登记的监听者是原子的。
         stream.seq, stream.projection = seq, projection
-        stream.epoch, stream.cursor = frame.epoch, frame.cursor
+        stream.positions[frame.epoch] = frame.cursor
         self._track_running(stream, kind, data)
         self._broadcaster.publish(stored)
         self._observe(stream, kind, data)
+
+    async def _accept_live(self, stream: _Stream, frame: KernelEvent) -> None:
+        """进程内的帧（宿主不带序号、不补积压）：不落库、不推进续读位置。宿主实例号变了（宿主重启过）请上层补发令牌；
+        Agent 状态只用来判断还在不在跑；子 Agent 状态不用，目标自动续跑的开关页面需要时现取（ConversationService.goal_armed）。"""
+        if frame.kind == HOST_INSTANCE_KIND:
+            instance = frame.data.get("instance") if isinstance(frame.data, dict) else None
+            if isinstance(instance, str):
+                if stream.instance is not None and stream.instance != instance:
+                    await self._host_restarted()
+                stream.instance = instance
+            return
+        self._track_running(stream, frame.kind, frame.data)
 
     async def _follow_model(self, stream: _Stream, kind: str, data: object) -> None:
         """每次模型请求开始时（request/header 带着请求的模型别名）问一次这个模型的思考给不给页面看。问不到按显示处理。"""
@@ -357,13 +405,11 @@ class EventPump:
 
     async def _load(self, stream: _Stream) -> None:
         async with self._sessionmaker() as session:
-            row = (await session.execute(
-                select(RunEvent.seq, RunEvent.host_epoch, RunEvent.host_cursor)
-                .where(RunEvent.conversation_id == stream.conversation_id)
-                .order_by(RunEvent.seq.desc()).limit(1)
-            )).first()
-        if row is not None:
-            stream.seq, stream.epoch, stream.cursor = row.seq, row.host_epoch, row.host_cursor
+            last = (await session.execute(
+                select(func.max(RunEvent.seq)).where(RunEvent.conversation_id == stream.conversation_id))).scalar()
+            stream.positions = await _positions(session, stream.conversation_id, pushed=stream.pushed)
+        if last is not None:
+            stream.seq = last
         if self._thinking_visible is not None:
             # request/header 只在第一次请求与换模型时有：泵重新拉起（业务服务重启、空闲回收后）从库里补上这段对话在用的模型
             model = await last_requested_model(self._sessionmaker, stream.conversation_id)

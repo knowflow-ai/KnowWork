@@ -250,6 +250,20 @@ class AttachmentService:
             raise AttachmentRejected(*UNAVAILABLE)
         return tuple(found[i] for i in wanted)
 
+    async def claim_draft(self, conversation: Conversation, attachment_id: str,
+                          accept: Callable[[str], bool]) -> str | None:
+        """输入框里还没发出去的一个附件直接进编辑器（documents/editing.py 的 draft_copy）：本人的、文件名 accept 认的，
+        认领进这段对话（同发消息时的认领，之后随消息发出去照用），返回它在附件目录里的名字。
+        不是他的、不存在、格式不认、放不进沙箱都返回 None；格式不认的不认领。"""
+        found = await self.states(conversation.workspace_id, conversation.user_id, [attachment_id])
+        if not found or not accept(found[0].filename):
+            return None
+        try:
+            (claimed,) = await self.claim(conversation, [attachment_id])
+        except AttachmentRejected:
+            return None
+        return claimed.input_name
+
     async def _claim(self, conversation: Conversation,
                      ids: Sequence[str]) -> tuple[tuple[AttachmentView, ...], tuple[FileFailure, ...]]:
         if not ids:
@@ -500,17 +514,40 @@ class AttachmentService:
                 failures.append(failure)
         return tuple(failures)
 
-    async def _restage_one(self, workspace_id: str, session_id: str, row: Attachment) -> FileFailure | None:
+    def _placed(self, row: Attachment) -> tuple[tuple[str, str, int], ...]:
+        """这一行放进附件目录的几份：（文件名, 存储里的摘要, 读取上限）。重新放入与按名字读回用同一份清单。"""
         # 迁移 0013 之前的行：PDF、Word、PPT 只放了 Markdown（parsed_name 等于 input_name），照旧只放它
         legacy = row.parsed_name is not None and row.parsed_name == row.input_name
-        copies = [] if legacy else [(row.input_name, row.digest, self.max_bytes)]
-        if row.parsed_name and row.parsed_digest:
-            copies.append((row.parsed_name, row.parsed_digest, self.max_bytes * MARKDOWN_FACTOR))
-        if row.digest_name and row.digest_digest:
-            copies.append((row.digest_name, row.digest_digest, self.max_bytes * MARKDOWN_FACTOR))
+        original = () if legacy else ((row.input_name, row.digest, self.max_bytes),)
+        parsed = ((row.parsed_name, row.parsed_digest, self.max_bytes * MARKDOWN_FACTOR),) \
+            if row.parsed_name and row.parsed_digest else ()
+        digest = ((row.digest_name, row.digest_digest, self.max_bytes * MARKDOWN_FACTOR),) \
+            if row.digest_name and row.digest_digest else ()
+        return original + parsed + digest
+
+    async def input_file(self, conversation: Conversation, name: str) -> bytes | None:
+        """附件目录里这个名字的文件（原件、解析出的 Markdown 或导读），从附件存储读：和放进沙箱的是同一份，沙箱空闲回收了
+        也在。不是这段对话的附件放进去的（例如知识库取来的文档）、内容已经没了的返回 None，由调用方照旧去沙箱里读。"""
+        async with self._tx(conversation.workspace_id) as session:
+            rows = (await session.scalars(select(Attachment).where(
+                Attachment.conversation_id == conversation.id,
+                Attachment.status.in_(("ready", "place_failed")),
+                (Attachment.input_name == name) | (Attachment.parsed_name == name)
+                | (Attachment.digest_name == name)))).all()
+        for row in rows:
+            for placed, digest, cap in self._placed(row):
+                if placed != name:
+                    continue
+                try:
+                    return await self._stores(conversation.workspace_id, scope_of(row)).get(digest, max_bytes=cap)
+                except BlobIntegrityError:
+                    return None
+        return None
+
+    async def _restage_one(self, workspace_id: str, session_id: str, row: Attachment) -> FileFailure | None:
         store = self._stores(workspace_id, scope_of(row))
         try:
-            for name, digest, cap in copies:
+            for name, digest, cap in self._placed(row):
                 await self._sandbox.put_input(workspace_id, session_id, name, await store.get(digest, max_bytes=cap))
         except BlobIntegrityError:
             return FileFailure(row.filename, "content_missing", "附件内容已不可用，请重新上传")

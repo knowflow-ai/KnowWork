@@ -56,6 +56,10 @@ def make_app(sink) -> FastAPI:
     async def unregistered(widget_id: str):
         return {}
 
+    @app.post("/api/extensions/content-safety/check")
+    async def content_check():
+        return {"blocked": False}
+
     @app.get("/api/things")
     async def read(user: Who):
         return {"seen": current() is not None}
@@ -119,6 +123,13 @@ async def test_reads_are_not_recorded_unless_marked(client, memory_sink):
     await client.get("/api/auth/oidc/callback")
     [event] = memory_sink.events
     assert (event.action, event.actor_id, event.result) == ("auth.oidc_login", "carol", "success")
+
+
+async def test_content_checks_from_host_plugins_are_not_recorded(client, memory_sink):
+    # 模型输出时每几十个字查一次，记了会把审计表刷满；命中的那一次由检查服务另记 content_safety.blocked
+    response = await client.post("/api/extensions/content-safety/check")
+    assert response.status_code == 200
+    assert memory_sink.events == []
 
 
 async def test_unmatched_paths_are_skipped_and_unregistered_routes_get_a_derived_action(client, memory_sink):

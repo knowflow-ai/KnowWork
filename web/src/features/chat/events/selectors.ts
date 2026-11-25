@@ -14,6 +14,7 @@ import type {
   SentMessage,
   TimelineEntry,
 } from './types';
+import { visibleCommands } from './commands';
 
 export function selectRunState(state: ChatState): RunState {
   if (state.approvals.some((a) => a.status === 'pending')) return 'waiting-approval';
@@ -45,14 +46,37 @@ function unechoedSent(state: ChatState): readonly SentMessage[] {
   for (const m of asked) {
     if (!claimed.has(m.id)) pending.set(m.text, (pending.get(m.text) ?? 0) + 1);
   }
+  const discarded = new Set(state.discarded);
   return state.sent.filter((m) => {
-    if (m.messageId) return !echoed.has(m.messageId);
+    if (m.messageId) return !echoed.has(m.messageId) && !discarded.has(m.messageId);
     const text = m.text.trim();
     const left = pending.get(text) ?? 0;
     if (left === 0) return true;
     pending.set(text, left - 1);
     return false;
   });
+}
+
+/** 本页发出、排着队随停止一起取消了的消息（按发送接口给的消息 id 认）：对话页把原文放回输入框。 */
+export function selectDiscardedSent(state: ChatState): readonly SentMessage[] {
+  const discarded = new Set(state.discarded);
+  return state.sent.filter((m) => m.messageId !== undefined && discarded.has(m.messageId));
+}
+
+/**
+ * 这段对话里出现过的文件：消息上的附件（名字）和交付的文件（路径），去重、按出现先后。给「提前起编辑器」看
+ * （ConversationFiles.prewarm），能不能编辑由给编辑能力的一方按名字判断。
+ */
+export function selectFileNames(state: ChatState): readonly string[] {
+  const asked = state.runOrder.flatMap((runId) => {
+    const run = state.runs[runId];
+    return [
+      ...(run?.asked ?? []).flatMap((m) => (m.attachments ?? []).map((a) => a.name)),
+      ...(run?.deliverables ?? []).map((d) => d.path),
+    ];
+  });
+  const sent = state.sent.flatMap((m) => (m.attachments ?? []).map((a) => a.name));
+  return [...new Set([...asked, ...sent])];
 }
 
 /**
@@ -83,13 +107,39 @@ export function selectTimeline(state: ChatState): readonly TimelineEntry[] {
         placed.add(message.localId);
         return { type: 'user' as const, message };
       });
+  // 用户执行的 / 命令与上下文压缩：排在当时已有的那些轮次之后（同一处的几条按先后）
+  const commands = visibleCommands(state);
+  const notes: readonly { readonly entry: TimelineEntry; readonly at: number; readonly after: number }[] = [
+    ...commands.map((command) => ({
+      entry: { type: 'command' as const, command },
+      at: command.time,
+      after: command.afterRuns,
+    })),
+    ...state.compactions.map((compaction) => ({
+      entry: { type: 'compaction' as const, compaction },
+      at: compaction.time,
+      after: compaction.afterRuns,
+    })),
+  ];
+  const notesWhere = (keep: (after: number) => boolean): TimelineEntry[] =>
+    notes
+      .filter((note) => keep(note.after))
+      .sort((a, b) => a.at - b.at)
+      .map((note) => note.entry);
+  const commandsAfter = (count: number) => notesWhere((after) => after === count);
   state.runOrder.forEach((runId, index) => {
     const run = state.runs[runId];
     const asked = (run?.asked ?? []).map((m) => askedEntry(index, m));
     const trigger = run?.trigger ? [{ type: 'trigger' as const, trigger: run.trigger }] : [];
-    entries.push(...usersBefore(index), ...trigger, ...asked, { type: 'run', runId });
+    entries.push(...commandsAfter(index), ...usersBefore(index), ...trigger, ...asked, {
+      type: 'run',
+      runId,
+    });
   });
-  entries.push(...usersBefore(Number.POSITIVE_INFINITY));
+  entries.push(
+    ...notesWhere((after) => after >= state.runOrder.length),
+    ...usersBefore(Number.POSITIVE_INFINITY),
+  );
   return entries;
 }
 

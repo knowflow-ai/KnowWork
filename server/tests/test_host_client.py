@@ -82,6 +82,35 @@ async def test_control_and_stream_clients_are_separate_with_timeouts():
     await kernel.aclose()
 
 
+async def test_subscribe_sends_one_position_per_source():
+    """续读位置按来源各带一个 after=<来源>:<序号>（根会话与各个子 Agent）；没有位置时从头读"""
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.params.get_list("after"))
+        return httpx.Response(200, content=b"")
+
+    stream = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t" * 32, stream_client=stream)
+    assert [f async for f in kernel.subscribe("s1", positions={"host": 9, "host:kid": 2})] == []
+    assert [f async for f in kernel.subscribe("s1")] == []
+    assert seen == [["host:9", "host:kid:2"], []]
+    await kernel.aclose()
+
+
+@pytest.mark.parametrize(("body", "armed"), [({"goal": {"armed": True, "phase": "active"}}, True),
+                                             ({"goal": {"armed": False}}, False), ({"goal": None}, False)])
+async def test_goal_armed_reads_the_official_goal_state(body, armed):
+    def handler(request):
+        assert request.url.path == "/v1/sessions/s1/goal"
+        return httpx.Response(200, json=body)
+
+    client = httpx.AsyncClient(base_url="http://h", transport=httpx.MockTransport(handler))
+    kernel = HostKernel("http://h", "t" * 32, client=client)
+    assert await kernel.goal_armed("s1") is armed
+    await kernel.aclose()
+
+
 async def test_path_segments_are_encoded():
     seen = []
 
@@ -154,7 +183,7 @@ async def test_send_carries_the_reading_plan():
     big = TurnAttachment(name="年报.pdf", path="input/年报.pdf", bytes=9, sha256="b" * 64,
                          extracted_path="input/年报.md", text_chars=90000, text_pages=30,
                          outline=(OutlineEntry(line=1, text="第 1 页：封面"),), digest_path="input/年报.导读.md",
-                         digest_pending=True)
+                         digest_pending=True, working_copy_path="年报.pdf")
     await kernel.send("s1", TurnInput(text="看看", attachments=(small, big)))
     first, second = seen[0]["attachments"]
     assert (first["text"], first["textChars"]) == ("付款 30 天", 6) and "outline" not in first
@@ -162,6 +191,7 @@ async def test_send_carries_the_reading_plan():
     assert "text" not in second
     assert (second["digestPath"], second["digestPending"]) == ("input/年报.导读.md", True)
     assert "digestPath" not in first
+    assert second["workingCopyPath"] == "年报.pdf" and "workingCopyPath" not in first
     await kernel.aclose()
     await kernel.aclose()
 

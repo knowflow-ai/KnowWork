@@ -3,6 +3,7 @@
  * 先排「在哪里找」（知识库、目录、文件、标签），再排「怎么做」（技能）。
  * 样式和附件卡片分开：附件是带进对话的文件（带类型色块和大小），@ 是限定范围，用单色的圆角小标签。
  */
+import type { ReactNode } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { X } from '@openai/apps-sdk-ui/components/Icon';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
@@ -16,18 +17,21 @@ interface Props {
   /** 给了就能去掉（输入框里的） */
   readonly onRemove?: (mention: Mention) => void;
   readonly label: string;
+  /** 排在最前面的一个标签（输入框里选中的 / 命令，mentions/useCommandClaim），已经是 li */
+  readonly leading?: ReactNode;
 }
 
 function explain(mention: Mention, kind: MentionKind): string {
   return mention.baseName ? `${kind.effect}（在知识库「${mention.baseName}」）` : kind.effect;
 }
 
-export function MentionChips({ items, onRemove, label }: Props) {
+export function MentionChips({ items, onRemove, label, leading }: Props) {
   const { options } = useMentionOptions();
-  if (items.length === 0) return null;
+  if (items.length === 0 && !leading) return null;
   const sorted = [...items].sort((a, b) => KIND_ORDER.indexOf(a.type) - KIND_ORDER.indexOf(b.type));
   return (
     <ul className="kw-mention-chips" aria-label={label}>
+      {leading}
       {sorted.map((mention) => {
         const kind = kindOf(mention, options.extensions);
         return (

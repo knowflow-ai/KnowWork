@@ -15,6 +15,20 @@ const FAILED_MESSAGES: Readonly<Record<string, string>> = {
   skill_gate_failed: '没有完成技能要求的收尾步骤',
 };
 
+/**
+ * 内容检查（敏感词）拦下的：话术是管理员写的阻断提示，服务端原样带来（server events_v1 的 CONTENT_CODES）。
+ * 拦下时这一轮已经显示的回答、思考与说明都收掉，只留提示（刷新前后一样）；执行过的步骤留着
+ */
+const CONTENT_CODES: ReadonlySet<string> = new Set(['content_blocked', 'check_unavailable']);
+const CONTENT_FALLBACK: Readonly<Record<string, string>> = {
+  content_blocked: '内容违反公司规范，已被拦下',
+  check_unavailable: '内容检查暂时不可用，请稍后再试',
+};
+
+export function blockedByContentCheck(event: V1Event): boolean {
+  return event.type === 'run.failed' && CONTENT_CODES.has(str(event.data.code) ?? '');
+}
+
 const PROBLEM_MESSAGES: Readonly<Record<string, string>> = {
   events_gap: '部分执行过程没有记录下来',
   skill_gate_failed: '技能要求的收尾步骤没有完成',
@@ -26,6 +40,8 @@ export function endReasonOf(event: V1Event): EndReason {
       return { kind: 'cancelled', message: '已停止' };
     case 'run.failed': {
       const code = str(event.data.code) ?? '';
+      if (CONTENT_CODES.has(code))
+        return { kind: 'failed', message: str(event.data.message) || CONTENT_FALLBACK[code] };
       return { kind: 'failed', message: FAILED_MESSAGES[code] ?? '这一轮没有完成，请稍后重试' };
     }
     default:
@@ -113,6 +129,7 @@ export function onRunEnded(state: ChatState, event: V1Event): ChatState {
   if (!runId) return state;
   const endReason = endReasonOf(event);
   const reason = endReason.message ?? '没有完成';
+  const blocked = blockedByContentCheck(event);
   const ended = updateRun(withRun(state, runId, event.time), runId, (r) => ({
     ...r,
     status: STATUS_BY_END[endReason.kind],
@@ -120,6 +137,14 @@ export function onRunEnded(state: ChatState, event: V1Event): ChatState {
     endReason,
     // 轮次已经结束，还挂着的步骤不会再有结果了
     steps: r.steps.map((s) => settleStep(s, event.time, reason)),
+    ...(blocked
+      ? {
+          answer: '',
+          thinking: [],
+          notes: [],
+          trail: r.trail.filter((entry) => entry.type === 'step' || entry.type === 'question'),
+        }
+      : {}),
   }));
   // 已结束轮次里还在等的审批不再有效
   const approvals = ended.approvals.map((a) =>
@@ -200,7 +225,7 @@ const MAX_REASON = 60;
 /** 失败原因取工具返回内容的第一行（MCP 服务、业务工具都会写明原因），没有就给通用说明。 */
 function failureReason(text: string): string {
   const line = text.trim().split('\n')[0]?.trim() ?? '';
-  if (!line) return '工具执行没有成功';
+  if (!line) return '工具没能执行';
   return line.length > MAX_REASON ? `${line.slice(0, MAX_REASON)}…` : line;
 }
 
@@ -253,13 +278,20 @@ export function onSubagent(state: ChatState, event: V1Event, runId: string, chil
   );
 }
 
-/** 用户消息带的文件：服务端把宿主的附件说明换成了名字与大小（不含沙箱路径）。 */
+/** 用户消息带的文件：服务端把宿主的附件说明换成了名字、大小与工作区里的路径（input/…，不含沙箱的绝对路径）。 */
 function attachmentsOf(value: unknown): readonly AttachmentChip[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item: unknown) => {
     if (typeof item !== 'object' || item === null) return [];
-    const { name, size } = item as { name?: unknown; size?: unknown };
-    return typeof name === 'string' && name ? [{ name, size: typeof size === 'number' ? size : 0 }] : [];
+    const { name, size, path } = item as { name?: unknown; size?: unknown; path?: unknown };
+    if (typeof name !== 'string' || !name) return [];
+    return [
+      {
+        name,
+        size: typeof size === 'number' ? size : 0,
+        ...(typeof path === 'string' && path ? { path } : {}),
+      },
+    ];
   });
 }
 

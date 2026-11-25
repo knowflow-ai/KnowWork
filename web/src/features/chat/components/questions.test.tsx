@@ -38,7 +38,7 @@ describe('QuestionCard', () => {
     expect(screen.getByText('格式')).toBeInTheDocument();
     expect(screen.getByText('推荐')).toBeInTheDocument();
     expect(screen.queryByText(/Recommended/)).toBeNull();
-    expect(screen.getByText('回答后 Agent 接着执行')).toBeInTheDocument();
+    expect(screen.getByText('回答后智能体接着执行')).toBeInTheDocument();
     expect(submitButton()).toBeDisabled();
     await userEvent.click(screen.getByRole('radio', { name: /Excel/ }));
     await userEvent.click(submitButton());
@@ -92,14 +92,14 @@ describe('QuestionCard', () => {
     await userEvent.click(submitButton());
     await waitFor(() => expect(onAnswer).toHaveBeenCalledTimes(2));
     finish(true);
-    expect(await screen.findByText('已提交，等 Agent 接收')).toBeInTheDocument();
+    expect(await screen.findByText('已提交，等智能体接收')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /提交回答/ })).toBeNull();
     expect(screen.getByRole('radio', { name: 'PDF' })).toBeDisabled();
   });
 
-  it('前台等待已结束时说明 Agent 先继续了', () => {
+  it('前台等待已结束时说明智能体先继续了', () => {
     renderWithApp(<QuestionCard question={pending([FORMAT], { continued: true })} onAnswer={vi.fn()} />);
-    expect(screen.getByText('Agent 先继续做别的了，你回答后会接着处理')).toBeInTheDocument();
+    expect(screen.getByText('智能体先继续做别的了，你回答后会接着处理')).toBeInTheDocument();
   });
 
   it('已回答：显示问题与回答，没有输入与提交', () => {

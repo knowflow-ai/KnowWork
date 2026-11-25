@@ -86,7 +86,7 @@ async function startScheduleHost(plans, { activate = async () => true } = {}) {
   const ask = async (sessionId, text) => {
     await host.call('POST', `/v1/sessions/${sessionId}/messages`, { text })
     const frames = await collectEvents(host, sessionId, isTurnEnd, { after: cursors.get(sessionId) ?? 0 })
-    cursors.set(sessionId, frames.at(-1)?.cursor ?? 0)
+    cursors.set(sessionId, frames.positions)
   }
   const waitFor = (sessionId, predicate, timeoutMs) =>
     collectEvents(host, sessionId, predicate, { after: cursors.get(sessionId) ?? 0, timeoutMs })

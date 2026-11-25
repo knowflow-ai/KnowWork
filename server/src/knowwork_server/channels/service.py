@@ -390,7 +390,11 @@ class _Follower:
         elif item.type == "run.completed":
             return self.answer or "这一轮没有生成回答。"
         elif item.type == "run.failed":
-            reason = str((payload.get("data") or {}).get("message") or "执行失败")
+            data = payload.get("data") or {}
+            reason = str(data.get("message") or "执行失败")
+            if data.get("code") in ("content_blocked", "check_unavailable"):
+                # 内容检查拦下：只回管理员写的提示，前面说了一半的话不发出去（同网页上收掉半截回答）
+                return reason
             return f"{self.answer}\n\n（这一轮没有完成：{reason}）".strip()
         elif item.type == "run.cancelled":
             return f"{self.answer}\n\n（已停止）".strip()

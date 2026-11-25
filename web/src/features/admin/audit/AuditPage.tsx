@@ -12,11 +12,13 @@ import { SearchInput } from '../../../ui/SearchInput';
 import { Skeleton } from '../../../ui/Skeleton';
 import { StatusDot } from '../../../ui/StatusDot';
 import { Table, type Column } from '../../../ui/Table';
-import { ACTOR_OPTIONS, actorTypeLabel, RESULT_BADGE, RESULT_OPTIONS } from './labels';
+import { AuditDetail } from './AuditDetail';
+import { ACTOR_OPTIONS, actionLabel, actorTypeLabel, RESULT_BADGE, RESULT_OPTIONS } from './labels';
 
 export default function AuditPage() {
   const [filter, setFilter] = useState<AuditFilter>({});
   const [actionInput, setActionInput] = useState('');
+  const [opened, setOpened] = useState<AuditEntry>();
   const members = useMembers();
   const logs = useInfiniteQuery({
     queryKey: ['admin', 'audit', filter],
@@ -50,7 +52,7 @@ export default function AuditPage() {
         </span>
       ),
     },
-    { key: 'action', title: '动作', width: 200, ellipsis: true, render: (e) => e.action },
+    { key: 'action', title: '动作', width: 200, ellipsis: true, render: (e) => actionLabel(e.action) },
     {
       key: 'resource',
       title: '对象',
@@ -67,12 +69,23 @@ export default function AuditPage() {
       },
     },
     { key: 'ip', title: 'IP', width: 130, ellipsis: true, render: (e) => e.ip ?? '—' },
+    {
+      key: 'more',
+      title: '',
+      width: 80,
+      render: (e) =>
+        Object.keys(e.detail).length > 0 ? (
+          <Button color="secondary" variant="ghost" size="sm" onClick={() => setOpened(e)}>
+            详情
+          </Button>
+        ) : null,
+    },
   ];
 
   return (
     <AdminPage
       title="审计"
-      description="查看谁在什么时候做了哪些操作，包括 Agent 调用的工具与批准的审批。日志保留 90 天。"
+      description="查看谁在什么时候做了哪些操作，包括智能体调用的工具与批准的审批。日志保留 90 天。"
     >
       <Toolbar
         left={
@@ -118,7 +131,7 @@ export default function AuditPage() {
             rows={rows}
             minWidth={960}
             pageSize={false}
-            empty={logs.isError ? '审计日志加载失败，请刷新重试' : '没有符合条件的记录'}
+            empty={logs.isError ? '没能加载审计日志，请刷新重试' : '没有符合条件的记录'}
           />
           <div className="kw-admin-more">
             <span className="kw-secondary">已加载 {rows.length} 条</span>
@@ -135,6 +148,9 @@ export default function AuditPage() {
           </div>
         </>
       )}
+      {opened ? (
+        <AuditDetail entry={opened} actorName={actorName(opened)} onClose={() => setOpened(undefined)} />
+      ) : null}
     </AdminPage>
   );
 }

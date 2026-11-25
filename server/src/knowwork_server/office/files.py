@@ -10,6 +10,7 @@
 
 import asyncio
 import hashlib
+import shutil
 from pathlib import Path
 from typing import Protocol
 
@@ -17,7 +18,7 @@ from knowwork_server.sandbox.contract import SandboxError
 from knowwork_server.tools.mcp.client import Endpoint
 from knowwork_server.workpath import Mount, WorkPath
 
-from .containers import SYNC_MAX_BYTES, OfficeCopy, OfficeKey, office_mount, sync_record, sync_value
+from .containers import SYNC_DIR, SYNC_MAX_BYTES, OfficeCopy, OfficeKey, office_mount, sync_record, sync_value
 
 
 class OfficeFiles(Protocol):
@@ -26,6 +27,10 @@ class OfficeFiles(Protocol):
     async def mcp(self, key: OfficeKey) -> Endpoint | None: ...
 
     async def ready(self, key: OfficeKey) -> None: ...
+
+    async def prewarm(self, key: OfficeKey) -> bool: ...
+
+    async def erase(self, key: OfficeKey, conversation_id: str) -> None: ...
 
     async def place(self, key: OfficeKey, conversation_id: str, path: WorkPath, data: bytes) -> str: ...
 
@@ -60,6 +65,20 @@ class LocalOfficeFiles:
 
     async def ready(self, key: OfficeKey) -> None:
         return None
+
+    async def prewarm(self, key: OfficeKey) -> bool:
+        """本机开发连的是一个一直开着的 GenOffice，没有要提前起的。"""
+        return False
+
+    async def erase(self, key: OfficeKey, conversation_id: str) -> None:
+        """删对话时清掉开发目录里这段对话的文件与一致记录（同编辑器容器里的 /work/<对话>、/work/.knowwork/<对话>）。"""
+        targets = [Path(self.mount(conversation_id).root), self._root / SYNC_DIR / conversation_id]
+
+        def remove() -> None:
+            for target in targets:
+                shutil.rmtree(target, ignore_errors=True)
+
+        await asyncio.to_thread(remove)
 
     def _record(self, conversation_id: str, work: WorkPath) -> Path:
         path = (self._root / sync_record(conversation_id, work)).resolve()

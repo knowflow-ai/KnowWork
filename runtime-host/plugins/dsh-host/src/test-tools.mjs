@@ -63,9 +63,11 @@ function registerStreamProbes(ctx) {
     parameters: {},
     output: { schema: { type: 'string' }, render: text },
     async execute(_args, exec) {
+      // 0.2.3 起 PTC 默认是常驻 REPL：顶层不能 return，结果是最后一个表达式（对象要加括号），模块一律动态导入
       const spec = ctx.ptcRuntime.resolve({
         program: 'const n = await host.add({ a: 2, b: 3 }); const fs = await import("node:fs"); '
-          + 'return { n, inContainer: fs.existsSync("/opt/dsh-ssh"), cwd: process.cwd() }',
+          + 'const proc = await import("node:process"); '
+          + '({ n, inContainer: fs.existsSync("/opt/dsh-ssh"), cwd: proc.cwd() })',
         bindings: [{ global: 'host', functions: { add: async ({ a, b }) => a + b } }],
         cwd: await cwdOf(exec),
       })

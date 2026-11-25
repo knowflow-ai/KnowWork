@@ -15,7 +15,7 @@ const toolNamesOf = request => (request.body?.tools ?? []).map(t => t.name)
 const messagesText = request => JSON.stringify(request.body?.messages ?? [])
 const sessionEvents = frames => frames.filter(f => f.kind === 'session/event').map(f => f.data)
 const turnEndReason = frames => sessionEvents(frames).find(e => e.type === 'turn/end')?.data?.reason?.kind
-const lastCursor = frames => frames.at(-1)?.cursor ?? 0
+const lastCursor = frames => frames.positions
 const systemOf = request => String(request.body?.system ?? '')
 
 async function startBridgeHost(mock, toolsByToken, execute, notes, granted) {
@@ -326,5 +326,28 @@ test('业务服务声明 concurrent 的工具：同一步里的几个调用同�
     assert.equal(overlap('kw_slow'), false, '没声明的工具不该同时执行')
   } finally {
     await host.stop(); await gateway.close(); await stub.close()
+  }
+})
+
+test('业务工具超过时限：官方超时策略按工具上声明的时限取消，模型收到统一的超时报错，这一轮照常收尾', async () => {
+  const stub = await startToolsStub({
+    toolsByToken: { [TOKEN_A]: [bizTool('kw_biz_slow')] },
+    execute: async () => { await new Promise(resolve => setTimeout(resolve, 3000)); return undefined },
+  })
+  const host = await startHost(
+    { sequence: ['tool_call_success', 'success'], toolName: 'kw_biz_slow', toolArguments: JSON.stringify({ q: '慢' }) },
+    { KNOWWORK_TOOLS_BASE_URL: stub.baseUrl, KNOWWORK_TOOLS_TIMEOUT_MS: '300' },
+  )
+  try {
+    await host.call('POST', '/v1/sessions', { sessionId: 'tb-slow', tools: { token: TOKEN_A } })
+    const started = Date.now()
+    await host.call('POST', '/v1/sessions/tb-slow/messages', { text: '查一下' })
+    const frames = await collectEvents(host, 'tb-slow', isTurnEnd)
+    assert.equal(turnEndReason(frames), 'completed')
+    assert.ok(messagesText(host.llm.requests.at(-1)).includes('tool call timed out after 300ms'), '模型拿到官方的超时报错')
+    assert.ok(Date.now() - started < 2500, '到点就取消，不等业务服务慢慢返回')
+  } finally {
+    await host.stop()
+    await stub.close()
   }
 })

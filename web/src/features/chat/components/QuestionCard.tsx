@@ -12,7 +12,7 @@ import { RadioGroup } from '@openai/apps-sdk-ui/components/RadioGroup';
 import { Textarea } from '@openai/apps-sdk-ui/components/Textarea';
 import { MAX_ANSWER_LENGTH, type QuestionAnswer } from '../../../api/conversations';
 import type { QuestionAnswerView, QuestionItemView, QuestionOptionView, QuestionView } from '../events/types';
-import { answerText, displayLabel } from './questionText';
+import { answerText, displayLabel, SKIPPED } from './questionText';
 
 interface Props {
   readonly question: QuestionView;
@@ -150,9 +150,9 @@ function ReadOnlyItem({
 
 function footText(question: QuestionView, sent: boolean): string {
   if (question.status === 'answered') return '已回答';
-  if (question.status === 'pending' && sent) return '已提交，等 Agent 接收';
+  if (question.status === 'pending' && sent) return '已提交，等智能体接收';
   if (question.status === 'closed') return CLOSED_TEXT[question.closedReason ?? 'cancelled'];
-  return question.continued ? 'Agent 先继续做别的了，你回答后会接着处理' : '回答后 Agent 接着执行';
+  return question.continued ? '智能体先继续做别的了，你回答后会接着处理' : '回答后智能体接着执行';
 }
 
 export function QuestionCard({ question, onAnswer }: Props) {
@@ -204,5 +204,22 @@ export function QuestionCard({ question, onAnswer }: Props) {
         ) : null}
       </div>
     </section>
+  );
+}
+
+/** 答完的问题照 ChatGPT 画成你的一条回复：右对齐的用户气泡，一题一行「题目标签：回答」（只有一题时只写回答） */
+export function QuestionReplyBubble({ question }: { readonly question: QuestionView }) {
+  const single = question.questions.length === 1;
+  return (
+    <div className="kw-user-row">
+      <div className="kw-user-bubble kw-question-reply" aria-label="你的回答">
+        {question.questions.map((item) => {
+          const reply = answerText(question.answers?.find((a) => a.id === item.id));
+          const text = reply && reply !== SKIPPED ? reply : '跳过';
+          const label = item.header ?? (single ? undefined : item.question);
+          return <div key={item.id}>{label ? `${label}：${text}` : text}</div>;
+        })}
+      </div>
+    </div>
   );
 }

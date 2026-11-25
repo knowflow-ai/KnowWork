@@ -18,7 +18,7 @@ function Overview() {
   const client = useQueryClient();
   if (overview.isPending) return <Skeleton rows={6} />;
   if (overview.isError) {
-    return <Empty area icon={<Warning />} title="运行情况加载失败" description="请稍后刷新重试" />;
+    return <Empty area icon={<Warning />} title="没能加载运行情况" description="请稍后刷新重试" />;
   }
   const { pools, gates, workers, kinds } = overview.data;
   return (

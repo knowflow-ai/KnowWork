@@ -64,6 +64,7 @@ class ProfileFacts:
     selection: TurnSelection = field(default=NO_SELECTION)
     host_denied: tuple[str, ...] = ()
     narrowing: ProfileNarrowing | None = None
+    plugins: tuple[str, ...] = ()  # 这个人此刻生效的预置插件键（plugins 模块算好的）
 
 
 def compile_profile(facts: ProfileFacts) -> RuntimeProfile:
@@ -83,7 +84,8 @@ def compile_profile(facts: ProfileFacts) -> RuntimeProfile:
         workspace_id=facts.workspace_id, user_id=facts.user_id, role=facts.role, member=True,
         tools=tools, denied_tools=_denied((n for n in names if n not in allowed), facts.host_denied),
         skills=_skills(skills, selection.skills), knowledge=knowledge, bound_knowledge=bound,
-        dropped_conditions=selection.dropped_conditions, pins=selection.pins)
+        dropped_conditions=selection.dropped_conditions, pins=selection.pins,
+        plugins=tuple(sorted(set(facts.plugins))))
 
 
 def _within(selection: TurnSelection, allowed: tuple[str, ...] | None) -> TurnSelection:

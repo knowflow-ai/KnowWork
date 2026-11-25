@@ -117,7 +117,7 @@ function SessionsSheet({ channel, onClose }: { readonly channel: Channel; readon
           rowKey={(s) => `${s.chatId}:${s.externalId}`}
           columns={columns}
           rows={sessions.data ?? []}
-          empty={sessions.isError ? '加载失败，请刷新重试' : '还没有人提问'}
+          empty={sessions.isError ? '没能加载，请刷新重试' : '还没有人提问'}
         />
       )}
       {member ? <Strangers query={strangers} /> : null}
@@ -160,7 +160,7 @@ function Strangers({
           rowKey={(s) => s.externalId}
           columns={columns}
           rows={query.data ?? []}
-          empty={query.isError ? '加载失败，请刷新重试' : '都认出来了'}
+          empty={query.isError ? '没能加载，请刷新重试' : '都认出来了'}
         />
       )}
     </>
@@ -178,12 +178,12 @@ export default function ChannelsPage() {
   const [code, setCode] = useState<Channel | null>(null);
   const toggle = useAction(
     ({ id, enabled }: { readonly id: string; readonly enabled: boolean }) => setChannelEnabled(id, enabled),
-    { invalidate: [KEYS.channels], failure: '没有改成功，请稍后重试' },
+    { invalidate: [KEYS.channels], failure: '没能改，请稍后重试' },
   );
   const remove = useAction((id: string) => deleteChannel(id), {
     invalidate: [KEYS.channels],
     success: '已删除渠道',
-    failure: '删除没有成功，请稍后重试',
+    failure: '没能删除，请稍后重试',
   });
   const columns: readonly Column<Channel>[] = [
     { key: 'name', title: '名称', width: 160, ellipsis: true, render: (c) => c.name },
@@ -266,7 +266,7 @@ export default function ChannelsPage() {
   return (
     <AdminPage
       title="渠道"
-      description="让员工在企业微信、飞书、钉钉里，或在你们自己的网站上直接向智能助手提问，不用登录 KnowWork。它只查给它选的资料；谁能找到机器人由 IM 平台的可见范围决定，网页嵌入只能嵌在允许的网站里。"
+      description="让员工在企业微信、飞书、钉钉里，或在你们自己的网站上直接向智能体提问，不用登录 KnowWork。它只查给它选的资料；谁能找到机器人由 IM 平台的可见范围决定，网页嵌入只能嵌在允许的网站里。"
     >
       <Toolbar
         right={
@@ -283,7 +283,7 @@ export default function ChannelsPage() {
           rowKey={(c) => c.id}
           columns={columns}
           rows={channels.data ?? []}
-          empty={channels.isError ? '渠道加载失败，请刷新重试' : '还没有渠道'}
+          empty={channels.isError ? '没能加载渠道，请刷新重试' : '还没有渠道'}
         />
       )}
       {editing ? <ChannelDialog channel={editing.item} onClose={() => setEditing(null)} /> : null}

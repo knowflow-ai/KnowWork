@@ -23,6 +23,7 @@ def session_body(spec: SessionSpec) -> dict:
         **({"skills": {"token": spec.skills_token}} if spec.skills_token is not None else {}),
         **({"owner": {"workspaceId": spec.owner.workspace_id, "userId": spec.owner.user_id}}
            if spec.owner is not None else {}),
+        **({"plugins": list(spec.plugins)} if spec.plugins else {}),
     }
 
 
@@ -73,6 +74,8 @@ def _attachment(item: TurnAttachment) -> dict:
                 **({"extractionPending": True} if item.extraction_pending else {})}
     if item.digest_path is not None:
         body = {**body, "digestPath": item.digest_path, **({"digestPending": True} if item.digest_pending else {})}
+    if item.working_copy_path is not None:
+        body = {**body, "workingCopyPath": item.working_copy_path}
     if item.text_chars is None:
         return body
     reading = {"textChars": item.text_chars, **({"text": item.text} if item.text is not None else {}),

@@ -64,7 +64,7 @@ describe('提问', () => {
     expect(state.runs['run-1']!.status).toBe('running');
   });
 
-  it('前台等待到期：卡片仍可答并标明 Agent 先继续；迟到回答落在新一轮，卡片留在原轮', () => {
+  it('前台等待到期：卡片仍可答并标明智能体先继续；迟到回答落在新一轮，卡片留在原轮', () => {
     const state = fold([
       ...asking(),
       ev.questionContinued(5, 'call_1'),

@@ -82,7 +82,7 @@ export function AnswerActions({
       await navigator.clipboard.writeText(withoutImages(text));
       toast.success('已复制');
     } catch {
-      toast.error('复制没有成功，请手动选中文字复制');
+      toast.error('没能复制，请手动选中文字复制');
     }
   };
 

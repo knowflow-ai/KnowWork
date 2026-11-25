@@ -46,7 +46,7 @@ export function ProviderDialog({
     {
       invalidate: [KEYS.providers],
       success: editing ? '已保存' : '已添加厂商',
-      failure: '保存没有成功，请检查后重试',
+      failure: '没能保存，请检查后重试',
     },
   );
   const submit = async () => {

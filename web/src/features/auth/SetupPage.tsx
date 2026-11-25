@@ -69,7 +69,7 @@ export default function SetupPage() {
       toast.success('初始化完成，请用刚才的账号登录');
       navigate('/login', { replace: true });
     } catch (err) {
-      setError(readableError(err, '初始化没有成功，请稍后重试'));
+      setError(readableError(err, '没能初始化，请稍后重试'));
     } finally {
       setSubmitting(false);
     }

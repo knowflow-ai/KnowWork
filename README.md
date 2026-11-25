@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.1.2-2b7de9" alt="Version: v0.1.2"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.1.3-2b7de9" alt="Version: v0.1.3"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -257,7 +257,7 @@ web, with sign-in, permissions, models and audit still managed by the server; on
 
 **Continuous compatibility with DSH.** KnowWork does not fork DSH. In practice:
 
-- all `@deepseek-ai/*` packages are pinned to the same version (currently `0.2.2-rc.5`);
+- all `@deepseek-ai/*` packages are pinned to the same version (currently `0.2.3-alpha.2`);
 - before an upgrade, a preflight check and admission tests run (create a session, run, cancel, resume, load skills,
   subagents, the tool bridge and more), and the version is switched only when they pass;
 - new DSH releases are followed, and capabilities that ship with DSH are picked up directly.
@@ -373,7 +373,7 @@ and ask before each command.
 
 ## Status and roadmap
 
-The current version is v0.1.2. APIs and data structures may still change before 1.0. Known
+The current version is v0.1.3. APIs and data structures may still change before 1.0. Known
 limitations are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Next up: a skill test bench (cases, structural assertions, draft versus published comparison), scenario packs, a UI for

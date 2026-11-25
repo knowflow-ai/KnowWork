@@ -42,7 +42,7 @@ export function AddMemberDialog({
   const action = useAction(({ id, r }: { id: string; r: Role }) => addMember(id, r), {
     invalidate: [KEYS.members],
     success: '已添加成员',
-    failure: '添加没有成功，请稍后重试',
+    failure: '没能添加，请稍后重试',
   });
   const submit = async () => {
     setMissing(!userId);
@@ -85,7 +85,7 @@ export function RoleDialog({ member, onClose }: { readonly member: Member; reado
   const action = useAction((r: Role) => setMemberRole(member.userId, r), {
     invalidate: [KEYS.members],
     success: '角色已更新',
-    failure: '改角色没有成功，请稍后重试',
+    failure: '没能改角色，请稍后重试',
   });
   const submit = async () => {
     if (role === member.role) return onClose();
@@ -132,7 +132,7 @@ export function InviteDialog({ onClose }: { readonly onClose: () => void }) {
     try {
       setIssued(await inviteUser(email, role));
     } catch (error) {
-      toast.error(readableError(error, '邀请没有成功，请稍后重试'));
+      toast.error(readableError(error, '没能邀请，请稍后重试'));
     } finally {
       setBusy(false);
     }

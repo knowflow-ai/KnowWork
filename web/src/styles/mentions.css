@@ -15,7 +15,7 @@
   flex-direction: column;
   width: min(420px, calc(100% - 24px));
   max-height: 380px;
-  border-radius: var(--kw-radius-card-lg);
+  border-radius: var(--radius-2xl);
   background: var(--color-surface-elevated);
   box-shadow: var(--kw-shadow-floating);
   overflow: hidden;
@@ -23,8 +23,8 @@
 
 .kw-mention-title {
   padding: 12px 14px 4px;
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-mention-back {
@@ -34,7 +34,7 @@
   padding: 10px 12px 4px;
   border: none;
   background: none;
-  color: var(--kw-text);
+  color: var(--color-text);
   font: inherit;
   text-align: left;
   cursor: pointer;
@@ -51,8 +51,8 @@
 
 .kw-mention-section {
   padding: 10px 8px 4px;
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-mention-row {
@@ -60,7 +60,7 @@
   align-items: center;
   gap: 10px;
   padding: 7px 8px;
-  border-radius: var(--kw-radius-card);
+  border-radius: var(--radius-xl);
   cursor: pointer;
 }
 
@@ -75,9 +75,9 @@
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: var(--kw-radius-control);
+  border-radius: var(--radius-md);
   background: var(--color-surface-secondary);
-  color: var(--kw-text-secondary);
+  color: var(--color-text-secondary);
 }
 
 .kw-mention-icon svg,
@@ -102,38 +102,45 @@
 }
 
 .kw-mention-name {
-  color: var(--kw-text);
-  font-size: var(--kw-font-sm);
+  color: var(--color-text);
+  font-size: var(--font-text-sm-size);
+}
+
+/* 官方内置命令的命令名，跟在中文标题后面（/ 菜单，同官方命令菜单） */
+.kw-mention-alias {
+  margin-left: 6px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-mention-detail {
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-mention-kind,
 .kw-mention-count {
   flex: none;
-  color: var(--kw-text-tertiary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-mention-arrow {
   flex: none;
-  color: var(--kw-text-tertiary);
+  color: var(--color-text-tertiary);
 }
 
 .kw-mention-more {
   flex: 1;
   padding-left: 38px;
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-mention-empty {
   padding: 12px 10px;
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-mention-chips {
@@ -160,9 +167,9 @@
   max-width: 300px;
   height: 28px;
   padding: 0 2px 0 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-surface-secondary);
-  font-size: var(--kw-font-sm);
+  font-size: var(--font-text-sm-size);
 }
 
 .kw-mention-chip.is-static {
@@ -178,17 +185,87 @@
 
 .kw-mention-chip-icon {
   display: inline-flex;
-  color: var(--kw-text-secondary);
+  color: var(--color-text-secondary);
 }
 
 .kw-mention-chip-kind {
   flex: none;
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-mention-chip-name {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* 对话里用户执行的 / 命令（CommandNotice）：那一行用等宽字，和普通提问分得开；结果那条通知不能点开收起 */
+.kw-command-line {
+  font-family: var(--font-mono);
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-command-head {
+  cursor: default;
+}
+
+.kw-command-head:hover {
+  background: transparent;
+}
+
+/* 长任务目标的进度（GoalPanel）：输入框上方一条，和输入框同宽；状态只写字不上色（使用端单色），卡住的原因用次要文字 */
+.kw-goal {
+  max-width: var(--kw-chat-max-width);
+  margin: 0 auto 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+}
+
+.kw-goal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-goal-title {
+  font-weight: var(--font-weight-semibold);
+}
+
+.kw-goal-status {
+  padding: 0 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+}
+
+.kw-goal-progress {
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.kw-goal-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.kw-goal-objective {
+  display: -webkit-box;
+  margin: 6px 0 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-goal-reason {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }

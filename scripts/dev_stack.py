@@ -29,11 +29,11 @@ import pgserver
 
 ROOT = Path(__file__).resolve().parent.parent
 DEV = ROOT / ".dev"
-PINNED_NODE_BIN = Path.home() / ".nvm/versions/node/v24.18.0/bin"
+PINNED_NODE_BIN = Path.home() / ".nvm/versions/node/v24.22.3/bin"
 
 
 def _node_bin() -> Path:
-    """Node 所在目录：KNOWWORK_NODE_BIN 优先；本机有 nvm 装的固定版本就用它；否则取 PATH 里的 node（要 24.9 以上，DSH 0.2.2 起的要求）。"""
+    """Node 所在目录：KNOWWORK_NODE_BIN 优先；本机有 nvm 装的固定版本就用它；否则取 PATH 里的 node（要 24.22.3 以上，DSH 0.2.3 起的要求）。"""
     configured = os.environ.get("KNOWWORK_NODE_BIN")
     if configured:
         return Path(configured)
@@ -41,7 +41,7 @@ def _node_bin() -> Path:
         return PINNED_NODE_BIN
     found = shutil.which("node")
     if found is None:
-        sys.exit("找不到 node：请安装 Node.js 24.9 以上，或用 KNOWWORK_NODE_BIN 指定所在目录")
+        sys.exit("找不到 node：请安装 Node.js 24.22.3 以上，或用 KNOWWORK_NODE_BIN 指定所在目录")
     return Path(found).parent
 
 
@@ -161,6 +161,7 @@ def main() -> int:
                      "KNOWWORK_MODEL_BASE_URL": f"{internal}/internal/model/v1",
                      "KNOWWORK_TOOLS_BASE_URL": f"{internal}/internal/extensions/tools",
                      "KNOWWORK_SKILLS_BASE_URL": f"{internal}/internal/extensions/skills",
+                     "KNOWWORK_CONTENT_SAFETY_BASE_URL": f"{internal}/internal/extensions/content-safety",
                      "KNOWWORK_ACTIVATION_BASE_URL": f"{internal}/internal/host/v1"})
     # 业务服务与 worker 共用：同一个库、同一份对象存储、同一个沙箱（worker 把解析出的 Markdown 放进会话容器）。
     # MinerU 地址等其余 KNOWWORK_* 照外面的环境变量传进来。
@@ -173,7 +174,14 @@ def main() -> int:
         # 流式执行（KNOWWORK_SANDBOX_SSH_ENABLED=true，照外面的环境变量传进来）要用这份 Dockerfile 新构建的镜像；
         # 宿主在本机用 macOS 自带的 ssh 与 nc。
         "KNOWWORK_SANDBOX_DOCKER_ENABLED": os.environ.get("KNOWWORK_SANDBOX_DOCKER_ENABLED", "true"),
-        "KNOWWORK_SANDBOX_IMAGE": os.environ.get("KNOWWORK_SANDBOX_IMAGE", "knowwork-sandbox:dev")}
+        "KNOWWORK_SANDBOX_IMAGE": os.environ.get("KNOWWORK_SANDBOX_IMAGE", "knowwork-sandbox:dev"),
+        # 个人专属宿主（上传的插件在云端对话里跑的地方）：默认不开；外面设 KNOWWORK_PLUGIN_HOSTS=process 时
+        # 业务服务按人直接起宿主进程（本机试用，插件代码没有隔离），各人的目录在 .dev/plugin-hosts
+        "KNOWWORK_PLUGIN_HOSTS": os.environ.get("KNOWWORK_PLUGIN_HOSTS", "off"),
+        "KNOWWORK_PLUGIN_HOST_RUNTIME_DIR": str(ROOT / "runtime-host"),
+        "KNOWWORK_PLUGIN_HOST_DIR": str(DEV / "plugin-hosts"),
+        "KNOWWORK_PLUGIN_HOST_NODE_BIN": str(PINNED_NODE_BIN) if Path(PINNED_NODE_BIN).is_dir() else "",
+        "KNOWWORK_PLUGIN_HOST_CALLBACK_URL": internal}
     sources = server_sources()
     server = start("server", watched([sys.executable, "-m", "knowwork_server"], sources, python_only=True),
                    cwd=ROOT / "server", env={

@@ -151,7 +151,8 @@ async def test_no_service_operation_reaches_the_host_for_a_device_conversation(w
                     lambda: service.cancel(conversation),
                     lambda: service.decide(conversation, "ap1", True, remember=True),
                     lambda: service.answer(conversation, "q1", QuestionAnswer(answers=(QuestionAnswerItem(id="x", selected=("好",)),))),
-                    lambda: service.activate(conversation)):
+                    lambda: service.activate(conversation),
+                    lambda: service.goal_armed(conversation)):
         with pytest.raises(RunsOnDevice):
             await refused()
     assert await service.approvals(conversation) == []

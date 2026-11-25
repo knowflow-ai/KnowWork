@@ -24,9 +24,11 @@ from .schemas import TokenConfig
 from .store import McpServerRecord, McpServerStore
 
 
-def spec_of(tool: CatalogTool) -> ToolSpec:
+def spec_of(tool: CatalogTool, server: McpServerRecord | None = None) -> ToolSpec:
+    """服务开了按需加载的，标上服务名：宿主不先给模型，模型用该服务的加载器加载（ToolSpec.on_demand_server）"""
+    on_demand = server is not None and server.tool_loading == "on_demand"
     return ToolSpec(name=tool.name, description=tool.description, input_schema=tool.input_schema, risk=tool.risk,
-                    approval=tool.approval_override)
+                    approval=tool.approval_override, on_demand_server=server.name if on_demand else None)
 
 
 class McpToolRegistry:
@@ -41,7 +43,7 @@ class McpToolRegistry:
     async def available(self, ctx: ToolContext) -> list[ToolSpec]:
         servers = await self._servers(ctx)
         connected = await self._connected(ctx, servers)
-        return [spec_of(tool) for server in servers if not server.per_user or server.id in connected
+        return [spec_of(tool, server) for server in servers if not server.per_user or server.id in connected
                 for tool in server.tools if tool.usable]
 
     async def invoke(self, ctx: ToolContext, name: str, arguments: dict[str, Any]) -> str:

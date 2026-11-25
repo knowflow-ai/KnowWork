@@ -30,6 +30,8 @@ from ..db.base import make_engine, make_held_engine, make_sessionmaker, make_wor
 from ..docparse import DocumentParsers
 from ..extensions import Extensions, WorkerContext, installed_extensions
 from ..extensions.expiry import EXIT_LICENSE_ENDED, stop_when_license_ends
+from ..hosts.assembly import build_launcher
+from ..hosts.trial import PluginTrial
 from ..identity.directory_accounts import DirectoryAccounts
 from ..jobs import JobRunner, listen
 from ..jobs.gate import build_gate
@@ -37,9 +39,10 @@ from ..jobs.heartbeat import Heartbeat
 from ..jobs.settings import JobSettings
 from ..knowledge.answer_check import AnswerChecker
 from ..models import ModelClient, catalog_for_worker
+from ..plugins.trial_job import TrialJob
 from ..sandbox import SandboxModule, SandboxSettings, build_sandbox
 from ..sandbox.unavailable import UnavailableSandbox
-from ..storage import namespaced_stores, session_stores
+from ..storage import namespaced_stores, plugin_store, session_stores
 from . import logredact
 from .eventloop import loop_factory
 
@@ -120,6 +123,10 @@ def build_worker(settings: Settings, jobs: JobSettings | None = None, *,
     # 回合结束后判断知识库答上了没有，每个空间一小时一批（入队在 api 进程的 knowledge.search_log）
     AnswerChecker(scoped, models).register(runner)
     attachments.digest_job(models).register(runner)  # 长附件的导读：要调模型，模型客户端建好以后再接
+    if settings.plugin_hosts != "off":
+        # 开了个人专属宿主：上传的插件在这里试装（同一套启动器起一次性的宿主），api 进程上传时排任务
+        launcher = build_launcher(settings, docker_engine=sandbox.engine if sandbox else None)
+        TrialJob(scoped, plugin_store(settings), PluginTrial(launcher)).register(runner)
     context = WorkerContext(settings=settings, engine=engine, sessionmaker=scoped, runner=runner, stores=stores,
                             sandbox=session_sandbox, models=models, gate=gate, mineru=attachments.mineru,
                             stores_for=lambda namespace: namespaced_stores(settings, namespace),

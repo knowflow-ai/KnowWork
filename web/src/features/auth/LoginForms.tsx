@@ -37,7 +37,7 @@ function useSubmit(onDone: FormProps['onDone'], onError: FormProps['onError']) {
     try {
       onDone(await attempt());
     } catch (err) {
-      onError(readableError(err, '登录没有成功，请稍后重试'));
+      onError(readableError(err, '没能登录，请稍后重试'));
     } finally {
       setSubmitting(false);
     }

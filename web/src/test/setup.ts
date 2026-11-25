@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 import { afterEach, beforeEach } from 'vitest';
 import { cleanup, configure } from '@testing-library/react';
+import { useFileTabsStore } from '../features/chat/hooks/fileTabs';
 import { useWorkspaceStore } from '../stores/workspace';
 import { useToasts } from '../ui/toastStore';
 
@@ -15,6 +16,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  // 对话右边那栏的标签按对话记在内存里（另存一份在 localStorage）：每个用例从没开过文件开始
+  useFileTabsStore.setState({ byConversation: {} });
   useToasts.getState().clear();
 });
 

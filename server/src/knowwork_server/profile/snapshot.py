@@ -123,7 +123,8 @@ class ProfileKnowledgeSource(_Frozen):
     bases: tuple[str, ...] = ()
 
 
-HOST_FIELDS = ("schema_version", "workspace_id", "user_id", "role", "member", "tools", "denied_tools", "skills")
+HOST_FIELDS = ("schema_version", "workspace_id", "user_id", "role", "member", "tools", "denied_tools", "skills",
+               "plugins")
 
 
 class RuntimeProfile(_Frozen):
@@ -143,9 +144,15 @@ class RuntimeProfile(_Frozen):
     dropped_conditions: tuple[str, ...] = ()
     # 用户这一轮 @ 点名的文件与标签（同 TurnSelection.pins），检索工具执行时只查它们
     pins: tuple[PinnedScope, ...] = ()
+    # 这个人这段对话启用的预置插件键（plugins/catalog.py），排好序。宿主按它装官方 Agent 预设
+    plugins: tuple[str, ...] = ()
 
     def payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+        """没有插件时不带 plugins 这一项：加这个字段之前存下的快照版本号不变（版本号是内容的摘要）。"""
+        payload = self.model_dump(mode="json")
+        if not payload["plugins"]:
+            del payload["plugins"]
+        return payload
 
     @property
     def version(self) -> str:
@@ -156,6 +163,8 @@ class RuntimeProfile(_Frozen):
         它变了才要重开宿主会话。本轮选择（选的知识库、@ 的文件与标签、撤掉的条件、技能的选中）不在这里：
         它们只在业务服务执行工具时从绑定读出来生效，知识库目录每轮随消息下发，宿主用不到。"""
         payload = self.model_dump(mode="json", include=set(HOST_FIELDS))
+        if not payload["plugins"]:
+            del payload["plugins"]  # 同 payload()：没有插件的对话宿主版本不变，不会因为升级全部重开一遍
         payload["skills"] = [{key: value for key, value in skill.items() if key != "selected"}
                              for skill in payload["skills"]]
         return payload

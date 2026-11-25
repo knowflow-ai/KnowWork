@@ -10,7 +10,8 @@
  *   编辑用读回来的版本核对（读 + 写两次）；写入要先知道文件在不在、版本对不对（大文件不能为拿版本整个读一遍），
  *   probe 之后读旧内容不再 stat；
  * - 文本读取与字面编辑的语义见 fs-text.mjs；不支持监听（基类默认拒绝）；
- * - 补丁、删除、移动（0.2.2-rc.1 起基类新增，官方 apply_patch 用它们）照 dsh-fs-local 0.2.2-rc.1 的语义：
+ * - 补丁、删除、移动（0.2.2-rc.1 起基类新增，官方 apply_patch 用它们）照 dsh-fs-local 的语义（0.2.3-alpha.2 核对过：
+ *   官方这一版只把本机报错统一换成 fsErrorFromErrno，我们的错误码来自业务服务的沙箱接口，另有对照表）：
  *   目标不在或版本对不上报 FS_STALE_VERSION，不是普通文件报 FS_NOT_REGULAR_FILE，补丁对不上报 FS_PATCH_MISMATCH；
  *   移动是「先写目标、再删源」两步，源删不掉时目标照样算写成，结果里写明 sourceDeleted: false。
  */

@@ -230,7 +230,7 @@ export function LoginProviderDialog({
     {
       invalidate: [LOGIN_PROVIDERS_KEY],
       success: editing ? '已保存' : '已添加，把回调地址登记到对方后就能登录',
-      failure: '保存没有成功，请检查后重试',
+      failure: '没能保存，请检查后重试',
     },
   );
   const submit = async () => {

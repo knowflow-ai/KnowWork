@@ -54,7 +54,7 @@ export function ApiKeysTab() {
   const revoke = useAction((id: string) => revokeApiKey(id), {
     invalidate: [API_KEYS],
     success: '已吊销',
-    failure: '吊销没有成功，请稍后重试',
+    failure: '没能吊销，请稍后重试',
   });
   const columns: readonly Column<ApiKey>[] = [
     { key: 'name', title: '名称', width: 150, ellipsis: true, render: (k) => k.name },
@@ -120,7 +120,7 @@ export function ApiKeysTab() {
           columns={columns}
           rows={keys.data ?? []}
           minWidth={900}
-          empty={keys.isError ? 'API Key 加载失败，请刷新重试' : '还没有 API Key'}
+          empty={keys.isError ? '没能加载 API Key，请刷新重试' : '还没有 API Key'}
         />
       )}
       {creating ? (

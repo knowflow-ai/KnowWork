@@ -19,27 +19,31 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ..tools.presentation import normalize as normalize_presentation
+from ..workpath import INPUT, SANDBOX, InvalidPath
 
 SCHEMA = "events.v1"
 
 RUN_TYPES = ("run.started", "run.completed", "run.failed", "run.cancelled", "run.waiting")
 ITEM_TYPES = ("item.started", "item.delta", "item.updated", "item.completed", "item.failed")
 ITEM_KINDS = ("message", "thinking", "tool", "approval", "input_request", "todo", "artifact", "deliverable", "evidence",
-              "subagent", "background_job", "error")
+              "subagent", "background_job", "error", "command", "goal", "compaction")
 
 GAP_KIND = "kernel.gap"
 # 不是人发起一轮时那条消息的来源（官方 source.kind）：展示成「谁发起了这一轮」，不当用户的话。
 # 定时任务到点；后台任务（官方 dsh-tool-jobs）或在后台跑的子 Agent（dsh-subagent）做完时 Agent 正空闲，官方自己开一轮
 # 让它接着处理结果。Agent 正忙时官方把同样的消息塞进当前这一轮，那就不算发起（前端与运行记录只认一轮的第一条）
-TRIGGER_TITLES = {"schedule": "定时任务", "tool-jobs": "后台任务完成", "subagent-settled": "子 Agent 完成"}
+# 长任务目标（官方 dsh-goal-round-driver）还没完成、Agent 空下来时自己发起的下一轮也算，来源上带着第几轮
+TRIGGER_TITLES = {"schedule": "定时任务", "tool-jobs": "后台任务完成", "subagent-settled": "子智能体完成",
+                  "goal": "长任务目标"}
 TRIGGER_SOURCES = tuple(TRIGGER_TITLES)
 TEXT_LIMIT = 8000
 # 宿主给附件写的说明块（runtime-host attachment-handles.mjs，逐字照官方 dsh-llm 的 fileHandleText）：
-# 不进显示文字，换成附件列表。文件名是 JSON 字符串（官方 quoted 即 JSON.stringify）。
+# 不进显示文字，换成附件列表。文件名、保存位置是 JSON 字符串（官方 quoted 即 JSON.stringify）。
 _FILE_HANDLE = re.compile(r'^\[File (?P<name>"(?:[^"\\]|\\.)*") \((?P<bytes>\d+) bytes, sha256:[0-9a-f]{8}\): '
-                          r'verbatim read-only copy saved at ')
-# 解析结果的位置、给模型读的全文或目录（attachment-handles.mjs 的 extractedText、pendingText、contentsText）：同样不进显示文字
-_READING_HANDLES = ("[Markdown extracted from ", "[Contents of ")
+                          r'verbatim read-only copy saved at (?P<path>"(?:[^"\\]|\\.)*")?')
+# 解析结果的位置、给模型读的全文或目录、编辑器里打开过的工作副本（attachment-handles.mjs 的 extractedText、pendingText、
+# contentsText、workingCopyText）：同样不进显示文字
+_READING_HANDLES = ("[Markdown extracted from ", "[Contents of ", "[Working copy of ")
 # 宿主写的 @ 说明块（runtime-host mentions.mjs）：第一行是这个前缀加 JSON，不进显示文字，换成气泡上的小标签
 _MENTION_PREFIX = "[用户这一轮 @ 点名的范围] "
 MENTION_TYPES = ("knowledge_base", "folder", "document", "tag", "mcp", "skill", "extension")
@@ -73,6 +77,34 @@ APPROVAL_EVENTS = ("approval/asked", "approval/decided")
 # 所以提醒之后只更新待办时，那次调用和收尾的话都不展示；待办照新写的那份更新。提醒之后又做了别的事，就照常展示
 TODO_CHECK_SOURCE = "knowwork-todo-check"
 TODO_TOOL = "todo_write"
+# 内容检查（runtime-host content-guard.mjs）：员工的消息命中时宿主拒绝这一步（官方 agent/pre-step 的 reject），这一轮以
+# blocked 结束，结束原因里没有话术，所以宿主先往会话日志写一条这个事件，带上管理员写的阻断提示与被拒的消息（服务端宿主
+# 经事件流、桌面端经上传，都是会话事件）；输出、工具参数命中时这一步以 error 结束，失败码与提示就在结束原因里。
+# 检查接口不通时失败码是 CHECK_UNAVAILABLE
+CONTENT_BLOCKED_EVENT = "content-safety/blocked"
+# 长任务目标（官方 dsh-goal）：每次变化官方往会话日志记一条 goal/change（变化后的整份目标，或清除的记号），自动续跑
+# 每发起一轮，那条消息的来源带着第几轮。投影成一个固定编号的 goal 条目，前端据此常驻显示目标面板（目标、状态、第几轮）；
+# 第几轮那一项只带轮数，前端合进已有的那份
+GOAL_CHANGE = "goal/change"
+GOAL_ITEM = "goal"
+GOAL_PHASES = ("active", "paused", "blocked", "complete")
+GOAL_ACTIVATION = "goal/activation"  # 宿主转来的帧（http-host.mjs 转官方 goal/activation-changed）
+# 用户的 / 命令（官方 dsh-commands）：执行时官方往会话日志记这一对，不在任何一轮里（不经模型）。投影成一个命令条目，
+# run_id 为空：前端按它到来的位置排在各轮之间，刷新后照样画出命令气泡（照官方对话界面的 Command input）
+COMMAND_EVENTS = ("command/run", "command/done")
+# 上下文压缩（官方 dsh-compaction）：开始、摘要写好、结束（出错时带原因）。替换上下文用的那条 user/message 检查点
+# （来源 compact-checkpoint）不是人说的话，_user_message 本来就不展示
+COMPACTION_EVENTS = ("compaction/start", "compaction/summary", "compaction/end")
+COMMAND_NAME = re.compile(r"^[a-z0-9_-]{1,64}$")
+CONTENT_CODES = {"CONTENT_BLOCKED": "content_blocked", "CHECK_UNAVAILABLE": "check_unavailable"}
+# 收件箱（官方 dsh-agent-loop 的 inbox）：一轮还在跑时用户发的消息排在「下一轮」（排队）或「下一步」（插话）里，每次变化
+# 记一条 agent/inbox/spliced（起点、移掉几条、插入哪些，同 Array.splice）。用户点停止时官方连排着的一起取消，那次移除带
+# outcome: canceled，但不写移掉的是哪条，要照官方对话界面（dsh-client-ui-trajectory）回放坐标认出来；开轮、开步时领走
+# 是不带 outcome 的移除。被取消的那条从没进会话（不会有它的 user/message），投影成一条 item.failed 告诉前端，
+# 不然页面上那条一直挂着「思考中」
+INBOX_EVENT = "agent/inbox/spliced"
+INBOX_TARGETS = {"next-turn": "queued_turn", "next-step": "queued_step"}
+MAX_BLOCK_MESSAGE = 500
 
 
 @dataclass(frozen=True)
@@ -88,6 +120,11 @@ class ProjectionState:
     tidy_turn: int | None = None  # 宿主提醒过更新待办的那一轮（提醒之后只更新待办的那一步不展示）
     tidy_working: bool = False  # 提醒之后模型又做了别的事：之后照常展示
     tidy_calls: frozenset[str] = frozenset()  # 提醒之后那几次 todo_write 的调用 id，它们的结果也不展示
+    content_blocked: tuple[int, str, str] | None = None  # 内容检查拦下的那一轮、失败码与提示（管理员写的阻断提示）
+    # 收件箱里排着的消息 id（回放 agent/inbox/spliced 的坐标）。状态只在内存里，业务服务重启后从空的算起，
+    # 那时排着的对不上坐标就不报（_inbox）
+    queued_turn: tuple[str, ...] = ()
+    queued_step: tuple[str, ...] = ()
 
 
 def _run_id(turn: int | None) -> str | None:
@@ -188,6 +225,8 @@ def _user_message(state: ProjectionState, payload: dict, seq: int, time: int) ->
     """用户亲自发的消息（提问与插话）归到当前这一轮。宿主也用 user/message 注入运行时上下文、
     子 Agent 回报等，它们的 source.kind 不是 user，不展示给用户；定时任务到点投进来的展示成「谁发起了这一轮」。"""
     source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+    if source.get("kind") == "goal":
+        return _trigger(state, payload, source, seq, time) + _goal_round(source, seq, time)
     if source.get("kind") in TRIGGER_SOURCES:
         return _trigger(state, payload, source, seq, time)
     if source.get("kind") != "user":
@@ -216,8 +255,29 @@ def trigger_text(source: dict, content: Any) -> str:
     text = _joined(content, ("text",))
     if source.get("kind") == "schedule":
         return "\n\n".join(reminder_prompts(text))
+    if source.get("kind") == "goal":
+        # 官方每轮的提示（<goal_round> 里是目标原文、第几轮和给模型的要求）：给人看第几轮和目标就够了
+        return goal_round_text(source, text)
     summary = source.get("summary")
     return summary if isinstance(summary, str) and summary else text
+
+
+def goal_round_text(source: dict, text: str) -> str:
+    """长任务目标的第几轮：官方提示里 Objective 一行是目标原文（JSON 字符串），Round 一行是「第几轮/上限」。"""
+    objective, limit = "", ""
+    for line in text.splitlines():
+        key, _, value = line.partition(": ")
+        if key == "Objective":
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                parsed = value
+            objective = parsed if isinstance(parsed, str) else ""
+        elif key == "Round":
+            limit = value.partition("/")[2]
+    round_ = _int(source.get("round"))
+    head = f"第 {round_} 轮" + (f"（最多 {limit} 轮）" if limit.isdigit() else "") if round_ else "接着做下一轮"
+    return f"{head}：{objective}" if objective else head
 
 
 def reminder_prompts(text: str) -> list[str]:
@@ -262,8 +322,20 @@ def _mentions(block: str) -> list[dict] | None:
             and isinstance(item.get("id"), str)]
 
 
+def _attachment_path(quoted: str | None) -> dict:
+    """附件在工作区里的写法（input/文件名，点卡片按它打开）：只认会话沙箱附件目录里直接一层的，沙箱里的绝对路径不给浏览器。
+    在用户电脑上执行的对话、写法不对的不给。"""
+    if quoted is None:
+        return {}
+    try:
+        path = SANDBOX.of(json.loads(quoted))
+    except (ValueError, TypeError, InvalidPath):
+        return {}
+    return {"path": path.relative} if path.relative == f"{INPUT.relative}/{path.name}" else {}
+
+
 def user_parts(content: Any) -> tuple[str, list[dict], list[dict]]:
-    """用户原话、附件与 @：附件、@ 的说明块按固定格式认出来。附件只留文件名与大小（路径是沙箱内部的，不给浏览器）。"""
+    """用户原话、附件与 @：附件、@ 的说明块按固定格式认出来。附件留文件名、大小与工作区里的路径。"""
     texts: list[str] = []
     attachments: list[dict] = []
     mentions: list[dict] = []
@@ -277,7 +349,8 @@ def user_parts(content: Any) -> tuple[str, list[dict], list[dict]]:
         found = _FILE_HANDLE.match(block["text"])
         if found is not None:
             try:
-                attachments.append({"name": str(json.loads(found["name"])), "size": int(found["bytes"])})
+                attachments.append({"name": str(json.loads(found["name"])), "size": int(found["bytes"]),
+                                    **_attachment_path(found["path"])})
             except ValueError:
                 texts.append(block["text"])
         elif not block["text"].startswith(_READING_HANDLES):
@@ -295,7 +368,15 @@ def _turn_end(state: ProjectionState, payload: dict, seq: int, time: int) -> tup
     elif kind == "error":
         error = reason.get("error") if isinstance(reason.get("error"), dict) else {}
         code = str(error.get("code") or "UNKNOWN")[:64]
-        event = _event("run.failed", seq=seq, turn=turn, time=time, data={"code": code, "message": "本轮执行失败"})
+        if code in CONTENT_CODES:
+            message = str(error.get("message") or "")[:MAX_BLOCK_MESSAGE]
+            event = _event("run.failed", seq=seq, turn=turn, time=time,
+                           data={"code": CONTENT_CODES[code], "message": message})
+        else:
+            event = _event("run.failed", seq=seq, turn=turn, time=time, data={"code": code, "message": "本轮执行失败"})
+    elif kind == "blocked" and state.content_blocked is not None and state.content_blocked[0] == turn:
+        _, code, message = state.content_blocked
+        event = _event("run.failed", seq=seq, turn=turn, time=time, data={"code": code, "message": message})
     elif kind == "blocked":
         event = _event("run.failed", seq=seq, turn=turn, time=time, data={"code": "blocked", "message": "本轮被拦截"})
     elif gate_failed:
@@ -304,7 +385,7 @@ def _turn_end(state: ProjectionState, payload: dict, seq: int, time: int) -> tup
     else:
         data = {"reason": "max_tokens"} if kind == "max-tokens" else {}
         event = _event("run.completed", seq=seq, turn=turn, time=time, data=data)
-    return replace(state, gate_failed_turn=None), [event]
+    return replace(state, gate_failed_turn=None, content_blocked=None), [event]
 
 
 def _tool_call(state: ProjectionState, payload: dict, seq: int, time: int) -> list[dict]:
@@ -353,7 +434,8 @@ def _session_event(state: ProjectionState, event: Any, seq: int) -> tuple[Projec
     time = _int(event.get("time")) or 0  # 缺时间时记 0，不影响排序（排序看 seq）
     if kind == "turn/start":
         turn = _int(payload.get("turn"))
-        return (replace(state, turn=turn, gate_failed_turn=None, tidy_turn=None, tidy_working=False, tidy_calls=frozenset()),
+        return (replace(state, turn=turn, gate_failed_turn=None, tidy_turn=None, tidy_working=False, tidy_calls=frozenset(),
+                        content_blocked=None),
                 [_event("run.started", seq=seq, turn=turn, time=time)])
     tidying = state.tidy_turn is not None and state.tidy_turn == _turn(payload, state) and not state.tidy_working
     if kind == "assistant/message" and tidying:
@@ -367,6 +449,8 @@ def _session_event(state: ProjectionState, event: Any, seq: int) -> tuple[Projec
         return state, []
     if kind == "turn/end":
         return _turn_end(state, payload, seq, time)
+    if kind == CONTENT_BLOCKED_EVENT:
+        return _content_blocked(state, payload, seq, time)
     if kind == "assistant/message":
         return state, _assistant_message(state, payload, seq, time)
     if kind == "request/header":
@@ -391,7 +475,108 @@ def _session_event(state: ProjectionState, event: Any, seq: int) -> tuple[Projec
         return state, _deliverables(state, payload, seq, time)
     if kind in APPROVAL_EVENTS:
         return _approval(state, kind, payload, seq, time)
+    if kind in COMMAND_EVENTS:
+        return state, _command(kind, payload, seq, time)
+    if kind in COMPACTION_EVENTS:
+        return state, _compaction(kind, payload, seq, time)
+    if kind == GOAL_CHANGE:
+        return state, _goal_change(payload, seq, time)
+    if kind == INBOX_EVENT:
+        return _inbox(state, payload, seq, time)
     return state, []
+
+
+def _inbox(state: ProjectionState, payload: dict, seq: int, time: int) -> tuple[ProjectionState, list[dict]]:
+    field = INBOX_TARGETS.get(str(payload.get("target")))
+    start, removed = _int(payload.get("start")), _int(payload.get("removedCount")) or 0
+    inserted = payload.get("inserted") if isinstance(payload.get("inserted"), list) else []
+    if field is None or start is None:
+        return state, []
+    queued = list(getattr(state, field))
+    if start < 0 or removed < 0 or start + removed > len(queued):  # 重启前排进来的，坐标对不上：不认
+        return replace(state, **{field: ()}), []
+    gone = queued[start:start + removed]
+    queued[start:start + removed] = [str(m.get("id")) for m in inserted if isinstance(m, dict) and m.get("id")]
+    events = [] if payload.get("outcome") != "canceled" else [
+        _event("item.failed", seq=seq, turn=None, time=time, item_id=message_id, kind="message",
+               data={"role": "user", "reason": "canceled"}) for message_id in gone]
+    return replace(state, **{field: tuple(queued)}), events
+
+
+def _goal_change(payload: dict, seq: int, time: int) -> list[dict]:
+    """目标变了：整份目标（目标原文、状态、卡住的原因、已发起几轮、上限）；清除了就是 cleared。不归任何一轮。"""
+    if payload.get("operation") == "clear":
+        return [_event("item.updated", seq=seq, turn=None, time=time, item_id=GOAL_ITEM, kind="goal",
+                       data={"cleared": True})]
+    goal = payload.get("goal") if isinstance(payload.get("goal"), dict) else {}
+    phase, objective = goal.get("phase"), goal.get("objective")
+    if phase not in GOAL_PHASES or not isinstance(objective, str):
+        return []
+    reason = goal.get("blockedReason") if isinstance(goal.get("blockedReason"), dict) else {}
+    data = {"operation": str(payload.get("operation") or ""), "objective": objective[:FIELD_LIMIT], "phase": phase,
+            "rounds": _int(payload.get("roundsStarted")) or 0, "max_rounds": _int(goal.get("maxGoalRounds")) or 0,
+            **({"blocked_reason": reason["message"][:FIELD_LIMIT]} if isinstance(reason.get("message"), str) else {})}
+    return [_event("item.updated", seq=seq, turn=None, time=time, item_id=GOAL_ITEM, kind="goal", data=data)]
+
+
+def _goal_round(source: dict, seq: int, time: int) -> list[dict]:
+    """自动续跑又发起了一轮：只带轮数，前端合进已有的目标面板。"""
+    round_ = _int(source.get("round"))
+    if not round_:
+        return []
+    return [_event("item.updated", seq=seq, turn=None, time=time, item_id=GOAL_ITEM, kind="goal",
+                   data={"rounds": round_})]
+
+
+def _command(kind: str, payload: dict, seq: int, time: int) -> list[dict]:
+    """命令开始（名字与参数）和结束（成功或失败、给人看的文字）：同一个 commandId 一个条目，前端把两条合起来。"""
+    command_id = payload.get("commandId")
+    if not isinstance(command_id, str) or not command_id or len(command_id) > 200:
+        return []
+    if kind == "command/run":
+        name = payload.get("name")
+        if not isinstance(name, str) or not COMMAND_NAME.match(name):
+            return []
+        args = payload.get("args")
+        data = {"name": name, **({"args": args[:FIELD_LIMIT]} if isinstance(args, str) else {})}
+        return [_event("item.started", seq=seq, turn=None, time=time, item_id=command_id, kind="command", data=data)]
+    status = "error" if payload.get("kind") == "error" else "success"
+    text = payload.get("text")
+    data = {"status": status, **({"text": text[:TEXT_LIMIT]} if isinstance(text, str) else {})}
+    return [_event("item.completed", seq=seq, turn=None, time=time, item_id=command_id, kind="command", data=data)]
+
+
+def _shadowed_items(raw: Any) -> int | None:
+    """压掉了几条记录：官方 shadowedSeqs 的条数（照官方对话界面的「已压缩 N 条历史记录」）"""
+    if not isinstance(raw, list) or not all(type(seq) is int and seq >= 0 for seq in raw):
+        return None
+    return len(raw)
+
+
+def _compaction(kind: str, payload: dict, seq: int, time: int) -> list[dict]:
+    """上下文压缩（照官方对话界面：一次压缩一行，进行中写「正在压缩」，做完写压掉了多少、可看摘要）：编号是官方的
+    compactionId，开始是 item.started，摘要写好是 item.completed（带压掉的条数、约多少 token、摘要正文），结束出错是
+    item.failed；没出错的结束只是收尾，摘要那条已经说完了。turn 是压缩发生在哪一轮里，轮次之间手动压缩（/compact）是 null。"""
+    compaction_id = payload.get("compactionId")
+    if not isinstance(compaction_id, str) or not compaction_id or len(compaction_id) > 200:
+        return []
+    turn = _int(payload.get("turn"))
+    common = {"turn": turn, "time": time, "item_id": compaction_id, "kind": "compaction"}
+    manual = {"manual": True} if isinstance(payload.get("sourceCommandId"), str) else {}
+    if kind == "compaction/start":
+        return [_event("item.started", seq=seq, **common, data={"status": "running", **manual})]
+    if kind == "compaction/summary":
+        items = _shadowed_items(payload.get("shadowedSeqs"))
+        tokens = _int(payload.get("shadowedTokenCount"))
+        summary = _joined(payload.get("summary"), ("text",))[:TEXT_LIMIT]
+        data = {"status": "completed", **manual, **({"items": items} if items is not None else {}),
+                **({"tokens": tokens} if tokens is not None and tokens >= 0 else {}),
+                **({"summary": summary} if summary else {})}
+        return [_event("item.completed", seq=seq, **common, data=data)]
+    error = payload.get("error")
+    if isinstance(error, str) and error:
+        return [_event("item.failed", seq=seq, **common, data={"status": "error", "error": error[:FIELD_LIMIT], **manual})]
+    return [_event("item.updated", seq=seq, **common, data={"status": "ended", **manual})]
 
 
 def _todos(state: ProjectionState, payload: dict, seq: int, time: int) -> list[dict]:
@@ -625,11 +810,33 @@ def project(state: ProjectionState, kind: str, data: Any, *, seq: int, time: int
                        data={"code": "skill_gate_failed", "required_tool": str(payload.get("requiredTool", "")),
                              "missing": _gate_missing(payload.get("missing"))})
         return replace(state, gate_failed_turn=turn), [event]
+    if kind == GOAL_ACTIVATION:
+        # 自动续跑开着没有（官方只记在宿主内存里；会话重开、宿主重启后先关上）：目标面板据此写「待继续」、给「恢复」
+        armed = payload.get("armed")
+        return state, ([] if not isinstance(armed, bool) else [
+            _event("item.updated", seq=seq, turn=None, time=time, item_id=GOAL_ITEM, kind="goal", data={"armed": armed})])
     if kind == GAP_KIND:
         event = _event("item.failed", seq=seq, turn=state.turn, time=time, item_id=f"gap-{seq}", kind="error",
                        data={"code": "events_gap", "message": "部分执行事件已丢失"})
         return state, [event]
     return state, []
+
+
+def _content_blocked(state: ProjectionState, payload: dict, seq: int, time: int) -> tuple[ProjectionState, list[dict]]:
+    """员工的消息被内容检查拦下：宿主拒绝了这一步，这几条消息不进会话历史（模型看不到），宿主把它们记在这条事件里，
+    照普通提问展示（员工自己发的话，刷新后也看得到）；阻断提示留到这一轮结束时用。"""
+    turn = _turn(payload, state)
+    if turn is None:
+        return state, []
+    message = str(payload.get("message") or "")[:MAX_BLOCK_MESSAGE]
+    code = CONTENT_CODES.get(str(payload.get("code") or ""), "content_blocked")
+    current = replace(state, turn=turn)
+    asked = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+    events = [event for index, item in enumerate(asked[:8]) if isinstance(item, dict)
+              for event in _user_message(current, {"id": item.get("id") or f"blocked-{seq}-{index}",
+                                                   "source": {"kind": "user"}, "content": item.get("content")},
+                                         seq, time)]
+    return replace(state, content_blocked=(turn, code, message)), events
 
 
 def _gate_missing(raw) -> list[dict]:

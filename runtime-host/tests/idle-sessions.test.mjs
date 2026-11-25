@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createIdleTracker, idleMsOf, releasable, sweepMsOf } from '../plugins/dsh-host/src/idle-sessions.mjs'
-import { startHost, collectEvents, isTurnEnd } from './support/harness.mjs'
+import { startHost, collectEvents, isTurnEnd, isTurnEndAfter } from './support/harness.mjs'
 import { startOpenAiStub } from './support/openai-stub.mjs'
 import { startSandboxStub } from './support/sandbox-stub.mjs'
 import { startToolsStub } from './support/tools-stub.mjs'
@@ -74,7 +74,7 @@ test('空闲超时后释放；恢复打开后历史照旧，业务服务走的�
     const resumed = await host.call('POST', '/v1/sessions', { sessionId: 'idle-1', resume: true, policy: {} })
     assert.equal(resumed.status, 201, JSON.stringify(resumed.body))
     await host.call('POST', '/v1/sessions/idle-1/messages', { text: '第二句' })
-    await collectEvents(host, 'idle-1', isTurnEnd)
+    await collectEvents(host, 'idle-1', isTurnEndAfter('第二句'))
     const last = JSON.stringify(host.llm.requests.at(-1).body?.messages ?? [])
     assert.ok(last.includes('蓝鲸') && last.includes('第二句'), '恢复后的请求里应带着释放前的历史')
   } finally {
@@ -87,7 +87,7 @@ test('还有事件流订阅者（业务服务的事件泵没退出）时不释�
   const controller = new AbortController()
   try {
     await host.call('POST', '/v1/sessions', { sessionId: 'idle-2' })
-    const subscribed = await fetch(`${host.base}/v1/sessions/idle-2/events?after=0`, {
+    const subscribed = await fetch(`${host.base}/v1/sessions/idle-2/events`, {
       headers: { authorization: `Bearer ${host.token}` },
       signal: controller.signal,
     })

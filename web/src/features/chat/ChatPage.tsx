@@ -3,7 +3,7 @@
  * 对话都在业务服务里、都在 /chat/<编号>。在哪执行由来源定（sources.ts）：新对话页在输入框下面选（照 ChatGPT、Claude 的桌面端，
  * 默认云端，只有云端可选时不显示）；会话页按这段对话自己的 source 字段——它只决定发消息、停止、审批交给谁，读的都是业务服务。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { chipsOf, type SentAttachment } from '../../api/attachments';
@@ -20,7 +20,8 @@ import { NEW_CHAT, useChatModel } from '../../stores/chatModel';
 import { slotItems } from '../../slots/registry';
 import { toast } from '../../ui/toastStore';
 import { CONVERSATIONS_KEY } from '../conversations/queries';
-import { Composer, DEFAULT_FOOTNOTE } from './components/Composer';
+import { Composer, DEFAULT_FOOTNOTE, type ComposerDraft } from './components/Composer';
+import { useDraftsEditable } from './hooks/useDraftsEditable';
 import { MessageList } from './components/MessageList';
 import { ConversationView } from './ConversationView';
 import { chatReducer, initialChatState } from './events/reducer';
@@ -38,6 +39,10 @@ interface NavigationState {
   readonly firstMessage?: FirstMessage;
   /** 刚建的对话在哪执行（新对话页带过来，省得会话页再问一次才知道操作交给谁） */
   readonly source?: string;
+  /** 新对话页点了输入框里的附件：为它建好对话后，输入框里的草稿（字、附件、@）带过来接着用 */
+  readonly draft?: ComposerDraft;
+  /** 同上：进来就在编辑器里打开的那个附件（暂存时给的 id） */
+  readonly openAttachment?: string;
 }
 
 /**
@@ -104,6 +109,72 @@ function NewChat() {
     }
   };
 
+  // 输入框里能编辑的附件直接进编辑器，不用先打一句话发出去：先建一段空对话（标题用文件名），带着输入框里的草稿进会话页，
+  // 那边进来就建副本、打开编辑器。只在云端、开着在线编辑时给点，开不了时不白建对话
+  const draftsEditable = useDraftsEditable(source.server ? source.files : undefined);
+  const opening = useRef(false);
+  const openDraft = async (attachmentId: string, draft: ComposerDraft) => {
+    if (opening.current) return;
+    opening.current = true;
+    const name = draft.attachments.find((item) => item.id === attachmentId)?.name ?? '';
+    try {
+      const { id } = await source.start({
+        text: name,
+        attachments: [],
+        mentions: draft.mentions,
+        answerMode: source.limits?.answerMode?.value ?? currentAnswerMode(),
+        blank: true,
+      });
+      void client.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
+      useChatModel.getState().carry(NEW_CHAT, id);
+      navigate(`/chat/${encodeURIComponent(id)}`, {
+        state: { source: source.id, draft, openAttachment: attachmentId } satisfies NavigationState,
+      });
+    } catch (error) {
+      opening.current = false;
+      toast.error(readableError(error, '没能新建对话，请稍后重试'));
+    }
+  };
+
+  // 新对话页的 / 命令：按自己开着的插件列（来源给的）；回车就建对话、执行它，再进会话页
+  const newCommands = source.newCommands;
+  const commands = useMemo(
+    () =>
+      newCommands
+        ? {
+            key: `new:${source.id}`,
+            list: newCommands,
+            run: async (line: string) => {
+              setPending(
+                chatReducer(initialChatState, {
+                  type: 'local/sent',
+                  localId: 'new-chat',
+                  text: line,
+                  mode: 'followup',
+                }),
+              );
+              try {
+                const { id } = await source.start({
+                  text: '',
+                  attachments: [],
+                  mentions: [],
+                  answerMode: source.limits?.answerMode?.value ?? currentAnswerMode(),
+                  command: line,
+                });
+                void client.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
+                navigate(`/chat/${encodeURIComponent(id)}`, {
+                  state: { source: source.id } satisfies NavigationState,
+                });
+              } catch (error) {
+                setPending(null);
+                throw new Error(readableError(error, '命令没能执行，请稍后重试'));
+              }
+            },
+          }
+        : undefined,
+    [newCommands, source, client, navigate],
+  );
+
   // 按了发送：换成和会话页一样的样子（消息在上、输入框贴底），建好再进会话页。输入框在树里的位置两种样子都一样，
   // 不会被重新挂载：发送失败时它还能把文字和附件放回来
   return (
@@ -130,6 +201,12 @@ function NewChat() {
             below={below}
             dropFiles={dropFiles}
             onSend={(text, _mode, attachments, mentions) => start(text, attachments, mentions)}
+            // 输入框里加了能在线编辑的附件就提前起编辑器，点开时不用等（来源给了的话）
+            onAttach={source.files?.prewarm}
+            commands={commands}
+            onOpenDraft={
+              draftsEditable && blocker === null ? (id, draft) => void openDraft(id, draft) : undefined
+            }
           />
         </div>
         {/* 扩展的建议问题这类：点了就照这句、带着它给的 @ 开一个新对话（服务端会话才有） */}
@@ -180,8 +257,18 @@ const PENDING_SOURCE: ConversationSource = { ...SERVER_SOURCE, files: undefined 
 
 function ExistingChat({ conversationId }: { readonly conversationId: string }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const arrived = location.state as NavigationState | null;
   const firstMessage = arrived?.firstMessage;
+  // 新对话页带来的草稿和要打开的附件只用一次：先记下，再从历史记录里拿掉，刷新页面不会把发过的附件又摆回输入框
+  const [carried] = useState(() => ({ draft: arrived?.draft, open: arrived?.openAttachment }));
+  useEffect(() => {
+    if (!arrived || (arrived.draft === undefined && arrived.openAttachment === undefined)) return;
+    navigate(location.pathname, {
+      replace: true,
+      state: { firstMessage: arrived.firstMessage, source: arrived.source } satisfies NavigationState,
+    });
+  }, [arrived, location.pathname, navigate]);
   // 这段对话在哪执行：刚建的由新对话页带过来，别的问业务服务。还不知道（或问不到）时按业务服务处理：读的本来就是它，
   // 这一小会儿里真发了消息，在别处执行的对话业务服务会拒绝并说明原因
   const known = useQuery({
@@ -207,6 +294,8 @@ function ExistingChat({ conversationId }: { readonly conversationId: string }) {
       source={source}
       chooseModel
       firstMessage={firstMessage}
+      initialDraft={carried.draft}
+      openOnArrival={carried.open}
       answerMode={scope?.answerMode ?? undefined}
       {...(scope ? scopeParts(conversationId, scope) : {})}
     />

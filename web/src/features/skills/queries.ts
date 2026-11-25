@@ -43,36 +43,36 @@ export function useMySkillActions() {
     install: useAction((file: File) => installSkill(file, 'personal'), {
       invalidate,
       success: '已上传，新对话里就能用了',
-      failure: '技能包没有上传成功',
+      failure: '技能包没能上传',
     }),
     replace: useAction(({ skill, file }: { skill: Skill; file: File }) => replaceDraft(skill, file), {
       invalidate,
       success: '已换成新版本，新对话里生效',
-      failure: '新版本没有上传成功',
+      failure: '新版本没能上传',
     }),
     toggle: useAction(
       ({ skill, enabled }: { skill: Skill; enabled: boolean }) => setSkillEnabled(skill, enabled),
-      { invalidate, failure: '没有切换成功' },
+      { invalidate, failure: '没能切换' },
     ),
     remove: useAction((skill: Skill) => deleteSkill(skill), {
       invalidate,
       success: '已删除',
-      failure: '没有删除成功',
+      failure: '没能删除',
     }),
     submit: useAction(({ skill, note }: { skill: Skill; note: string }) => submitSkill(skill, note), {
       invalidate,
       success: '已提交，空间管理员审核通过后大家就能用了',
-      failure: '没有提交成功',
+      failure: '没能提交',
     }),
     withdraw: useAction((skill: Skill) => withdrawSubmission(skill), {
       invalidate,
       success: '已撤回提交',
-      failure: '没有撤回成功',
+      failure: '没能撤回',
     }),
     env: useAction(
       ({ skill, values }: { skill: Skill; values: Record<string, string | null> }) =>
         setSkillEnv(skill, values),
-      { invalidate, success: '已保存，新对话里加载这个技能后生效', failure: '环境变量没有保存成功' },
+      { invalidate, success: '已保存，新对话里加载这个技能后生效', failure: '环境变量没能保存' },
     ),
   };
 }

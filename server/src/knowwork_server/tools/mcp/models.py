@@ -37,6 +37,9 @@ class McpServerRow(Base):
     headers_ciphertext: Mapped[str | None] = mapped_column(Text)
     header_names: Mapped[list] = mapped_column(JSONB, default=list)  # [{"name": ..., "last4": ...}]
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    # eager：工具随每次请求发给模型；on_demand：不常驻请求，系统提示里只列名字，模型用 mcp__<name>__load_tools 加载
+    # （照官方 dsh-mcp-client 的 toolLoading，宿主那边见 runtime-host 的 mcp-on-demand.mjs）
+    tool_loading: Mapped[str] = mapped_column(String(16), default="eager", server_default="eager")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     tools: Mapped[list] = mapped_column(JSONB, default=list)  # 工具清单快照，见 catalog.py
     auth: Mapped[str] = mapped_column(String(16), default="shared", server_default="shared")  # shared | user_token | oauth

@@ -97,7 +97,7 @@ class UsageRecord(Base):
     reasoning_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     cost: Mapped[Decimal | None] = mapped_column(COST)
-    status: Mapped[str] = mapped_column(String(16))  # ok | interrupted
+    status: Mapped[str] = mapped_column(String(16))  # ok | interrupted | blocked | failed（见 usage.py）
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     day: Mapped[date] = mapped_column(Date, index=True)
 

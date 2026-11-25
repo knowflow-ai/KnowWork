@@ -59,11 +59,11 @@ test('真实宿主：推清单后按对话选模型，之后的消息沿用；�
     assert.equal(chatRequests(gateway).at(-1).body.model, 'kw-chat', '没选时用配置档里的默认模型')
 
     await host.call('POST', '/v1/sessions/ms-1/messages', { text: '第二问', model: 'kw-pro' })
-    frames = await collectEvents(host, 'ms-1', isTurnEnd, { after: frames.at(-1).cursor })
+    frames = await collectEvents(host, 'ms-1', isTurnEnd, { after: frames.positions })
     assert.equal(chatRequests(gateway).at(-1).body.model, 'kw-pro', '选了就换')
 
     await host.call('POST', '/v1/sessions/ms-1/messages', { text: '第三问' })
-    await collectEvents(host, 'ms-1', isTurnEnd, { after: frames.at(-1).cursor })
+    await collectEvents(host, 'ms-1', isTurnEnd, { after: frames.positions })
     assert.equal(chatRequests(gateway).at(-1).body.model, 'kw-pro', '之后不带也沿用这段对话选的')
   } finally {
     await host.stop()

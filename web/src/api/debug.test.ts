@@ -7,7 +7,7 @@ afterEach(() => vi.unstubAllGlobals());
 const B = '/api/workspaces/default/conversations/c1/debug';
 
 describe('运行调试接口', () => {
-  it('解析一轮的步骤、工具调用、用量与子 Agent', async () => {
+  it('解析一轮的步骤、工具调用、用量与子智能体', async () => {
     routeFetch({
       [`GET ${B}/turns/2`]: jsonResponse({
         summary: {
@@ -66,7 +66,7 @@ describe('运行调试接口', () => {
   it('解析某一步的输入，给出导出地址与轮次号', async () => {
     routeFetch({
       [`GET ${B}/turns/2/steps/3/input`]: jsonResponse({
-        system: ['你是助手'],
+        system: ['你是智能体'],
         tools: [{ name: 'bash', description: '执行命令' }],
         notes: ['按日志还原'],
         messages: [{ role: 'user', source: 'runtime-context', blocks: [{ type: 'text', text: '上下文' }] }],

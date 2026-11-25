@@ -100,6 +100,16 @@ export const ev = {
       kind: 'message',
       data: attachments ? { role: 'user', text, attachments } : { role: 'user', text },
     }),
+  /** 排在收件箱里、随停止一起取消的用户消息（不在任何一轮里） */
+  discarded: (id: number | string, messageId: string) =>
+    wire({
+      id: s(id),
+      type: 'item.failed',
+      run: null,
+      item: messageId,
+      kind: 'message',
+      data: { role: 'user', reason: 'canceled' },
+    }),
   thinking: (id: number | string, text: string, run = 1) =>
     wire({
       id: s(id),

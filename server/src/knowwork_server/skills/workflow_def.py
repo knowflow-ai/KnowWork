@@ -48,8 +48,8 @@ from .manifest import TOOL_NAME, SkillManifest, _NoAliasLoader
 from .workflow_refs import ReferenceInvalid, find_refs
 
 FILE = "workflow.yaml"
+# 只限文件大小，不限步数（同 DSH 官方工作流：只限并发、条目与子任务数，不限步数）
 MAX_BYTES = 64 * 1024
-MAX_STEPS = 50
 MAX_RETRIES = 2
 STEP_KEY = r"^[a-z][a-z0-9_-]{0,47}$"
 
@@ -97,7 +97,7 @@ class WorkflowDefinition(_Frozen):
     version: Literal[1]
     description: str = Field(default="", max_length=2000)
     inputs: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
-    steps: tuple[Step, ...] = Field(min_length=1, max_length=MAX_STEPS)
+    steps: tuple[Step, ...] = Field(min_length=1)
     output: Any = None
 
     def to_json(self) -> dict[str, Any]:

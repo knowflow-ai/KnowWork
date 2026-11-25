@@ -11,6 +11,8 @@
  *   同名 deployment:persona-prefix 只遮这个会话的部署人设（cordis.patch.yml 的 personaPrefix），部署人设后缀里的通用要求
  *   照旧在。追加在对话里的背景压不过系统提示里的「你是 KnowWork 企业智能助手」，问「你是谁」会照部署人设答
  *   （2026-11-09 专家对话实测）。每一步开始前对一次：变了换掉，空了撤掉回到默认人设；身份不变时系统提示不变，不动前缀缓存。
+ *   DSH 0.2.3 起官方系统提示只追加不重写：换掉、撤掉身份时，官方在系统提示末尾追加「以下取代 deployment:persona-prefix
+ *   之前的说明」加新的那份，开头那份不动（dsh-system-prompt 0.2.3-alpha.2 的 SystemAdmission）。
  */
 
 import { createHash } from 'node:crypto'

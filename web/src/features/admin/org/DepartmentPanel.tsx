@@ -34,7 +34,7 @@ function AddDepartmentMember({ department, members }: Omit<Props, 'onDeleted'>) 
     {
       invalidate: [KEYS.departments],
       success: '已加入部门',
-      failure: '加入没有成功，请稍后重试',
+      failure: '没能加入，请稍后重试',
     },
   );
   const submit = async () => {
@@ -68,22 +68,22 @@ export function DepartmentPanel({ department, members, onDeleted }: Props) {
   const create = useAction((name: string) => createDepartment(name, department.id), {
     invalidate,
     success: '已新建子部门',
-    failure: '新建没有成功，请稍后重试',
+    failure: '没能新建，请稍后重试',
   });
   const rename = useAction((name: string) => renameDepartment(department.id, name), {
     invalidate,
     success: '已重命名',
-    failure: '重命名没有成功，请稍后重试',
+    failure: '没能重命名，请稍后重试',
   });
   const remove = useAction(() => deleteDepartment(department.id), {
     invalidate,
     success: '已删除部门',
-    failure: '删除没有成功，请稍后重试',
+    failure: '没能删除，请稍后重试',
   });
   const removeMember = useAction((userId: string) => removeDepartmentMember(department.id, userId), {
     invalidate,
     success: '已移出部门',
-    failure: '移出没有成功，请稍后重试',
+    failure: '没能移出，请稍后重试',
   });
 
   const columns: readonly Column<DepartmentMember>[] = [

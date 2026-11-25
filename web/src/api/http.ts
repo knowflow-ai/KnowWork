@@ -53,7 +53,7 @@ export function messageForStatus(status: number, body?: unknown): string {
   const fromServer = detailMessage(body);
   if (fromServer) return fromServer;
   if (STATUS_MESSAGES[status]) return STATUS_MESSAGES[status];
-  return status >= 500 ? '服务暂时不可用，请稍后重试' : '请求没有成功，请稍后重试';
+  return status >= 500 ? '服务暂时不可用，请稍后重试' : '没能请求，请稍后重试';
 }
 
 export const NETWORK_MESSAGE = '无法连接服务，请检查网络后重试';
@@ -209,7 +209,7 @@ export function saveFile(blob: Blob, filename: string): void {
 }
 
 /** 把任意异常变成一句可读的话。 */
-export function readableError(error: unknown, fallback = '操作没有成功，请稍后重试'): string {
+export function readableError(error: unknown, fallback = '没能操作，请稍后重试'): string {
   if (error instanceof ApiError) return error.message;
   return fallback;
 }

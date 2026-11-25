@@ -9,14 +9,14 @@
  * 对话框里的选择框弹出来就被对话框压在下面（2026-10-20 新增授权的知识库下拉）。行内样式只能用 !important 盖。
  */
 [data-radix-popper-content-wrapper] {
-  z-index: 1100 !important;
+  z-index: var(--kw-z-popover) !important;
 }
 
 /* ---------- 遮罩、对话框、抽屉 ---------- */
 .kw-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: var(--kw-z-overlay);
   background: var(--modal-backdrop-background);
   animation: kw-fade-in 150ms var(--cubic-enter);
 }
@@ -25,15 +25,15 @@
 .kw-image-viewer-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1100;
-  background: rgb(0 0 0 / 82%);
+  z-index: var(--kw-z-popover);
+  background: var(--kw-viewer-backdrop);
   animation: kw-fade-in 150ms var(--cubic-enter);
 }
 
 .kw-image-viewer {
   position: fixed;
   inset: 0;
-  z-index: 1101;
+  z-index: var(--kw-z-viewer);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -63,26 +63,26 @@
   max-height: calc(100vh - 120px);
   object-fit: contain;
   border-radius: var(--radius-md, 8px);
-  background: #fff;
+  background: var(--kw-viewer-image-bg);
 }
 
 .kw-image-viewer-figure figcaption {
   max-width: 720px;
-  color: rgb(255 255 255 / 85%);
-  font-size: var(--kw-font-sm);
+  color: var(--kw-viewer-text);
+  font-size: var(--font-text-sm-size);
   text-align: center;
 }
 
 /* 抽屉的遮罩浅一些，左边的对话还看得清 */
 .kw-overlay-light {
-  background: rgb(0 0 0 / 12%);
+  background: var(--kw-overlay-light-bg);
 }
 
 .kw-dialog {
   position: fixed;
   top: 50%;
   left: 50%;
-  z-index: 1001;
+  z-index: var(--kw-z-dialog);
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 64px);
@@ -156,7 +156,7 @@
   top: 0;
   right: 0;
   bottom: 0;
-  z-index: 1001;
+  z-index: var(--kw-z-dialog);
   display: flex;
   flex-direction: column;
   background: var(--color-surface);
@@ -274,7 +274,7 @@
   bottom: -1px;
   left: 0;
   height: 2px;
-  border-radius: 1px;
+  border-radius: var(--radius-2xs);
   background: var(--color-text);
   content: '';
 }
@@ -584,7 +584,7 @@
   position: fixed;
   top: 24px;
   left: 50%;
-  z-index: 2000;
+  z-index: var(--kw-z-toast);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -684,7 +684,7 @@
   align-self: center;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: var(--gray-400);
 }
 
@@ -847,6 +847,188 @@
   font-size: var(--font-text-xs-size);
 }
 
+/* ---------- 导航树（Tree variant="nav"，放在二级侧栏里）：照 ChatGPT 侧栏，行和主侧栏同一套 ---------- */
+.kw-tree.is-nav .kw-tree-row {
+  min-height: 36px;
+  padding-right: 4px;
+  border-radius: var(--radius-md);
+}
+
+.kw-tree.is-nav .kw-tree-row:hover,
+.kw-tree.is-nav .kw-tree-row.is-selected {
+  background: var(--kw-hover-bg);
+}
+
+.kw-tree.is-nav .kw-tree-title {
+  /* 和栏顶标题、组标题的字左边对齐 */
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--font-text-sm-size);
+  cursor: pointer;
+}
+
+/* 分组画成组标题：小号灰字，三角跟在名字后面，点了收起展开；不画悬停底色 */
+.kw-tree.is-nav .kw-tree-row.is-heading {
+  min-height: 0;
+  margin-top: 12px;
+}
+
+.kw-tree.is-nav .kw-tree-row.is-heading:hover {
+  background: transparent;
+}
+
+.kw-tree.is-nav .kw-tree-row.is-heading .kw-tree-title {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-text-xs-size);
+}
+
+.kw-tree.is-nav .kw-tree-row.is-heading .kw-tree-title svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* 行尾的「…」：鼠标移上去、键盘聚焦、选中或菜单开着时才出现（同侧栏会话项） */
+.kw-tree-actions {
+  display: inline-flex;
+  flex: none;
+  opacity: 0;
+}
+
+.kw-tree-row:hover > .kw-tree-actions,
+.kw-tree-row:focus-within > .kw-tree-actions,
+.kw-tree-row.is-selected > .kw-tree-actions,
+.kw-tree-actions:has([data-state='open']) {
+  opacity: 1;
+}
+
+/* ---------- 二级侧栏（ui/SideNav）：贴顶的一栏 + 右边内容区，两边各自滚动 ---------- */
+.kw-sidenav-layout {
+  display: grid;
+  grid-template-columns: var(--kw-sidenav-width) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.kw-sidenav-layout.is-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.kw-sidenav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  padding: 12px 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-border-subtle);
+  box-sizing: border-box;
+}
+
+.kw-sidenav-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-height: 40px;
+  padding: 0 0 0 12px;
+}
+
+.kw-sidenav-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--font-text-md-size);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kw-sidenav-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-text-secondary);
+}
+
+.kw-sidenav-main {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 内容区顶上一行：和二级侧栏的栏顶一样高，路径与按钮两头排 */
+.kw-sidenav-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  min-height: 40px;
+}
+
+.kw-sidenav-bar-left,
+.kw-sidenav-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 路径：前面几层能点回去，最后一层是当前位置 */
+.kw-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-crumbs-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kw-crumbs-item > [aria-current='page'] {
+  color: var(--color-text);
+}
+
+.kw-crumbs-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.kw-crumbs-link:hover {
+  color: var(--color-text);
+}
+
+/* 窄屏：二级侧栏排到内容上面，高度按内容，整页滚 */
+@media (max-width: 860px) {
+  .kw-sidenav-layout {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+  }
+
+  .kw-sidenav {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+}
+
 /* ---------- 树形选择框 ---------- */
 .kw-tree-select-menu {
   display: flex;
@@ -940,4 +1122,136 @@
 .kw-context-menu-item[data-disabled] {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+/* 打开的文档的标签条（ui/DocTabs，照 DSH 官方右侧栏 dockkit 的标签条）：条就是面板的上沿，高度同抽屉头部；
+   右端是切换类控件与文件的操作，标签多了只在条里横向滚动，右端的控件不缩、不跟着滚 */
+.kw-doc-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.kw-doc-tabs-strip {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.kw-doc-tabs-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.kw-doc-tabs-end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 一枚标签：28 高，80～170 宽；关闭按钮不占位，叠在右端，标签宽度不因它出现而变 */
+.kw-doc-tab {
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 80px;
+  max-width: 170px;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+  line-height: 1;
+  white-space: nowrap;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 相邻两枚之间留 10 宽，中间一条细竖线；当前标签两边的不画（它自己有底色） */
+.kw-doc-tab + .kw-doc-tab {
+  margin-left: 10px;
+}
+
+.kw-doc-tab + .kw-doc-tab::before {
+  position: absolute;
+  top: 7px;
+  left: -5.5px;
+  width: 1px;
+  height: 14px;
+  background: var(--color-border-subtle);
+  content: '';
+}
+
+.kw-doc-tab.is-active::before,
+.kw-doc-tab.is-active + .kw-doc-tab::before {
+  background: transparent;
+}
+
+.kw-doc-tab.is-active {
+  color: var(--color-text);
+  background: var(--color-surface-tertiary);
+}
+
+.kw-doc-tab:focus-visible {
+  outline: 2px solid var(--color-border-strong);
+  outline-offset: -2px;
+}
+
+/* 标题：类型图标加名字，末尾 16 像素总是渐隐（不量长度）；关闭按钮出现时让出最后 14 像素 */
+.kw-doc-tab-title {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.4;
+  mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
+}
+
+.kw-doc-tab.is-active .kw-doc-tab-title,
+.kw-doc-tab:focus-within .kw-doc-tab-title {
+  mask-image: linear-gradient(to right, black calc(100% - 30px), transparent calc(100% - 14px));
+}
+
+.kw-doc-tab-close {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: flex;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.kw-doc-tab.is-active .kw-doc-tab-close,
+.kw-doc-tab:focus-within .kw-doc-tab-close {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: hover) {
+  .kw-doc-tab:hover {
+    background: var(--color-surface-secondary);
+  }
+
+  .kw-doc-tab.is-active:hover {
+    background: var(--color-surface-tertiary);
+  }
+
+  .kw-doc-tab:hover .kw-doc-tab-title {
+    mask-image: linear-gradient(to right, black calc(100% - 30px), transparent calc(100% - 14px));
+  }
+
+  .kw-doc-tab:hover .kw-doc-tab-close {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }

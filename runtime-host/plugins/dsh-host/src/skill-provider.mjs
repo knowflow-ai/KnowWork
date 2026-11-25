@@ -31,7 +31,7 @@ import { createScope } from '@deepseek-ai/dsh-scope'
 import { bundledFor } from './bundled-skills.mjs'
 import { skillClient, ensureCatalog, lockedTools } from './skill-catalog.mjs'
 import { lockTools, unlockSkill } from './skill-unlock.mjs'
-import { publish, resolveRootSession } from './state.mjs'
+import { recordFact, resolveRootSession } from './state.mjs'
 
 export const name = 'knowwork-skill-provider'
 export const inject = ['agents', 'tools', 'skills']
@@ -100,7 +100,11 @@ export function apply(ctx, config = {}) {
     const sessionId = String(agent.session.id)
     // 只有声明了完成判据的技能才进技能门；子 Agent 加载的不约束根会话的最终回答
     if (sessionId === root.id && skill.completionTools.length > 0) root.gate.loaded.set(skillName, skill.completionTools)
-    publish(root.id, 'skill/loaded', { sessionId, skill: skillName, version: skill.version, mode, unlocked })
+    const record = () => recordFact(root, 'skill/loaded', { sessionId, skill: skillName, version: skill.version, mode, unlocked })
+    // 用户 /技能名 是在会话日志的 session/event 监听里认出来的：官方在派发日志事件时拒绝往同一份日志里重入写（失败只记日志），
+    // 这条事实挪到下一个微任务再写；解锁、技能门照旧当场生效
+    if (mode === 'manual') queueMicrotask(record)
+    else record()
   }
 
   ctx.on('agent/created', async ({ agent }) => {

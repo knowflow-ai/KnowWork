@@ -6,6 +6,7 @@
  * mermaid 代码块画成图（MermaidDiagram）；正在输出、一直延伸到正文末尾的那块可能还没写完，先显示代码。
  * 指向文件的链接（判定照 DSH 官方，见 fileLinks.ts）点了交给 FileLinks 给的处理函数（会话页在右侧预览）；
  * 没给（云端对话、别的电脑上看本机会话）就只显示文字，不做成点了打不开的链接。
+ * 行内代码照 ChatGPT（组件库 InlineCode 的样式）；反引号里点到这一轮改过、交付的文件（turnFiles.ts）变成文件链接。
  */
 import { createContext, useContext, useState, type ReactNode } from 'react';
 import { CodeBlock } from '@openai/apps-sdk-ui/components/CodeBlock';
@@ -18,6 +19,7 @@ import { keepDirectivesAsText } from './directives';
 import { FileLinkContext, useFileOpener, type FileOpener } from './fileLinkContext';
 import { fileTarget, type FileTarget } from './fileLinks';
 import { MermaidDiagram } from './MermaidDiagram';
+import { turnFileOf } from './turnFiles';
 
 type Sources = Readonly<Record<number, CitationSource>>;
 
@@ -27,6 +29,8 @@ interface Props {
   readonly sources?: Sources;
   /** 回答还在逐字输出：末尾那块代码可能还没写完，先不画图 */
   readonly streaming?: boolean;
+  /** 这一轮改过、交付的文件（turnFiles.ts）：正文里反引号点到它们的变成文件链接 */
+  readonly files?: readonly string[];
 }
 
 /**
@@ -35,6 +39,7 @@ interface Props {
  * 回答过程中每来一次状态更新，图就重新加载、闪一下，点开的引用气泡也被重建（实测）。
  */
 const SourcesContext = createContext<Sources | undefined>(undefined);
+const TurnFilesContext = createContext<readonly string[]>([]);
 
 /** 正在输出时正文有多长：延伸到这里的代码块可能还没写完。不在输出时是 undefined。 */
 const OpenEndContext = createContext<number | undefined>(undefined);
@@ -154,18 +159,30 @@ function Table({ children }: { readonly children?: ReactNode }) {
   );
 }
 
-const COMPONENTS = { a: Link, pre: Pre, table: Table };
+/** 行内代码（代码块由 Pre 画，不经这里）：点到这一轮的文件就是文件链接，别的是官方样式的代码小块 */
+function InlineCode({ children }: { readonly children?: ReactNode }) {
+  const files = useContext(TurnFilesContext);
+  const file = typeof children === 'string' ? turnFileOf(children, files) : undefined;
+  const code = <code className="kw-inline-code">{children}</code>;
+  return file === undefined ? code : <FileLink target={{ path: file }}>{code}</FileLink>;
+}
+
+const COMPONENTS = { a: Link, pre: Pre, table: Table, code: InlineCode };
 const REMARK_PLUGINS = [keepDirectivesAsText];
 
-export function Markdown({ text, sources, streaming = false }: Props) {
+const NO_FILES: readonly string[] = [];
+
+export function Markdown({ text, sources, streaming = false, files = NO_FILES }: Props) {
   const marked = markCitations(text);
   return (
     <SourcesContext.Provider value={sources}>
-      <OpenEndContext.Provider value={streaming ? marked.length : undefined}>
-        <MarkdownContent className="kw-markdown" components={COMPONENTS} remarkPlugins={REMARK_PLUGINS}>
-          {marked}
-        </MarkdownContent>
-      </OpenEndContext.Provider>
+      <TurnFilesContext.Provider value={files}>
+        <OpenEndContext.Provider value={streaming ? marked.length : undefined}>
+          <MarkdownContent className="kw-markdown" components={COMPONENTS} remarkPlugins={REMARK_PLUGINS}>
+            {marked}
+          </MarkdownContent>
+        </OpenEndContext.Provider>
+      </TurnFilesContext.Provider>
     </SourcesContext.Provider>
   );
 }

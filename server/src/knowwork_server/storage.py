@@ -26,8 +26,8 @@ def blob_store(settings: Settings) -> BlobStore:
 
 
 _NAMESPACE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
-# 已经有人用的位置：技能包在根下的 sha256/，会话文件在 session-files/
-_TAKEN = frozenset({"sha256", DEFAULT_PREFIX})
+# 已经有人用的位置：技能包在根下的 sha256/，会话文件在 session-files/，插件压缩包在 plugins/
+_TAKEN = frozenset({"sha256", DEFAULT_PREFIX, "plugins"})
 
 
 def namespaced_stores(settings: Settings, namespace: str) -> SessionStores:
@@ -36,6 +36,13 @@ def namespaced_stores(settings: Settings, namespace: str) -> SessionStores:
     if settings.s3_endpoint_url:
         return s3_session_stores(s3_client(settings), settings.s3_bucket, prefix=namespace)
     return local_session_stores(f"{settings.blob_dir.rstrip('/')}/{namespace}")
+
+
+def plugin_store(settings: Settings) -> BlobStore:
+    """上传的插件压缩包：按摘要寻址，放在 plugins/ 下，和技能包分开。"""
+    if settings.s3_endpoint_url:
+        return S3BlobStore(s3_client(settings), settings.s3_bucket, prefix="plugins")
+    return LocalBlobStore(f"{settings.blob_dir.rstrip('/')}/plugins")
 
 
 def session_stores(settings: Settings) -> SessionStores:

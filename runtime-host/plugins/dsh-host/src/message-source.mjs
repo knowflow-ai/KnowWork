@@ -29,14 +29,3 @@ export function deploymentTimeZone() {
 export function userSource(timeZone, fallback) {
   return { kind: 'user', rpcId: randomUUID(), clientTimeZone: canonicalTimeZone(timeZone) ?? fallback }
 }
-
-/**
- * 给子 Agent 的任务消息补上时区。官方委派时任务消息的来源只写 `{ kind: 'user' }`，不带时区，官方时钟就在子 Agent
- * 的读数里写「时区不可用，请向用户确认」；这里换成同样写法的 user-rpc 来源。已经带了编号的（有人直接发给子 Agent 的）
- * 和别的来源（父 Agent 后来发的消息、系统补的上下文）不动。
- */
-export function withTimeZone(message, timeZone) {
-  const source = message.source
-  if (source?.kind !== 'user' || 'rpcId' in source) return message
-  return { ...message, source: { ...source, rpcId: randomUUID(), clientTimeZone: timeZone } }
-}

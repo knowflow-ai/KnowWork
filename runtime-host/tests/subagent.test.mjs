@@ -100,7 +100,7 @@ test('子 Agent 里需要审批的工具：审批出现在父会话的审批列�
     assert.equal(pending[0].sessionId, frame.data.sessionId)
     assert.equal(pending[0].id, approvalEvent(frame, 'approval/asked').id, '待答项用子会话日志里的官方编号')
     assert.equal((await env.host.call('POST', `/v1/sessions/sub-appr/approvals/${pending[0].id}`, { outcome: 'allowed-once' })).status, 200)
-    await collectEvents(env.host, 'sub-appr', subagentEvent('turn/end'), { after: asked.at(-1).cursor, timeoutMs: 30_000 })
+    await collectEvents(env.host, 'sub-appr', subagentEvent('turn/end'), { after: asked.positions, timeoutMs: 30_000 })
     const followup = env.childRequests()[1]
     assert.ok(followup, '审批后子 Agent 没有继续')
     assert.ok(JSON.stringify(followup.body.messages).includes('written: 子台账'), '批准后子 Agent 的工具没有执行')

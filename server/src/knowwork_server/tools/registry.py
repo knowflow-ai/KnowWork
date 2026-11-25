@@ -65,6 +65,9 @@ class ToolSpec:
     - answer_modes：在哪几种回答方式下提供（默认只在智能体里）。快速问答只给能「快速查知识库作答」的工具（只读知识库工具、
       用户明确要记的记忆写入），由定义工具的模块自己声明，和 risk、concurrent 一样随描述交给宿主；宿主按它算官方条件工具的
       `when`，名单不写在宿主里，加工具不用两头改；
+    - on_demand_server：这个工具属于哪个开了「按需加载」的 MCP 服务（只有那种服务的工具有）。宿主不先把它交给模型，
+      系统提示里列名字，模型用 `mcp__<服务名>__load_tools` 加载（照官方 dsh-mcp-client 的 toolLoading: on-demand，
+      宿主那边见 runtime-host 的 mcp-on-demand.mjs）；
     - tailor：按会话裁剪交给宿主的那份描述（可选），例如去掉这个会话用不上的参数。DSH 的工具参数注册时就定了，
       没有按步改参数的扩展点；官方自己的做法是装配时定（bash 只在有沙箱执行器时才带 sandbox_permissions）。
       宿主每个会话开始时拉一次清单，就在那时定，整个会话不变，不动模型服务的前缀缓存。只影响交给宿主的描述，
@@ -82,6 +85,7 @@ class ToolSpec:
     concurrent: bool = False
     answer_modes: frozenset[str] = AGENT_ONLY
     needs_sandbox: bool = False
+    on_demand_server: str | None = None
     tailor: "Tailor | None" = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -107,7 +111,8 @@ class ToolSpec:
                      "risk": self.risk, "approval": self.approval_mode}
         return {**described, **({"guidance": self.guidance} if self.guidance is not None else {}),
                 **({"concurrent": True} if self.concurrent else {}),
-                **({"answerModes": sorted(self.answer_modes)} if self.answer_modes != AGENT_ONLY else {})}
+                **({"answerModes": sorted(self.answer_modes)} if self.answer_modes != AGENT_ONLY else {}),
+                **({"onDemand": {"server": self.on_demand_server}} if self.on_demand_server is not None else {})}
 
 
 Tailor = Callable[[ToolContext, ToolSpec], Awaitable[ToolSpec]]

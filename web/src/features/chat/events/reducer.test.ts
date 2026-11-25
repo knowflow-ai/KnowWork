@@ -58,7 +58,7 @@ describe('chatReducer 正常轮次', () => {
     expect(state.openRun).toBe('run-1');
   });
 
-  it('同一轮多段回答用空行拼接；非助手消息与空文本忽略', () => {
+  it('同一轮多段回答用空行拼接；非智能体消息与空文本忽略', () => {
     const state = fold([
       ev.runStarted(1),
       ev.message(2, '第一段'),
@@ -87,7 +87,7 @@ describe('chatReducer 正常轮次', () => {
     ]);
     const [first, second, third] = state.runs['run-1']!.steps;
     expect(first).toMatchObject({ status: 'error', errorReason: '仓库还没有被收录', arguments: '{"q":"x"}' });
-    expect(second!.errorReason).toBe('工具执行没有成功');
+    expect(second!.errorReason).toBe('工具没能执行');
     expect(third!.errorReason).toBe(`${'长'.repeat(60)}…`);
   });
 
@@ -201,6 +201,34 @@ describe('chatReducer 结束原因', () => {
     expect(state.runs['run-1']!.endReason?.message).toBe(
       '这一步要输出的内容超过了模型单次输出的上限，没写完就停了。回复「继续」，AI 会拆小接着做；也可以请管理员调高这个模型的「最大输出」。',
     );
+  });
+
+  it('内容检查拦下：只留管理员写的提示，已经显示的回答、思考与说明都收掉，执行过的步骤留着', () => {
+    const blocked = wire({
+      id: '7',
+      type: 'run.failed',
+      run: 1,
+      data: { code: 'content_blocked', message: '当前对话内容违反公司规范' },
+    });
+    const state = fold([...happyRun().slice(0, -1), blocked]);
+    const run = state.runs['run-1']!;
+    expect(run.endReason).toEqual({ kind: 'failed', message: '当前对话内容违反公司规范' });
+    expect(run.answer).toBe('');
+    expect(run.thinking).toEqual([]);
+    expect(run.notes).toEqual([]);
+    expect(run.trail).toEqual([{ type: 'step', callId: 'c1' }]);
+    expect(run.steps.map((s) => s.callId)).toEqual(['c1']);
+  });
+
+  it('内容检查暂时不可用：照服务端带来的话说', () => {
+    const down = wire({
+      id: '2',
+      type: 'run.failed',
+      run: 1,
+      data: { code: 'check_unavailable', message: '' },
+    });
+    const state = fold([ev.runStarted(1), down]);
+    expect(state.runs['run-1']!.endReason?.message).toBe('内容检查暂时不可用，请稍后再试');
   });
 
   it('只有结束事件时也建立轮次', () => {

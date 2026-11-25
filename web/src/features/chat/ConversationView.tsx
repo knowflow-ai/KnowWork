@@ -17,16 +17,22 @@ import { readableError } from '../../api/http';
 import { useEmbedMode } from '../embed/embedMode';
 import { toast } from '../../ui/toastStore';
 import { CONVERSATIONS_KEY } from '../conversations/queries';
-import { Composer } from './components/Composer';
+import { GoalPanel } from './components/GoalPanel';
+import { Composer, type ComposerDraft } from './components/Composer';
 import { FileLinks } from './components/Markdown';
+import { JumpToLatest } from './components/JumpToLatest';
 import { MessageList } from './components/MessageList';
-import { selectLastUserMessage, selectRunState } from './events/selectors';
+import { selectFileNames, selectLastUserMessage, selectRunState } from './events/selectors';
 import { useConversation, type FirstMessage, type TurnExtras } from './hooks/useConversation';
+import { useDiscardedBack } from './hooks/useDiscardedBack';
 import { useFileLinks } from './hooks/useFileLinks';
+import { useFollowLatest } from './hooks/useFollowLatest';
+import { useDraftsEditable } from './hooks/useDraftsEditable';
 import { PlaceLabel } from './components/PlaceSelect';
 import { useFeedback } from './hooks/useFeedback';
 import { resolveMentions } from './mentions/resolve';
 import { SERVER_SOURCE, type ConversationSource } from './sources';
+import { useGoalArmed } from './useGoalArmed';
 import { turnEnded } from './turnEnds';
 import { cx } from '../../ui/cx';
 
@@ -66,15 +72,34 @@ interface Props {
   /** 这段对话在哪执行（sources.ts）：默认业务服务。别处执行的，发消息、停止、审批交给来源，输入框按来源的 limits 置灰，
    *  输入框下面写明在哪执行；读的都是业务服务，反馈、运行详情照常有 */
   readonly source?: ConversationSource;
+  /** 输入框接着用的草稿（新对话页点了输入框里的附件、为它建好对话后带过来） */
+  readonly initialDraft?: ComposerDraft;
+  /** 进来就在编辑器里打开的附件（输入框里还没发出去的，暂存时给的 id） */
+  readonly openOnArrival?: string;
 }
 
+/**
+ * 第一次连接等这么久还没连上才写「正在连接…」：一般几百毫秒就连上（照 ChatGPT，进对话时不提示连接）。
+ * 原来一进会话页就先插一行、连上再拿掉，新对话发完第一句进来，刚发的那条会被顶下去再弹回来（2026-11-24 实测下移 26 像素）
+ */
+const CONNECTING_GRACE_MS = 1000;
+
+/** 连接提示浮在消息区顶上（高度为 0 的贴顶层），出现、消失都不挪动下面的消息；中途断了、连不上马上写 */
 function ConnectionNotice({ state, message }: { readonly state: string; readonly message?: string }) {
-  if (state === 'connected') return null;
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    if (state !== 'connecting') return undefined;
+    const timer = setTimeout(() => setLate(true), CONNECTING_GRACE_MS);
+    return () => clearTimeout(timer);
+  }, [state]);
+  if (state === 'connected' || (state === 'connecting' && !late)) return null;
   const base = CONNECTION_TEXT[state as keyof typeof CONNECTION_TEXT];
   if (!base) return null;
   return (
-    <div className="kw-connection" role="status">
-      {state === 'failed' && message ? message : base}
+    <div className="kw-connection-float">
+      <div className="kw-connection" role="status">
+        {state === 'failed' && message ? message : base}
+      </div>
     </div>
   );
 }
@@ -93,6 +118,8 @@ export function ConversationView({
   scoped = false,
   chooseModel = false,
   source = SERVER_SOURCE,
+  initialDraft,
+  openOnArrival,
 }: Props) {
   const server = source.server;
   const feedback = useFeedback(conversationId);
@@ -122,22 +149,55 @@ export function ConversationView({
   // 回答里的文件链接：在业务服务上执行的直接读服务端；别处执行的，确认了这里能继续（别的电脑上看本机会话不行）才能点开
   const here = server || (continuing.isSuccess && continuing.data === null);
   const fileLinks = useFileLinks(conversationId, here ? source.files : undefined);
-  const { state, connection, connectionMessage, send, cancel, decide, answer } = useConversation(
+  // 输入框里还没发出去的附件：这里开着在线编辑才点得开，点了建副本、在编辑器里打开，不用先发一句话
+  const draftsEditable = useDraftsEditable(here ? source.files : undefined);
+  const openAttachment = fileLinks.opener?.openAttachment;
+  const onOpenDraft = useMemo(
+    () =>
+      draftsEditable && openAttachment
+        ? (attachmentId: string) => openAttachment({ attachmentId })
+        : undefined,
+    [draftsEditable, openAttachment],
+  );
+  // 新对话页为输入框里的附件建好对话带过来的：进来就打开，只打开一次
+  const arrivalOpened = useRef(false);
+  useEffect(() => {
+    if (openOnArrival === undefined || !openAttachment || arrivalOpened.current) return;
+    arrivalOpened.current = true;
+    openAttachment({ attachmentId: openOnArrival });
+  }, [openOnArrival, openAttachment]);
+  // 消息区跟着最新的；往上翻了就不自动滚、给「回到最新」
+  const { ref: scrollRef, atLatest, onScroll: onMessagesScroll, toLatest } = useFollowLatest();
+  const { state, connection, connectionMessage, send, cancel, decide, answer, runCommand } = useConversation(
     conversationId,
     firstMessage,
     answerMode,
     actions,
   );
+  // / 命令：执行的一方能列能执行、这里能继续这段对话时才给输入框（来源给的，云端问业务服务、本机问桌面端）
+  const listCommands = actions.commands;
+  const commands = useMemo(
+    () =>
+      listCommands && actions.runCommand && blocked === null
+        ? { key: `${source.id}:${conversationId}`, list: () => listCommands(conversationId), run: runCommand }
+        : undefined,
+    [listCommands, actions.runCommand, blocked, source.id, conversationId, runCommand],
+  );
+  // 排着队随停止一起取消的消息：原文放回输入框
+  useDiscardedBack(conversationId, state);
   const running = selectRunState(state) !== 'idle';
+  const goalArmed = useGoalArmed(source.id, conversationId, state.goal, actions.goalArmed, running);
   const wasRunning = useRef(false);
   useEffect(() => {
     if (wasRunning.current && !running) {
       onTurnEnd?.();
+      // 对话标题以官方为准：官方按第一句话、再用模型起标题，业务服务同步过来，一轮结束时一般已经到了，刷新列表与标题
+      void client.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
       // 也按对话通知扩展的来源（例如云端在线编辑一轮结束查改动，turnEnds.ts）
       turnEnded(conversationId);
     }
     wasRunning.current = running;
-  }, [running, onTurnEnd, conversationId]);
+  }, [running, onTurnEnd, conversationId, client]);
   const [inspecting, setInspecting] = useState<number>();
   // 加了附件就预热（宿主上的对话、沙箱容器空闲半小时会被回收），一分钟内只预热一次；结果不用管
   const warmedAt = useRef(0);
@@ -148,6 +208,19 @@ export function ConversationView({
     warmedAt.current = now;
     void warmConversation(conversationId).catch(() => undefined);
   }, [conversationId, server]);
+  // 页面上出现了文件就提前起编辑器（来源给了的话），点开时不用等它起来：对话里的附件、交付的文件，输入框里刚加的附件
+  const prewarm = source.files?.prewarm;
+  const onAttach = useCallback(
+    (names: readonly string[]) => {
+      warm();
+      prewarm?.(names);
+    },
+    [warm, prewarm],
+  );
+  const fileNames = selectFileNames(state).join('\n');
+  useEffect(() => {
+    if (fileNames) prewarm?.(fileNames.split('\n'));
+  }, [fileNames, prewarm]);
   const onInspect = useCallback((runId: string) => setInspecting(turnOfRun(runId)), []);
   // 网页嵌入页不看运行详情（embedMode.ts）
   const embedMode = useEmbedMode();
@@ -197,7 +270,7 @@ export function ConversationView({
       try {
         await decide(approvalId, allow, remember);
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : '审批没有提交成功，请稍后重试');
+        toast.error(error instanceof Error ? error.message : '审批没能提交，请稍后重试');
       }
     },
     [decide],
@@ -208,7 +281,7 @@ export function ConversationView({
         await answer(questionId, answers);
         return true;
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : '回答没有提交成功，请稍后重试');
+        toast.error(error instanceof Error ? error.message : '回答没能提交，请稍后重试');
         return false;
       }
     },
@@ -232,7 +305,7 @@ export function ConversationView({
       <div className={opening ? 'kw-chat kw-chat-intro' : 'kw-chat'}>
         {fileLinks.tools ? <div className="kw-chat-tools">{fileLinks.tools}</div> : null}
         {top}
-        <div className="kw-chat-scroll">
+        <div className="kw-chat-scroll" ref={scrollRef} onScroll={onMessagesScroll}>
           <ConnectionNotice state={connection} message={connectionMessage} />
           {opening ? intro(ask) : null}
           <FileLinks opener={fileLinks.opener}>
@@ -247,6 +320,7 @@ export function ConversationView({
               onInspect={canInspect ? onInspect : undefined}
               feedback={feedback}
               onAsk={ask}
+              follow={atLatest}
             />
           </FileLinks>
         </div>
@@ -261,12 +335,22 @@ export function ConversationView({
           </Suspense>
         ) : null}
         <div className="kw-composer-dock">
+          {atLatest ? null : <JumpToLatest onClick={toLatest} />}
           {above}
+          {/* 长任务目标的进度：按钮执行的是 /goal 命令，能在这里继续这段对话时才给 */}
+          {state.goal ? (
+            <GoalPanel
+              goal={goalArmed === undefined ? state.goal : { ...state.goal, armed: goalArmed }}
+              run={commands?.run}
+            />
+          ) : null}
           <Composer
             running={running}
             onSend={onSend}
             onStop={cancel}
-            initialMentions={firstMessage?.mentions}
+            initialMentions={initialDraft?.mentions ?? firstMessage?.mentions}
+            initialDraft={initialDraft}
+            onOpenDraft={blocked === null ? onOpenDraft : undefined}
             disabled={connection === 'failed' || blocked !== null}
             answerMode={answerMode}
             limits={source.limits}
@@ -286,7 +370,8 @@ export function ConversationView({
             mentionScope={scoped ? { conversationId } : undefined}
             fileReferences={references}
             dropFiles={blocked === null ? dropFiles : undefined}
-            onAttach={warm}
+            commands={commands}
+            onAttach={onAttach}
             chooseModel={chooseModel}
           />
         </div>

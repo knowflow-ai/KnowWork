@@ -279,3 +279,44 @@ def test_search_snippet_keeps_a_little_context_around_the_hit():
     cut = snippet(long, "差旅报销")
     assert cut.startswith("…") and cut.endswith("…") and "差旅报销" in cut and len(cut) < 70
     assert snippet("多个   空白\n换行 差旅", "差旅") == "多个 空白 换行 差旅"
+
+
+async def test_goal_armed_is_read_live_from_the_host(sessionmaker, conversation_id):
+    """目标面板现取自动续跑开着没有：宿主说开着就开着；宿主上没开着这段会话按关着算（官方重开后就是关着的），
+    不为读它把会话恢复起来；宿主出错报上游错误；别人的对话 404。"""
+    kernel = FakeKernel()
+    client, pump = api(kernel, sessionmaker)
+    async with client:
+        url = f"{CONV}/{conversation_id}/goal"
+        assert (await client.get(url, headers=AUTH)).json() == {"armed": False}
+        kernel.goals_armed[conversation_id] = True
+        assert (await client.get(url, headers=AUTH)).json() == {"armed": True}
+        kernel.goals_armed[conversation_id] = SessionNotFound("session_not_found", "x", 404)
+        assert (await client.get(url, headers=AUTH)).json() == {"armed": False}
+        assert kernel.opened == [], "读状态不恢复会话"
+        kernel.goals_armed[conversation_id] = KernelError("host_down", "x", 503)
+        assert (await client.get(url, headers=AUTH)).status_code >= 500
+        assert (await client.get(f"{CONV}/c-missing/goal", headers=AUTH)).status_code == 404
+    await pump.close()
+
+
+async def test_commands_list_and_run_on_the_host(sessionmaker, conversation_id):
+    """/ 命令：列出宿主上这段会话的命令；执行交给宿主、不发消息；不认识的 404，格式不对的 422，别人的对话 404。"""
+    kernel = FakeKernel()
+    client, pump = api(kernel, sessionmaker)
+    async with client:
+        listed = await client.get(f"{CONV}/{conversation_id}/commands", headers=AUTH)
+        assert listed.status_code == 200
+        assert listed.json() == {"commands": [{"name": "goal", "description": "Set or view the goal",
+                                               "hint": "[<objective>]",
+                                               "definition_id": "@deepseek-ai/dsh-command-goal"}]}
+        ran = await client.post(f"{CONV}/{conversation_id}/commands", json={"line": "/goal 把合同核对完"}, headers=AUTH)
+        assert ran.status_code == 200 and ran.json() == {"command_id": "cmd-1", "kind": "success", "text": "Goal set"}
+        assert kernel.commands_run == [(conversation_id, "/goal 把合同核对完")]
+        unknown = await client.post(f"{CONV}/{conversation_id}/commands", json={"line": "/nope"}, headers=AUTH)
+        assert unknown.status_code == 404 and unknown.json()["detail"]["code"] == "command_unknown"
+        for bad in ({"line": "你好"}, {"line": "/Goal x"}, {"line": "/"}, {}, {"line": "/goal", "extra": 1}):
+            assert (await client.post(f"{CONV}/{conversation_id}/commands", json=bad, headers=AUTH)).status_code == 422
+        assert (await client.get(f"{CONV}/c-missing/commands", headers=AUTH)).status_code == 404
+    assert kernel.sent == [] if hasattr(kernel, "sent") else True
+    await pump.close()

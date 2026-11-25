@@ -58,7 +58,7 @@ export function JobSheet({ id, kinds, onClose }: Props) {
       {job.isPending ? (
         <Skeleton rows={6} />
       ) : job.isError ? (
-        <Empty title="任务详情加载失败" description="任务可能已经被清理，请刷新列表后再看" />
+        <Empty title="没能加载任务详情" description="任务可能已经被清理，请刷新列表后再看" />
       ) : (
         <>
           <DescriptionList

@@ -1,5 +1,5 @@
 /**
- * @ 菜单的状态。刚打 @ 时列分组（知识库、文件、标签、扩展登记的、MCP、技能），各带一句选了会怎样；
+ * @ 菜单的状态。刚打 @ 时列分组（知识库、文件、标签、扩展登记的、MCP），各带一句选了会怎样（技能在 / 里，见 slash.ts）；
  * 接着打字就跨组查（每组露前几项，「查看全部」进组）；进了组只看这一组。↑↓ 选，回车、Tab 或 → 确定（→ 只进分组），
  * ← 退回分组列表，Esc 先退出分组再关。
  * 键盘事件由输入框转过来（焦点一直在输入框里，边打字边选）。
@@ -150,8 +150,9 @@ export function useMentionMenu(
   files?: MentionFiles,
 ): MentionMenu {
   const { options: offered, loading } = useMentionOptions(scope);
+  // 技能改到输入框开头的 / 里了（照 DSH 官方与业内做法：@ 是材料与范围，/ 是做法与命令），@ 菜单不再列技能
   const options = useMemo(
-    () => (agent ? offered : { ...offered, services: [], skills: [] }),
+    () => (agent ? { ...offered, skills: [] } : { ...offered, services: [], skills: [] }),
     [offered, agent],
   );
   const open = trigger !== null;
@@ -215,8 +216,16 @@ export function useMentionMenu(
 
   const busy = loading || (wantsDocuments && documents.isFetching) || (wantsFiles && references.isFetching);
   const empty = rows.length > 0 || busy ? null : '没有匹配的内容';
-  const note =
-    group === 'documents' && !query && rows.length > 0
+  // 老用户照旧打 @技能名：提示技能在 / 里
+  const needle = query.trim().toLowerCase();
+  const skillMoved =
+    agent &&
+    group === null &&
+    needle.length > 0 &&
+    offered.skills.some((s) => s.name.toLowerCase().includes(needle));
+  const note = skillMoved
+    ? '技能改到 / 里了：在输入框开头打 / 选技能'
+    : group === 'documents' && !query && rows.length > 0
       ? '这里是最近更新的文件，接着打字按名字查找'
       : group === 'workspace' && rows.length > 0
         ? '接着打字按路径查找；选文件夹会接着往下列'

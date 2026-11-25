@@ -21,18 +21,24 @@ from ..fake_sandbox import FakeSandbox
 pytestmark = pytest.mark.anyio
 
 
-def setup(files_db, tmp_path, *, limits: ArtifactLimits | None = None, settle=None):
+def setup(files_db, tmp_path, *, limits: ArtifactLimits | None = None, settle=None, inputs=None, claim_draft=None):
     sandbox, stores = FakeSandbox(), local_session_stores(tmp_path)
     artifacts = build_artifacts(files_db.sessionmaker, stores, sandbox)
     if limits is not None:
         artifacts.collector._limits = limits
-    files = ConversationFiles(artifacts.service, sandbox, PreviewService(artifacts.service, sandbox))
-    editing = ConversationFileEditing(files_db.lookup, files, artifacts.collector, sandbox, settle=settle)
+    files = ConversationFiles(artifacts.service, sandbox, PreviewService(artifacts.service, sandbox), inputs=inputs)
+    editing = ConversationFileEditing(files_db.lookup, files, artifacts.collector, sandbox, settle=settle,
+                                      claim_draft=claim_draft)
     return editing, artifacts, sandbox, files
 
 
 async def locate(editing, conv, path, *, user="alice"):
     return await editing.locate(workspace_id=conv.workspace_id, conversation_id=conv.id, user_id=user, path=path)
+
+
+async def working_copy(editing, conv, path, *, user="alice"):
+    return await editing.working_copy(workspace_id=conv.workspace_id, conversation_id=conv.id, user_id=user,
+                                      path=path)
 
 
 async def test_only_the_owner_edits_files_in_the_working_folder(files_db, tmp_path):
@@ -161,6 +167,133 @@ async def test_read_waits_for_the_turns_deliverables_to_land(files_db, tmp_path)
     sandbox.write_output("ws1", conv.id, "a.docx", b"ai")
     pending.append(f"/sessions/{conv.id}/a.docx")
     assert await editing.read(await locate(editing, conv, "a.docx")) == b"ai"
+
+
+async def test_an_attachment_is_edited_through_a_same_name_copy_in_the_working_folder(files_db, tmp_path):
+    """附件只读：要编辑时在工作目录根上建同名副本，存成这个路径的一版并写回沙箱，原件不动。"""
+    conv = await files_db.conversation()
+    editing, artifacts, sandbox, files = setup(files_db, tmp_path)
+    sandbox.write_output("ws1", conv.id, "input/北京众城简介 .docx", b"orig")
+    for path in ("input/北京众城简介 .docx", "/workspace/input/北京众城简介 .docx"):
+        copy = await working_copy(editing, conv, path)
+        assert copy.relative == "北京众城简介 .docx", path
+    assert await editing.read(copy) == b"orig"
+    assert sandbox.outputs[("ws1", conv.id)]["北京众城简介 .docx"] == b"orig"
+    assert len(await artifacts.service.list(conv)) == 1, "点两次只存一版"
+    sandbox.recycle("ws1", conv.id)
+    assert (await files.read(conv, files.locate(conv, "北京众城简介 .docx"))).data == b"orig", "存成了一版，回收后也在"
+
+
+async def test_a_working_copy_that_already_exists_is_reused_not_overwritten(files_db, tmp_path):
+    """第二次点开接着改上次那份：根上已有同名文件（人改过的、模型自己放的）就用它，不拿原件盖掉。"""
+    conv = await files_db.conversation()
+    editing, artifacts, sandbox, _ = setup(files_db, tmp_path)
+    sandbox.write_output("ws1", conv.id, "input/合同.docx", b"orig")
+    copy = await working_copy(editing, conv, "input/合同.docx")
+    await editing.save(copy, b"edited")
+    again = await working_copy(editing, conv, "input/合同.docx")
+    assert again.relative == "合同.docx" and await editing.read(again) == b"edited"
+
+    sandbox.write_output("ws1", conv.id, "input/报价.xlsx", b"orig")
+    sandbox.write_output("ws1", conv.id, "报价.xlsx", b"model's copy")
+    reused = await working_copy(editing, conv, "input/报价.xlsx")
+    assert await editing.read(reused) == b"model's copy"
+    assert len(await artifacts.service.list(conv)) == 2, "已有的不另存"
+
+
+async def test_a_working_copy_is_made_from_the_stored_attachment_after_the_sandbox_is_recycled(files_db, tmp_path):
+    """沙箱空闲回收后附件仍在附件存储里：照样能建副本（存成一版，等沙箱再起来时由模型那边读到）。"""
+    conv = await files_db.conversation()
+
+    async def inputs(conversation, name):
+        return b"stored original" if (conversation.id, name) == (conv.id, "简介.docx") else None
+
+    editing, _, sandbox, _ = setup(files_db, tmp_path, inputs=inputs)
+    sandbox.recycle("ws1", conv.id)
+    copy = await working_copy(editing, conv, "input/简介.docx")
+    assert await editing.read(copy) == b"stored original"
+    with pytest.raises(EditRefused) as refused:
+        await working_copy(editing, conv, "input/不在了.docx")
+    assert refused.value.status == 410
+
+
+async def test_only_the_owners_attachments_get_working_copies(files_db, tmp_path):
+    conv = await files_db.conversation()
+    editing, _, sandbox, _ = setup(files_db, tmp_path)
+    sandbox.write_output("ws1", conv.id, "input/a.docx", b"orig")
+    sandbox.write_output("ws1", conv.id, "output/b.docx", b"x")
+    for path, status in (("output/b.docx", 400), ("input", 400), ("/workspace/input", 400), ("../etc/passwd", 400),
+                         ("input/没有.docx", 404)):
+        with pytest.raises(EditRefused) as refused:
+            await working_copy(editing, conv, path)
+        assert refused.value.status == status, path
+    with pytest.raises(EditRefused) as refused:
+        await working_copy(editing, conv, "input/a.docx", user="bob")
+    assert refused.value.status == 404
+    device = await files_db.conversation(source=DEVICE_SOURCE)
+    with pytest.raises(EditRefused) as refused:
+        await working_copy(editing, device, "input/a.docx")
+    assert refused.value.status == 409
+    assert "a.docx" not in sandbox.outputs[("ws1", conv.id)], "拒绝的不建副本"
+
+
+def docx_only(name: str) -> bool:
+    return name.endswith(".docx")
+
+
+async def draft_copy(editing, conv, attachment_id, *, user="alice"):
+    return await editing.draft_copy(workspace_id=conv.workspace_id, conversation_id=conv.id, user_id=user,
+                                    attachment_id=attachment_id, editable=docx_only)
+
+
+async def test_a_draft_attachment_opens_through_a_working_copy_without_sending_a_message(files_db, tmp_path):
+    """输入框里还没发出去的附件直接进编辑器：认领进对话（放进附件目录、名字和会话里已有的错开），再在根上建同名副本；
+    之后点消息上的附件卡片打开的是同一份。"""
+    conv = await files_db.conversation()
+    claims: list[tuple[str, str]] = []
+
+    async def claim_draft(conversation, attachment_id, editable):
+        claims.append((conversation.id, attachment_id))
+        if attachment_id != "att_1" or not editable("简报 (1).docx"):
+            return None
+        sandbox.write_output("ws1", conversation.id, "input/简报 (1).docx", b"orig")  # 认领时放进附件目录
+        return "简报 (1).docx"
+
+    editing, artifacts, sandbox, _ = setup(files_db, tmp_path, claim_draft=claim_draft)
+    copy = await draft_copy(editing, conv, "att_1")
+    assert copy.relative == "简报 (1).docx" and await editing.read(copy) == b"orig"
+    await editing.save(copy, b"edited")
+    again = await working_copy(editing, conv, "input/简报 (1).docx")
+    assert again.relative == copy.relative and await editing.read(again) == b"edited", "消息上的卡片打开同一份"
+    assert len(await artifacts.service.list(conv)) == 2
+
+    with pytest.raises(EditRefused) as refused:
+        await draft_copy(editing, conv, "att_别人的")
+    assert refused.value.status == 404
+    assert claims == [(conv.id, "att_1"), (conv.id, "att_别人的")]
+
+
+async def test_draft_attachments_are_not_claimed_into_conversations_that_refuse_them(files_db, tmp_path):
+    """对话不是本人的、在设备上执行的：认领之前就拒绝，附件留在输入框里；没接上认领的部署也拒绝。"""
+    claimed: list[str] = []
+
+    async def claim_draft(conversation, attachment_id, editable):
+        claimed.append(conversation.id)
+        return "a.docx"
+
+    conv = await files_db.conversation()
+    device = await files_db.conversation(source=DEVICE_SOURCE)
+    editing, _, _, _ = setup(files_db, tmp_path, claim_draft=claim_draft)
+    for target, user, status in ((conv, "bob", 404), (device, "alice", 409)):
+        with pytest.raises(EditRefused) as refused:
+            await draft_copy(editing, target, "att_1", user=user)
+        assert refused.value.status == status
+    assert claimed == []
+
+    bare, _, _, _ = setup(files_db, tmp_path)
+    with pytest.raises(EditRefused) as refused:
+        await draft_copy(bare, conv, "att_1")
+    assert refused.value.status == 404
 
 
 async def test_limits_refuse_the_save_with_a_reason(files_db, tmp_path):

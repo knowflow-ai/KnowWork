@@ -29,10 +29,12 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import Settings
-from ..kernel.tokens import TokenError, TokenSigner
+from ..kernel.tokens import TokenClaims, TokenError, TokenSigner
 from ..models.errors import NotFound, Unavailable
 from ..models.schemas import Route
 from ..models.thinking import with_thinking
+from .content_check import ContentCheckClient
+from .content_guard import ContentGuard, Refusal
 from .request_filter import InvalidRequest, parse_request
 
 log = logging.getLogger(__name__)
@@ -107,8 +109,7 @@ def _within_output_limit(payload: dict[str, Any], limit: int | None) -> dict[str
                           if isinstance(payload.get(key), int) and not isinstance(payload.get(key), bool)}}
 
 
-def _verify(signer: TokenSigner, header: str) -> str:
-    """返回令牌里的工作空间。"""
+def _verify(signer: TokenSigner, header: str) -> TokenClaims:
     if not header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="invalid token")
     token = header[7:]
@@ -116,7 +117,7 @@ def _verify(signer: TokenSigner, header: str) -> str:
     if not token.isascii():
         raise HTTPException(status_code=401, detail="invalid token")
     try:
-        return signer.verify(token, audience=MODEL_AUDIENCE).workspace_id
+        return signer.verify(token, audience=MODEL_AUDIENCE)
     except TokenError as error:
         raise HTTPException(status_code=401, detail="invalid token") from error
 
@@ -188,7 +189,8 @@ class _Forwarder:
                                           timeout=timeout)
         return _Outgoing(self.http, request)
 
-    async def send(self, outgoing: _Outgoing):
+    async def send(self, outgoing: _Outgoing, wrap=None):
+        """wrap：包住转给宿主的字节流（专属宿主的输出检查，content_guard.py）。"""
         total = self.limits.total_timeout_seconds
         deadline = asyncio.get_running_loop().time() + total
         try:
@@ -206,37 +208,47 @@ class _Forwarder:
             if response.status_code == 413 or (response.status_code == 400 and CONTEXT_OVERFLOW.search(detail)):
                 return _error(response.status_code, OVERFLOW_MESSAGE)
             return _error(_status_for_host(response.status_code), "上游模型返回错误")
-        return StreamingResponse(_relay(response, deadline, self.limits.idle_timeout_seconds),
-                                 status_code=response.status_code,
+        relayed = _relay(response, deadline, self.limits.idle_timeout_seconds)
+        return StreamingResponse(wrap(relayed) if wrap is not None else relayed, status_code=response.status_code,
                                  media_type=response.headers.get("content-type", "text/event-stream"))
 
 
 INTERNAL_PREFIX = "/internal/model/v1"
+CONTENT_SAFETY_PATH = "/internal/extensions/content-safety"  # 同 content_safety.api.PREFIX
 # 原生应用（桌面端等）的本机宿主经公开端口调模型：同一个网关、同样的令牌，只在登记了原生应用时挂（app.py）
 PUBLIC_PREFIX = "/api/model/v1"
 
 
 def build_router(signer: TokenSigner, upstream: httpx.AsyncClient, upstream_model: str, *,
                  resolver: RouteResolver | None = None, http: httpx.AsyncClient | None = None,
-                 limits: GatewayLimits | None = None, path_prefix: str = INTERNAL_PREFIX) -> APIRouter:
+                 limits: GatewayLimits | None = None, path_prefix: str = INTERNAL_PREFIX,
+                 guard: ContentGuard | None = None) -> APIRouter:
     """upstream：固定上游（带 base_url 与厂商密钥头），作回退用；upstream_model 为空表示不回退。
     resolver：模型目录；给了就必须同时给 http（转发到各厂商用，不带 base_url 与默认鉴权头）。
-    path_prefix：挂在哪个路径下；内部端口与独立网关进程用默认的，公开端口用 PUBLIC_PREFIX。不进接口文档（是给宿主的协议接口）。"""
+    path_prefix：挂在哪个路径下；内部端口与独立网关进程用默认的，公开端口用 PUBLIC_PREFIX。不进接口文档（是给宿主的协议接口）。
+    guard：带归属的令牌（个人专属宿主）按那个空间的内容安全策略再查一遍；不带归属的（共享宿主、桌面端）不经它。"""
     forwarder = _Forwarder(upstream, upstream_model, resolver, http, limits or GatewayLimits())
     router = APIRouter()
 
     @router.post(path_prefix + CHAT_PATH, include_in_schema=False)
     async def chat_completions(request: Request):
         """宿主调模型（OpenAI 兼容）"""
-        workspace_id = _verify(signer, request.headers.get("authorization", ""))
+        header = request.headers.get("authorization", "")
+        claims = _verify(signer, header)
         try:
             body, alias = parse_request(await request.body())
         except InvalidRequest as error:
             return _error(400, str(error))
-        built = await forwarder.build(workspace_id, body, alias)
+        wrap = None
+        if guard is not None and claims.owner is not None:
+            admitted = await guard.admit(claims.owner.workspace_id, header, body)
+            if isinstance(admitted, Refusal):
+                return _error(admitted.status, admitted.message)
+            wrap = admitted
+        built = await forwarder.build(claims.workspace_id, body, alias)
         if isinstance(built, JSONResponse):
             return built
-        return await forwarder.send(built)
+        return await forwarder.send(built, wrap)
 
     return router
 
@@ -257,5 +269,7 @@ def router_from_settings(settings: Settings, signer: TokenSigner, resolver: Rout
     fallback = settings.model_upstream_model if settings.model_upstream_api_key.get_secret_value() else ""
     limits = GatewayLimits(total_timeout_seconds=settings.model_call_timeout_seconds,
                            idle_timeout_seconds=settings.model_idle_timeout_seconds)
+    # 专属宿主的调用回调业务服务内部端口上的检查接口（独立网关进程要把 KNOWWORK_INTERNAL_URL 指到业务服务）
+    guard = ContentGuard(ContentCheckClient(http, settings.internal_url.rstrip("/") + CONTENT_SAFETY_PATH))
     return build_router(signer, upstream, fallback, resolver=resolver, http=http, limits=limits,
-                        path_prefix=path_prefix)
+                        path_prefix=path_prefix, guard=guard)

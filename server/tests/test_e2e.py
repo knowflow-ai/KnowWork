@@ -241,7 +241,10 @@ async def test_send_recovers_after_host_restart(app_db):
             texts = [e["data"]["data"].get("text") for e in events if e["data"]["kind"] == "message"]
             assert "重启后的回答" in texts
             rows = await stored_rows(s["runtime"], cid)
-            assert len({r.host_epoch for r in rows}) == 2, "应当看到两个宿主实例的事件"
+            # 游标是官方会话日志的序号，宿主重启后照旧：来源不变、从原位置接着读，已落库的事件不重放
+            assert {r.host_epoch for r in rows} == {"host"}
+            cursors = [r.host_cursor for r in rows]
+            assert cursors == sorted(set(cursors)), "宿主重启后重放了已落库的事件"
             assert [r.seq for r in rows] == list(range(1, len(rows) + 1))
 
 
@@ -394,6 +397,16 @@ async def test_agent_keeps_todos_and_asks_the_user(app_db):
         assert any(r.kind == "session/event" and (r.data or {}).get("type") == "tool/call" for r in rows), "原始帧落了库"
 
 
+async def persisted(sessions, text: str, timeout: float = 10.0) -> None:
+    """等到宿主的会话日志（DSH_HOME/sessions 下的 jsonl）里写进了这段文字。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not any(text in path.read_text(encoding="utf-8", errors="ignore")
+                  for path in sessions.rglob("*") if path.is_file()):
+        assert loop.time() < deadline, f"{timeout} 秒内没写进会话日志：{text}"
+        await asyncio.sleep(0.05)
+
+
 async def test_question_survives_host_crash(app_db):
     """宿主在提问等待中崩溃：用户回答时业务服务以恢复方式重开宿主会话，官方把问题转入 continued，回答开新一轮。"""
     host_port = free_port()
@@ -407,6 +420,9 @@ async def test_question_survives_host_crash(app_db):
             await client.post(f"{CONV}/{cid}/messages", json={"text": "导出台账"}, headers=headers)
             asked = await sse.until(item("input_request", "item.started"))
         question_id = asked[-1]["data"]["item_id"]
+        # 模拟的是等用户回答期间崩溃，这时提问早已落盘：官方 jsonl 持久化把新事件攒最多 200 毫秒再写，事件却当场推出来，
+        # 看到提问就杀宿主的话，慢机器上这条还没写进会话日志，恢复后问题就没了
+        await persisted(host.home / "sessions", question_id)
 
         host.proc.kill()  # 崩溃：不走正常关闭
         await host.proc.wait()

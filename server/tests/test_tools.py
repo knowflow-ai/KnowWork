@@ -278,6 +278,51 @@ async def test_large_result_is_stored_by_reference_and_truncated(env):
     assert receipt.truncated is True and receipt.result_ref == body["resultRef"]
 
 
+@pytest.fixture
+async def limited(database_url):
+    """按给定的上限（回给宿主的结果最多多少字节）建一份工具服务。"""
+    engine = make_engine(database_url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessionmaker = make_sessionmaker(engine)
+    clients = []
+
+    async def make(limit):
+        registry = StaticToolRegistry.of([BuiltinTool(ToolSpec("kw_note", "记一笔", NOTE_SCHEMA, "write"), Counting())])
+        service = build_tool_service(MASTER, sessionmaker, registry=registry, result_limit=limit)
+        app = FastAPI()
+        app.include_router(build_internal_router(service))
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://internal")
+        clients.append(client)
+        session_id = f"conv-{uuid.uuid4().hex[:8]}"
+        token = await service.issue_session_token("ws1", session_id, user_id="u1")
+        return {"client": client, "session_id": session_id, "token": token, "sessionmaker": sessionmaker}
+
+    yield make
+    for client in clients:
+        await client.aclose()
+    await engine.dispose()
+
+
+async def test_with_a_result_limit_the_host_gets_the_whole_result(limited):
+    """开了会话沙箱：大结果整篇回给宿主（宿主的官方溢出策略决定模型看多少、全文写进会话工作区），回执照旧只存预览加
+    全文引用；同一个调用重放时从全文存档取回整篇。"""
+    env = await limited(1024 * 1024)
+    body = (await call(env, "big", call_id="full-1")).json()
+    assert body["truncated"] is False and len(body["content"].encode()) == 70 * 1024
+    async with env["sessionmaker"]() as session:
+        receipt = (await session.execute(select(ActionReceipt).where(ActionReceipt.action_id == body["actionId"]))).scalar_one()
+    assert receipt.truncated is True and len(receipt.result_inline.encode()) <= 16 * 1024, "回执照旧只存预览"
+    replay = (await call(env, "big", call_id="full-1")).json()
+    assert replay["replayed"] is True and replay["content"] == body["content"], "重放从全文存档取回整篇"
+
+
+async def test_results_over_the_limit_are_cut_and_marked(limited):
+    env = await limited(32 * 1024)
+    body = (await call(env, "big", call_id="cut-1")).json()
+    assert body["truncated"] is True and len(body["content"].encode()) <= 32 * 1024
+
+
 async def test_kw_now_returns_current_time(env):
     response = await env["client"].post(f"{PREFIX}/execute",
                                         json={"toolName": "kw_now", "agentSessionId": env["session_id"], "callId": "t"},

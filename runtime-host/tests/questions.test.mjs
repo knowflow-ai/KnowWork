@@ -18,7 +18,7 @@ const ASK = { tool: 'ask_user_question', args: { questions: QUESTIONS } }
 
 const sessionEvents = frames => frames.filter(f => f.kind === 'session/event').map(f => f.data)
 const turnEndReason = frames => sessionEvents(frames).filter(e => e.type === 'turn/end').at(-1)?.data?.reason?.kind
-const lastCursor = frames => frames.at(-1)?.cursor ?? 0
+const lastCursor = frames => frames.positions
 const messagesText = request => JSON.stringify(request?.body?.messages ?? [])
 /** 官方日志里模型调 ask_user_question 的那条 tool/call */
 const isAsk = f => f.kind === 'session/event' && f.data?.type === 'tool/call' && f.data.data?.name === 'ask_user_question'
@@ -191,7 +191,8 @@ test('宿主在等待中被杀：恢复会话后没答完的问题仍可回答',
     assert.deepEqual(listed.body[0].questions, QUESTIONS)
     const queued = await host.call('POST', '/v1/sessions/q-crash/questions/call_1', { answers: [{ id: 'fmt', selected: ['PDF'] }] })
     assert.equal(queued.status, 200)
-    const frames = await collectEvents(host, 'q-crash', isTurnEnd)
+    // 宿主被杀前的那一轮官方恢复时补了 interrupted 的结尾：等带着迟到回答的那一轮结束
+    const frames = await collectEvents(host, 'q-crash', (frame, seen) => isTurnEnd(frame) && lateReplyOf(seen, 'call_1') !== undefined)
     assert.deepEqual(lateReplyOf(frames, 'call_1'), [{ id: 'fmt', selected: ['PDF'] }])
     assert.equal(turnEndReason(frames), 'completed')
     assert.ok(messagesText(second.gateway.requests.at(-1)).includes('answer_to_pending_question'))

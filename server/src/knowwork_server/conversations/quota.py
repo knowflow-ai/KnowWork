@@ -11,13 +11,13 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-Trigger = Literal["user", "schedule"]
+Trigger = Literal["user", "schedule", "goal"]
 Scope = Literal["personal", "workspace"]
 
 
 @dataclass(frozen=True)
 class TurnStart:
-    """要开始的这一轮：在哪个空间、算谁的、哪段对话，用户发的还是定时任务到点。user_id 是对话所属账号，渠道里没认出人时
+    """要开始的这一轮：在哪个空间、算谁的、哪段对话，用户发的、定时任务到点，还是长任务目标自动接着做的下一轮。user_id 是对话所属账号，渠道里没认出人时
     是渠道账号（扩展要分真人可以查 profiles 的 kind）。"""
 
     workspace_id: str

@@ -74,7 +74,7 @@ export default function InvitePage() {
       rememberUser(client, await acceptInvitation({ token, name: values.name, password: values.password }));
       navigate('/chat', { replace: true });
     } catch (err) {
-      setError(readableError(err, '注册没有成功，请稍后重试'));
+      setError(readableError(err, '没能注册，请稍后重试'));
     } finally {
       setSubmitting(false);
     }

@@ -4,7 +4,7 @@ import userEvent, { pickOption } from '../../../test/user';
 import { jsonResponse, renderWithApp, routeFetch } from '../../../test/render';
 import AuditPage from './AuditPage';
 import { validateAction } from '../../../api/audit';
-import { actorTypeLabel } from './labels';
+import { actionLabel, actorTypeLabel, detailLines } from './labels';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -70,7 +70,7 @@ describe('AuditPage', () => {
       [`GET ${B}/audit-logs`]: jsonResponse({ detail: '只有工作空间的所有者或管理员可以查看审计日志' }, 403),
     });
     renderWithApp(<AuditPage />);
-    expect(await screen.findByText('审计日志加载失败，请刷新重试')).toBeInTheDocument();
+    expect(await screen.findByText('没能加载审计日志，请刷新重试')).toBeInTheDocument();
   });
 
   it('动作名校验与标签', () => {
@@ -79,5 +79,54 @@ describe('AuditPage', () => {
     expect(validateAction('Skill')).not.toBeNull();
     expect(actorTypeLabel('agent')).toBe('Agent');
     expect(actorTypeLabel('x')).toBe('x');
+  });
+});
+
+describe('审计详情', () => {
+  it('敏感词拦截：方向带工具名、命中词多了写总数、策略第几版，不记原文', () => {
+    expect(actionLabel('content_safety.blocked')).toBe('敏感词拦截');
+    expect(actionLabel('api_key.create')).toBe('api_key.create');
+    expect(
+      detailLines('content_safety.blocked', {
+        direction: 'tool_args',
+        tool: 'send_email',
+        words: ['星河计划', '某某银行'],
+        word_count: 5,
+        policy_version: 7,
+      }),
+    ).toEqual([
+      { label: '方向', value: '工具参数：send_email' },
+      { label: '命中词', value: '星河计划、某某银行 等 5 个' },
+      { label: '策略版本', value: '第 7 版' },
+    ]);
+  });
+
+  it('有详情的记录点「详情」打开抽屉，别的动作照原样列出', async () => {
+    routeFetch({
+      [`GET ${B}/members`]: jsonResponse([
+        { user_id: 'u1', role: 'owner', name: '李雷', email: 'li@corp.cn' },
+      ]),
+      [`GET ${B}/audit-logs`]: jsonResponse({
+        items: [
+          entry('a1', {
+            action: 'content_safety.blocked',
+            result: 'denied',
+            resourceType: 'conversation',
+            resourceId: 'c1',
+            detail: { direction: 'input', words: ['星河计划'], word_count: 1, policy_version: 2 },
+          }),
+          entry('a2'),
+        ],
+        next: null,
+      }),
+    });
+    renderWithApp(<AuditPage />);
+    expect(await screen.findByText('敏感词拦截')).toBeInTheDocument();
+    const buttons = screen.getAllByRole('button', { name: '详情' });
+    expect(buttons).toHaveLength(1);
+    await userEvent.click(buttons[0]!);
+    const sheet = await screen.findByRole('dialog');
+    expect(within(sheet).getByText('星河计划')).toBeInTheDocument();
+    expect(within(sheet).getByText('第 2 版')).toBeInTheDocument();
   });
 });

@@ -9,6 +9,7 @@
     "./http-host": "./src/http-host.mjs",
     "./intake": "./src/intake.mjs",
     "./answers": "./src/answers.mjs",
+    "./commands": "./src/commands.mjs",
     "./model-catalog": "./src/model-catalog.mjs",
     "./log-sink": "./src/log-sink.mjs",
     "./prompt-context": "./src/prompt-context.mjs",
@@ -18,6 +19,7 @@
     "./bundled-skills": "./src/bundled-skills.mjs",
     "./remote-fs": "./src/remote-fs.mjs",
     "./remote-subprocess": "./src/remote-subprocess.mjs",
+    "./remote-spill": "./src/remote-spill.mjs",
     "./approval-broker": "./src/approval-broker.mjs",
     "./question-broker": "./src/question-broker.mjs",
     "./session-policy": "./src/session-policy.mjs",
@@ -28,9 +30,12 @@
     "./subagent-policy": "./src/subagent-policy.mjs",
     "./tool-bridge": "./src/tool-bridge.mjs",
     "./test-tools": "./src/test-tools.mjs",
+    "./test-preset-tool": "./src/test-preset-tool.mjs",
     "./owners": "./src/multi-user/owners.mjs",
     "./schedule": "./src/multi-user/schedule.mjs",
     "./state": "./src/state.mjs",
-    "./workpath": "./src/workpath.mjs"
+    "./workpath": "./src/workpath.mjs",
+    "./content-guard": "./src/content-guard.mjs",
+    "./goal-gate": "./src/goal-gate.mjs"
   }
 }

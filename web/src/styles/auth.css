@@ -13,8 +13,8 @@
   width: 100%;
   max-width: 380px;
   background: var(--kw-content-bg);
-  border: 1px solid var(--kw-border-secondary);
-  border-radius: var(--kw-radius-card-lg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2xl);
   padding: 32px;
   box-sizing: border-box;
 }
@@ -25,13 +25,13 @@
 
 .kw-login-card h1 {
   margin: 0 0 4px;
-  font-size: var(--kw-font-title);
-  font-weight: 600;
+  font-size: var(--font-heading-md-size);
+  font-weight: var(--font-weight-semibold);
 }
 
 .kw-login-card p {
   margin: 0 0 24px;
-  color: var(--kw-text-secondary);
+  color: var(--color-text-secondary);
 }
 
 .kw-login-error {

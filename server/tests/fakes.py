@@ -14,16 +14,22 @@ from knowwork_server.kernel.contract import (
 HOLD = object()  # 保持连接不再发帧，直到被取消
 
 
-def frame(cursor: int, kind: str = "session/event", data=None, *, epoch: str = "e1", time: int = 1) -> KernelEvent:
+def frame(cursor: int, kind: str = "session/event", data=None, *, epoch: str = "host", time: int = 1) -> KernelEvent:
     return KernelEvent(epoch=epoch, cursor=cursor, kind=kind, time=time, data=data)
 
 
-def session_event(cursor: int, type_: str, data=None, *, epoch: str = "e1") -> KernelEvent:
+def session_event(cursor: int, type_: str, data=None, *, epoch: str = "host") -> KernelEvent:
     return frame(cursor, "session/event", {"type": type_, "seq": cursor, "time": 1, "data": data or {}}, epoch=epoch)
 
 
-def status(cursor: int, value: str, *, epoch: str = "e1") -> KernelEvent:
-    return frame(cursor, "agent/status", {"status": value}, epoch=epoch)
+def status(cursor: int, value: str) -> KernelEvent:
+    """Agent 状态：宿主给的是进程内的帧（来源 live、不带序号、不落库）。cursor 只为调用处写得顺，不用"""
+    return frame(0, "agent/status", {"status": value}, epoch="live")
+
+
+def instance(value: str) -> KernelEvent:
+    """事件流开头宿主给的实例号（进程内的帧）"""
+    return frame(0, "host/instance", {"instance": value}, epoch="live")
 
 
 class FakeKernel:
@@ -32,6 +38,7 @@ class FakeKernel:
         self.subscriptions: list[list] = list(subscriptions or [])
         self.subscribe_calls: list[tuple[int, str | None]] = []
         self.opened: list = []
+        self.retitled: list = []
         self.sent: list = []
         self.open_effects: list = []  # 依次作用于 open_session：异常则抛出
         self.send_effects: list = []  # 依次作用于 send：异常则抛出
@@ -44,9 +51,10 @@ class FakeKernel:
         self.cancelled: list[str] = []
         self.answered: list[tuple[str, str, object]] = []
         self.answer_effects: list = []  # 依次作用于 answer_question：异常则抛出
+        self.goals_armed: dict[str, bool | BaseException] = {}  # 各会话目标的自动续跑开着没有；异常则抛出
 
-    async def subscribe(self, session_id, *, after=0, epoch=None):
-        self.subscribe_calls.append((after, epoch))
+    async def subscribe(self, session_id, *, positions=None):
+        self.subscribe_calls.append(dict(positions or {}))
         script = self.subscriptions.pop(0) if self.subscriptions else [HOLD]
         for item in script:
             if item is HOLD:
@@ -75,6 +83,9 @@ class FakeKernel:
     async def cancel(self, session_id):
         self.cancelled.append(session_id)
         return CancelResult(settled=True, status="idle")
+
+    async def retitle(self, session_id, title):
+        self.retitled.append((session_id, title))
 
     async def dispose(self, session_id):
         effect = self.dispose_effects.pop(0) if self.dispose_effects else None
@@ -113,6 +124,26 @@ class FakeKernel:
 
     async def bundled_skills(self):
         return ()
+
+    async def commands(self, session_id):
+        from knowwork_server.kernel.contract import HostCommand
+
+        return (HostCommand(name="goal", description="Set or view the goal", hint="[<objective>]",
+                            definition_id="@deepseek-ai/dsh-command-goal"),)
+
+    async def goal_armed(self, session_id):
+        value = self.goals_armed.get(session_id, False)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    async def run_command(self, session_id, line):
+        from knowwork_server.kernel.contract import CommandOutcome, CommandUnknown
+
+        if not line.startswith("/goal"):
+            raise CommandUnknown("command_unknown", "没有这个命令", 404)
+        self.commands_run = [*getattr(self, "commands_run", []), (session_id, line)]
+        return CommandOutcome(command_id="cmd-1", kind="success", text="Goal set")
 
 
 def token_actor(token: str, user_id: str = "dev-user", workspace_id: str = "default"):

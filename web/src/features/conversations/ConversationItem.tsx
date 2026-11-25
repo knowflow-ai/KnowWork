@@ -38,7 +38,7 @@ function RenameDialog({
       await rename.mutateAsync({ id: item.id, title });
       onClose();
     } catch (error) {
-      toast.error(readableError(error, '改名没有成功，请稍后重试'));
+      toast.error(readableError(error, '没能改名，请稍后重试'));
     }
   };
   return (
@@ -99,7 +99,7 @@ export function ConversationItem({
       await remove.mutateAsync(item.id);
       if (isCurrent) navigate('/chat', { replace: true });
     } catch (error) {
-      toast.error(readableError(error, '删除没有成功，请稍后重试'));
+      toast.error(readableError(error, '没能删除，请稍后重试'));
     }
   };
 

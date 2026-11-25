@@ -15,9 +15,11 @@ from .tokens import ToolTokenSigner
 
 def build_tool_service(master_key: str, sessionmaker: async_sessionmaker, *, registry: ToolRegistry | None = None,
                        token_ttl_seconds: int = 900, audit: ToolAuditHook | None = None,
-                       notes: ToolNotes | None = None) -> ToolService:
+                       notes: ToolNotes | None = None, result_limit: int | None = None) -> ToolService:
+    """result_limit：回给宿主的结果最多多少字节，不给时只回预览（ReceiptStore）。"""
     return ToolService(registry or builtin_registry(), ToolTokenSigner.from_master_key(master_key),
-                       ReceiptStore(sessionmaker), token_ttl_seconds=token_ttl_seconds, audit=audit, notes=notes)
+                       ReceiptStore(sessionmaker, result_limit=result_limit), token_ttl_seconds=token_ttl_seconds,
+                       audit=audit, notes=notes)
 
 
 __all__ = ["ToolAuditHook", "ToolExecution", "ToolNotes", "ToolService", "build_tool_service"]

@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { officialPackages, preflight, releaseProblem } from '../scripts/preflight-dsh-upgrade.mjs'
 
 const fullDigest = `sha512-${Buffer.alloc(64, 3).toString('base64')}`
@@ -9,7 +10,7 @@ const release = (name, version, extra = {}) => ({
 
 test('要查的包：锁文件里随 DSH 同版本的全部官方包，加上配置层按名字挂的插件', async () => {
   const { current, names } = await officialPackages()
-  assert.equal(current, '0.2.2-rc.5')
+  assert.equal(current, JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).dependencies['@deepseek-ai/dsh'])
   for (const name of ['@deepseek-ai/dsh', '@deepseek-ai/dsh-user-approval', '@deepseek-ai/dsh-llm-pi-ai',
     '@deepseek-ai/dsh-sdk-minimal']) assert.ok(names.includes(name), `缺 ${name}`)
   // 有自己版本号的包不按候选版本查

@@ -2,7 +2,9 @@
 差别只在续期时调宿主的哪个接口（rotate）。
 
 令牌有效期短（默认 900 秒）。打开或恢复宿主会话时签一张新的随会话下发；之后由续期循环给距上次签发
-满 interval 的会话换新令牌，每轮开始前再用 ensure_fresh() 兜一次。间隔按墙上时钟算，原因同模型令牌
+满 interval 的会话换新令牌，每轮开始前再用 ensure_fresh() 兜一次。续期表只在内存里：业务服务单独重启（热重载、
+崩溃、单独升级）后表是空的，宿主上的会话却还开着、拿着重启前的令牌，没人续就会过期，之后工具调用、内容检查一律
+401。所以 ensure_fresh() 遇到表里没有的会话当场换新令牌并记回表里（宿主插件激活时宿主回「已经开着」也走这里）。间隔按墙上时钟算，原因同模型令牌
 （gateway/credential_rotation.py）：asyncio 的单调时钟在 macOS 睡眠时不走，令牌有效期却是墙上时间。
 
 几条约束：
@@ -131,11 +133,21 @@ class ToolCredentials:
         now = self._clock()
         await self._renew(tuple(e for e in self._open.values() if now - e.issued_at >= self._interval))
 
-    async def ensure_fresh(self, conversation_id: str) -> None:
-        """每轮开始前调用：这个会话的令牌距上次签发已满一个间隔（例如电脑刚从睡眠醒来）就立即续上。"""
-        entry = self._open.get(conversation_id)
-        if entry is not None and self._clock() - entry.issued_at >= self._interval:
-            await self._renew_one(entry)
+    async def ensure_fresh(self, conversation: Conversation) -> None:
+        """每轮开始前调用：这个会话的令牌距上次签发已满一个间隔（例如电脑刚从睡眠醒来）就立即续上；表里没有（业务服务
+        重启过）就当场换新令牌并记回表里。宿主上没有这段会话的不记（_renew_one 遇到 SessionNotFound 会删掉）。"""
+        entry = self._open.get(conversation.id)
+        if entry is None:
+            entry = self._adopt(conversation)
+        elif self._clock() - entry.issued_at < self._interval:
+            return
+        await self._renew_one(entry)
+
+    def _adopt(self, conversation: Conversation) -> _Tracked:
+        """把表里没有的会话记回来，算已到期：这次换令牌要是没成（宿主一时不通），续期循环下一拍就再试，不等满一个间隔。"""
+        entry = _Tracked(next(self._generations), conversation, self._clock() - self._interval)
+        self._open = {**self._open, conversation.id: entry}
+        return entry
 
     async def _renew(self, snapshot: tuple[_Tracked, ...]) -> None:
         if not snapshot:

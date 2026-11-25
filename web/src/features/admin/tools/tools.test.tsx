@@ -115,6 +115,7 @@ describe('工具与 MCP 页', () => {
         title: '工单系统',
         url: 'https://t.example/mcp',
         timeoutSeconds: 60,
+        toolLoading: 'eager',
         headers: { Authorization: 'Bearer secret-1' },
         auth: 'shared',
       }),
@@ -139,6 +140,7 @@ describe('工具与 MCP 页', () => {
         title: '工单系统',
         url: 'https://t.example/mcp',
         timeoutSeconds: 60,
+        toolLoading: 'eager',
         headers: {},
         auth: 'user_token',
         tokenConfig: { header: 'Authorization', prefix: 'Bearer ', help: '在个人设置里生成' },
@@ -304,7 +306,24 @@ describe('工具与 MCP 页', () => {
       title: 'GitHub（企业）',
       url: 'https://mcp.github.example/mcp',
       timeoutSeconds: 60,
+      toolLoading: 'eager',
     });
+  });
+
+  it('按需加载：勾上后修改请求带 toolLoading，打开时照服务现在的设置勾好', async () => {
+    const calls = api({
+      [`GET ${B}`]: jsonResponse([server({ toolLoading: 'on_demand' })]),
+      [`PATCH ${B}/mcp_1`]: jsonResponse(server({})),
+    });
+    renderWithApp(<ToolsPage />);
+    await userEvent.click(within(await rowOf('GitHub')).getByRole('button', { name: /更多/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: '修改' }));
+    const dialog = await screen.findByRole('dialog');
+    const toggle = within(dialog).getByRole('checkbox', { name: '按需加载' });
+    expect(toggle).toBeChecked();
+    await userEvent.click(toggle);
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(sentBody(calls, 'PATCH', `${B}/mcp_1`)?.toolLoading).toBe('eager'));
   });
 
   it('修改：不勾选「重新设置请求头」时不发请求头，标识不能改', async () => {

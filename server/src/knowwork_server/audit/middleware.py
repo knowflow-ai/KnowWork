@@ -20,7 +20,7 @@ from urllib.parse import parse_qs
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import context
-from .actions import WRITE_METHODS, action_for
+from .actions import UNAUDITED_ROUTES, WRITE_METHODS, action_for
 from .events import AuditEvent
 from .sink import AuditSink, safe_record
 
@@ -90,7 +90,7 @@ class AuditMiddleware:
     def _event(self, scope: Scope, note: context.AuditNote, status: int, request_id: str) -> AuditEvent | None:
         method = scope.get("method", "")
         route = getattr(scope.get("route"), "path", None)
-        if route is None or (method not in WRITE_METHODS and not note.record):
+        if route is None or (method not in WRITE_METHODS and not note.record) or (method, route) in UNAUDITED_ROUTES:
             return None
         params = dict(scope.get("path_params") or {})
         spec = action_for(method, route)

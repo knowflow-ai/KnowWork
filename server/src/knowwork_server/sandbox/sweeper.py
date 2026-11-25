@@ -4,6 +4,8 @@ Docker 没有空闲超时：容器会一直跑到有人停它。没有清扫，�
 - 最后一次使用时间读容器里活动标记的 mtime（每次 exec 顺手 touch），没有就退回容器创建时间；
 - 空闲超过容器创建时写在 label 上的 TTL（默认 1800 秒）就**删除**容器，不暂停：Docker 的 pause 让内存继续
   驻留在宿主机上，暂停一个没人要的沙箱什么也省不下；
+- 给了 keep_stopped_seconds 时分两段（Office 编辑器用）：在跑的空闲超过 TTL 先**停掉**（释放内存，文件系统留着，
+  再用时拉起来约 1 秒，新建要几秒到十秒），停着的空闲超过 TTL + keep_stopped_seconds 才删；
 - 清扫在创建、连接时于后台触发，同一进程每 60 秒最多一次，单次最多跑 2 分钟；不是定时器；
 - 删除前再判一次是否空闲（列表加逐个 stat 在繁忙 daemon 上要一会儿，期间会话可能又被用起来），
   并且持有该会话的锁、确认本进程没在用它。
@@ -51,6 +53,14 @@ def _timestamp(raw: Any) -> float | None:
     return parsed.timestamp() if parsed.year > 1 else None
 
 
+# 容器列表里的 State：这几种算停着（没占内存，文件系统还在）
+STOPPED_STATES = frozenset({"exited", "created"})
+
+
+def _state(item: dict[str, Any]) -> str:
+    return str(item.get("State") or "").lower()
+
+
 def managed_filter() -> dict[str, str]:
     return {LABEL_COMPONENT: COMPONENT}
 
@@ -62,6 +72,7 @@ class IdleSweeper:
                  key_of: Callable[[dict[str, str] | None], Any] = SandboxKey.from_labels,
                  activity: Callable[[dict[str, Any]], Awaitable[float | None]] | None = None,
                  before_remove: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+                 keep_stopped_seconds: int | None = None,
                  name: str = "sandbox-idle-sweep") -> None:
         self._engine = engine
         self._guard = guard
@@ -72,6 +83,7 @@ class IdleSweeper:
         self._key_of = key_of
         self._activity = activity
         self._before_remove = before_remove
+        self._keep_stopped = keep_stopped_seconds
         self._name = name
         self._last: float | None = None
         self._tasks: set[asyncio.Task] = set()
@@ -104,19 +116,34 @@ class IdleSweeper:
     async def sweep(self) -> int:
         reclaimed = 0
         for item in await self._engine.list_containers(self._labels):
-            if not await self.is_idle(item):
+            # 分两段时，停着的按「TTL + 保留期」判，删之前没什么要存的（编辑器没在跑）
+            stopped = self._keep_stopped is not None and _state(item) in STOPPED_STATES
+            extra = self._keep_stopped if stopped and self._keep_stopped is not None else 0
+            if not await self.is_idle(item, extra=extra):
                 continue
             key = self._key_of(item.get("Labels"))
             if key is None:
                 reclaimed += await self._remove(item)
                 continue
             async with self._guard.lock(key):
-                if self._guard.is_busy(key) or not await self.is_idle(item):
+                if self._guard.is_busy(key) or not await self.is_idle(item, extra=extra):
+                    continue
+                # 停着的到了保留期删；坏掉的（dead）停不了，空闲到时间直接删
+                if stopped or _state(item) == "dead":
+                    reclaimed += await self._remove(item)
                     continue
                 if self._before_remove is not None and not await self._prepare(key, item):
                     continue
-                reclaimed += await self._remove(item)
+                reclaimed += await (self._stop(item) if self._keep_stopped is not None else self._remove(item))
         return reclaimed
+
+    async def _stop(self, item: dict[str, Any]) -> int:
+        try:
+            await self._engine.stop_container(str(item["Id"]))
+        except SandboxError:  # 一个停不掉不影响其他的，下一轮再试
+            log.warning("空闲清扫：停止容器失败")
+            return 0
+        return 1
 
     async def _prepare(self, key: Any, item: dict[str, Any]) -> bool:
         """删之前的那件事；跑完还能删（没人在这期间用起来）才是 True。"""
@@ -154,10 +181,12 @@ class IdleSweeper:
             return fallback
         return marker
 
-    async def is_idle(self, item: dict[str, Any]) -> bool:
+    async def is_idle(self, item: dict[str, Any], *, extra: int = 0) -> bool:
+        """空闲超过 TTL（再加 extra 秒，停着的按保留期算）。"""
         ttl = self.ttl_for(item)
         if ttl <= 0:
             return False
+        ttl += extra
         try:
             last = await self.last_activity(item)
         except SandboxError:

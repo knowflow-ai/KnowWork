@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { startHost, collectEvents, isTurnEnd } from './support/harness.mjs'
 import { startOpenAiStub } from './support/openai-stub.mjs'
-import { canonicalTimeZone, userSource, withTimeZone } from '../plugins/dsh-host/src/message-source.mjs'
+import { canonicalTimeZone, userSource } from '../plugins/dsh-host/src/message-source.mjs'
 
 /** 模型读得到的部分：系统提示与消息。 */
 function modelInput(host, index = 0) {
@@ -66,47 +66,6 @@ test('时区名照官方规则规范化：别名换成规范名（官方时钟�
   assert.equal(source.clientTimeZone, 'America/New_York')
   assert.equal(typeof source.rpcId, 'string')
   assert.equal(userSource(undefined, 'Asia/Tokyo').clientTimeZone, 'Asia/Tokyo')
-})
-
-test('子 Agent 沿用根会话的时区：官方委派的任务消息不带时区，宿主补上，读数里不再让子 Agent 去问用户', async () => {
-  // 官方给子 Agent 的首条任务消息后面固定跟一段交付说明（0.2.2-rc.2 起），按它区分父子两边的请求
-  const isChild = body => JSON.stringify(body).includes('Your final answer is delivered automatically')
-  const counts = { parent: 0, child: 0 }
-  const gateway = await startOpenAiStub({ pick: body => {
-    const role = isChild(body) ? 'child' : 'parent'
-    const index = counts[role]++
-    if (role === 'parent' && index === 0) return { tool: 'subagent', args: { description: '核对期限', prompt: '算一下合同还有几天到期' } }
-    return { text: role === 'parent' ? '好' : '还有 12 天' }
-  } })
-  const host = await startHost({ sequence: ['success'] }, {
-    TZ: 'Asia/Tokyo',
-    KNOWWORK_MODEL_PROVIDER: 'knowwork-gateway',
-    KNOWWORK_MODEL: 'kw-chat',
-    KNOWWORK_MODEL_BASE_URL: gateway.baseURL,
-    KNOWWORK_MODEL_TOKEN: 'gw-token-tz-0001-aaaaaaaaaa',
-  })
-  try {
-    await host.call('POST', '/v1/sessions', { sessionId: 'tz-sub' })
-    await host.call('POST', '/v1/sessions/tz-sub/messages', { text: '交给子 Agent 核对', timeZone: 'America/New_York' })
-    await collectEvents(host, 'tz-sub', f => f.kind === 'subagent/event' && f.data.event?.type === 'turn/end', { timeoutMs: 30_000 })
-    const child = gateway.requests.find(r => r.path.endsWith('/chat/completions') && isChild(r.body))
-    const input = JSON.stringify(child?.body?.messages ?? [])
-    assert.ok(input.includes('Browser time zone for this request: America/New_York.'), input.slice(-800))
-    assert.ok(!input.includes('unavailable. Ask the user'), '子 Agent 的读数还在让它去问用户')
-  } finally {
-    await host.stop()
-    await gateway.close()
-  }
-})
-
-test('只补没带时区的用户来源：已带编号的、父 Agent 发来的、系统补的上下文都不动', () => {
-  const task = { id: 'm1', source: { kind: 'user' } }
-  assert.deepEqual(withTimeZone(task, 'Asia/Shanghai').source.clientTimeZone, 'Asia/Shanghai')
-  assert.equal(withTimeZone(task, 'Asia/Shanghai').id, 'm1')
-  const direct = { id: 'm2', source: { kind: 'user', rpcId: 'r1', clientTimeZone: 'Europe/Paris' } }
-  assert.equal(withTimeZone(direct, 'Asia/Shanghai'), direct)
-  const fromParent = { id: 'm3', source: { kind: 'agent-message' } }
-  assert.equal(withTimeZone(fromParent, 'Asia/Shanghai'), fromParent)
 })
 
 test('停用的 DeepSeek 专用插件不再往模型请求里加会话日志与插件包清单', async () => {

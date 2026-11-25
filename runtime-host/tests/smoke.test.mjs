@@ -55,8 +55,12 @@ test('扩展给对话定的身份（例如专家）进系统提示、只换这�
     assert.ok(plain.includes('KnowWork 企业智能助手') && !plain.includes('经营分析'), '别的会话不该受影响')
     await host.call('POST', '/v1/sessions/expert-1/messages', { text: '还在吗', context: { standing: '', turn: '', persona: '' } })
     await collectEvents(host, 'expert-1', (frame) => isTurnEnd(frame) && host.llm.requests.length >= 3)
+    // DSH 0.2.3 起系统提示只追加不重写（前缀缓存）：撤掉身份时官方在末尾追加一段「以下取代 deployment:persona-prefix
+    // 之前的说明」再跟部署人设，开头那份专家身份还留着。所以看最后生效的是哪一份
     const cleared = JSON.stringify(host.llm.requests.at(-1)?.body?.system ?? '')
-    assert.ok(cleared.includes('KnowWork 企业智能助手') && !cleared.includes('经营分析'), '身份清空后没回到默认人设')
+    const restored = cleared.lastIndexOf('replaces the earlier instructions from deployment:persona-prefix')
+    assert.ok(restored > cleared.lastIndexOf('经营分析') && cleared.indexOf('KnowWork 企业智能助手', restored) > restored,
+      `身份清空后没回到默认人设：${cleared.slice(-400)}`)
   } finally {
     await host.stop()
   }
@@ -132,7 +136,7 @@ test('没有下发语言时不附语言规则；语言值不合法时拒收', as
   }
 })
 
-test('附件：每个文件在提问之后一行说明（逐字照官方 fileHandleText），会话历史里留着；合同里给工作区路径、写给模型的是 /workspace/input/...，附件目录外的拒收', async () => {
+test('附件：每个文件在提问之后一行说明（官方 fileHandleText），会话历史里留着；合同里给工作区路径、写给模型的是 /workspace/input/...，附件目录外的拒收', async () => {
   const host = await startHost({ sequence: ['success', 'success', 'success', 'success'], successText: '好' })
   try {
     await host.call('POST', '/v1/sessions', { sessionId: 'att-1' })
@@ -142,9 +146,14 @@ test('附件：每个文件在提问之后一行说明（逐字照官方 fileHan
       const bad = await host.call('POST', '/v1/sessions/att-1/messages', { text: '看看', attachments: [{ ...file, path }] })
       assert.equal(bad.status, 400, path)
     }
+    // 工作副本只能是工作目录根上的文件
+    for (const workingCopyPath of ['input/合同.docx', 'out/合同.docx', '../合同.docx', '/workspace/合同.docx', '']) {
+      const bad = await host.call('POST', '/v1/sessions/att-1/messages', { text: '看看', attachments: [{ ...file, workingCopyPath }] })
+      assert.equal(bad.status, 400, workingCopyPath)
+    }
     await host.call('POST', '/v1/sessions/att-1/messages', {
       text: '帮我改一下付款条款',
-      attachments: [{ ...file, extractedPath: 'input/合同 "终版".md' }],
+      attachments: [{ ...file, extractedPath: 'input/合同 "终版".md', workingCopyPath: '合同 "终版".docx' }],
     })
     await collectEvents(host, 'att-1', isTurnEnd)
     const first = modelInput(host, 0)
@@ -153,6 +162,9 @@ test('附件：每个文件在提问之后一行说明（逐字照官方 fileHan
     const handle = inJson('[File "合同 \\"终版\\".docx" (2048 bytes, sha256:aaaaaaaa): verbatim read-only copy saved at "/workspace/input/合同 \\"终版\\".docx". Read that path with your file tools when its contents are needed')
     assert.ok(first.indexOf(handle) > first.indexOf('帮我改一下付款条款'), '说明行跟在提问之后')
     assert.ok(first.includes(inJson('[Markdown extracted from "合同 \\"终版\\".docx" by the document parser')))
+    // 人在编辑器里打开过：告诉模型要改的是根上那份工作副本
+    const working = inJson('[Working copy of "合同 \\"终版\\".docx" at "/workspace/合同 \\"终版\\".docx": the user opened this file in the document editor')
+    assert.ok(first.indexOf(working) > first.indexOf(handle), '工作副本那句跟在附件说明之后')
 
     await host.call('POST', '/v1/sessions/att-1/messages', { text: '再看一遍第三条' })
     await collectEvents(host, 'att-1', frame => isTurnEnd(frame) && host.llm.requests.length >= 2)

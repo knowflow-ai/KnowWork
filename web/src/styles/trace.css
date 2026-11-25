@@ -31,7 +31,7 @@
 
 .kw-trace-cards > h3 {
   margin: 0 0 8px;
-  font-weight: 400;
+  font-weight: var(--font-weight-normal);
 }
 
 .kw-trace-request {
@@ -184,7 +184,7 @@
   flex: 1;
   height: 4px;
   overflow: hidden;
-  border-radius: 2px;
+  border-radius: var(--radius-2xs);
   background: var(--color-border-subtle);
 }
 
@@ -226,7 +226,7 @@
 .kw-trace-thinking {
   margin: 6px 0 0;
   padding: 0 0 0 12px;
-  border-left: 2px solid var(--color-border);
+  border-left: 2px solid var(--color-border-subtle);
   color: var(--color-text-secondary);
   font-family: inherit;
   font-size: var(--font-text-sm-size);

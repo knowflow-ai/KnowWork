@@ -49,14 +49,14 @@ export function useFeedback(conversationId: string | undefined): FeedbackControl
   const submit = useCallback(
     (runId: string, input: FeedbackInput) =>
       conversationId
-        ? run(() => putFeedback(conversationId, runId, input), '感谢反馈', '反馈没有提交成功')
+        ? run(() => putFeedback(conversationId, runId, input), '感谢反馈', '反馈没能提交')
         : Promise.resolve(false),
     [conversationId, run],
   );
   const retract = useCallback(
     (runId: string) =>
       conversationId
-        ? run(() => deleteFeedback(conversationId, runId), '已撤回反馈', '没有撤回成功')
+        ? run(() => deleteFeedback(conversationId, runId), '已撤回反馈', '没能撤回')
         : Promise.resolve(false),
     [conversationId, run],
   );

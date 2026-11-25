@@ -5,7 +5,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startHost, collectEvents, isTurnEnd, isApprovalAsked, approvalEvent, decidedOutcome, pendingApprovals } from './support/harness.mjs'
+import { startHost, collectEvents, isTurnEnd, isTurnEndAfter, isApprovalAsked, approvalEvent, decidedOutcome, pendingApprovals } from './support/harness.mjs'
 
 const sessionEvents = frames => frames.filter(f => f.kind === 'session/event').map(f => f.data)
 
@@ -27,8 +27,8 @@ for (const signal of ['SIGTERM', 'SIGKILL']) {
       assert.deepEqual(pending.body, [], '重启后出现了待决审批')
 
       await second.call('POST', '/v1/sessions/restart-1/messages', { text: '重启后继续' })
-      const frames = await collectEvents(second, 'restart-1', isTurnEnd)
-      assert.equal(sessionEvents(frames).find(e => e.type === 'turn/end')?.data?.reason?.kind, 'completed')
+      const frames = await collectEvents(second, 'restart-1', isTurnEndAfter('重启后继续'))
+      assert.equal(sessionEvents(frames).filter(e => e.type === 'turn/end').at(-1)?.data?.reason?.kind, 'completed')
       const all = JSON.stringify(second.llm.requests.map(r => r.body?.messages ?? []))
       assert.ok(!all.includes('written: 敏感写入'), '等待审批的写入在重启后被执行了')
       assert.ok(all.includes('重启后继续'))

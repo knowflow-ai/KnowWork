@@ -45,7 +45,7 @@ export function ProvidersTab() {
   const remove = useAction((id: string) => deleteProvider(id), {
     invalidate: [KEYS.providers, KEYS.models],
     success: '已删除厂商',
-    failure: '删除没有成功，请稍后重试',
+    failure: '没能删除，请稍后重试',
   });
   const columns: readonly Column<Provider>[] = [
     { key: 'name', title: '名称', width: 160, ellipsis: true, render: (p) => p.name },
@@ -88,7 +88,7 @@ export function ProvidersTab() {
           columns={columns}
           rows={providers.data ?? []}
           loading={providers.isFetching}
-          empty={providers.isError ? '厂商加载失败，请刷新重试' : '还没有厂商'}
+          empty={providers.isError ? '没能加载厂商，请刷新重试' : '还没有厂商'}
         />
       )}
       {editing ? <ProviderDialog provider={editing.item} onClose={() => setEditing(null)} /> : null}
@@ -124,7 +124,7 @@ export function ModelsTab() {
   const remove = useAction((id: string) => deleteModel(id), {
     invalidate: [KEYS.models],
     success: '已删除模型',
-    failure: '删除没有成功，请稍后重试',
+    failure: '没能删除，请稍后重试',
   });
   const providerName = (id: string) => providers.data?.find((p) => p.id === id)?.name ?? '—';
   const columns: readonly Column<Model>[] = [
@@ -212,7 +212,7 @@ export function ModelsTab() {
           rows={models.data ?? []}
           minWidth={1100}
           loading={models.isFetching}
-          empty={models.isError ? '模型加载失败，请刷新重试' : '还没有模型，先添加厂商再添加模型'}
+          empty={models.isError ? '没能加载模型，请刷新重试' : '还没有模型，先添加厂商再添加模型'}
         />
       )}
       {editing ? (

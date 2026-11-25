@@ -19,6 +19,8 @@
  *   查或建动作回执后执行。同一调用重复执行时业务服务返回第一次的结果，不重复执行。
  *
  * - 被本会话某个技能认领的专业工具先不注册，模型加载了认领它的技能之后才注册（见 skill-unlock）。
+ * - 管理员开了「按需加载」的 MCP 服务，它的工具也先不注册：系统提示里列名字，模型用该服务的加载器加进自己的工具清单
+ *   （照官方 dsh-mcp-client 的按需加载，见 mcp-on-demand）。
  * - 会话策略 deny 里的业务工具根本不注册（官方 restrict 管不到作用域自己注册的工具，见 tool-deny）；
  *   deny 里既不是全局工具也不是本会话业务工具的名字，忽略并记一条宿主日志。
  *
@@ -27,6 +29,7 @@
 
 import { allowedInMode } from './answer-mode.mjs'
 import { BridgeError, createBridgeClient } from './tool-bridge-client.mjs'
+import { attachOnDemand, groupOnDemand, loaderNameOf, onDemandServerOf } from './mcp-on-demand.mjs'
 import { ensureCatalog, lockedTools } from './skill-catalog.mjs'
 import { defer, lockTools } from './skill-unlock.mjs'
 import { resolveRootSession } from './state.mjs'
@@ -57,7 +60,7 @@ export function apply(ctx, config) {
   if (!Number.isInteger(executeTimeoutMs) || executeTimeoutMs <= 0) {
     throw new Error(`knowwork-tool-bridge: executeTimeoutMs 必须是正整数毫秒，当前为 ${executeTimeoutMs}`)
   }
-  const client = createBridgeClient({ baseUrl, executeTimeoutMs })
+  const client = createBridgeClient({ baseUrl })
   const log = ctx.logger
   /** 工具桥注册的定义对象 → 描述。用对象身份判断一次调用是不是业务工具，不按名字猜。 */
   const owned = new WeakMap()
@@ -75,6 +78,9 @@ export function apply(ctx, config) {
         presentationMeta: (_args, value) => value.presentation ?? null,
       },
       ...(tool.concurrent ? { isConcurrencySafe: () => true } : {}),
+      // 时限照官方的写法声明在工具上，由官方超时策略（dsh-tool-call-timeout-policy）按它取消、给模型统一的超时报错；
+      // 工具这边只认 exec.signal，不另起计时
+      timeoutMs: executeTimeoutMs,
       async execute(args, exec) {
         const root = resolveRootSession(exec.agent.session)
         if (root?.toolAccess === undefined) throw new Error('会话已释放，工具不可用')
@@ -88,7 +94,8 @@ export function apply(ctx, config) {
           signal: exec.signal,
         })
         if (result.status !== 'succeeded') throw new Error(result.content)
-        const text = result.truncated ? `${result.content}\n[结果过长已截断，完整结果已存档：${result.actionId}]` : result.content
+        // 业务服务截过（超过它的上限，或没地方放全文时只回预览）就写明只是前面一部分；没截的大结果交给官方溢出策略
+        const text = result.truncated ? `${result.content}\n[结果太长，这里只有前面一部分]` : result.content
         return isCard(result.presentation) ? { text, presentation: result.presentation } : { text }
       },
     }
@@ -107,15 +114,22 @@ export function apply(ctx, config) {
       root.bridgeTools = root.toolAccess === undefined ? [] : await fetchTools(root)
       reportUnknownDenied(root)
     }
-    for (const tool of root.bridgeTools ?? []) {
-      if (isDenied(root, tool.name)) continue
-      // 官方条件工具：每个模型步骤按回答方式算一次，快速问答下只留声明了 quick 的工具，描述与执行一起去掉
-      const register = () => { agent.ctx.tools.register(definitionOf(tool), { when: () => allowedInMode(root, tool) }) }
+    const usable = (root.bridgeTools ?? []).filter(tool => !isDenied(root, tool.name))
+    for (const tool of usable) {
+      const register = () => { registerIn(agent, tool) }
       if (owners.has(tool.name)) defer(agent, tool.name, register)
-      else register()
+      // 按需加载的先不注册：模型用该服务的加载器加（被技能认领的照旧等技能加载，不进按需目录）
+      else if (onDemandServerOf(tool) === undefined) register()
     }
+    attachOnDemand(agent, groupOnDemand(usable.filter(tool => !owners.has(tool.name)), log), registerIn)
     registerGuidance(agent, root.bridgeTools ?? [])
   })
+
+  /** 把一个业务工具注册进某个 Agent 的作用域。官方条件工具：每个模型步骤按回答方式算一次，快速问答下只留声明了 quick 的工具 */
+  function registerIn(agent, tool) {
+    const root = resolveRootSession(agent.session)
+    return agent.ctx.tools.register(definitionOf(tool), { when: () => allowedInMode(root, tool) })
+  }
 
   /** 该 agent 此刻可见的业务工具的使用规则，去重后按工具顺序拼接。不带工具集的 get 不算条件，回答方式另外筛 */
   function guidanceFor(agent, tools) {
@@ -154,9 +168,10 @@ export function apply(ctx, config) {
       const reason = error instanceof BridgeError ? error.message : '拉取失败'
       throw new Error(`knowwork-tool-bridge: 会话 ${root.id} 拉取业务工具失败：${reason}`)
     }
-    // 作用域工具会遮住同名全局工具（官方规则），不允许业务工具借此顶替 subagent 一类的内置工具。
-    const clash = tools.find(t => ctx.tools.get(t.name) !== undefined)
-    if (clash !== undefined) throw new Error(`knowwork-tool-bridge: 业务工具 ${clash.name} 与宿主内置工具重名`)
+    // 作用域工具会遮住同名全局工具（官方规则），不允许业务工具（含按需服务的加载器）借此顶替 subagent 一类的内置工具。
+    const loaders = [...new Set(tools.map(onDemandServerOf).filter(server => server !== undefined))].map(loaderNameOf)
+    const clash = [...tools.map(t => t.name), ...loaders].find(name => ctx.tools.get(name) !== undefined)
+    if (clash !== undefined) throw new Error(`knowwork-tool-bridge: 业务工具 ${clash} 与宿主内置工具重名`)
     return tools
   }
 

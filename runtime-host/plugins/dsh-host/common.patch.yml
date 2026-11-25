@@ -46,6 +46,12 @@
     - id: knowwork-tool-bridge
       name: '@knowwork/dsh-host/tool-bridge'
 
+    # 内容检查（敏感词）：员工的消息、工具取回的内容、模型的回答与工具参数，送业务服务查，命中就拦下（content-guard.mjs）。
+    # 词表只在业务服务，宿主只送文字。地址取 KNOWWORK_CONTENT_SAFETY_BASE_URL（服务端是内部端口，本机宿主是公开入口），
+    # 没给就不查；令牌用这段会话的工具令牌（同工具桥）
+    - id: knowwork-content-guard
+      name: '@knowwork/dsh-host/content-guard'
+
     - id: knowwork-skill-gate
       name: '@knowwork/dsh-host/skill-gate'
     # 一次输出到了单次上限被截停（官方 max-tokens，这一轮就此结束）：下一轮第一步前告诉模型截在哪一步、在写什么、要拆小，只说一次
@@ -80,7 +86,4 @@
   disabled: true
 # 官方 MCP 资源工具：挂了官方 MCP 客户端才有内容。我们的 MCP 走业务服务的工具桥，它一直是空的
 - id: mcp-resources
-  disabled: true
-# 官方会话标题服务：对话标题由业务服务管（本机宿主上它还会为每段会话多调一次模型起标题）
-- id: session-title
   disabled: true

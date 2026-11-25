@@ -94,6 +94,29 @@ async def test_tool_settings_change_spec(env, stub):
     assert (spec.risk, spec.approval_mode) == ("read", "never")
 
 
+async def test_on_demand_loading_marks_the_servers_tools(env, stub):
+    """服务开了按需加载：它的工具交给宿主时标上服务名（宿主不先给模型，模型用 mcp__demo__load_tools 加载）；
+    默认不开、关掉后照旧随请求给。"""
+    record = await register(env, stub)
+    assert record.tool_loading == "eager"
+    assert all("onDemand" not in s.describe() for s in await env.mcp.registry.available(ctx()))
+    record = await env.mcp.admin.update("alice", "ws1", record.id, McpServerPatch(tool_loading="on_demand"))
+    assert record.tool_loading == "on_demand"
+    described = [s.describe() for s in await env.mcp.registry.available(ctx())]
+    assert described and all(d["onDemand"] == {"server": "demo"} for d in described)
+    renamed = await env.mcp.admin.update("alice", "ws1", record.id, McpServerPatch(title="改个名字"))
+    assert renamed.tool_loading == "on_demand", "不给开关时不改"
+    await env.mcp.admin.update("alice", "ws1", record.id, McpServerPatch(tool_loading="eager"))
+    assert all("onDemand" not in s.describe() for s in await env.mcp.registry.available(ctx()))
+
+
+async def test_on_demand_loading_can_be_set_when_registering(env, stub):
+    record = await register(env, stub, tool_loading="on_demand")
+    assert record.tool_loading == "on_demand"
+    with pytest.raises(ValueError):
+        McpServerPatch(tool_loading="lazy")
+
+
 async def test_failed_sync_keeps_tools_and_records_reason(env, stub):
     record = await register(env, stub)
     await stub.__aexit__(None, None, None)  # MCP 服务下线

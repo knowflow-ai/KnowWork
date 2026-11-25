@@ -196,6 +196,17 @@ function TableResult({
 }: { readonly table: TableCard; readonly replace: (presentation: unknown) => void } & PreferenceProps) {
   const drill = drillOf(table);
   const [picked, setPicked] = useState<{ readonly column: string; readonly value: CardCell } | null>(null);
+  const [view, setView] = useState<'chart' | 'table'>(table.chart ? (preference.view ?? 'chart') : 'table');
+  // 图形、画哪一列由 ResultChart 换，这里攒着，换「图 / 表」时一起交出去
+  const [chartPicked, setChartPicked] = useState<ChartPreference>(preference);
+  // 没有数据：查过了、确实没有，是回答「没有」的依据，出处照样能点开；空表、图、下钻都不画
+  if (isEmpty(table))
+    return (
+      <>
+        <CardHead table={table}>{null}</CardHead>
+        <p className="kw-result-empty">没有符合条件的数据</p>
+      </>
+    );
   const pick = drill ? (column: string, value: CardCell) => setPicked({ column, value }) : undefined;
   const drillDialog =
     drill && picked && table.drill ? (
@@ -212,9 +223,6 @@ function TableResult({
       />
     ) : null;
   const hint = (text: string) => (drill ? <p className="kw-result-drill-hint">{text}</p> : null);
-  const [view, setView] = useState<'chart' | 'table'>(table.chart ? (preference.view ?? 'chart') : 'table');
-  // 图形、画哪一列由 ResultChart 换，这里攒着，换「图 / 表」时一起交出去
-  const [chartPicked, setChartPicked] = useState<ChartPreference>(preference);
   const changeView = (next: 'chart' | 'table') => {
     setView(next);
     onPreference?.({ ...chartPicked, view: next });
@@ -265,15 +273,19 @@ function TableResult({
   );
 }
 
-/** 卡片头：标题（工具没给就写「查询结果」），下面一行灰字（时间范围、几行），右边是控件 */
+function isEmpty(table: TableCard): boolean {
+  return table.empty === true || table.rowCount === 0;
+}
+
+/** 卡片头：标题（工具没给就写「查询结果」），下面一行灰字（时间范围、几行；没有数据时不写几行），右边是控件 */
 function CardHead({ table, children }: { readonly table: TableCard; readonly children: ReactNode }) {
+  const rows = isEmpty(table) ? undefined : `${table.rowCount} 行`;
+  const line = [table.subtitle, rows].filter(Boolean).join(' · ');
   return (
     <header className="kw-result-head">
       <div className="kw-result-heading">
         <span className="kw-result-title">{table.title ?? '查询结果'}</span>
-        <span className="kw-result-subtitle">
-          {[table.subtitle, `${table.rowCount} 行`].filter(Boolean).join(' · ')}
-        </span>
+        {line ? <span className="kw-result-subtitle">{line}</span> : null}
       </div>
       <div className="kw-result-controls">{children}</div>
     </header>
@@ -348,7 +360,7 @@ function ResultTable({
         </table>
       </div>
       <div className="kw-result-table-foot">
-        <span>{rows.length === 0 ? '没有符合条件的数据' : summary(table)}</span>
+        <span>{summary(table)}</span>
         {folded > 0 ? (
           <Button color="secondary" variant="ghost" size="2xs" onClick={() => setAll(true)}>
             展开其余 {folded} 行
@@ -388,7 +400,7 @@ async function copy(text: string) {
     await navigator.clipboard.writeText(text);
     toast.success('已复制');
   } catch {
-    toast.error('复制没有成功，请手动选中复制');
+    toast.error('没能复制，请手动选中复制');
   }
 }
 

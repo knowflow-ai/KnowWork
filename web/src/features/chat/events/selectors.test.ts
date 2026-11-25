@@ -5,7 +5,10 @@ import {
   formatDuration,
   hasProcess,
   selectAwaitingReply,
+  selectDiscardedSent,
+  selectFileNames,
   selectRunSearch,
+  selectTimeline,
   summarizeProcess,
 } from './selectors';
 import type { RunView, StepView } from './types';
@@ -127,5 +130,58 @@ describe('selectAwaitingReply', () => {
     expect(selectAwaitingReply(delivered)).toBe(true);
     expect(selectAwaitingReply(reduceWire(delivered, ev.runStarted(1)))).toBe(false);
     expect(selectAwaitingReply(chatReducer(sent, { type: 'local/failed', localId: 'l1' }))).toBe(false);
+  });
+
+  it('一轮还在跑时发的消息排着队、随停止一起取消了：不再「思考中」，也不在时间线上，交给输入框放回原文', () => {
+    const running = reduceWire(initialChatState, ev.runStarted(1, 5));
+    const queued = chatReducer(
+      chatReducer(running, {
+        type: 'local/sent',
+        localId: 'l2',
+        text: '2025 年整体良率走势',
+        mode: 'followup',
+      }),
+      { type: 'local/delivered', localId: 'l2', messageId: 'm2' },
+    );
+    const stopped = reduceWire(reduceWire(queued, ev.discarded(2, 'm2')), ev.runCancelled(3, 5));
+    expect(selectAwaitingReply(stopped)).toBe(false);
+    expect(selectTimeline(stopped).filter((e) => e.type === 'user')).toEqual([]);
+    expect(selectDiscardedSent(stopped).map((m) => m.text)).toEqual(['2025 年整体良率走势']);
+  });
+
+  it('取消的事件先到、发送接口的消息 id 后到，一样认得出', () => {
+    const sent = chatReducer(reduceWire(initialChatState, ev.runStarted(1, 5)), {
+      type: 'local/sent',
+      localId: 'l3',
+      text: '再问一句',
+      mode: 'followup',
+    });
+    const early = reduceWire(sent, ev.discarded(2, 'm3'));
+    expect(selectDiscardedSent(early)).toEqual([]);
+    const late = chatReducer(early, { type: 'local/delivered', localId: 'l3', messageId: 'm3' });
+    expect(selectDiscardedSent(late).map((m) => m.localId)).toEqual(['l3']);
+    expect(selectAwaitingReply(reduceWire(late, ev.runCancelled(3, 5)))).toBe(false);
+  });
+});
+
+describe('对话里出现过的文件（给提前起编辑器看）', () => {
+  it('提问带的附件、交付的文件、刚发出还没回显的附件，去重、按出现先后', () => {
+    const events = [
+      ev.runStarted(1),
+      ev.asked(2, '看看', 1, 'u2', [{ name: '合同.docx', size: 1 }]),
+      ev.delivered(3, [{ path: '/sessions/c1/output/报告.pptx' }]),
+      ev.runStarted(4, 2),
+      ev.asked(5, '再看', 2, 'u5', [{ name: '合同.docx', size: 1 }]),
+    ];
+    const replayed = events.reduce(reduceWire, initialChatState);
+    const sent = chatReducer(replayed, {
+      type: 'local/sent',
+      localId: 'l1',
+      text: '还有这个',
+      mode: 'followup',
+      attachments: [{ name: '预算.xlsx', size: 2 }],
+    });
+    expect(selectFileNames(sent)).toEqual(['合同.docx', '/sessions/c1/output/报告.pptx', '预算.xlsx']);
+    expect(selectFileNames(initialChatState)).toEqual([]);
   });
 });

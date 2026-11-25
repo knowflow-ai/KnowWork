@@ -1,0 +1,4 @@
+# 只在测试时叠加：一个加载不了的插件条目（模块不存在），看宿主的插件清单把它标成失败、带上原因。
+- insert:
+    - id: knowwork-broken-probe
+      name: '@knowwork/does-not-exist'

@@ -126,7 +126,7 @@ export default function InsightsPage() {
       {data ? (
         <Body data={data} refreshing={insights.isPlaceholderData} />
       ) : insights.isError ? (
-        <Empty area icon={<Warning />} title="问答大盘加载失败" description="请稍后刷新重试" />
+        <Empty area icon={<Warning />} title="没能加载问答大盘" description="请稍后刷新重试" />
       ) : (
         <Skeleton rows={6} />
       )}

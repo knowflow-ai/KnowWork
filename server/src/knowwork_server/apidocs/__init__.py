@@ -48,6 +48,8 @@ TAGS: tuple[tuple[str, str], ...] = (
     ("问答大盘", "问答数据汇总"),
     ("运行记录", "管理员看各会话的运行详情"),
     ("后台任务", "任务队列的运行面板（系统管理员）"),
+    ("内容安全", "敏感词：员工发给模型的内容、模型的回答与工具参数命中就拦下"),
+    ("插件", "DSH 宿主里的官方能力：管理员给空间定档，成员自己开关"),
     ("审计", "审计日志"),
     ("账号与登录", "登录、单点登录、邀请、API Key"),
     ("初始化", "首次部署时创建第一个管理员"),
@@ -57,7 +59,7 @@ TAGS: tuple[tuple[str, str], ...] = (
 _SEGMENTS = {
     "conversations": "对话", "attachments": "对话", "answer-modes": "对话", "chat-models": "对话", "runs": "运行记录", "usage": "用量", "insights": "问答大盘", "channels": "渠道",
     "knowledge-sources": "知识源", "knowledge-bases": "知识源", "mcp-servers": "工具（MCP）", "enterprise-mcp": "工具（MCP）", "skills": "技能",
-    "skill-submissions": "技能", "platform-skills": "技能", "workflow-runs": "工作流", "jobs": "后台任务", "audit-logs": "审计", "members": "成员与权限",
+    "skill-submissions": "技能", "platform-skills": "技能", "workflow-runs": "工作流", "jobs": "后台任务", "audit-logs": "审计", "content-safety": "内容安全", "plugins": "插件", "members": "成员与权限",
     "departments": "成员与权限", "groups": "成员与权限", "grants": "成员与权限", "invitations": "成员与权限",
     "users": "成员与权限", "org-departments": "成员与权限", "member-rules": "成员与权限",
 }
@@ -98,6 +100,8 @@ def tag_of(path: str) -> str | None:
         if rest[0] == "me":
             if len(rest) > 1 and rest[1] == "skills":
                 return "技能"
+            if len(rest) > 1 and rest[1] == "plugins":
+                return "插件"
             return "工具（MCP）" if len(rest) > 1 and rest[1] == "mcp-connections" else "成员与权限"
         return _SEGMENTS.get(rest[0])
     return None

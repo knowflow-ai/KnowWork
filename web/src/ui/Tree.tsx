@@ -4,6 +4,9 @@
  * 和组件库多选下拉的样子一致；被选中项包含了的（covered，例如选了目录，它下面的知识库）行尾写「已包含」、点不了。
  * 组件库没有树，键盘与读屏照 WAI-ARIA 的 tree 模式。
  * 单选时选中项从外面换了（例如在详情里点了一个字段），把它的上级都展开、滚到看得见的地方，不让人迷路。
+ * variant="nav" 是页面二级侧栏（ui/SideNav）里的导航树，照 ChatGPT 侧栏：行高、圆角、选中底色和主侧栏一样；
+ * 分组节点画成小号灰字的组标题（点了收起展开），组里的项不缩进；整棵树没有能展开的项时不留三角的空位；
+ * 节点的 actions（「…」菜单）鼠标移上去、键盘聚焦或选中时才出现。
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Check, ChevronDown, ChevronRight } from '@openai/apps-sdk-ui/components/Icon';
@@ -15,6 +18,8 @@ export interface TreeNode {
   readonly children: readonly TreeNode[];
   /** false 时只是分组（例如树形选择框里的知识源），点名称展开收起，不能选中 */
   readonly selectable?: boolean;
+  /** 行尾的操作（导航树里的「…」菜单）：鼠标移上去、聚焦或选中时才出现 */
+  readonly actions?: ReactNode;
 }
 
 interface Props {
@@ -30,6 +35,8 @@ interface Props {
   readonly defaultCollapsed?: readonly string[];
   readonly 'aria-label': string;
   readonly className?: string;
+  /** nav：二级侧栏里的导航树（见文件头） */
+  readonly variant?: 'nav';
 }
 
 interface BranchProps {
@@ -41,6 +48,9 @@ interface BranchProps {
   readonly collapsed: ReadonlySet<string>;
   readonly onToggle: (key: string) => void;
   readonly onSelect: (key: string) => void;
+  readonly nav: boolean;
+  /** 没有能展开的项（导航树全是叶子）时不留三角的空位 */
+  readonly flat: boolean;
 }
 
 function Branch({
@@ -52,8 +62,13 @@ function Branch({
   collapsed,
   onToggle,
   onSelect,
+  nav,
+  flat,
 }: BranchProps) {
   const hasChildren = node.children.length > 0;
+  const group = node.selectable === false;
+  // 导航树的分组画成组标题：没有左边的三角，三角跟在名字后面
+  const heading = nav && group;
   const open = hasChildren && !collapsed.has(node.key);
   const covered = isCovered(node.key);
   const chosen = isSelected(node.key);
@@ -72,10 +87,10 @@ function Branch({
     >
       <div
         ref={row}
-        className={cx('kw-tree-row', chosen && 'is-selected')}
+        className={cx('kw-tree-row', chosen && 'is-selected', heading && 'is-heading')}
         style={{ paddingLeft: depth * 16 + 4 }}
       >
-        {hasChildren ? (
+        {heading || (flat && !hasChildren) ? null : hasChildren ? (
           <button
             type="button"
             className="kw-tree-toggle"
@@ -89,12 +104,14 @@ function Branch({
         )}
         <button
           type="button"
-          className={cx('kw-tree-title', node.selectable === false && 'is-group', covered && 'is-covered')}
+          className={cx('kw-tree-title', group && 'is-group', covered && 'is-covered')}
           disabled={covered}
-          onClick={() => (node.selectable === false ? onToggle(node.key) : onSelect(node.key))}
+          onClick={() => (group ? onToggle(node.key) : onSelect(node.key))}
         >
           {node.title}
+          {heading && hasChildren ? open ? <ChevronDown aria-hidden /> : <ChevronRight aria-hidden /> : null}
         </button>
+        {node.actions ? <span className="kw-tree-actions">{node.actions}</span> : null}
         {covered ? (
           <span className="kw-tree-covered">已包含</span>
         ) : multiple && chosen ? (
@@ -107,18 +124,27 @@ function Branch({
             <Branch
               key={child.key}
               node={child}
-              depth={depth + 1}
+              depth={heading ? depth : depth + 1}
               isSelected={isSelected}
               isCovered={isCovered}
               multiple={multiple}
               collapsed={collapsed}
               onToggle={onToggle}
               onSelect={onSelect}
+              nav={nav}
+              flat={flat}
             />
           ))}
         </ul>
       ) : null}
     </li>
+  );
+}
+
+/** 有没有能展开的项（分组不算，组里的项才算） */
+function hasBranches(nodes: readonly TreeNode[]): boolean {
+  return nodes.some((node) =>
+    node.selectable === false ? hasBranches(node.children) : node.children.length > 0,
   );
 }
 
@@ -140,8 +166,10 @@ export function Tree({
   onSelect,
   defaultCollapsed,
   className,
+  variant,
   ...rest
 }: Props) {
+  const nav = variant === 'nav';
   // 一开始就选中了深处的一项（例如带着地址进来）：它的上级不收起
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => {
     const path = typeof selected === 'string' ? (ancestorsOf(nodes, selected) ?? []) : [];
@@ -170,7 +198,7 @@ export function Tree({
       role="tree"
       aria-label={rest['aria-label']}
       aria-multiselectable={multiple || undefined}
-      className={cx('kw-tree', className)}
+      className={cx('kw-tree', nav && 'is-nav', className)}
     >
       {nodes.map((node) => (
         <Branch
@@ -183,6 +211,8 @@ export function Tree({
           collapsed={collapsed}
           onToggle={toggle}
           onSelect={onSelect}
+          nav={nav}
+          flat={nav && !hasBranches(nodes)}
         />
       ))}
     </ul>

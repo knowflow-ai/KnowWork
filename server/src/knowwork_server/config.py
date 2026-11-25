@@ -6,7 +6,7 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -91,6 +91,29 @@ class Settings(BaseSettings):
     host_base_url: str = "http://runtime-host:7300"
     host_token: SecretStr = Field(min_length=32)
 
+    # 个人专属宿主：用了上传插件的人，云端对话跑在他自己的宿主里（hosts 包）。off 不开（上传的插件只在桌面端的
+    # 本机对话里生效）；docker 每人一个容器（部署用，要能连 Docker，同会话沙箱）；process 直接起进程（只给本机开发，
+    # 插件代码没有隔离）
+    plugin_hosts: Literal["off", "docker", "process"] = "off"
+    plugin_host_max: int = Field(default=50, ge=1, le=2000)
+    plugin_host_idle_seconds: int = Field(default=600, ge=30, le=86400)
+    # 每人的持久数据（会话日志、插件存的数据）多久没用就删掉；0 只删已经不在那个空间的人。删了以后他在专属宿主上的
+    # 旧对话还能翻看，但接不着聊了（hosts/cleanup.py）
+    plugin_host_retention_days: int = Field(default=90, ge=0, le=3650)
+    # docker：镜像（同共享宿主的镜像）、宿主那张内部网络的名字、每个容器的内存上限
+    plugin_host_image: str = ""
+    plugin_host_network: str = ""
+    plugin_host_memory_mb: int = Field(default=768, ge=256, le=16384)
+    # 业务服务不在 Docker 里跑时打开（本机试容器的起法）：把专属宿主的端口发布到本机回环口再连
+    plugin_host_publish: bool = False
+    # process：runtime-host 的目录、放各人 DSH_HOME 与解开的插件的目录、Node 所在目录（不给用 PATH 里的）
+    plugin_host_runtime_dir: str = ""
+    plugin_host_dir: str = "./data/plugin-hosts"
+    plugin_host_node_bin: str = ""
+    # 专属宿主回调业务服务、调模型的地址；不给时回调用 internal_url、模型走业务服务内部端口上的同一个接口
+    plugin_host_callback_url: str = ""
+    plugin_host_model_base_url: str = ""
+
     # 模型网关的上游（OpenAI 兼容）。第一阶段一个工作空间一个默认模型。
     model_upstream_base_url: str = "https://api.deepseek.com/v1"
     model_upstream_api_key: SecretStr = SecretStr("")
@@ -98,10 +121,12 @@ class Settings(BaseSettings):
     # 宿主请求模型时用的名字（宿主的 KNOWWORK_MODEL）；没在会话里看到 request/header 时按它记用量。
     host_model_alias: str = "default"
     model_token_ttl_seconds: int = Field(default=900, ge=60, le=3600)
-    # 单次模型调用：总时长上限、两个流式块之间的空闲上限；每轮最多几次模型调用（0 表示不限）
+    # 单次模型调用：总时长上限、两个流式块之间的空闲上限；每轮最多几次模型调用（0 表示不限）。
+    # 每轮调用次数默认不限，同 DSH 官方（一轮做到模型自己停下为止）：原来默认 50，长一点的活（边改文档边跑命令）
+    # 做到第 51 步就被取消，界面上像是被人停了。要兜底的部署自己设
     model_call_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
     model_idle_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
-    model_max_calls_per_turn: int = Field(default=50, ge=0, le=1000)
+    model_max_calls_per_turn: int = Field(default=0, ge=0, le=10000)
     model_probe_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     usage_timezone: str = "Asia/Shanghai"
 

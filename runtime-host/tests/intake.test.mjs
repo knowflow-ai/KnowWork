@@ -41,7 +41,7 @@ test('开会话的合同建成会话状态：策略、令牌、属主都在；�
   }
 })
 
-test('这一轮的合同写成用户消息：原话后面跟 @ 的说明块；语言、时区、目录、回答方式记进会话状态', () => {
+test('这一轮的合同写成用户消息：原话后面跟 @ 的说明块，时区在消息来源上；语言、目录、回答方式记进会话状态', () => {
   const state = provision(sessionContractOf({ sessionId: 'c_intake2' }))
   try {
     const agent = fakeAgent()
@@ -56,7 +56,7 @@ test('这一轮的合同写成用户消息：原话后面跟 @ 的说明块；�
     assert.equal(message.content[0].text, '报销标准')
     assert.ok(message.content[1].text.startsWith(MENTION_PREFIX), '@ 的说明块紧跟原话（业务服务投影据此显示小标签）')
     assert.equal(message.source.clientTimeZone, 'Asia/Tokyo')
-    assert.deepEqual([state.language, state.timeZone, state.knowledgeCatalog.bases[0].id], ['zh', 'Asia/Tokyo', 'builtin.kb1'])
+    assert.deepEqual([state.language, state.knowledgeCatalog.bases[0].id], ['zh', 'builtin.kb1'])
     assert.deepEqual(state.answerModes.get(String(message.id)), { mode: 'quick', spec: undefined })
   } finally {
     dropSession(state)

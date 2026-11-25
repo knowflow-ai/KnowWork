@@ -12,11 +12,14 @@ export function displayLabel(label: string): { readonly text: string; readonly r
     : { text: label, recommended: false };
 }
 
+/** 跳过的题（官方约定：选项、文字都空）的回答摘要 */
+export const SKIPPED = '（跳过）';
+
 /** 一题的回答写成一句话：选项（去掉推荐标记）与文字用顿号连起来。 */
 export function answerText(answer?: QuestionAnswerView): string {
   if (!answer) return '';
   const parts = [...answer.selected.map((label) => displayLabel(label).text), answer.custom ?? ''].filter(
     Boolean,
   );
-  return parts.length > 0 ? parts.join('、') : '（跳过）';
+  return parts.length > 0 ? parts.join('、') : SKIPPED;
 }

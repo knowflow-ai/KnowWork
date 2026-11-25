@@ -138,6 +138,47 @@ async def test_only_my_unsent_files_can_be_claimed(env, files_db):
         await env.turns.for_turn(mine, ["att_nope"])
 
 
+async def test_an_unsent_file_opened_in_the_editor_is_claimed_before_any_message(env, files_db):
+    """输入框里的附件直接进编辑器：本人的、格式认的才认领进对话（名字和会话里已有的错开）；之后随消息发出去照用，不再放一遍。"""
+    conv = await files_db.conversation()
+    await env.turns.for_turn(conv, [(await env.stage(("合同.pdf", PDF)))["items"][0]["id"]])
+    [pdf, note] = (await env.stage(("合同.pdf", PDF), ("说明.txt", b"ok")))["items"]
+    only_pdf = lambda name: name.endswith(".pdf")
+    theirs = await files_db.conversation(user_id="bob")
+    assert await env.service.claim_draft(theirs, pdf["id"], only_pdf) is None, "别人的对话认领不了"
+    assert await env.service.claim_draft(conv, note["id"], only_pdf) is None, "格式不认的不认领"
+    assert [s["status"] for s in await env.states(note["id"])] == ["staged"]
+    assert await env.service.claim_draft(conv, "att_nope", only_pdf) is None
+
+    assert await env.service.claim_draft(conv, pdf["id"], only_pdf) == "合同 (2).pdf"
+    assert env.sandbox.inputs[("ws1", conv.id)]["合同 (2).pdf"] == PDF
+    [turn] = await env.turns.for_turn(conv, [pdf["id"]])
+    assert turn.path == "input/合同 (2).pdf", "发消息时照用认领时定的名字"
+    with pytest.raises(AttachmentUnavailable):
+        await env.turns.for_turn(await files_db.conversation(), [pdf["id"]])
+
+
+async def test_a_file_with_a_working_copy_tells_the_model_to_change_that_copy(env, files_db):
+    """根上有同名文件（人在编辑器里打开过这个附件）：本轮说明里给出工作副本的位置；查不成的当没有，不拦这一轮。"""
+    conv = await files_db.conversation()
+    [docx, note] = (await env.stage(("简报.pdf", PDF), ("说明.txt", b"ok")))["items"]
+    asked: list[str] = []
+
+    async def working_copy(conversation, name):
+        asked.append(name)
+        if name == "说明.txt":
+            raise RuntimeError("沙箱连不上")
+        return conversation.id == conv.id and name == "简报.pdf"
+
+    [plain] = await env.turns.for_turn(conv, [docx["id"]])
+    assert plain.working_copy_path is None, "没有在线编辑器（没登记）的不查、不给"
+    turns = TurnAttachments(env.service)
+    turns.check_working_copies(working_copy)
+    first, second = await turns.for_turn(conv, [docx["id"], note["id"]])
+    assert (first.working_copy_path, second.working_copy_path) == ("简报.pdf", None)
+    assert asked == ["简报.pdf", "说明.txt"]
+
+
 async def test_removing_an_unsent_file_cancels_parsing_and_deletes_it(env, files_db):
     [pdf, kept] = (await env.stage(("合同.pdf", PDF), ("留着.pdf", PDF)))["items"]
     assert (await env.bob.delete(f"{BASE}/{pdf['id']}")).status_code == 404, "别人的删不了"

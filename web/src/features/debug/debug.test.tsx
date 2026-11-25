@@ -93,7 +93,7 @@ function api() {
       ],
     }),
     [`GET ${B}/turns/3/steps/2/input`]: jsonResponse({
-      system: ['你是 KnowWork 企业智能助手'],
+      system: ['你是 KnowWork 企业智能体'],
       tools: [{ name: 'bash', description: '执行命令' }],
       notes: ['按会话日志还原'],
       messages: [

@@ -17,7 +17,7 @@ const DSH_BIN = join(ROOT, 'node_modules', '.bin', 'dsh')
 const TEST_OVERLAY = join(ROOT, 'tests', 'overlays', 'test-tools.yml')
 
 /** 每个测试一个独立的 DSH_HOME，避免会话文件互相影响。 */
-function freshDshHome() {
+export function freshDshHome() {
   const home = mkdtempSync(join(tmpdir(), 'kw-dsh-home-'))
   const profile = join(home, 'profiles', 'knowwork-host')
   mkdirSync(profile, { recursive: true })
@@ -110,12 +110,27 @@ export async function startHost(mock, env = {}, options = {}) {
  * 订阅事件流，直到 predicate 返回 true 或超时；返回收到的全部帧。
  * @param {{ base: string, token: string }} host
  */
-export async function collectEvents(host, sessionId, predicate, { after = 0, timeoutMs = 20_000 } = {}) {
+// 宿主插件写进会话日志的事实（state.mjs 的 recordFact）：和业务服务事件泵同一条规则还原成原来的帧（server pump.py 的 HOST_FACTS），
+// 测试看到的和业务服务一样
+const HOST_FACTS = new Set(['approval/auto', 'skill/loaded', 'skill-gate/passed', 'skill-gate/failed', 'skill-gate/nudged'])
+export function asFact(frame) {
+  if (frame.kind === 'session/event' && HOST_FACTS.has(frame.data?.type)) return { ...frame, kind: frame.data.type, data: frame.data.data }
+  return frame
+}
+
+/**
+ * 读事件流直到 predicate 为真，返回读到的帧；返回的数组上挂着 positions（各来源读到的官方序号），下一次传 { after: frames.positions }
+ * 从那之后接着读（宿主按来源与官方序号续读，见 http-host.mjs 的 streamEvents）。after 不给或给 0 就从头读。
+ */
+export async function collectEvents(host, sessionId, predicate, { after, timeoutMs = 20_000 } = {}) {
+  if (after !== undefined && after !== 0 && !(after instanceof Map)) throw new Error('after 要传上一次返回的 frames.positions')
+  const positions = new Map(after instanceof Map ? after : [])
+  const query = [...positions].map(([source, seq]) => `after=${encodeURIComponent(`${source}:${seq}`)}`).join('&')
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   const frames = []
   try {
-    const res = await fetch(`${host.base}/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, {
+    const res = await fetch(`${host.base}/v1/sessions/${encodeURIComponent(sessionId)}/events${query ? `?${query}` : ''}`, {
       headers: { authorization: `Bearer ${host.token}` },
       signal: controller.signal,
     })
@@ -128,9 +143,10 @@ export async function collectEvents(host, sessionId, predicate, { after = 0, tim
         const line = buffer.slice(0, index).trim()
         buffer = buffer.slice(index + 1)
         if (line.length === 0) continue
-        const frame = JSON.parse(line)
+        const frame = asFact(JSON.parse(line))
+        if (frame.epoch !== 'live') positions.set(frame.epoch, Math.max(positions.get(frame.epoch) ?? -1, frame.cursor))
         frames.push(frame)
-        if (predicate(frame, frames)) return frames
+        if (predicate(frame, frames)) return Object.assign(frames, { positions })
       }
     }
   } catch (error) {
@@ -140,10 +156,16 @@ export async function collectEvents(host, sessionId, predicate, { after = 0, tim
     clearTimeout(timer)
     controller.abort()
   }
-  return frames
+  return Object.assign(frames, { positions })
 }
 
 export const isTurnEnd = frame => frame.kind === 'session/event' && frame.data?.type === 'turn/end'
+/**
+ * 含这段文字的用户消息之后的那个 turn/end：宿主重启、空闲释放后重新打开，事件流从头读时积压里还有之前几轮
+ * （重启打断的那一轮，官方恢复时还会补一个 interrupted 的 turn/end），要等的是新发的这一句的那一轮
+ */
+export const isTurnEndAfter = text => (frame, frames) => isTurnEnd(frame) && frames.some(f =>
+  f.kind === 'session/event' && f.data?.type === 'user/message' && JSON.stringify(f.data).includes(text))
 
 /** 官方日志里的审批事件：根会话的 session/event，或子 Agent 转发上来的 subagent/event；type 不对就是 undefined。 */
 export function approvalEvent(frame, type) {

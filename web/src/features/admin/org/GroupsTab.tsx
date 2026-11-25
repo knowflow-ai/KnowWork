@@ -37,12 +37,12 @@ function GroupMembers({
   const add = useAction((id: string) => addGroupMember(group.id, id), {
     invalidate,
     success: '已加入用户组',
-    failure: '加入没有成功，请稍后重试',
+    failure: '没能加入，请稍后重试',
   });
   const remove = useAction((id: string) => removeGroupMember(group.id, id), {
     invalidate,
     success: '已移出用户组',
-    failure: '移出没有成功，请稍后重试',
+    failure: '没能移出，请稍后重试',
   });
   const columns: readonly Column<{ readonly id: string }>[] = [
     { key: 'member', title: '成员', ellipsis: true, render: (row) => nameOf(members, row.id) },
@@ -107,17 +107,17 @@ export function GroupsTab() {
   const create = useAction((name: string) => createGroup(name), {
     invalidate,
     success: '已新建用户组',
-    failure: '新建没有成功，请稍后重试',
+    failure: '没能新建，请稍后重试',
   });
   const rename = useAction(({ id, name }: { id: string; name: string }) => renameGroup(id, name), {
     invalidate,
     success: '已重命名',
-    failure: '重命名没有成功，请稍后重试',
+    failure: '没能重命名，请稍后重试',
   });
   const remove = useAction((id: string) => deleteGroup(id), {
     invalidate,
     success: '已删除用户组',
-    failure: '删除没有成功，请稍后重试',
+    failure: '没能删除，请稍后重试',
   });
   const current =
     dialog && dialog.type !== 'create'
@@ -173,7 +173,7 @@ export function GroupsTab() {
           columns={columns}
           rows={groups.data ?? []}
           loading={groups.isFetching}
-          empty={groups.isError ? '用户组加载失败，请刷新重试' : '还没有用户组'}
+          empty={groups.isError ? '没能加载用户组，请刷新重试' : '还没有用户组'}
         />
       )}
       {dialog?.type === 'create' ? (

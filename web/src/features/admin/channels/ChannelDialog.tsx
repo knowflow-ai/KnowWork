@@ -174,7 +174,7 @@ export function ChannelDialog({
           : editing
             ? '已保存，机器人会按新配置重新连接'
             : '已添加，机器人正在连接',
-      failure: '保存没有成功，请检查后重试',
+      failure: '没能保存，请检查后重试',
     },
   );
   const submit = async () => {

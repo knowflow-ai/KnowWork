@@ -8,7 +8,7 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
-import { FileBlank, X } from '@openai/apps-sdk-ui/components/Icon';
+import { FileBlank } from '@openai/apps-sdk-ui/components/Icon';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError, readableError } from '../../api/http';
 import { Empty } from '../../ui/Empty';
@@ -21,6 +21,7 @@ import { TextView } from './TextView';
 import type { PreviewLocate } from './locate';
 import { extensionOf, isEditableFormat, previewKindOf, type PreviewKind } from './previewKind';
 import { cx } from '../../ui/cx';
+import { DocTabs } from '../../ui/DocTabs';
 import { FileKindIcon } from '../../ui/FileKindIcon';
 import { BlobImage } from './BlobImage';
 import {
@@ -45,6 +46,8 @@ export interface PreviewFile {
   readonly name: string;
   /** 区分是哪个文件（缓存、换文件时复位用）：服务端文件用地址，本机文件用对话加路径 */
   readonly id: string;
+  /** 文件在哪（并排编辑区的标签上悬停时显示，同名的文件好区分）；不给就显示名字 */
+  readonly location?: string;
   /** 原件字节：表格、文本、图片、HTML、Word（.docx）的预览，以及没给 pdf 时的 PDF 原件 */
   readonly read: Read;
   /** 给 PDF 阅读器的字节：Word、PPT 等转成的 PDF（PDF 原件直接读原件，不走它）；不给就只有 PDF 原件能用 PDF 阅读器 */
@@ -198,51 +201,86 @@ export function opensInEditor(file: PreviewFile): boolean {
 
 /**
  * 并排的编辑区（照 ChatGPT Canvas）：能编辑的本机 Office 文件打开在对话右边，对话一直看得到、能输入。编辑器里的「AI 修改」
- * 发到对话，AI 的回答、追问、确认就在旁边，不用关掉文档去找。头部和抽屉一样：关闭在左上，标题，右边是文件的操作。
+ * 发到对话，AI 的回答、追问、确认就在旁边，不用关掉文档去找。
+ * 打开的文件各占一个标签，排在上沿（照 DSH 官方右侧栏的标签条，ui/DocTabs）：点标签切换，每个标签自己关，右键可以关闭其他、
+ * 关闭右侧；条的右端是切换类控件和当前文件的操作。看过的标签切走、整栏收起（hidden）都照样挂着（同官方 keepMounted），
+ * 编辑器不用重开、没存的改动还在；没看过的标签（例如刷新后恢复的）不先挂，点到才打开，收起时也不在后台打开当前那个。
+ * 开在哪、关掉以后切到哪由调用方按 ui/docTabList.ts 算，关掉最后一个由调用方收起编辑区。
  */
 export function FileEditPane({
-  file,
+  files,
+  activeId,
+  hidden = false,
+  onSelect,
   onClose,
   tools,
   aside,
 }: {
-  readonly file: PreviewFile;
-  readonly onClose: () => void;
-  /** 头部右边、文件操作之前的切换类控件（例如显示目录树） */
+  readonly files: readonly PreviewFile[];
+  readonly activeId: string;
+  /** 整栏收起：标签和看过的内容照样挂着，只是不显示 */
+  readonly hidden?: boolean;
+  readonly onSelect: (id: string) => void;
+  /** 关掉这几个标签 */
+  readonly onClose: (ids: readonly string[]) => void;
+  /** 条的右端、文件操作之前的切换类控件（例如显示目录树） */
   readonly tools?: ReactNode;
   /** 正文右边的一栏（例如工作文件夹的目录树，照官方：预览旁边的目录树） */
   readonly aside?: ReactNode;
 }) {
-  const [actions, onGone] = useHeaderActions(file);
+  // 服务端说不在了的文件（见 useHeaderActions）：它的标签上不再给下载
+  const [gone, setGone] = useState<ReadonlySet<string>>(() => new Set());
+  const onGone = useCallback((id: string) => setGone((current) => new Set([...current, id])), []);
+  const active = files.find((file) => file.id === activeId) ?? files[0];
+  // 显示过的标签：只挂这些（同官方「未访问的正文不会提前挂载」）
+  const [visited, setVisited] = useState<ReadonlySet<string>>(() =>
+    hidden || active === undefined ? new Set() : new Set([active.id]),
+  );
+  const shownId = hidden ? undefined : active?.id;
+  // 渲染时记下刚显示的（React 推荐的「渲染中按新属性调整状态」写法，不在 effect 里再渲染一遍）
+  if (shownId !== undefined && !visited.has(shownId)) setVisited(new Set([...visited, shownId]));
+  if (active === undefined) return null;
+  const actions = gone.has(active.id) ? undefined : active.actions;
   return (
-    <section className="kw-file-pane" aria-label={file.name}>
-      <header className="kw-sheet-head">
-        <Button color="secondary" variant="ghost" size="sm" uniform aria-label="关闭" onClick={onClose}>
-          <X />
-        </Button>
-        <h2 className="kw-sheet-title">
-          <span className="kw-labeled">
-            <FileKindIcon name={file.name} />
-            {file.name}
-          </span>
-        </h2>
-        {tools || actions ? (
-          <div className="kw-sheet-extra">
-            {tools}
-            {actions}
-          </div>
-        ) : null}
-      </header>
+    <section className="kw-file-pane" aria-label={active.name} hidden={hidden}>
+      <DocTabs
+        label="打开的文件"
+        tabs={files.map((file) => ({
+          id: file.id,
+          title: file.name,
+          icon: <FileKindIcon name={file.name} />,
+          ...(file.location ? { hint: file.location } : {}),
+        }))}
+        activeId={active.id}
+        onSelect={onSelect}
+        onClose={onClose}
+        end={
+          tools || actions ? (
+            <>
+              {tools}
+              {actions}
+            </>
+          ) : undefined
+        }
+      />
       <div className="kw-file-pane-main">
-        {/* 编辑器、PDF、Word、网页铺满（它们自己滚）；别的（Markdown、表格、文本、图片）同抽屉留边、在这里滚 */}
-        <div
-          className={cx(
-            'kw-file-pane-body',
-            !opensInEditor(file) && !EDGE_TO_EDGE.includes(kindOf(file)) && 'is-padded',
-          )}
-        >
-          <PreviewContent file={file} scripted={false} onGone={onGone} />
-        </div>
+        {files.map((file) =>
+          // 编辑器、PDF、Word、网页铺满（它们自己滚）；别的（Markdown、表格、文本、图片）同抽屉留边、在这里滚
+          !visited.has(file.id) && file.id !== shownId ? null : (
+            <div
+              key={file.id}
+              role="tabpanel"
+              aria-label={file.name}
+              hidden={file.id !== active.id}
+              className={cx(
+                'kw-file-pane-body',
+                !opensInEditor(file) && !EDGE_TO_EDGE.includes(kindOf(file)) && 'is-padded',
+              )}
+            >
+              <PreviewContent file={file} scripted={false} onGone={onGone} />
+            </div>
+          ),
+        )}
         {aside ? <aside className="kw-file-pane-aside">{aside}</aside> : null}
       </div>
     </section>
@@ -296,6 +334,31 @@ function PreviewContent(props: ContentProps) {
   if (props.file.edit && opensInEditor(props.file) && props.locate === undefined)
     return <EditableContent {...props} edit={props.file.edit} />;
   return <ReadOnlyContent {...props} note={props.file.readOnlyNote} />;
+}
+
+/** 等多久还没打开就说一句在等什么 */
+export const EDITOR_STARTING_HINT_MS = 2000;
+
+/**
+ * 等编辑器打开：编辑器按人起，这个人第一次打开（或空闲回收以后）要现起一个，十几秒（2026-11 测试部署实测约 16 秒）。
+ * 等了一会儿还没好就在上面说一句，不让人对着骨架干等；已经起着的一两秒就开了，看不到这句。
+ */
+function EditorStarting() {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSlow(true), EDITOR_STARTING_HINT_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const skeleton = <Skeleton rows={8} className="kw-preview-state" />;
+  if (!slow) return skeleton;
+  return (
+    <div className="kw-preview-noted">
+      <p className="kw-preview-note" role="status">
+        正在启动编辑器，第一次打开要十几秒
+      </p>
+      <div className="kw-preview-noted-body">{skeleton}</div>
+    </div>
+  );
 }
 
 /** AI 正在改的那几块上的标签 */
@@ -390,7 +453,7 @@ function EditableContent({
     }
   };
 
-  if (session.isPending) return <Skeleton rows={8} className="kw-preview-state" />;
+  if (session.isPending) return <EditorStarting />;
   if (session.isError)
     return <ReadOnlyContent {...props} note={readableError(session.error, '编辑器暂时打不开，先只读预览')} />;
   if (session.data === null) return <ReadOnlyContent {...props} />;

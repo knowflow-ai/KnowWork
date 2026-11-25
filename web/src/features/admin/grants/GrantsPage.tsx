@@ -65,7 +65,7 @@ export default function GrantsPage() {
   const revoke = useAction((g: Grant) => revokeGrant(g.subject, g.resource), {
     invalidate: [KEYS.grants],
     success: '已撤销授权',
-    failure: '撤销没有成功，请稍后重试',
+    failure: '没能撤销，请稍后重试',
   });
   const subjectOf = (g: Grant) => subjectLabel(g.subject, dir);
   const resourceOf = (g: Grant) => {
@@ -146,7 +146,7 @@ export default function GrantsPage() {
           columns={columns}
           rows={rows}
           loading={grants.isFetching}
-          empty={grants.isError ? '授权加载失败，请刷新重试' : keyword ? '没有找到匹配的授权' : '还没有授权'}
+          empty={grants.isError ? '没能加载授权，请刷新重试' : keyword ? '没有找到匹配的授权' : '还没有授权'}
         />
       )}
       {adding ? <GrantDialog dir={dir} onClose={() => setAdding(false)} /> : null}

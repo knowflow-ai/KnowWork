@@ -14,7 +14,7 @@
  */
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { getSession, publish, resolveRootSession } from './state.mjs'
+import { getSession, recordFact, resolveRootSession } from './state.mjs'
 
 export const name = 'knowwork-skill-gate'
 export const inject = ['agents', 'tools']
@@ -82,16 +82,16 @@ export function apply(ctx) {
     if (state.policy?.gate?.requiredTool === undefined && state.gate.loaded.size === 0) return
     const missing = missingOf(state)
     if (missing.length === 0) {
-      publish(sessionId, 'skill-gate/passed', eventData(state, turn, missing))
+      recordFact(state, 'skill-gate/passed', eventData(state, turn, missing))
       return
     }
     const maxNudges = state.policy?.gate?.maxNudges ?? DEFAULT_MAX_NUDGES
     if (state.gate.nudges >= maxNudges) {
-      publish(sessionId, 'skill-gate/failed', { ...eventData(state, turn, missing), nudges: state.gate.nudges })
+      recordFact(state, 'skill-gate/failed', { ...eventData(state, turn, missing), nudges: state.gate.nudges })
       return
     }
     state.gate.nudges += 1
-    publish(sessionId, 'skill-gate/nudged', { ...eventData(state, turn, missing), nudge: state.gate.nudges })
+    recordFact(state, 'skill-gate/nudged', { ...eventData(state, turn, missing), nudge: state.gate.nudges })
     agent.steer(createUserMessage({
       content: [{ type: 'text', text: nudgeText(missing) }],
       source: { kind: 'knowwork-skill-gate' },

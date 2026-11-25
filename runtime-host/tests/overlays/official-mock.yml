@@ -2,3 +2,7 @@
 # 不含测试工具，工具全部来自业务服务的工具桥。
 - id: llm-deepseek
   disabled: false
+
+# 官方用模型起会话标题：每段会话第一句话之后多调一次模型，会打乱按顺序编排的模型回答、多出模型请求（同 test-tools.yml）
+- id: session-title-llm
+  disabled: true

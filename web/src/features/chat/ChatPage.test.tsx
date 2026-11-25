@@ -50,6 +50,9 @@ beforeEach(() => {
         return new Response(null, { status: 204 });
       if (url === '/api/workspaces/default/conversations/mention-options')
         return jsonResponse(MENTION_OPTIONS);
+      if (url === '/api/workspaces/default/me/plugins') return jsonResponse(MY_PLUGINS);
+      if (url === '/api/workspaces/default/conversations/c-new/commands' && init?.method === 'POST')
+        return jsonResponse({ command_id: 'cmd-1', kind: 'success', text: 'Goal set' });
       return jsonResponse({ messageId: 'm1' }, 202);
     }),
   );
@@ -89,6 +92,28 @@ const MENTION_OPTIONS = {
   skills: [],
 };
 
+/** 自己开着的预置插件（带 / 命令）：新对话页的 / 菜单按它列命令 */
+const MY_PLUGINS = {
+  plugins: [
+    {
+      key: 'goal',
+      name: '长任务目标',
+      description: '',
+      source: 'builtin',
+      enabled: true,
+      locked: true,
+      commands: [
+        {
+          name: 'goal',
+          description: 'Set or view the goal for a long-running task',
+          hint: '[<objective>|clear|edit <objective>|pause|resume]',
+          definition_id: '@deepseek-ai/dsh-command-goal',
+        },
+      ],
+    },
+  ],
+};
+
 const push = (event: WireEvent) => act(() => streams[streams.length - 1]?.onEvent(event));
 
 describe('ChatPage', () => {
@@ -101,7 +126,7 @@ describe('ChatPage', () => {
     expect(screen.getByText('有什么可以帮你？')).toBeInTheDocument();
     await userEvent.type(screen.getByRole('textbox'), '帮我写周报');
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
-    await waitFor(() => expect(screen.getByText('正在连接…')).toBeInTheDocument());
+    await waitFor(() => expect(streams).toHaveLength(1)); // 进了会话页、打开了事件流
     expect(
       calls
         .map((c) => c.url)
@@ -118,6 +143,28 @@ describe('ChatPage', () => {
     expect(screen.getByText('帮我写周报')).toBeInTheDocument();
   });
 
+  it('新对话页的 /：列出开着的插件带的命令；回车先建对话、再执行命令（不发第一句），然后进会话页', async () => {
+    renderWithApp(<ChatPage />, {
+      route: '/chat',
+      path: '/chat',
+      extraRoutes: { '/chat/:conversationId': <ChatPage /> },
+    });
+    const box = screen.getByRole('textbox');
+    await userEvent.type(box, '/go');
+    const menu = await screen.findByRole('listbox', { name: '/ 技能与命令' });
+    await userEvent.click(await within(menu).findByRole('option', { name: '命令 /goal' }));
+    await userEvent.type(box, '把三季度合同核对完');
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(streams).toHaveLength(1)); // 进了会话页、打开了事件流
+    const posted = calls.filter((c) => c.method === 'POST').map((c) => [c.url, c.body]);
+    expect(posted[0]?.[0]).toBe('/api/workspaces/default/conversations');
+    expect(posted[1]).toEqual([
+      '/api/workspaces/default/conversations/c-new/commands',
+      JSON.stringify({ line: '/goal 把三季度合同核对完' }),
+    ]);
+    expect(calls.some((c) => c.url.endsWith('/messages'))).toBe(false);
+  });
+
   it('从别的页面带着回答方式和 @ 进新对话（例如数据源页「去问」）：换成那种回答方式，@ 摆在输入框里', async () => {
     const source = { type: 'extension', kind: 'data_source', label: '数据源', id: 'p1', name: '销售库' };
     renderWithApp(<ChatPage />, {
@@ -129,6 +176,25 @@ describe('ChatPage', () => {
     expect(within(chips).getByText('销售库')).toBeInTheDocument();
     expect(within(chips).getByText('数据源')).toBeInTheDocument();
     expect(useAnswerMode.getState().mode).toBe('analytics');
+  });
+
+  it('进会话页第一次连接时不先插一行「正在连接…」（发完第一句进来消息不会被顶下去），超过 1 秒还没连上才写；中途断了马上写', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
+      await waitFor(() => expect(streams).toHaveLength(1));
+      expect(screen.queryByText('正在连接…')).not.toBeInTheDocument();
+      act(() => vi.advanceTimersByTime(1000));
+      const notice = screen.getByText('正在连接…');
+      // 浮在消息区顶上、不占位置：出现、消失都不挪动下面的消息
+      expect(notice.closest('.kw-connection-float')).not.toBeNull();
+      act(() => streams[0]?.onStatus?.('connected'));
+      expect(screen.queryByText('正在连接…')).not.toBeInTheDocument();
+      act(() => streams[0]?.onStatus?.('reconnecting', '网络断了'));
+      expect(screen.getByText('连接中断，正在重连…')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('回答语言：用户选了 English，之后的消息都带 en', async () => {
@@ -244,6 +310,22 @@ describe('ChatPage', () => {
     expect(screen.getByText('合同.docx')).toBeInTheDocument();
   });
 
+  it('一轮还在跑时发的消息排着队，点停止后官方连它一起取消：气泡和「思考中」都去掉，原文放回输入框', async () => {
+    renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
+    act(() => streams[0]?.onStatus?.('connected'));
+    push(ev.runStarted(1, 5));
+    await userEvent.type(screen.getByRole('textbox'), '2025 年整体良率走势');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() => expect(calls.some((c) => c.url.endsWith('/c1/messages'))).toBe(true));
+    expect(await screen.findByText('2025 年整体良率走势')).toBeInTheDocument();
+    push(ev.discarded(2, 'm1'));
+    push(ev.runCancelled(3, 5));
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('2025 年整体良率走势'));
+    expect(screen.queryByText('思考中')).not.toBeInTheDocument();
+    expect(screen.queryByText('2025 年整体良率走势', { ignore: 'textarea' })).not.toBeInTheDocument(); // 气泡去掉了
+    expect(screen.getByText(/没有发出去，已放回输入框/)).toBeInTheDocument();
+  });
+
   it('新对话：按了发送马上换成这条消息和「思考中」，不等建会话；建好进会话页', async () => {
     const original = globalThis.fetch;
     let created: () => void = () => undefined;
@@ -269,7 +351,7 @@ describe('ChatPage', () => {
     expect(screen.queryByText('有什么可以帮你？')).not.toBeInTheDocument();
     expect(screen.getByRole('textbox')).toHaveValue('');
     act(() => created());
-    await waitFor(() => expect(screen.getByText('正在连接…')).toBeInTheDocument());
+    await waitFor(() => expect(streams).toHaveLength(1)); // 进了会话页、打开了事件流
     expect(screen.getByText('帮我写周报')).toBeInTheDocument();
   });
 
@@ -471,7 +553,8 @@ describe('ChatPage', () => {
 
   it('会话页：渲染事件流、审批、停止与插话', async () => {
     renderWithApp(<ChatPage />, { route: '/chat/c1', path: '/chat/:conversationId' });
-    expect(screen.getByText('正在连接…')).toBeInTheDocument();
+    // 一般很快就连上，一进来不先写「正在连接…」
+    expect(screen.queryByText('正在连接…')).not.toBeInTheDocument();
     act(() => streams[0]?.onStatus?.('connected'));
     push(ev.runStarted(1));
     push(ev.toolStarted(3, 'c9', 'write_file', '{"path":"报告.docx"}'));
@@ -534,7 +617,7 @@ describe('ChatPage', () => {
     push(ev.message(7, '总结已生成，可在下方查看。', 2));
     push(ev.runCompleted(8, 2));
     expect(await screen.findByText('总结.md')).toBeInTheDocument();
-    const turns = screen.getAllByRole('article', { name: '助手回答' });
+    const turns = screen.getAllByRole('article', { name: '智能体回答' });
     expect(turns).toHaveLength(2);
     expect(turns[0]).toHaveTextContent('上一轮.md');
     expect(turns[0]).not.toHaveTextContent('总结.md');
@@ -551,7 +634,7 @@ describe('ChatPage', () => {
     expect(calls.some((c) => c.url.endsWith('/artifacts'))).toBe(false);
   });
 
-  it('提问：卡片作答后提交到提问接口；回答回来后显示回答，待办随轮次显示', async () => {
+  it('提问：卡片作答后提交到提问接口；回答回来后照 ChatGPT 画成你的一条回复，待办随轮次显示', async () => {
     renderWithApp(<ChatPage />, { route: '/chat/c6', path: '/chat/:conversationId' });
     act(() => streams[0]?.onStatus?.('connected'));
     push(ev.runStarted(1));
@@ -565,7 +648,9 @@ describe('ChatPage', () => {
     push(ev.questionRequested(4, 'call_1'));
     push(ev.runWaitingInput('4.1', 'call_1'));
 
-    expect(screen.getByText('等待你回答')).toBeInTheDocument();
+    // 这一轮停在提问那里（同 ChatGPT），不再转一行「等待你回答」，卡片上写回答后接着执行
+    expect(screen.queryByText('等待你回答')).toBeNull();
+    expect(screen.getByText('回答后智能体接着执行')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /待办 · 已完成 1\/2/ })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('radio', { name: 'PDF' }));
     await userEvent.click(screen.getByRole('button', { name: '提交回答' }));
@@ -575,7 +660,9 @@ describe('ChatPage', () => {
       ).toBe('{"answers":[{"id":"fmt","selected":["PDF"]}]}'),
     );
     push(ev.questionAnswered(5, 'call_1', [{ id: 'fmt', selected: ['PDF'] }]));
-    expect(await screen.findByText('你的回答：PDF')).toBeInTheDocument();
+    const reply = await screen.findByLabelText('你的回答');
+    expect(reply).toHaveTextContent('格式：PDF');
+    expect(screen.queryByRole('button', { name: '提交回答' })).toBeNull();
     expect(screen.queryByRole('button', { name: /执行：ask_user_question/ })).toBeNull();
   });
 

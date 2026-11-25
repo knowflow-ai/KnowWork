@@ -69,11 +69,12 @@ describe('前端插槽', () => {
       '知识库',
       '技能',
       '工具与 MCP',
+      '插件',
       '渠道',
     ]);
     expect(groups.at(-1)?.label).toBe('扩展');
     // 内置导航不被改动
-    expect(ADMIN_NAV.find((group) => group.label === '能力接入')!.items).toHaveLength(4);
+    expect(ADMIN_NAV.find((group) => group.label === '能力接入')!.items).toHaveLength(5);
   });
 
   it('扩展的系统菜单项（例如空间管理）排在「模型」后面，内置的系统分组不被改动', () => {

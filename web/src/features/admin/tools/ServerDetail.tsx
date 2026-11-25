@@ -32,7 +32,7 @@ function ToolName({ tool }: { readonly tool: McpTool }) {
         {tool.isNew ? (
           <Tooltip content="之后同步才出现的工具，先设成需确认，看过后再定" compact>
             <span>
-              <Badge color="discovery" variant="soft" size="sm">
+              <Badge color="secondary" variant="soft" size="sm">
                 新
               </Badge>
             </span>
@@ -41,7 +41,7 @@ function ToolName({ tool }: { readonly tool: McpTool }) {
         {tool.problem ? (
           <Tooltip content={`${tool.problem}，不会交给模型`} compact>
             <span>
-              <Badge color="warning" variant="soft" size="sm">
+              <Badge color="secondary" variant="soft" size="sm">
                 不可用
               </Badge>
             </span>

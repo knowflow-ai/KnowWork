@@ -1,0 +1,8 @@
+# 只在测试时叠加：给预置插件目录多加一个我们自己的最小工具插件 probe（目录里本来的 goal 是官方的目标工具，
+# 见 plugin-catalog.mjs）。
+- id: knowwork-http-host
+  config:
+    plugins:
+      probe:
+        rows:
+          - name: '@knowwork/dsh-host/test-preset-tool'

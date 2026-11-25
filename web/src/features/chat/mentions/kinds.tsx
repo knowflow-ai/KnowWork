@@ -58,7 +58,7 @@ export const MENTION_GROUPS: readonly {
   readonly icon: ReactNode;
   readonly effect: string;
 }[] = [
-  { group: 'workspace', label: '工作文件夹', icon: <Folder />, effect: '把文件写进这一问，Agent 自己去读' },
+  { group: 'workspace', label: '工作文件夹', icon: <Folder />, effect: '把文件写进这一问，智能体自己去读' },
   { group: 'bases', label: '知识库', icon: <BookClosed />, effect: '只在选中的知识库或目录里找' },
   { group: 'documents', label: '文件', icon: <FileDocument />, effect: '只在选中的文件里找' },
   { group: 'tags', label: '标签', icon: <Tag />, effect: '只在带这个标签的文件里找' },

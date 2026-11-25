@@ -44,7 +44,7 @@ export default function OAuthConsentPage() {
       setOutcome(approve ? 'approved' : 'denied');
       navigation.go(target);
     } catch (err) {
-      setError(readableError(err, '没有成功，请稍后重试'));
+      setError(readableError(err, approve ? '没能授权，请稍后重试' : '没能拒绝，请稍后重试'));
     } finally {
       setBusy(false);
     }

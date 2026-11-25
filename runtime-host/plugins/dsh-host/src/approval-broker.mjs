@@ -26,7 +26,7 @@
 
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { createBridgeClient } from './tool-bridge-client.mjs'
-import { publish, resolveRootSession } from './state.mjs'
+import { recordFact, resolveRootSession } from './state.mjs'
 
 export const name = 'knowwork-approval-broker'
 export const inject = ['approval']
@@ -109,7 +109,7 @@ export function apply(ctx, config) {
     }
     const seen = typeof req.callId === 'string' && checked.delete(req.callId)
     if (!seen && await granted(state, req)) {
-      publish(state.id, 'approval/auto', { id, sessionId })
+      recordFact(state, 'approval/auto', { id, sessionId })
       return 'allowed-once'
     }
     if (req.signal?.aborted) return 'cancelled'

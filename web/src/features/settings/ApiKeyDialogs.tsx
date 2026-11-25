@@ -71,7 +71,7 @@ export function CreateApiKeyDialog({
       setIssued(await createApiKey(input));
       onCreated();
     } catch (error) {
-      toast.error(readableError(error, '创建没有成功，请稍后重试'));
+      toast.error(readableError(error, '没能创建，请稍后重试'));
     } finally {
       setBusy(false);
     }

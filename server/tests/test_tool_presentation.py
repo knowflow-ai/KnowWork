@@ -120,3 +120,14 @@ def test_suggestions_card_lists_questions_to_ask_next():
     assert normalize({"version": 1, "cards": [{"type": "suggestions", "questions": ["x" * 500]}]})["cards"][0][
         "questions"] == ["x" * 200]
     assert normalize({"version": 1, "cards": [{"type": "suggestions", "title": "只有标题", "questions": []}]}) is None
+
+
+def test_tables_can_say_there_is_no_data():
+    """结果表可以标 empty：没有数据（一行都没有，或只做了汇总、汇总出来全是空值）。只认 true，别的不带。"""
+    table = {"type": "table", "columns": [{"name": "n", "kind": "number"}], "rows": [[None]], "row_count": 1}
+
+    def empty_of(value):
+        return normalize({"version": 1, "cards": [{**table, "empty": value}]})["cards"][0].get("empty")
+
+    assert empty_of(True) is True
+    assert empty_of("true") is None and empty_of(1) is None

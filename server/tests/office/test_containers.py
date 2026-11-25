@@ -29,7 +29,7 @@ from knowwork_server.office.containers import (
     office_location,
     office_mount,
 )
-from knowwork_server.sandbox.contract import SandboxError
+from knowwork_server.sandbox.contract import ExecResult, SandboxError
 from knowwork_server.sandbox.docker_engine import DockerConflict
 from knowwork_server.sandbox.execution import RawExec
 from knowwork_server.workpath import ROOT, parse
@@ -96,6 +96,10 @@ class FakeEngine:
     async def unpause_container(self, container_id: str) -> None:
         self._find(container_id)["Status"] = "running"
 
+    async def stop_container(self, container_id: str) -> None:
+        self.counts["stop_container"] += 1
+        self._find(container_id)["Status"] = "exited"
+
     async def remove_container(self, container_id: str) -> None:
         c = self._find(container_id)
         if c is not None:
@@ -152,7 +156,8 @@ async def make():
     built: list[tuple[OfficeContainers, httpx.AsyncClient]] = []
 
     def factory(*, engine: FakeEngine | None = None, max_containers: int = 5, clock: Clock | None = None,
-                ready: bool = True, refused: int = 0, run=None, **spec_overrides: Any):
+                ready: bool = True, refused: int = 0, run=None, prewarm: bool = True,
+                keep_stopped_seconds: int | None = None, **spec_overrides: Any):
         engine = engine or FakeEngine()
         hits: list[str] = []
 
@@ -165,7 +170,8 @@ async def make():
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(answer))
         editors = OfficeContainers(engine, spec(**spec_overrides), max_containers=max_containers, http=http,
-                                author_of=_author, clock=clock or Clock(),
+                                author_of=_author, clock=clock or Clock(), prewarm=prewarm,
+                                keep_stopped_seconds=keep_stopped_seconds,
                                 **({"run": run} if run else {}))
         built.append((editors, http))
         return engine, editors, hits
@@ -243,6 +249,35 @@ async def test_cap_counts_only_other_peoples_running_editors(make):
         await editors.endpoint(BOB)
     next(iter(engine.containers.values()))["Status"] = "exited"  # 停了的不占内存，不算
     await editors.endpoint(BOB)
+
+
+async def test_prewarm_starts_the_persons_editor_ahead_of_opening(make):
+    """页面上出现了能在线编辑的文件就提前起：点开时编辑器已经在跑，不用再等它起来。"""
+    engine, editors, hits = make()
+    assert await editors.prewarm(ALICE) is True
+    (container,) = engine.containers.values()
+    assert container["Status"] == "running" and hits
+    # 已经在跑：再提前起只算一次使用，不另建
+    assert await editors.prewarm(ALICE) is True
+    assert len(engine.containers) == 1
+
+
+async def test_prewarm_can_be_switched_off(make):
+    engine, editors, _ = make(prewarm=False)
+    assert await editors.prewarm(ALICE) is False
+    assert not engine.containers
+
+
+async def test_prewarm_leaves_room_for_people_who_actually_open_files(make):
+    """提前起的不跟真要打开的人抢名额：别人在跑的到了上限减去预留（五分之一，至少一个）就不起，也不为它先清扫。"""
+    engine, editors, _ = make(max_containers=5)
+    for user in ("u1", "u2", "u3", "u4"):
+        engine.add(f"kw-office-{user}", {"io.knowwork.component": COMPONENT, "io.knowwork.user": user})
+    assert await editors.prewarm(ALICE) is False
+    assert spec().name(ALICE) not in {item["Name"] for item in engine.containers.values()}
+    # 真打开照常能起（还没到上限）
+    await editors.endpoint(ALICE)
+    assert spec().name(ALICE) in {item["Name"] for item in engine.containers.values()}
 
 
 async def settle() -> None:
@@ -571,3 +606,105 @@ async def test_a_marker_from_the_future_is_not_trusted(make):
     engine.mtimes[(container["Id"], MARKER)] = clock.now + 86_400
     clock.now += 1801
     assert await other.sweeper.sweep() == 1
+
+
+WEEK = 7 * 24 * 3600
+
+
+async def test_idle_editor_is_stopped_first_and_removed_after_the_keep_period(make):
+    """空闲先停（释放内存，回收前照样替人存盘），再打开时拉起来接着用，比新建快得多、放进去的文件还在；
+    停满保留期才删。"""
+    clock = Clock(10_000.0)
+    engine, editors, _ = make(clock=clock, keep_stopped_seconds=WEEK)
+    await editors.endpoint(ALICE)
+    await editors.place(ALICE, "conv-1", parse("a.docx"), b"in editor")
+    (container,) = engine.containers.values()
+    saved = []
+
+    async def before_reclaim(key, mcp, read):
+        saved.append(await read("/work/conv-1/a.docx", 100))
+
+    editors.before_reclaim = before_reclaim
+    clock.now += 1801
+    assert await editors.sweeper.sweep() == 1
+    assert container["Status"] == "exited" and not engine.removed and saved == [b"in editor"]
+    assert engine.files[(container["Id"], "/work/conv-1/a.docx")] == b"in editor"
+    # 停着的再扫一遍：没到保留期不删，也不再「停」一次
+    assert await editors.sweeper.sweep() == 0 and engine.counts["stop_container"] == 1
+
+    await editors.endpoint(ALICE)  # 回来再打开：拉起原来那个，不新建
+    assert container["Status"] == "running" and len(engine.containers) == 1
+
+    clock.now += 1801
+    assert await editors.sweeper.sweep() == 1 and container["Status"] == "exited"
+    clock.now += WEEK
+    assert await editors.sweeper.sweep() == 1
+    assert engine.removed == [container["Name"]] and not engine.containers
+
+
+async def test_a_dead_editor_is_removed_instead_of_stopped(make):
+    """坏掉的容器（dead）停不了：空闲到时间直接删，不每轮都去停一次、永远收不掉。"""
+    clock = Clock(10_000.0)
+    engine, editors, _ = make(clock=clock, keep_stopped_seconds=WEEK)
+    await editors.endpoint(ALICE)
+    (container,) = engine.containers.values()
+    container["Status"] = "dead"
+    clock.now += 1801
+    assert await editors.sweeper.sweep() == 1
+    assert engine.removed == [container["Name"]] and engine.counts["stop_container"] == 0
+
+
+async def test_stopped_editors_are_not_woken_by_lookups(make):
+    """智能体找编辑器的 MCP、一轮结束查改动、取回文件、记一致：编辑器停着就当不在，不为此拉起来占内存。"""
+    clock = Clock(10_000.0)
+    engine, editors, _ = make(clock=clock, keep_stopped_seconds=WEEK)
+    await editors.endpoint(ALICE)
+    report = parse("a.docx")
+    await editors.place(ALICE, "conv-1", report, b"x")
+    clock.now += 1801
+    await editors.sweeper.sweep()
+    (container,) = engine.containers.values()
+    assert container["Status"] == "exited"
+    assert await editors.mcp(ALICE) is None
+    assert await editors.copies(ALICE, "conv-1", [report]) is None
+    assert await editors.fetch(ALICE, "conv-1", report, max_bytes=100) is None
+    await editors.mark(ALICE, "conv-1", report, "abc")
+    assert container["Status"] == "exited"
+
+
+async def test_deleting_a_conversation_clears_its_folder_in_the_editor(make):
+    """删对话时把这个人编辑器里这段对话的目录与一致记录删掉；停着的拉起来删、删完再停回去，没有编辑器就没事。"""
+    runs: list = []
+
+    async def run(engine, container_id, request):
+        runs.append(request)
+        return ExecResult(exit_code=0, stdout="", stderr="")
+
+    clock = Clock(10_000.0)
+    engine, editors, _ = make(clock=clock, keep_stopped_seconds=WEEK, run=run)
+    await editors.erase(ALICE, "conv-1")  # 还没有编辑器
+    assert not runs and not engine.containers
+
+    await editors.endpoint(ALICE)
+    (container,) = engine.containers.values()
+    await editors.erase(ALICE, "conv-1")
+    assert runs[-1].argv == ("rm", "-rf", "--", "/work/conv-1", "/work/.knowwork/conv-1")
+    assert runs[-1].user == "office" and container["Status"] == "running"
+
+    clock.now += 1801
+    await editors.sweeper.sweep()
+    assert container["Status"] == "exited"
+    await editors.erase(ALICE, "conv-2")
+    assert runs[-1].argv[-2:] == ("/work/conv-2", "/work/.knowwork/conv-2")
+    assert container["Status"] == "exited", "停着的删完再停回去"
+
+
+async def test_a_failed_cleanup_keeps_the_conversation(make):
+    """删不掉就报错（对话留着可以再删），不留下删了对话、文件还在编辑器里的情况。"""
+    async def run(engine, container_id, request):
+        return ExecResult(exit_code=1, stdout="", stderr="busy")
+
+    _, editors, _ = make(run=run, keep_stopped_seconds=WEEK)
+    await editors.endpoint(ALICE)
+    with pytest.raises(SandboxError):
+        await editors.erase(ALICE, "conv-1")

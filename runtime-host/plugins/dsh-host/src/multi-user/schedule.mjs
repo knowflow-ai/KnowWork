@@ -1,5 +1,6 @@
 /**
- * 定时任务的多用户适配（官方 @deepseek-ai/dsh-schedule 0.2.2-rc.1）。用的是本目录的通用适配层，这里只有规则：
+ * 定时任务的多用户适配（官方 @deepseek-ai/dsh-schedule，0.2.3-alpha.2 核对过：相对 0.2.2-rc.1 只改了编号的类型写法，
+ * 列表分页、找不到时的返回、到点要活会话的事件都没变）。用的是本目录的通用适配层，这里只有规则：
  * - 官方 ScheduleService 原样，继承它补归属：建任务记属主（owned-service 的 create），列表只给自己的（list，照官方
  *   resolveListPage 的校验与分页），查看、编辑不是自己的照官方返回「找不到」（guard）；
  * - 到点时官方经 `schedule/resolve-agent` 要活会话：改道给业务服务激活（activation），官方再照常投递；

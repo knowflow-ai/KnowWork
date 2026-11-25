@@ -12,6 +12,8 @@ import type { ComponentType, SVGProps } from 'react';
 import {
   DEVICE_SOURCE,
   type AnswerMode,
+  type CommandOutcome,
+  type ConversationCommand,
   type QuestionAnswer,
   type ScopeClaim,
   type TurnRequest,
@@ -21,6 +23,7 @@ import type { InputLimits } from './components/Composer';
 import type { SentAttachment } from '../../api/attachments';
 import type { Mention } from '../../api/mentions';
 import { slotItems } from '../../slots/registry';
+import { listNewChatCommands } from '../../api/plugins';
 import { SERVER_ACTIONS } from './serverActions';
 import { SERVER_FILES } from './serverFiles';
 import type { FirstMessage } from './hooks/useConversation';
@@ -33,7 +36,14 @@ export interface StartInput {
   readonly answerMode: AnswerMode;
   /** 要挂的东西（例如从专家页开的对话挂这个专家）：不管在哪执行都在建对话时挂上 */
   readonly scope?: ScopeClaim;
+  /** 新对话页上直接执行的一行 / 命令：给了就建好对话后执行它，不发第一句（text 不用） */
+  readonly command?: string;
+  /** 只建对话、不发第一句，标题用 text（输入框里的附件直接进编辑器时用：先有对话才能放文件） */
+  readonly blank?: boolean;
 }
+
+/** 消息上已经发出去的附件（工作区里的路径 input/...），或输入框里还没发出去的（暂存时给的 id） */
+export type AttachmentSource = { readonly path: string } | { readonly attachmentId: string };
 
 /**
  * 这段对话里的文件（方案 7.7.3：网页与桌面同一套，照 DSH 官方「对话加路径」）：路径原样交出去，相对路径由执行的一方按这段对话的
@@ -55,6 +65,17 @@ export interface ConversationFiles {
    */
   readonly edit?: (conversationId: string, path: string) => Promise<{ readonly url: string } | null>;
   /**
+   * 附件（工作区 input/ 里的，只读）编辑用的副本：工作目录根上的同名文件，已有就用它（上次点开改过的），返回它的路径；
+   * 这里编辑不了时返回 null（照旧只读预览原件）。点消息上的附件卡片时，能编辑的格式先要副本再按副本打开；
+   * 输入框里还没发出去的附件给 id，先认领进这段对话再建副本，不用先发一句话。给了 edit 的来源才给
+   */
+  readonly workingCopy?: (conversationId: string, source: AttachmentSource) => Promise<string | null>;
+  /**
+   * 输入框里还没发出去的附件能不能直接进编辑器（这里开着在线编辑）：能的话输入框里能编辑的附件卡片点得开。
+   * 先问一声，因为新对话页点了要先建对话，开不了时不能白建一个。给了 workingCopy 的来源才给
+   */
+  readonly editsDrafts?: () => Promise<boolean>;
+  /**
    * 编辑器说这份文件存了盘（GenOffice 补丁 2 的 `genoffice:saved`：保存、自动保存、智能体存盘都算）：云端要把编辑器里的
    * 文件存回对话，成为这个路径的新一版；本机不用给（文件就在那台电脑的磁盘上）
    */
@@ -69,6 +90,11 @@ export interface ConversationFiles {
   ) => () => void;
   /** 丢掉编辑器里没存的改动（载入磁盘上被改过的版本之前） */
   readonly discardEdits?: (conversationId: string, path: string) => Promise<void>;
+  /**
+   * 页面上出现了文件（对话里的附件、交付的文件，输入框里刚加的附件），很可能要点开：提前把编辑器起好，点开时不用等。
+   * 给的是文件名或路径，是不是能编辑的格式、多久叫一次由给的一方判断；不等结果、不报错（云端在线编辑：按人起的 Office 容器）
+   */
+  readonly prewarm?: (names: readonly string[]) => void;
   /**
    * @ 点名工作文件夹里的文件（照官方 @file 补全）：按路径查找词列出文件与文件夹。只有执行的一方看得到文件夹时有
    * （本机对话；云端对话的沙箱目录用户现在看不到，先不给）
@@ -148,6 +174,15 @@ export interface ConversationActions {
     questionId: string,
     answers: readonly QuestionAnswer[],
   ) => Promise<void>;
+  /** 这段对话能用的 / 命令（执行的一方的官方命令服务列的）；不给就没有命令，/ 菜单里只有技能 */
+  readonly commands?: (conversationId: string) => Promise<readonly ConversationCommand[]>;
+  /** 执行一行 / 命令（不发给模型）；结果当场返回，也随事件回来画成命令气泡 */
+  readonly runCommand?: (conversationId: string, line: string) => Promise<CommandOutcome>;
+  /**
+   * 长任务目标的自动续跑此刻开着没有（官方只记在执行的一方的内存里、不进会话日志，现取，见 useGoalArmed.ts）；
+   * 不给就不知道，目标面板不显示「待继续」
+   */
+  readonly goalArmed?: (conversationId: string) => Promise<boolean>;
 }
 
 export interface ConversationSource {
@@ -171,10 +206,13 @@ export interface ConversationSource {
   readonly footnote?: string;
   /** 新对话页还不能发时的原因（例如还没选工作文件夹）：有原因时输入框不可用、占位文字写这句。是 hook，按 hook 的规矩调用 */
   readonly useBlocker?: () => string | null;
-  /** 新对话页按了发送：建对话、发第一句。建出来的都是业务服务里的对话，建好进 /chat/<编号> */
+  /** 新对话页按了发送：建对话、发第一句（或执行 input.command）。建出来的都是业务服务里的对话，建好进 /chat/<编号>；
+   *  执行命令时没有第一句 */
   readonly start: (
     input: StartInput,
-  ) => Promise<{ readonly id: string; readonly firstMessage: FirstMessage }>;
+  ) => Promise<{ readonly id: string; readonly firstMessage?: FirstMessage }>;
+  /** 新对话页的 / 命令（还没有对话，问不了执行的一方，按自己开着的插件列）；不给就只有技能，命令要对话开始以后才有 */
+  readonly newCommands?: () => Promise<readonly ConversationCommand[]>;
   /**
    * 拖进输入框的文件写成什么文字（照官方 @file 语法的 @路径，模型自己去读）：执行的一方直接读得到这些文件时给（在用户电脑上
    * 执行的对话，文件就在这台电脑上，不传也不复制）。conversationId 是已有的对话，新对话页为 null。不给时拖进来的照旧当附件
@@ -194,7 +232,10 @@ export interface ConversationSource {
  * 云端对话文件上，扩展补的编辑能力（插槽 chat.files.server，例如在线 Office 编辑）：给了 edit，预览抽屉对能编辑的文件就是
  * 编辑器；没注册时云端文件只能预览。
  */
-export type ServerFileEditing = Pick<ConversationFiles, 'edit' | 'saved' | 'editorChanges' | 'discardEdits'>;
+export type ServerFileEditing = Pick<
+  ConversationFiles,
+  'edit' | 'workingCopy' | 'editsDrafts' | 'saved' | 'editorChanges' | 'discardEdits' | 'prewarm'
+>;
 
 let serverFiles: { readonly from: readonly ServerFileEditing[]; readonly files: ConversationFiles } | null =
   null;
@@ -218,6 +259,7 @@ export const SERVER_SOURCE: ConversationSource = {
   Icon: Globe,
   server: true,
   start: (input) => startConversation(input),
+  newCommands: () => listNewChatCommands(),
   actions: SERVER_ACTIONS,
   get files() {
     return filesOnServer();

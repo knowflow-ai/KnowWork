@@ -50,6 +50,9 @@ def bump(tag: str) -> None:
     # compose 里每个我们自己的镜像都带一次版本默认值（server、runtime-host、两处 sandbox、gateway）
     replace_once(ROOT / "deploy/docker-compose.yml", r"\$\{KNOWWORK_VERSION:-[^}]+\}", f"${{KNOWWORK_VERSION:-{tag}}}",
                  count=5)
+    # 沙箱叠加文件里个人专属宿主用的镜像（同版本的宿主镜像）：api 起专属宿主、worker 试装上传的插件，各一处
+    replace_once(ROOT / "deploy/docker-compose.sandbox.yml", r"\$\{KNOWWORK_VERSION:-[^}]+\}",
+                 f"${{KNOWWORK_VERSION:-{tag}}}", count=2)
     replace_once(ROOT / "deploy/.env.example", r"^KNOWWORK_VERSION=.*$", f"KNOWWORK_VERSION={tag}")
     # README.md 是英文（公开仓库默认显示），中文在 README_zh.md
     for readme in ("README.md", "README_zh.md"):

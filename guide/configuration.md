@@ -53,6 +53,7 @@
 | 配置项 | 默认 | 说明 |
 |---|---|---|
 | `KNOWWORK_MODEL_GATEWAY_WORKERS` | `1` | 模型网关开几个进程。一个进程通常够用；同时对话的人很多、`model-gateway` 容器 CPU 长时间满一个核时调大 |
+| `KNOWWORK_MODEL_MAX_CALLS_PER_TURN` | `0` | 一轮回答最多调几次模型（一次调用加它要的工具算一步），超过就停下这一轮。`0` 不限，和 DeepSeek Harness 官方一样：一轮做到模型自己停下为止。想给失控的长回答兜个底可以设一个数，例如 `200` |
 
 ## IM 机器人：企业微信、飞书、钉钉
 
@@ -190,6 +191,26 @@
 | `KNOWWORK_SANDBOX_DOCKER_HOST` | 空 | 远端 Docker，见[部署](deploy.md#会话沙箱) |
 | `KNOWWORK_SANDBOX_SSH_ENABLED` | `false` | 流式执行：宿主经业务服务的管道连进会话容器里的 sshd，执行中要来回通话的能力（程序化调用工具、终端、实时读写进程的输入输出）才用得了。要与宿主同版本的沙箱镜像；打开后沙箱容器多一项 `SYS_CHROOT` 能力，已有的会话容器按新配置重建（工作区不保留） |
 | `KNOWWORK_SANDBOX_SSH_MAX_PIPES` | `64` | 流式执行同时开着的连接上限，一个用到流式执行的对话占一条 |
+
+## 上传的插件
+
+管理后台「能力接入 → 插件」里，管理员可以上传插件包给空间里的人用，成员也可以自己装。上传的插件不在共享的宿主里运行：云端对话里，用了它的人各有一个自己的宿主容器，用到才建、空闲回收；桌面端的本机对话里，插件装在他自己的电脑上。
+
+空间开了内容安全（敏感词）时，专属宿主里的对话除了宿主自己查，模型网关还会按同一份策略再查一遍，插件绕不过去。这一道比共享宿主严：系统提示（例如专家的提示词）、工具说明里出现敏感词也会被拦。
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `KNOWWORK_PLUGIN_HOSTS` | `off` | `off`：不建专属宿主，上传的插件只在桌面端的本机对话里生效。`docker`：每人一个容器，要会话沙箱开着（api 经同一个 Docker 创建专属宿主，worker 创建试装用的一次性宿主）。api 可以开多个进程，它们共用同一批宿主；api 重启不会停掉宿主 |
+| `KNOWWORK_PLUGIN_HOST_MAX` | `50` | 同时最多几个专属宿主。满了先回收最久没用的空闲宿主；都在用时，后来的人会看到「稍后再试」 |
+| `KNOWWORK_PLUGIN_HOST_IDLE_SECONDS` | `600` | 多久没有对话在用就回收。回收后再发消息会重新创建，多等一两秒，对话历史都在 |
+| `KNOWWORK_PLUGIN_HOST_RETENTION_DAYS` | `90` | 每人一个的数据卷（会话日志、插件存的数据）多久没用就删，按他在插件环境里的对话最后一次有动静算。`0` 只删已经不在那个空间的人。删了以后他在插件环境里的旧对话还能翻看，但接不着聊了，要新开对话；插件存的数据也没了 |
+| `KNOWWORK_PLUGIN_HOST_MEMORY_MB` | `768` | 每个专属宿主的内存上限。空着的宿主约占 100MB |
+| `KNOWWORK_PLUGIN_HOST_NETWORK` | `knowwork_host-link` | 宿主那张内部网络的名字；改过 compose 项目名时跟着改 |
+| `KNOWWORK_PLUGIN_HOST_IMAGE` | 同版本的宿主镜像 | 专属宿主用的镜像 |
+
+插件包是 DSH 的插件包：`npm pack` 打出的 `.tgz`，`package.json` 里声明 `dsh.bundle.patch`；自己的依赖要打进包里（`bundledDependencies`），用到的 `@deepseek-ai/*` 包写在 `peerDependencies` 里。上传时先做静态检查；开了专属宿主（`KNOWWORK_PLUGIN_HOSTS` 不是 `off`）时，后台再起一个一次性的宿主把它真的加载一遍，看各组件能不能激活、新增了哪些工具，通过了才生效，没通过的在列表里写明原因。没开专属宿主时不在服务端运行包里的代码，插件只在桌面端跑。
+
+插件列表和详情里显示的标题、一句话说明，取包里 `locale/zh.json`（没有就 `locale/en.json`）的 `meta.title`、`meta.description`，没写就用包名和 `package.json` 的 `description`；详情里的说明文档取 `meta.detail` 指的 Markdown 文件，没指就用包里的 `README.md`。说明文档里的图片不显示。
 
 ## 外部服务
 

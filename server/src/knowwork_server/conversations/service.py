@@ -29,6 +29,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from ..kernel.contract import (
     AgentKernel,
     CancelResult,
+    CommandOutcome,
+    HostCommand,
     KernelError,
     KnowledgeCatalog,
     ModelUnknown,
@@ -213,7 +215,8 @@ class ConversationService:
             skills_token = await self._skill_credentials.token_for(conversation)
         return SessionSpec(session_id=conversation.id, policy=self.policy_for(profile), resume=resume,
                            tools_token=token, skills_token=skills_token,
-                           owner=SessionOwner(workspace_id=conversation.workspace_id, user_id=conversation.user_id))
+                           owner=SessionOwner(workspace_id=conversation.workspace_id, user_id=conversation.user_id),
+                           plugins=profile.plugins if profile is not None else ())
 
     def _opened(self, conversation: Conversation) -> None:
         for credentials in (self._tool_credentials, self._skill_credentials):
@@ -431,11 +434,11 @@ class ConversationService:
         except SessionNotFound:
             return await self._resume_and_send(conversation, turn, profile)
 
-    async def activate(self, conversation: Conversation) -> None:
+    async def activate(self, conversation: Conversation, *, trigger: Trigger = "schedule") -> None:
         """宿主上的插件要在这段对话里自己发起一轮（定时任务到点）：确保宿主上开着它、事件泵开着——宿主随后投进来的
         消息和回答照常记进对话。额度用完了这一次不激活（抛 QuotaExceeded），同用户自己发。"""
         self._host(conversation)  # 设备上执行的对话在这里就拒绝
-        await self._within_quota(conversation, trigger="schedule")
+        await self._within_quota(conversation, trigger=trigger)
         await self._ensure_open(conversation)
         await self._touch(conversation.id)
         self._pump.ensure(conversation.id, conversation.workspace_id)
@@ -517,13 +520,14 @@ class ConversationService:
         return turn if state is None else turn.model_copy(update={"extension_state": state})
 
     async def _refresh_credentials(self, conversation: Conversation) -> None:
-        """每轮开始前把到期的令牌续上：电脑刚从睡眠醒来时，续期循环可能还没轮到，令牌却已按墙上时间过期。
+        """每轮开始前把到期的令牌续上：电脑刚从睡眠醒来时，续期循环可能还没轮到，令牌却已按墙上时间过期；业务服务
+        重启过时续期表是空的，宿主上还开着的会话也在这里换上新令牌（tool_credentials.py）。
         这里的失败只记日志，不挡这一轮（令牌没过期就照常能用）。"""
         if self._refresh_model_credential is not None:
             await self._refresh_model_credential()
         for credentials in (self._tool_credentials, self._skill_credentials):
             if credentials is not None:
-                await credentials.ensure_fresh(conversation.id)
+                await credentials.ensure_fresh(conversation)
 
     async def _touch(self, conversation_id: str, **values) -> None:
         async with self._sessionmaker() as session:
@@ -563,8 +567,18 @@ class ConversationService:
         return await search_conversations(self._sessionmaker, workspace_id=workspace_id, user_id=user_id, query=query)
 
     async def rename(self, conversation: Conversation, title: str) -> Conversation:
+        """用户改对话标题。对话标题以官方为准：官方按第一句话、再用模型起标题，事件泵从 session/title 同步过来
+        （titles.py）；用户改的同时写进宿主的官方标题（来源是用户，之后官方不再自动改它）。宿主上没开着就只改这里：官方只在
+        第一句话时起标题，之后不会再改。在设备上执行的对话不在我们宿主上，只改这里。"""
         clean = " ".join(title.split())[:200]
         await self._touch(conversation.id, title=clean)
+        if clean and not self._on_device(conversation):
+            try:
+                await self._kernel.retitle(conversation.id, clean)
+            except SessionNotFound:
+                pass
+            except KernelError as error:
+                log.warning("writing the title of %s into the host failed: %s", conversation.id, error.code)
         return await self.get(conversation_id=conversation.id, workspace_id=conversation.workspace_id,
                               user_id=conversation.user_id)
 
@@ -692,6 +706,39 @@ class ConversationService:
         if self._on_device(conversation):
             return []
         return await self._host(conversation).pending_questions(conversation.id)
+
+    async def commands(self, conversation: Conversation) -> tuple[HostCommand, ...]:
+        """这段对话能用的 / 命令（宿主按会话列，插件登记的）。宿主上不开着就先按此刻的配置恢复打开：插件的命令要装上了才列得出。"""
+        host = self._host(conversation)
+        async with self._lock(conversation.id):
+            try:
+                return await host.commands(conversation.id)
+            except SessionNotFound:
+                profile = await self._profile(conversation, NO_SELECTION)
+                return await self._resume_then(conversation, profile, lambda: self._kernel.commands(conversation.id))
+
+    async def goal_armed(self, conversation: Conversation) -> bool:
+        """长任务目标的自动续跑此刻开着没有（官方 dsh-goal 只记在宿主内存里、不进会话日志，目标面板现取）。宿主上没开着
+        这段会话时按关着算：官方恢复打开后自动续跑就是关着的，要用户「恢复」才再开；不为了读它把会话恢复起来。"""
+        try:
+            return await self._host(conversation).goal_armed(conversation.id)
+        except SessionNotFound:
+            return False
+
+    async def run_command(self, conversation: Conversation, line: str) -> CommandOutcome:
+        """执行一行 / 命令：直接作用在宿主上这段会话的智能体上，不发给模型、不算一轮（官方 dsh-commands）。官方把执行记进
+        会话日志（command/run、command/done），事件泵照常收进对话历史，页面据此画命令气泡。"""
+        host = self._host(conversation)
+        async with self._lock(conversation.id):
+            try:
+                outcome = await host.run_command(conversation.id, line)
+            except SessionNotFound:
+                profile = await self._profile(conversation, NO_SELECTION)
+                outcome = await self._resume_then(conversation, profile,
+                                                  lambda: self._kernel.run_command(conversation.id, line))
+        await self._touch(conversation.id)
+        self._pump.ensure(conversation.id, conversation.workspace_id)
+        return outcome
 
     async def answer(self, conversation: Conversation, question_id: str, answer: QuestionAnswer) -> None:
         """交回用户对一次提问的回答。与发送共用会话锁，宿主恢复会话时不会和发送撞上。"""

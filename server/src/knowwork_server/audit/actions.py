@@ -58,6 +58,18 @@ ROUTE_ACTIONS: dict[tuple[str, str], ActionSpec] = {
     ("PATCH", W + "/models/{model_id}"): ActionSpec("model.update", "model", "model_id"),
     ("DELETE", W + "/models/{model_id}"): ActionSpec("model.delete", "model", "model_id"),
     ("POST", W + "/models/{model_id}/test"): ActionSpec("model.test", "model", "model_id"),
+    ("PUT", W + "/content-safety"): ActionSpec("content_safety.policy_update", "content_safety_policy"),
+    ("PUT", W + "/plugins/{key}"): ActionSpec("plugin.set_mode", "plugin", "key"),
+    ("POST", W + "/plugins/uploads"): ActionSpec("plugin.upload", "plugin"),
+    ("PUT", W + "/plugins/uploads/{plugin_id}"): ActionSpec("plugin.update", "plugin", "plugin_id"),
+    ("DELETE", W + "/plugins/uploads/{plugin_id}"): ActionSpec("plugin.delete", "plugin", "plugin_id"),
+    ("PUT", W + "/plugins/settings"): ActionSpec("plugin.settings_update", "plugin_settings"),
+    ("POST", W + "/plugins/uploads/{plugin_id}/adopt"): ActionSpec("plugin.adopt", "plugin", "plugin_id"),
+    ("POST", W + "/me/plugins/uploads/{plugin_id}/submit"): ActionSpec("plugin.submit", "plugin", "plugin_id"),
+    ("POST", W + "/me/plugins/uploads"): ActionSpec("plugin.upload_personal", "plugin"),
+    ("PUT", W + "/me/plugins/uploads/{plugin_id}"): ActionSpec("plugin.switch", "plugin", "plugin_id"),
+    ("DELETE", W + "/me/plugins/uploads/{plugin_id}"): ActionSpec("plugin.delete_personal", "plugin", "plugin_id"),
+    ("PUT", W + "/me/plugins/{key}"): ActionSpec("plugin.switch", "plugin", "key"),
     ("POST", K): ActionSpec("knowledge_source.create", "knowledge_source"),
     ("PATCH", K + "/{source_id}"): ActionSpec("knowledge_source.update", "knowledge_source", "source_id"),
     ("DELETE", K + "/{source_id}"): ActionSpec("knowledge_source.delete", "knowledge_source", "source_id"),
@@ -92,6 +104,7 @@ ROUTE_ACTIONS: dict[tuple[str, str], ActionSpec] = {
     ("PATCH", C): ActionSpec("conversation.rename", "conversation", "conversation_id"),
     ("DELETE", C): ActionSpec("conversation.delete", "conversation", "conversation_id"),
     ("POST", C + "/messages"): ActionSpec("conversation.send", "conversation", "conversation_id"),
+    ("POST", C + "/commands"): ActionSpec("conversation.command", "conversation", "conversation_id"),
     ("POST", C + "/cancel"): ActionSpec("conversation.cancel", "conversation", "conversation_id"),
     ("POST", C + "/approvals/{approval_id}"): ActionSpec("approval.decide", "approval", "approval_id"),
     ("POST", C + "/questions/{question_id}"): ActionSpec("question.answer", "question", "question_id"),
@@ -100,6 +113,11 @@ ROUTE_ACTIONS: dict[tuple[str, str], ActionSpec] = {
     ("PUT", "/api/system/brand/logo"): ActionSpec("system.logo_update", "system"),
     ("DELETE", "/api/system/brand/logo"): ActionSpec("system.logo_reset", "system"),
 }
+
+
+# 不记审计的写接口：宿主回调的内容检查（模型输出时每几十个字查一次，记了会把审计表刷满）。命中的那一次由检查服务
+# 另记 content_safety.blocked，不会漏
+UNAUDITED_ROUTES: frozenset[tuple[str, str]] = frozenset({("POST", "/api/extensions/content-safety/check")})
 
 
 def _derived(method: str, route: str) -> ActionSpec:

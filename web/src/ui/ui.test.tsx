@@ -182,10 +182,10 @@ describe('toast', () => {
       render(<Toaster />);
       act(() => {
         toast.success('已保存');
-        toast.error('保存没有成功');
+        toast.error('没能保存');
       });
       expect(screen.getByRole('status')).toHaveTextContent('已保存');
-      expect(screen.getByRole('alert')).toHaveTextContent('保存没有成功');
+      expect(screen.getByRole('alert')).toHaveTextContent('没能保存');
       act(() => vi.advanceTimersByTime(3100));
       expect(screen.queryByText('已保存')).not.toBeInTheDocument();
     } finally {

@@ -156,6 +156,8 @@ class McpServerCreate(_ServerFields):
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int = Field(default=60, ge=5, le=300)
+    # 工具怎么给模型：eager 随每次请求给；on_demand 按需加载（工具多、描述长的服务用，见 models.McpServerRow.tool_loading）
+    tool_loading: Literal["eager", "on_demand"] = "eager"
     # 认证方式：shared 共享凭据（用 headers），user_token 个人访问令牌（用 token_config，token 是登记人自己的令牌，
     # 只用来测试连接、同步工具清单，存成他自己的连接），oauth OAuth 授权（用 oauth；登记后登记人登录一次才拉工具清单）
     auth: Literal["shared", "user_token", "oauth"] = "shared"
@@ -175,6 +177,7 @@ class McpServerPatch(_ServerFields):
     headers: dict[str, str] | None = None  # 给出时整体替换；不给表示不改
     timeout_seconds: int | None = Field(default=None, ge=5, le=300)
     enabled: bool | None = None
+    tool_loading: Literal["eager", "on_demand"] | None = None
     auth: Literal["shared", "user_token", "oauth"] | None = None
     token_config: TokenConfig | None = None
     token: str | None = None  # 改成个人访问令牌、或改地址时，用这份（管理员自己的）测试；不给就用他已有的连接
@@ -296,6 +299,7 @@ class McpServerView(_Model):
     headers: list[HeaderView]
     timeout_seconds: int
     enabled: bool
+    tool_loading: str
     auth: str
     token_config: TokenConfig | None
     oauth: OAuthView | None
@@ -313,7 +317,8 @@ class McpServerView(_Model):
         config = record.auth_config or {}
         return cls(id=record.id, name=record.name, title=record.title, url=record.url,
                    headers=[HeaderView(**item) for item in record.header_names],
-                   timeout_seconds=record.timeout_seconds, enabled=record.enabled, auth=record.auth,
+                   timeout_seconds=record.timeout_seconds, enabled=record.enabled, tool_loading=record.tool_loading,
+                   auth=record.auth,
                    token_config=TokenConfig(**config) if record.auth == "user_token" and config else None,
                    oauth=OAuthView.of(config, redirect_uri) if record.auth == "oauth" and config else None,
                    tools=[McpToolView.of(tool) for tool in record.tools],

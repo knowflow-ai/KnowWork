@@ -3,6 +3,11 @@
 - id: llm-deepseek
   disabled: false
 
+# 官方用模型起会话标题：每段会话第一句话之后多调一次模型，会打乱测试里按顺序编排的模型回答、多出模型请求。
+# 标题有自己的测试（session-title.test.mjs，用官方按第一句话的兜底标题）
+- id: session-title-llm
+  disabled: true
+
 - insert:
     - id: knowwork-test-tools
       name: '@knowwork/dsh-host/test-tools'

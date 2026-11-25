@@ -23,6 +23,7 @@ from ..audit.context import annotate
 from ..kernel.contract import (
     ANSWER_MODE_PATTERN,
     MODEL_ALIAS_PATTERN,
+    CommandUnknown,
     KernelError,
     ModelUnknown,
     QuestionAnswer,
@@ -239,7 +240,7 @@ class Answer(BaseModel):
 QUESTION_ERRORS = {
     "question_not_found": (404, "这个问题已经结束，不能再回答"),
     "invalid_answer": (400, "回答和问题对不上，请刷新页面后重试"),
-    "reply_queued": (409, "回答已经提交，正在等 Agent 接收"),
+    "reply_queued": (409, "回答已经提交，正在等智能体接收"),
 }
 
 
@@ -263,11 +264,15 @@ def upstream_error(error: Exception, action: str) -> HTTPException:
     if isinstance(error, SessionNotFound):
         return HTTPException(status_code=404, detail={"code": "session_not_running", "message": "会话当前没有在运行"})
     code = error.code if isinstance(error, KernelError) else "host_unreachable"
+    if code == PLUGIN_HOST_UNAVAILABLE:
+        # 这个人的插件运行环境满了或没起来（个人专属宿主）：原因是写给用户看的，直接带出去
+        return HTTPException(status_code=503, detail={"code": code, "message": str(error)})
     log.warning("%s failed: %s %s", action, type(error).__name__, code)
     return HTTPException(status_code=502, detail={"code": "runtime_unavailable", "message": "运行时暂时不可用，请稍后重试"})
 
 
 HOST_ERRORS = (KernelError, httpx.HTTPError, OSError)
+PLUGIN_HOST_UNAVAILABLE = "plugin_host_unavailable"  # 内核合同的错误码：个人专属宿主建不出来
 CREDENTIAL_ERRORS = (ToolAccessRevoked, ToolCredentialUnavailable, ProfileUnavailable)
 
 
@@ -300,6 +305,14 @@ def turn_rejected(error: Exception) -> HTTPException:
     if isinstance(error, UnknownModel):
         return HTTPException(status_code=422, detail="这个模型不存在或已停用，换一个试试")
     return credential_error(error)
+
+
+class CommandBody(BaseModel):
+    """一行 / 命令：斜杠开头，名字是小写字母、数字、下划线、连字符（官方 dsh-commands 的语法），后面是这个命令自己的参数。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    line: str = Field(min_length=2, max_length=4000, pattern=r"^/[a-z0-9_-]+(?:\s[\s\S]*)?$")
 
 
 class FeedbackBody(BaseModel):
@@ -493,6 +506,50 @@ def build_router(service: ConversationService, current_actor: ActorDependency,
         except HOST_ERRORS as error:
             raise upstream_error(error, "cancel") from error
         return {"settled": result.settled, "status": result.status}
+
+    @router.get("/{conversation_id}/commands")
+    async def commands(conversation_id: str, who: Who):
+        """这段对话能用的 / 命令
+        插件登记的命令（例如开了「长任务目标」就有 /goal），按这段对话启用的插件列出。在设备上执行的对话由那台电脑列。"""
+        conversation = await owned(conversation_id, who)
+        try:
+            listed = await service.commands(conversation)
+        except RunsOnDevice as error:
+            raise runs_on_device() from error
+        except HOST_ERRORS as error:
+            raise upstream_error(error, "list commands") from error
+        return {"commands": [{"name": c.name, "description": c.description,
+                              **({"hint": c.hint} if c.hint else {}),
+                              **({"definition_id": c.definition_id} if c.definition_id else {})} for c in listed]}
+
+    @router.get("/{conversation_id}/goal")
+    async def goal(conversation_id: str, who: Who):
+        """长任务目标的自动续跑状态
+        自动接着做此刻开着没有：宿主重启、对话重新打开后先关上，要「恢复」才再开。在设备上执行的对话由那台电脑答。"""
+        conversation = await owned(conversation_id, who)
+        try:
+            armed = await service.goal_armed(conversation)
+        except RunsOnDevice as error:
+            raise runs_on_device() from error
+        except HOST_ERRORS as error:
+            raise upstream_error(error, "read goal") from error
+        return {"armed": armed}
+
+    @router.post("/{conversation_id}/commands")
+    async def run_command(conversation_id: str, body: CommandBody, who: Who):
+        """执行一行 / 命令
+        直接作用在这段对话的智能体上，不发给模型、不算一轮；结果当场返回，也记进对话历史。"""
+        conversation = await owned(conversation_id, who)
+        try:
+            outcome = await service.run_command(conversation, body.line)
+        except RunsOnDevice as error:
+            raise runs_on_device() from error
+        except CommandUnknown as error:
+            raise HTTPException(status_code=404, detail={"code": "command_unknown", "message": str(error)}) from error
+        except HOST_ERRORS as error:
+            raise upstream_error(error, "run command") from error
+        return {"command_id": outcome.command_id, "kind": outcome.kind,
+                **({"text": outcome.text} if outcome.text is not None else {})}
 
     @router.get("/{conversation_id}/approvals")
     async def approvals(conversation_id: str, who: Who):

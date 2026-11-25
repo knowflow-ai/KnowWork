@@ -337,6 +337,83 @@ export function answerQuestion(
   });
 }
 
+/**
+ * 用户在输入框敲 / 的命令（DSH 官方 dsh-commands，插件登记）：按对话列出、执行。执行直接作用在这段对话的智能体上，
+ * 不发给模型；结果当场返回，也记进事件（刷新后从事件里画命令气泡）。云端经业务服务，本机经桌面端，格式一样。
+ */
+export interface ConversationCommand {
+  /** 不带斜杠的名字，例如 goal */
+  readonly name: string;
+  readonly description: string;
+  /** 参数的写法提示，例如 [<objective>|clear|pause|resume] */
+  readonly hint?: string;
+  /** 官方命令的稳定编号（界面认它给官方命令写中文说明）；插件自己的没有 */
+  readonly definitionId?: string;
+}
+
+export interface CommandOutcome {
+  readonly commandId: string;
+  readonly kind: 'success' | 'error';
+  readonly text?: string;
+}
+
+export const MAX_COMMAND_LINE = 4000;
+
+function commandOf(value: unknown): ConversationCommand | undefined {
+  if (!isRecord(value)) return undefined;
+  const name = str(value.name);
+  if (!name || !/^[a-z0-9_-]+$/.test(name)) return undefined;
+  const hint = text(value.hint);
+  const definitionId = text(value.definitionId) ?? text(value.definition_id);
+  return {
+    name,
+    description: str(value.description) ?? '',
+    ...(hint ? { hint } : {}),
+    ...(definitionId ? { definitionId } : {}),
+  };
+}
+
+/** 接口或桌面端交来的命令清单（{ commands: [...] } 或直接是数组） */
+export function parseCommands(body: unknown): readonly ConversationCommand[] {
+  const raw = isRecord(body) ? body.commands : body;
+  return listOf(Array.isArray(raw) ? raw : [], commandOf);
+}
+
+export function parseCommandOutcome(body: unknown): CommandOutcome {
+  const r = isRecord(body) ? body : {};
+  const commandId = str(r.commandId) ?? str(r.command_id) ?? '';
+  const outcomeText = text(r.text);
+  return {
+    commandId,
+    kind: r.kind === 'error' ? 'error' : 'success',
+    ...(outcomeText ? { text: outcomeText } : {}),
+  };
+}
+
+export async function listCommands(conversationId: string): Promise<readonly ConversationCommand[]> {
+  return parseCommands(
+    await request<unknown>(workspacePath(`/conversations/${seg(conversationId)}/commands`)),
+  );
+}
+
+/**
+ * 长任务目标的自动续跑此刻开着没有。官方只记在宿主内存里、不进会话日志（会话重开、宿主重启后先关上，要「恢复」才再开），
+ * 业务服务向宿主现取；宿主上没开着这段会话时按关着算（重开后官方就是关着的）
+ */
+export async function getGoalArmed(conversationId: string): Promise<boolean> {
+  const body = await request<unknown>(workspacePath(`/conversations/${seg(conversationId)}/goal`));
+  return isRecord(body) && body.armed === true;
+}
+
+export async function runCommand(conversationId: string, line: string): Promise<CommandOutcome> {
+  return parseCommandOutcome(
+    await request<unknown>(workspacePath(`/conversations/${seg(conversationId)}/commands`), {
+      method: 'POST',
+      body: { line },
+    }),
+  );
+}
+
 export function eventsUrl(conversationId: string): string {
   return workspacePath(`/conversations/${seg(conversationId)}/events`);
 }

@@ -73,37 +73,37 @@ export function useSkillActions() {
     install: useAction((file: File) => installSkill(file, 'workspace'), {
       invalidate,
       success: '技能已上传为草稿，发布后成员才能使用',
-      failure: '技能包没有上传成功',
+      failure: '技能包没能上传',
     }),
     replace: useAction(({ skill, file }: { skill: Skill; file: File }) => replaceDraft(skill, file), {
       invalidate,
       success: '已更新草稿，发布后生效',
-      failure: '新版本没有上传成功',
+      failure: '新版本没能上传',
     }),
     publish: useAction(
       ({ skill, version }: { skill: Skill; version?: string }) => publishSkill(skill, version),
       {
         invalidate,
         success: '已发布，新对话里就能用了',
-        failure: '没有发布成功',
+        failure: '没能发布',
       },
     ),
     toggle: useAction(
       ({ skill, enabled }: { skill: Skill; enabled: boolean }) => setSkillEnabled(skill, enabled),
       {
         invalidate,
-        failure: '没有切换成功',
+        failure: '没能切换',
       },
     ),
     remove: useAction((skill: Skill) => deleteSkill(skill), {
       invalidate,
       success: '已删除',
-      failure: '没有删除成功',
+      failure: '没能删除',
     }),
     env: useAction(
       ({ skill, values }: { skill: Skill; values: Record<string, string | null> }) =>
         setSkillEnv(skill, values),
-      { invalidate, success: '已保存，新对话里加载这个技能后生效', failure: '环境变量没有保存成功' },
+      { invalidate, success: '已保存，新对话里加载这个技能后生效', failure: '环境变量没能保存' },
     ),
   };
 }
@@ -134,7 +134,7 @@ async function approveAndGrant({ id, publish, grantTo }: ApproveInput): Promise<
     await setResourceUsers(`skill:${skill.id}`, grantTo);
   } catch (error) {
     const status = error instanceof ApiError ? error.status : 0;
-    throw new ApiError(status, '已通过，但「给谁用」没有保存成功，请到技能详情里改');
+    throw new ApiError(status, '已通过，但「给谁用」没能保存，请到技能详情里改');
   }
   return skill;
 }
@@ -146,12 +146,12 @@ export function useSubmissionActions() {
     approve: useAction(approveAndGrant, {
       invalidate: reviewed,
       success: '已通过，技能已进空间',
-      failure: '没有通过成功',
+      failure: '没能通过',
     }),
     reject: useAction(({ id, reason }: { id: string; reason: string }) => rejectSubmission(id, reason), {
       invalidate: reviewed,
       success: '已退回，作者能看到原因',
-      failure: '没有退回成功',
+      failure: '没能退回',
     }),
   };
 }
@@ -164,11 +164,11 @@ export function useUpperSkillActions() {
     toggle: useAction(({ key, off }: { key: string; off: boolean }) => setUpperSkillOff(key, off), {
       invalidate: [SKILL_KEYS.upper, SKILL_KEYS.list],
       success: '已切换，新对话里生效',
-      failure: '没有切换成功',
+      failure: '没能切换',
     }),
     users: useAction(
       ({ key, subjects }: { key: string; subjects: readonly string[] }) => setUpperSkillUsers(key, subjects),
-      { invalidate: [SKILL_KEYS.upper, KEYS.grants], success: '已保存给谁用', failure: '没有保存成功' },
+      { invalidate: [SKILL_KEYS.upper, KEYS.grants], success: '已保存给谁用', failure: '没能保存' },
     ),
   };
 }

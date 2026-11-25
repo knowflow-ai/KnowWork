@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 RUNTIME_HOST = Path(__file__).resolve().parents[2] / "runtime-host"
-PINNED_NODE_BIN = Path.home() / ".nvm/versions/node/v24.18.0/bin"  # 与 scripts/dev_stack.py 同一版本
+PINNED_NODE_BIN = Path.home() / ".nvm/versions/node/v24.22.3/bin"  # 与 scripts/dev_stack.py 同一版本
 STOP_TIMEOUT = 30  # 秒：宿主收到 SIGTERM 后最多等这么久
 
 
@@ -41,22 +41,31 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
+# 官方用模型起会话标题（dsh-session-title-first-prompt-llm，生产配置挂着）的请求里带的这句话
+TITLE_PROMPT = "Generate the session title from this JSON array of human messages"
+
+
 class UpstreamStub:
     """扮演真实模型厂商：按脚本流式返回，记录收到的请求。脚本每一步是一段文字，
-    或 {"tool": 工具名, "args": {...}}——这一步改为发起一次工具调用。"""
+    或 {"tool": 工具名, "args": {...}}——这一步改为发起一次工具调用。
+    官方起会话标题的请求单独记在 title_requests、回一个固定标题，不占脚本、不算进 requests。"""
+
+    TITLE = "测试标题"
 
     def __init__(self, texts: list, api_key: str) -> None:
         self.texts = texts
         self.api_key = api_key
         self.requests: list[dict] = []
+        self.title_requests: list[dict] = []
 
     def app(self) -> Starlette:
         async def completions(request: Request):
             body = await request.json()
-            self.requests.append({"headers": dict(request.headers), "body": body})
+            titling = TITLE_PROMPT in json.dumps(body.get("messages", []), ensure_ascii=False)
+            (self.title_requests if titling else self.requests).append({"headers": dict(request.headers), "body": body})
             if request.headers.get("authorization") != f"Bearer {self.api_key}":
                 return JSONResponse({"error": {"message": "bad key"}}, status_code=401)
-            step = self.texts[min(len(self.requests) - 1, len(self.texts) - 1)]
+            step = self.TITLE if titling else self.texts[min(len(self.requests) - 1, len(self.texts) - 1)]
 
             async def stream():
                 base = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": body["model"]}

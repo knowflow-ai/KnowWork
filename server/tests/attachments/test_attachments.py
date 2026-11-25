@@ -177,6 +177,23 @@ async def test_restage_and_erase(files_db, tmp_path):
     await attachments.aclose()
 
 
+async def test_input_files_are_read_back_from_attachment_storage(files_db, tmp_path):
+    """按附件目录里的名字读回放进去的那份（沙箱回收了也在）：别的对话的、不是附件放进去的名字都是 None。"""
+    conv, other = await files_db.conversation(), await files_db.conversation()
+    http, attachments, sandbox, stores = setup(files_db, tmp_path)
+    async with http:
+        [item] = (await post(http, conv.id, ("合同.docx", DOCX))).json()["items"]
+        await post(http, other.id, ("别人的.txt", b"x"))
+    sandbox.inputs.clear()
+    service = attachments.service
+    assert await service.input_file(conv, item["inputName"]) == DOCX
+    assert await service.input_file(conv, "知识库文档.md") is None
+    assert await service.input_file(conv, "别人的.txt") is None
+    await stores("ws1", item["id"]).delete(sha256_hex(DOCX))
+    assert await service.input_file(conv, item["inputName"]) is None, "内容没了当没有"
+    await attachments.aclose()
+
+
 async def test_restage_reports_missing_content(files_db, tmp_path):
     conv = await files_db.conversation()
     http, attachments, _sandbox, stores = setup(files_db, tmp_path)

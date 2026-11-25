@@ -37,7 +37,11 @@ from .channels import build_router as channels_router
 from .channels import build_web_router as web_channel_router
 from .channels.targets import ChannelTargets
 from .config import Settings
-from .conversations.activation import build_activation_router
+from .content_safety import PUBLIC_PREFIX as PUBLIC_CONTENT_SAFETY_PREFIX
+from .content_safety import ContentSafety, WordSources, build_content_safety
+from .content_safety import build_router as content_safety_router
+from .content_safety import internal_router as content_safety_internal_router
+from .conversations.activation import ACTIVATION_AUDIENCE, build_activation_router
 from .conversations.answer_modes import AnswerModes
 from .conversations.api import build_answer_modes_router
 from .conversations.api import build_router as conversation_router
@@ -57,6 +61,7 @@ from .conversations.runlog import last_requested_model
 from .conversations.scopes import ConversationScopes
 from .conversations.service import ConversationService
 from .conversations.summaries import RunSummaries
+from .conversations.titles import TitleObserver
 from .conversations.tool_credentials import ToolCredentials, require_membership
 from .conversations.turn_context import TurnContextHook
 from .conversations.turn_state import TurnStateHook
@@ -75,6 +80,7 @@ from .extensions import ApiContext, Extensions, installed_extensions
 from .extensions.contract import DeviceTokenIssuer
 from .gateway.credential_rotation import CredentialRotator
 from .gateway.model_gateway import MODEL_AUDIENCE, PUBLIC_PREFIX, fixed_upstream, router_from_settings
+from .hosts import HostKey, PluginHosts, RoutedKernel, build_plugin_hosts
 from .identity.api import build_router as identity_router
 from .identity.config import IdentityConfig, OidcConfig
 from .identity.container import Identity, build_identity
@@ -88,7 +94,7 @@ from .jobs.admin import JobsAdmin
 from .jobs.api import build_router as jobs_router
 from .kernel.contract import KnowledgeCatalog
 from .kernel.host_client import HostKernel
-from .kernel.tokens import TOOLS_AUDIENCE, TokenSigner, derive_key, host_callback_signer
+from .kernel.tokens import TOOLS_AUDIENCE, TokenError, TokenOwner, TokenSigner, derive_key, host_callback_signer
 from .knowledge import KnowledgeModule, Pinned, TurnScope, build_knowledge
 from .knowledge.api import build_router as knowledge_router
 from .knowledge.catalog import turn_catalog
@@ -113,6 +119,11 @@ from .office import OfficeRuntime, author_names, build_office
 from .office.config import OfficeSettings
 from .ops.health import build_router as health_router
 from .ops.health import database_check, host_check, host_dsh_version
+from .plugins import Plugins, build_plugins
+from .plugins import build_me_router as plugins_me_router
+from .plugins import build_my_uploads_router as plugins_my_uploads_router
+from .plugins import build_router as plugins_router
+from .plugins import build_uploads_router as plugins_uploads_router
 from .principals import (
     KNOWLEDGE_SCOPE,
     MODELS_SCOPE,
@@ -148,7 +159,7 @@ from .skills.internal_api import SkillDelivery
 from .skills.internal_api import build_internal_router as skills_internal_router
 from .skills.projector import LoggedTurns, SkillRunProjector
 from .skills.tokens import SKILLS_AUDIENCE
-from .storage import blob_store, namespaced_stores, session_stores
+from .storage import blob_store, namespaced_stores, plugin_store, session_stores
 from .system import BrandService, SystemInfoService
 from .system import build_router as system_router
 from .tools import build_tool_service
@@ -166,6 +177,7 @@ from .tools.service import ToolService
 from .tools.show_result import build_show_result
 from .workflows import STALE_AFTER, Workflows, build_workflows
 from .workflows.api import build_router as workflows_router
+from .workpath import ROOT
 
 log = logging.getLogger(__name__)
 
@@ -173,7 +185,8 @@ log = logging.getLogger(__name__)
 @dataclass
 class Runtime:
     settings: Settings
-    kernel: HostKernel
+    kernel: HostKernel | RoutedKernel
+    plugin_hosts: PluginHosts | None  # 个人专属宿主（没开为空）
     signer: TokenSigner
     writer: BatchWriter
     broadcaster: Broadcaster
@@ -195,6 +208,7 @@ class Runtime:
     artifact_observer: ArtifactObserver
     citation_observer: CitationObserver
     summaries: RunSummaries  # 每轮汇总（运行记录的列表读它）
+    titles: TitleObserver  # 官方会话标题同步进对话
     skill_runs: SkillRunProjector
     workflows: Workflows
     grants: SessionGrants
@@ -218,6 +232,8 @@ class Runtime:
     channels: Channels  # 渠道：企业微信等机器人
     jobs: JobsAdmin  # 运行面板
     parsers: DocumentParsers  # 文档解析服务的配置
+    content_safety: ContentSafety  # 敏感词：策略、检查（宿主插件回调）、命中审计
+    plugins: Plugins  # 预置插件的档位与个人开关（编运行配置时算出这个人生效的插件）
     # 不声明工作空间：只能读写全局表（账号、工作空间等）；读行级安全表一行都看不到，要用声明空间的工厂
     global_sessionmaker: async_sessionmaker
     engine: AsyncEngine
@@ -265,6 +281,8 @@ class Runtime:
         if self.office is not None:
             self.office.start()
         await self.rotator.start()
+        if self.plugin_hosts is not None:
+            self.plugin_hosts.start()  # 定时回收空闲的专属宿主、清理持久目录
         await self.host_models.push_quietly()  # 宿主的模型凭据就绪后推可选模型；宿主暂时连不上，等它重启或发消息时再推
         self.tool_credentials.start()
         self.skill_credentials.start()
@@ -287,6 +305,7 @@ class Runtime:
         await self.artifact_observer.drain()
         await self.citation_observer.drain()
         await self.summaries.drain()
+        await self.titles.drain()
         await self.skill_runs.drain()  # 它等本轮的帧落库，要在关落库器之前
         self.broadcaster.close_all()
         await self.writer.close()
@@ -403,13 +422,32 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     global_sessionmaker = make_sessionmaker(engine)
     # 对话、工具回执、产物、附件等的每个事务都声明当前空间（请求路径、回调令牌、会话所在的空间），行级安全据此放行
     scoped = make_workspace_sessionmaker(engine)
-    kernel = HostKernel(settings.host_base_url, settings.host_token.get_secret_value())
+    shared_kernel = HostKernel(settings.host_base_url, settings.host_token.get_secret_value())
     signer = host_callback_signer(master_key)
 
     def issue_model_token() -> str:
         # 宿主只有一份模型凭据，所有空间的会话共用；模型是平台级的，令牌就记平台配置所在的空间
         return signer.issue(audience=MODEL_AUDIENCE, workspace_id=PLATFORM_WORKSPACE_ID,
                             ttl_seconds=settings.model_token_ttl_seconds)
+
+    def issue_owner_token(key: HostKey) -> str:
+        # 个人专属宿主的模型令牌：模型照旧按平台查，另带归属，模型网关按这个空间的内容安全策略再查一遍
+        return signer.issue(audience=MODEL_AUDIENCE, workspace_id=PLATFORM_WORKSPACE_ID,
+                            ttl_seconds=settings.model_token_ttl_seconds,
+                            owner=TokenOwner(workspace_id=key.workspace_id, user_id=key.user_id))
+
+    def issue_activation_token(key: HostKey) -> str:
+        # 个人专属宿主请业务服务激活对话用（长任务目标、定时任务）：只能激活这个人自己的对话，有效期同模型令牌、一起续
+        return signer.issue(audience=ACTIVATION_AUDIENCE, workspace_id=key.workspace_id,
+                            ttl_seconds=settings.model_token_ttl_seconds,
+                            owner=TokenOwner(workspace_id=key.workspace_id, user_id=key.user_id))
+
+    sandbox = build_sandbox(SandboxSettings())
+    # 个人专属宿主（用了上传插件的人各一个，hosts 包）：没开时就是共享宿主那一个客户端，后面的装配和以前一样
+    plugin_hosts = build_plugin_hosts(settings, shared_kernel, global_sessionmaker, issue_owner_token=issue_owner_token,
+                                      issue_activation_token=issue_activation_token,
+                                      docker_engine=sandbox.engine if sandbox else None)
+    kernel: HostKernel | RoutedKernel = plugin_hosts.kernel if plugin_hosts else shared_kernel
 
     rotator = CredentialRotator(kernel.rotate_model_credential, issue_model_token,
                                 interval=max(settings.model_token_ttl_seconds // 3, 20))
@@ -427,7 +465,6 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
 
     # 每轮汇总：回合开始、结束时各写一次；检索记录从它知道这一轮是第几轮，回合结束时把知识这一项事实交回给它
     summaries = RunSummaries(scoped, _owner_lookup(scoped))
-    sandbox = build_sandbox(SandboxSettings())
 
     # 一人一个 Office 容器：扩展的在线编辑用它，业务服务里只建这一份（格式转换仍在会话沙箱里）。
     # 修订作者名建容器时才查；身份模块在下面才建好，到那时早已就绪
@@ -455,8 +492,11 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                                             mcp.registry), clearance)
     # 路径里没有空间的写操作（登录、建 Key、接受邀请）记在平台配置所在的空间
     audit = build_audit(global_sessionmaker, default_workspace_id=PLATFORM_WORKSPACE_ID)
+    # 开了会话沙箱时业务工具回全文（宿主的官方溢出策略把超出预算的部分写进会话工作区，上限同单个文件的写入上限）；
+    # 没开就只回预览，宿主没地方放全文
     tools = build_tool_service(master_key, scoped, registry=registry, token_ttl_seconds=settings.tool_token_ttl_seconds,
-                               audit=audit.tool_hook, notes=mcp.me.note)  # 告诉模型哪些服务用户还没连接
+                               audit=audit.tool_hook, notes=mcp.me.note,  # 告诉模型哪些服务用户还没连接
+                               result_limit=sandbox.sandbox.max_write_bytes if sandbox else None)
     blobs = blob_store(settings)
     skills = build_skills(master_key, global_sessionmaker, access, blobs,
                           basic_tools=DEFAULT_BASIC_TOOLS | {tool.spec.name for tool in knowledge.tools},
@@ -485,7 +525,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
         sandbox.on_created(attachments.service.restage)
     artifacts = build_artifacts(scoped, stores, session_sandbox)
     previews = PreviewService(artifacts.service, session_sandbox)
-    conversation_files = ConversationFiles(artifacts.service, session_sandbox, previews)
+    conversation_files = ConversationFiles(artifacts.service, session_sandbox, previews,
+                                           inputs=attachments.service.input_file)
     artifact_observer = ArtifactObserver(artifacts.collector)
     citation_observer = CitationObserver(knowledge.citations)
     writer = BatchWriter(scoped)
@@ -493,9 +534,10 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     skill_runs = SkillRunProjector(LoggedTurns(scoped, models.recorder, artifacts.service), skills.runs,
                                    writer.pending, artifact_observer.settle)
     broadcaster = Broadcaster()
+    titles = TitleObserver(scoped)
     pump = EventPump(kernel, scoped, writer, broadcaster, on_host_restart=host_restarted,
                      observer=fan_out(usage, artifact_observer, citation_observer, skill_runs,
-                                      knowledge.turns, summaries),
+                                      knowledge.turns, summaries, titles),
                      thinking_visible=models.catalog.shows_thinking)
     feed = EventFeed(scoped, writer, broadcaster, pump.produced_upto, live_snapshot=pump.live_snapshot)
     async def erase_knowledge(conversation: Conversation) -> None:
@@ -508,10 +550,16 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     workflows = build_workflows(global_sessionmaker, tools, kernel, skills.delivery.catalog)
     # 扩展给对话定的范围（固定的回答方式，知识库、技能、MCP 收窄）：扩展装配时登记提供者，没登记时和没有这个功能一样
     scopes = ConversationScopes()
+    plugins = build_plugins(scoped, access, plugin_store(settings), cloud=plugin_hosts is not None)
+    if plugin_hosts is not None:
+        # 定期清理专属宿主的持久目录：不在空间里的人、很久没用的人（hosts/cleanup.py）
+        plugin_hosts.bind(plugins.uploads, scoped=scoped,
+                          member=lambda user_id, workspace_id: access.check(user_id, workspace_id, WORKSPACE_RESOURCE,
+                                                                            Action.USE))
     profiles = build_profiles(global_sessionmaker, registry, clearance, skills=skills.delivery.catalog,
                               models=models.catalog, knowledge=knowledge.admin,
                               host_denied=() if sandbox else EXECUTION_TOOLS, bindings=bindings,
-                              narrowing_of=scopes.narrowing)
+                              narrowing_of=scopes.narrowing, plugins_of=plugins.service.effective)
     # 「本会话内同类操作不再询问」的授权按对话当前绑定的运行配置版本记与查
     # 「本会话内不再询问」按宿主相关版本记：工具、权限、技能变了才重新问，只是本轮 @ 变了不重新问
     grants = SessionGrants(global_sessionmaker, profiles.bound_host_version)
@@ -539,15 +587,17 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     answer_modes = AnswerModes()
     # 用量配额：扩展装配时登记判定，没登记时不限制
     quota = QuotaPolicies()
+    turn_attachments = TurnAttachments(attachments.service)
     service = ConversationService(kernel, scoped, pump, feed, on_host_restart=host_restarted, models=host_models,
                                   refresh_model_credential=rotator.ensure_fresh, profiles=profiles,
-                                  grants=grants, attachments=TurnAttachments(attachments.service),
+                                  grants=grants, attachments=turn_attachments,
                                   knowledge_catalog=knowledge_catalog, turn_context=turn_context, turn_state=turn_state,
                                   answer_modes=answer_modes, mention_kinds=mention_kinds, scopes=scopes,
                                   quota=quota, tool_credentials=tool_credentials, skill_credentials=skill_credentials,
                                   erasers=(erase_knowledge, erase_receipts,
                                            attachments.service.erase, artifacts.service.erase,
-                                           *((sandbox.eraser(),) if sandbox else ())),
+                                           *((sandbox.eraser(),) if sandbox else ()),
+                                           *((office.eraser(),) if office else ())),
                                   warmers=(sandbox.warmer(),) if sandbox else ())
     # 后台随时可能加上 OIDC、OAuth2 登录方式，客户端常备；不跟随重定向（httpx 默认），凭证不会被带到别的主机
     sso_http = httpx.AsyncClient(timeout=10.0)
@@ -564,6 +614,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     im_identities = ImIdentities()  # 扩展登记组织来源，渠道认人时用（同一个实例交给两边）
     embed_guard = EmbedGuard(access)  # 扩展里嵌入也能用的接口碰会话前的核对；网页渠道建好后 bind
     channel_targets = ChannelTargets()  # 网页渠道能挂的对象：扩展登记（例如专家），同一个实例交给渠道
+    word_sources = WordSources()  # 内容安全的现成词表：扩展登记，同一个实例交给内容安全
     context = ApiContext(settings=settings, engine=engine, sessionmaker=scoped,
                          global_sessionmaker=global_sessionmaker, access=access,
                          models=ModelClient(models.catalog, routed_http),
@@ -571,6 +622,7 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          knowledge_sources=knowledge.provided, tools=provided_tools, turn_context=turn_context,
                          turn_state=turn_state,
                          answer_modes=answer_modes, results=results, mentions=mention_kinds, conversation_scopes=scopes,
+                         content_safety_sources=word_sources,
                          links=links, profiles=identity.users.get_many, on_turn_ended=summaries.contribute,
                          platform_skills=skills.platform, enterprise_mcp=mcp.enterprise, accounts=identity.accounts,
                          login_methods=identity.methods, password_logins=identity.password_logins,
@@ -588,11 +640,17 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                          embed_guard=embed_guard.check, channel_targets=channel_targets,
                          quota=quota, usage=models.recorder,
                          file_editing=ConversationFileEditing(service, conversation_files, artifacts.collector,
-                                                              session_sandbox, settle=artifact_observer.settle),
+                                                              session_sandbox, settle=artifact_observer.settle,
+                                                              claim_draft=attachments.service.claim_draft),
                          verify_host_token=tools.verify,
                          principal=lambda scope: scoped_principal(identity, scope) if scope else bound_principal(identity))
     extensions, extension_routers, extension_internal, editor_app = _setup_extensions(
         extensions or installed_extensions(), context)
+    if editor_app is not None:
+        # 有扩展提供在线编辑器才会有附件的工作副本（建副本的接口和编辑器一起挂上）：发消息时告诉模型改那份。
+        # 没有编辑器的部署发消息不多查这一次
+        turn_attachments.check_working_copies(
+            lambda conversation, name: conversation_files.exists(conversation, ROOT.child(name)))
     if identity.oauth_clients.registered():
         # 扩展登记了原生应用（桌面端等）：它的本机宿主经令牌交换拿模型令牌，和服务端宿主同一种（平台级、受众 model）。
         # 没登记时不登记这个受众，换令牌接口也认不出任何客户端
@@ -609,13 +667,13 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
     identity.embed.set(channels.web.resolve)
     embed_guard.bind(channels.web)
     scopes.add(channels.web.scope)
-    return Runtime(settings=settings, kernel=kernel, signer=signer, writer=writer, broadcaster=broadcaster,
+    return Runtime(settings=settings, kernel=kernel, plugin_hosts=plugin_hosts, signer=signer, writer=writer, broadcaster=broadcaster,
                    pump=pump, service=service, rotator=rotator, host_models=host_models,
                    tool_credentials=tool_credentials,
                    skill_credentials=skill_credentials, skills=skills, blobs=blobs, audit=audit, sandbox=sandbox, office=office, attachments=attachments,
                    artifacts=artifacts, previews=previews, conversation_files=conversation_files,
                    artifact_observer=artifact_observer,
-                   citation_observer=citation_observer, summaries=summaries, skill_runs=skill_runs,
+                   citation_observer=citation_observer, summaries=summaries, titles=titles, skill_runs=skill_runs,
                    workflows=workflows,
                    grants=grants, tools=tools,
                    identity=identity,
@@ -630,6 +688,8 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                                            base_names=partial(_base_names, knowledge.service)),
                    channels=channels,
                    jobs=JobsAdmin(global_sessionmaker), parsers=parsers,
+                   content_safety=build_content_safety(scoped, access, audit.sink, sources=word_sources),
+                   plugins=plugins,
                    global_sessionmaker=global_sessionmaker,
                    engine=engine, held_engine=held_engine, upstream=upstream, routed_http=routed_http,
                    host_http=host_http,
@@ -701,6 +761,11 @@ def create_public_app(runtime: Runtime) -> FastAPI:
         app.include_router(tools_router(runtime.tools, grants=runtime.grants.covers, path_prefix=PUBLIC_TOOLS_PREFIX))
         app.include_router(skills_internal_router(runtime.skills.delivery, path_prefix=PUBLIC_SKILLS_PREFIX,
                                                   device_environment=runtime.skills.environment))
+        # 本机宿主送文字来查敏感词：同一个检查接口与令牌，词表照样只在业务服务
+        app.include_router(content_safety_internal_router(
+            runtime.content_safety, runtime.tools,
+            lambda user_id, workspace_id: access.check(user_id, workspace_id, WORKSPACE_RESOURCE, Action.USE),
+            path_prefix=PUBLIC_CONTENT_SAFETY_PREFIX))
     app.include_router(access_router(access, scoped_principal(identity, WORKSPACE_SCOPE),
                                      profiles=identity.users.get_many))
     app.include_router(models_router(runtime.models.catalog, runtime.models.recorder, access,
@@ -748,6 +813,13 @@ def create_public_app(runtime: Runtime) -> FastAPI:
     app.include_router(system_router(brand, info, bound_principal(identity)))
     app.include_router(jobs_router(runtime.jobs, bound_principal(identity), setup.is_system_admin))
     app.include_router(audit_router(runtime.audit.query, access, scoped_principal(identity, AUDIT_SCOPE)))
+    app.include_router(content_safety_router(runtime.content_safety.service, scoped_principal(identity, WORKSPACE_SCOPE)))
+    # 插件路由的先后：上传那两组有固定路径（settings、uploads、device），要排在带 /{key} 的预置插件路由前；
+    # /me/plugins 又要排在 /plugins 前
+    app.include_router(plugins_my_uploads_router(runtime.plugins.uploads, bound_principal(identity)))
+    app.include_router(plugins_me_router(runtime.plugins.service, bound_principal(identity)))
+    app.include_router(plugins_uploads_router(runtime.plugins.uploads, scoped_principal(identity, WORKSPACE_SCOPE)))
+    app.include_router(plugins_router(runtime.plugins.service, scoped_principal(identity, WORKSPACE_SCOPE)))
     app.include_router(health_router((database_check(runtime.engine), host_check(runtime.host_http))))
     for router in runtime.extension_routers:
         app.include_router(router)
@@ -773,7 +845,32 @@ def create_internal_app(runtime: Runtime) -> FastAPI:
         runtime.service, background_signer(settings.master_key.get_secret_value()), runtime.global_sessionmaker,
         member=member))
     # 宿主上的插件自己发起一轮前（定时任务到点）来这里激活对话
-    app.include_router(build_activation_router(runtime.service, settings.host_token.get_secret_value(), member=member))
+    def activation_owner(token: str) -> tuple[str, str] | None:
+        """个人专属宿主的激活令牌：认出它归谁，只能激活这个人的对话。"""
+        if not token.isascii():
+            return None
+        try:
+            owner = runtime.signer.verify(token, audience=ACTIVATION_AUDIENCE).owner
+        except TokenError:
+            return None
+        return None if owner is None else (owner.workspace_id, owner.user_id)
+
+    app.include_router(build_activation_router(runtime.service, settings.host_token.get_secret_value(), member=member,
+                                               owner_of=activation_owner))
+    def gateway_owner(token: str) -> tuple[str, str] | None:
+        """模型网关转来的专属宿主模型令牌：认出归属（空间，人）。别的令牌返回 None，照工具令牌校验。"""
+        if not token.isascii():
+            return None
+        try:
+            owner = runtime.signer.verify(token, audience=MODEL_AUDIENCE).owner
+        except TokenError:
+            return None
+        return None if owner is None else (owner.workspace_id, owner.user_id)
+
+    # 宿主插件送文字来查敏感词：令牌是这段会话的工具令牌，成员资格按当前授权再判一次。模型网关替专属宿主来查时
+    # 带的是那台宿主的模型令牌（gateway/content_guard.py）
+    app.include_router(content_safety_internal_router(runtime.content_safety, runtime.tools, member,
+                                                      owner_of=gateway_owner))
     if runtime.sandbox is not None:
         membership = ToolClearance(runtime.access, builtin=frozenset())
         app.include_router(sandbox_internal_router(runtime.sandbox.sandbox, runtime.tools, membership.member,

@@ -9,13 +9,13 @@
 
 .kw-admin-head h1 {
   margin: 0;
-  font-size: var(--kw-font-title);
-  font-weight: 600;
+  font-size: var(--font-heading-md-size);
+  font-weight: var(--font-weight-semibold);
 }
 
 .kw-admin-head p {
   margin: 4px 0 16px;
-  color: var(--kw-text-secondary);
+  color: var(--color-text-secondary);
 }
 
 .kw-admin-toolbar {
@@ -51,7 +51,7 @@
 
 .kw-code {
   padding: 0.1em 0.35em;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--color-surface-tertiary);
   font-family: var(--font-mono);
   font-size: 0.9em;
@@ -147,7 +147,7 @@
 .kw-labeled-icon {
   display: inline-flex;
   flex: none;
-  color: var(--kw-text-secondary);
+  color: var(--color-text-secondary);
 }
 
 .kw-labeled-icon svg {
@@ -184,8 +184,8 @@
 }
 
 .kw-secondary {
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-xs-size);
 }
 
 .kw-cell-stack {
@@ -210,14 +210,14 @@
 
 .kw-org-tree {
   padding: 8px;
-  border: 1px solid var(--kw-border-secondary);
-  border-radius: var(--kw-radius-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
 }
 
 .kw-org-panel {
   padding: 16px;
-  border: 1px solid var(--kw-border-secondary);
-  border-radius: var(--kw-radius-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
 }
 
 .kw-org-panel-head {
@@ -285,6 +285,66 @@
   display: flex;
   justify-content: flex-start;
   gap: 8px;
+}
+
+/* ---------- 内容安全：一整张表单，最宽 720（界面规范 1.2 的 Field） ---------- */
+.kw-content-safety {
+  max-width: 720px;
+}
+
+.kw-content-safety-directions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kw-content-safety-direction {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 一个勾选项，右边可以带一个文字链接（现成词表的「下载查看」） */
+.kw-content-safety-choice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.kw-content-safety-download {
+  flex: none;
+  font-size: var(--font-text-sm-size);
+}
+
+/* 自定义词表：上传按钮在文本框右上角 */
+.kw-content-safety-words {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.kw-content-safety-words-bar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 说明在左、已填几个在右 */
+.kw-content-safety-help {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.kw-content-safety-help > span:last-child {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.kw-content-safety-problem {
+  margin: 0 0 12px;
+  color: var(--red-500);
+  font-size: var(--font-text-sm-size);
 }
 
 /* ---------- 系统设置 ---------- */
@@ -406,7 +466,7 @@
   overflow: auto;
   padding: 12px 0;
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: var(--font-text-sm-size);
   line-height: 1.6;
@@ -453,8 +513,8 @@
 
 .kw-embed-snippet h3 {
   margin: 0;
-  font-size: var(--kw-font-base);
-  font-weight: 600;
+  font-size: var(--font-text-sm-size);
+  font-weight: var(--font-weight-semibold);
 }
 
 .kw-embed-snippet p {
@@ -464,11 +524,11 @@
 .kw-embed-code {
   margin: 0;
   padding: 12px;
-  border: 1px solid var(--kw-border-secondary);
-  border-radius: var(--kw-radius-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
   background: var(--color-surface-secondary);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 13px;
+  font-size: var(--font-text-sm-size);
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -512,5 +572,103 @@
 .kw-settings-devices h2 {
   margin: 0;
   font-size: var(--font-text-md-size);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
+}
+
+/* ---------- 插件 ---------- */
+.kw-plugin-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 上传的插件没通过试装：原因用警示色，和说明文字区分开 */
+.kw-plugin-failed {
+  color: var(--color-text-danger);
+}
+
+.kw-plugin-settings {
+  max-width: 720px;
+  margin-bottom: 16px;
+}
+
+/* 插件详情抽屉（PluginDetail）：标题下的包名、一句话说明、说明文档、组件清单 */
+.kw-plugin-detail-sub {
+  margin: 0 0 4px;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--font-text-xs-size);
+}
+
+.kw-plugin-detail-desc {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.kw-plugin-detail-doc {
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border-subtle, var(--color-border));
+}
+
+.kw-plugin-components {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kw-plugin-components li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kw-plugin-component-title {
+  font-weight: var(--font-weight-semibold);
+}
+
+.kw-plugin-component-module {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-text-xs-size);
+}
+
+.kw-plugin-upload-file {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.kw-plugin-upload-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kw-plugin-upload-target {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kw-plugin-upload-warning {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
+}
+
+.kw-plugin-upload-problem {
+  margin: 0;
+  color: var(--red-500);
+  font-size: var(--font-text-sm-size);
+}
+
+/* 「我的插件」上面那行：说明在左、上传按钮在右 */
+.kw-my-plugins-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
 }

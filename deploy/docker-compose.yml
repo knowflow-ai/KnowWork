@@ -28,7 +28,7 @@ x-logging: &logging
     max-file: "5"
 
 x-server-image: &server-image
-  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.1.2}
+  image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-server:${KNOWWORK_VERSION:-v0.1.3}
   pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
 
 x-hardening: &hardening
@@ -53,6 +53,8 @@ x-server-env: &server-env
   KNOWWORK_OIDC_CLIENT_SECRET: ${KNOWWORK_OIDC_CLIENT_SECRET:-}
   KNOWWORK_OIDC_REDIRECT_URI: ${KNOWWORK_OIDC_REDIRECT_URI:-}
   KNOWWORK_MODEL_TOKEN_TTL_SECONDS: ${KNOWWORK_MODEL_TOKEN_TTL_SECONDS:-900}
+  # 一轮回答最多调几次模型，超过就停下这一轮；0 不限（默认，同 DSH 官方）
+  KNOWWORK_MODEL_MAX_CALLS_PER_TURN: ${KNOWWORK_MODEL_MAX_CALLS_PER_TURN:-0}
   KNOWWORK_REDIS_URL: redis://redis:6379/0
   KNOWWORK_S3_ENDPOINT_URL: http://rustfs:9000
   KNOWWORK_S3_BUCKET: ${KNOWWORK_S3_BUCKET:-knowwork}
@@ -67,7 +69,7 @@ x-server-env: &server-env
 # 并把含 ca.pem、cert.pem、key.pem 的证书目录挂进来、填到 TLS_CERT_PATH。
 x-sandbox-env: &sandbox-env
   KNOWWORK_SANDBOX_DOCKER_ENABLED: ${KNOWWORK_SANDBOX_DOCKER_ENABLED:-false}
-  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.1.2}}
+  KNOWWORK_SANDBOX_IMAGE: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.1.3}}
   KNOWWORK_SANDBOX_DOCKER_HOST: ${KNOWWORK_SANDBOX_DOCKER_HOST:-}
   KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH: ${KNOWWORK_SANDBOX_DOCKER_TLS_CERT_PATH:-}
   KNOWWORK_SANDBOX_ALLOW_INTERNET: ${KNOWWORK_SANDBOX_ALLOW_INTERNET:-true}
@@ -157,7 +159,7 @@ services:
     logging: *logging
 
   runtime-host:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.1.2}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-runtime-host:${KNOWWORK_VERSION:-v0.1.3}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped
@@ -171,6 +173,8 @@ services:
       # 会话沙箱：模型的文件读写与命令经它落到会话容器。不配时插件退回 127.0.0.1:8001（本机开发的默认值），
       # 在容器里连的是宿主自己，写文件、执行命令都报「沙箱服务暂时不可用」
       KNOWWORK_SANDBOX_BASE_URL: http://api:8001/internal/extensions/sandbox
+      # 内容检查（敏感词）：宿主把要查的文字送到这里，词表只在业务服务。不配就不查（插件不退回默认地址）
+      KNOWWORK_CONTENT_SAFETY_BASE_URL: http://api:8001/internal/extensions/content-safety
       # 宿主上的插件自己发起一轮前（定时任务到点）请业务服务激活对话：核对人和对话、装好令牌、开起事件泵
       KNOWWORK_ACTIVATION_BASE_URL: http://api:8001/internal/host/v1
       # 宿主向模型网关请求时用的模型名，与 api 的 KNOWWORK_HOST_MODEL_ALIAS 一致
@@ -306,6 +310,8 @@ services:
       KNOWWORK_AUTO_MIGRATE: "false"
       KNOWWORK_MODEL_GATEWAY_PORT: "8002"
       KNOWWORK_MODEL_GATEWAY_WORKERS: ${KNOWWORK_MODEL_GATEWAY_WORKERS:-1}
+      # 个人专属宿主（上传的插件）调模型时，按那个空间的敏感词策略再查一遍，回调 api 内部端口上的检查接口
+      KNOWWORK_INTERNAL_URL: http://api:8001
     volumes:
       - secrets:/run/knowwork/secrets:ro
     tmpfs:
@@ -329,7 +335,7 @@ services:
   sandbox-image:
     # 会话沙箱镜像：只用于拉取或本地构建，不常驻；api 按会话用它创建容器。
     # 拉取：docker compose --profile sandbox pull sandbox-image（install.sh 会做）；本地构建：把 pull 换成 build。
-    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.1.2}}
+    image: ${KNOWWORK_SANDBOX_IMAGE:-${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-sandbox:${KNOWWORK_VERSION:-v0.1.3}}
     build:
       context: ..
       dockerfile: deploy/docker/sandbox.Dockerfile
@@ -340,7 +346,7 @@ services:
     logging: *logging
 
   gateway:
-    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.1.2}
+    image: ${KNOWWORK_REGISTRY:-crpi-6q638zy09wmnj70w.cn-hangzhou.personal.cr.aliyuncs.com/knowflow-ai}/knowwork-gateway:${KNOWWORK_VERSION:-v0.1.3}
     pull_policy: ${KNOWWORK_PULL_POLICY:-missing}
     <<: *hardening
     restart: unless-stopped

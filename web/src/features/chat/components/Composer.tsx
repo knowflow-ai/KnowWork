@@ -4,7 +4,9 @@
  * 也可以拖进来。
  * 运行中可以插话：回车 = 完成后发送（followup），Ctrl/⌘ + 回车 = 补充到当前任务（steer）；显示停止按钮。
  * 打 @（或点 @ 按钮）弹出点名菜单（mentions/），选中的变成小标签；发出去以后小标签留着，这个对话后面每一问都带上，
- * 直到手动去掉。
+ * 直到手动去掉。开头打 / 弹出技能与命令（mentions/slash.ts）：技能同样变成小标签；带参数的命令也变成带 × 的小标签
+ * （同 ChatGPT 输入框里选中的工具），输入框里打参数，不带参数的选中就执行，回车执行都不发给模型（mentions/useCommandClaim）；
+ * / 开头却不是认得的命令或技能的，不当提问发出去。
  * 框外左上角是回答方式（智能体 / 快速问答，见 AnswerModeSelect）；左下角的「+」添加文件。快速问答只查知识库（检索与阅读），
  * 不能加文件、@ 菜单不列技能，@ 过的技能先不显示也不发，切回智能体还在。
  * 附件一加进来就传上去、开始解析（useDraftAttachments），打字的工夫多半就好了；点发送时还没好的先等着（卡片上显示
@@ -25,8 +27,12 @@ import { ArrowUp, AtSign, PlusComposer, StopSm } from '@openai/apps-sdk-ui/compo
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
 import { validateMessage, type AnswerMode, type SendMode } from '../../../api/conversations';
 import { useComposerInbox } from '../editRequest';
+import { useQuery } from '@tanstack/react-query';
+import { listMyPlugins } from '../../../api/plugins';
+import { currentWorkspaceId } from '../../../stores/workspace';
+import { myBuiltinKey } from '../../admin/plugins/queries';
 import type { AttachmentChip, SentAttachment } from '../../../api/attachments';
-import { mentionKey, type Mention } from '../../../api/mentions';
+import { mentionKey, type Mention, type MentionSkill } from '../../../api/mentions';
 import { effectiveAnswerMode, useAnswerMode } from '../../../stores/answerMode';
 import { slotItems } from '../../../slots/registry';
 import { cx } from '../../../ui/cx';
@@ -34,6 +40,10 @@ import { toast } from '../../../ui/toastStore';
 import { useEmbedMode } from '../../embed/embedMode';
 import { sendable, useDraftAttachments, type DraftAttachment } from '../hooks/useDraftAttachments';
 import { activeTrigger, withoutTrigger } from '../mentions/candidates';
+import { parseSlashLine, resolveCommand, slashTrigger } from '../mentions/slash';
+import { SlashMenu } from '../mentions/SlashMenu';
+import { SLASH_MENU_ID, slashOptionId, useSlashMenu, type SlashCommands } from '../mentions/useSlashMenu';
+import { claimedLine, takesInput, useCommandClaim } from '../mentions/useCommandClaim';
 import { MentionChips } from '../mentions/MentionChips';
 import { MentionMenu } from '../mentions/MentionMenu';
 import type { FileReference } from '../sources';
@@ -49,6 +59,7 @@ import {
 import { AnswerModeSelect } from './AnswerModeSelect';
 import { ModelSelect } from './ModelSelect';
 import { AttachmentChips } from './AttachmentChips';
+import { isEditableFormat } from '../../preview/previewKind';
 import { modeForKey } from './keys';
 
 interface Props {
@@ -70,8 +81,9 @@ interface Props {
   readonly answerMode?: AnswerMode;
   /** 已有会话的 id（新对话没有）：给左上角那一行里扩展的组件用 */
   readonly conversationId?: string;
-  /** 加了附件（快要发消息了）：已有会话借此预热，发送时不用现开宿主上的对话、现建沙箱容器 */
-  readonly onAttach?: () => void;
+  /** 加了附件（快要发消息了），给加的文件名：已有会话借此预热，发送时不用现开宿主上的对话、现建沙箱容器；能在线编辑的文件
+   *  还提前起编辑器（ConversationFiles.prewarm） */
+  readonly onAttach?: (names: readonly string[]) => void;
   /** @ 候选按谁的范围取（见 MentionScope）：挂了范围的对话给对话 id，还没建对话的专家新对话页给收窄；不给按本人能用的全部 */
   readonly mentionScope?: MentionScope;
   /** 在发送按钮左边显示对话模型下拉（ModelSelect）：聊天页给，嵌在别的页面里的会话不给（沿用默认模型） */
@@ -86,6 +98,22 @@ interface Props {
   readonly dropFiles?: (
     files: readonly File[],
   ) => Promise<{ readonly mentions: readonly string[]; readonly skipped: readonly string[] }>;
+  /** 这段对话的 / 命令（见 sources.ts 的 ConversationActions.commands）：给了 / 菜单里多一组命令，回车执行；新对话页不给 */
+  readonly commands?: SlashCommands & { readonly run: (line: string) => Promise<void> };
+  /**
+   * 输入框里还没发出去、能编辑的附件点了直接进编辑器（不用先发一句话）：给了就点得开（传完了才点得开）。
+   * 第二个参数是输入框此刻的草稿，新对话页要带着它进会话页
+   */
+  readonly onOpenDraft?: (attachmentId: string, draft: ComposerDraft) => void;
+  /** 接着用的草稿（新对话页点了输入框里的附件、建好对话进会话页时带过来）：打的字与附件；@ 照旧经 initialMentions */
+  readonly initialDraft?: ComposerDraft;
+}
+
+/** 输入框此刻的草稿：打的字、附件、@ */
+export interface ComposerDraft {
+  readonly text: string;
+  readonly attachments: readonly DraftAttachment[];
+  readonly mentions: readonly Mention[];
 }
 
 /**
@@ -103,6 +131,7 @@ export interface InputLimits {
 }
 
 const NO_SCOPE: MentionScope = {};
+const NO_SKILLS: readonly MentionSkill[] = [];
 const noBlock = () => undefined;
 export const DEFAULT_FOOTNOTE = '回答可能有误，重要结论请点开出处核对';
 const NO_FILES_IN_QUICK = '快速问答不能带附件，去掉附件或切换到智能体再发';
@@ -189,9 +218,14 @@ export function Composer({
   below,
   fileReferences,
   dropFiles,
+  commands,
+  onOpenDraft,
+  initialDraft,
 }: Props) {
   const canMention = limits?.mentions === undefined;
-  const [value, setValue] = useState('');
+  const [value, setValue] = useState(initialDraft?.text ?? '');
+  // 认领的 / 命令：行首的小标签，后面打的是参数（mentions/useCommandClaim）
+  const commandClaim = useCommandClaim();
   const [caret, setCaret] = useState(0);
   const [mentions, setMentions] = useState<readonly Mention[]>(initialMentions);
   // Esc 关掉菜单后，同一个 @ 不再弹出，直到打下一个
@@ -218,7 +252,19 @@ export function Composer({
   const [skipped, setSkipped] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const draft = useDraftAttachments();
+  const draft = useDraftAttachments(initialDraft?.attachments);
+  // 能编辑的附件传完就点得开、直接进编辑器；还有在传的先不给点（新对话页要带着附件跳进会话页，传到一半的会丢）
+  const uploading = draft.items.some((item) => item.state === 'uploading');
+  const openDraft =
+    onOpenDraft && !sending && !uploading
+      ? (_chip: AttachmentChip, index: number) => {
+          const item = draft.items[index];
+          const id = item?.id;
+          return id && isEditableFormat(item.name)
+            ? () => onOpenDraft(id, { text: value, attachments: draft.items, mentions })
+            : undefined;
+        }
+      : undefined;
   // 网页嵌入页的访客不能带附件（embedMode.ts）
   const { attachments: canAttach } = useEmbedMode();
   const chosen = useAnswerMode((s) => s.mode);
@@ -241,6 +287,20 @@ export function Composer({
   const input = useAutoHeight(value);
   const found = canMention ? activeTrigger(value, caret) : null;
   const trigger = found && found.start !== dismissed ? found : null;
+  // 开头的 /：技能（快速问答、@ 用不了时不列）与这段对话的命令。Esc 关掉后，打的字变了再弹
+  const slashSkills = canMention && !quick ? offered.skills : NO_SKILLS;
+  const slashing = commands !== undefined || slashSkills.length > 0 ? slashTrigger(value, caret) : null;
+  const [slashClosed, setSlashClosed] = useState<string | null>(null);
+  const slash = slashing && slashClosed !== value.slice(0, caret) ? slashing : null;
+  // 管理员设为「可选」、自己还没打开的预置插件：/ 菜单底下提示去哪儿开（嵌入页的访客没有个人设置，不提示）
+  const { inspect: ownAccount } = useEmbedMode();
+  const myPlugins = useQuery({
+    queryKey: myBuiltinKey(currentWorkspaceId()),
+    queryFn: listMyPlugins,
+    enabled: slash !== null && ownAccount,
+    staleTime: 30_000,
+  });
+  const unopened = (myPlugins.data ?? []).filter((p) => !p.enabled && !p.locked).map((p) => p.name);
   const placeCaret = (position: number) => {
     setCaret(position);
     requestAnimationFrame(() => {
@@ -272,6 +332,50 @@ export function Composer({
       },
     },
   );
+  /** 一行 / 命令：交给执行的一方，不发给模型；结果由对话里的命令气泡显示。keep 是执行时输入框里留下的字，
+   * restore 是失败时怎么放回去（不给就把这一行写回输入框） */
+  const runLine = async (line: string, keep = '', restore?: () => void) => {
+    if (!commands) return;
+    setSending(true);
+    setValue(keep);
+    setCaret(0);
+    try {
+      await commands.run(line);
+    } catch (error) {
+      if (restore) restore();
+      else setValue((current) => current || line);
+      toast.error(error instanceof Error ? error.message : '命令没能执行，请稍后重试');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const slashMenu = useSlashMenu(
+    slash,
+    slashSkills,
+    commands,
+    (row) => {
+      const rest = value.slice(caret).replace(/^\s+/, '');
+      if (row.kind === 'skill') {
+        const mention: Mention = { type: 'skill', id: row.skill.name, name: row.skill.name };
+        setMentions((current) =>
+          current.some((m) => mentionKey(m) === mentionKey(mention)) ? current : [...current, mention],
+        );
+        setValue(rest);
+        placeCaret(0);
+        return;
+      }
+      // 带参数的命令变成带 × 的小标签（同 ChatGPT 输入框里选中的工具），输入框里打参数；不带参数的选中就执行
+      if (!takesInput(row.command)) {
+        void runLine(`/${row.command.name}`, rest);
+        return;
+      }
+      commandClaim.take({ command: row.command });
+      setValue(rest);
+      placeCaret(0);
+    },
+    () => setSlashClosed(value.slice(0, caret)),
+  );
   const openMention = () => {
     // 点 @ 按钮：在光标处补一个 @（前面不是空白就先空一格），菜单随之弹出
     const at = input.current?.selectionStart ?? value.length;
@@ -284,7 +388,7 @@ export function Composer({
   const addFiles = (incoming: readonly File[]) => {
     const problem = draft.add(incoming);
     if (problem) toast.warning(problem);
-    if (incoming.length > 0) onAttach?.();
+    if (incoming.length > 0) onAttach?.(incoming.map((file) => file.name));
   };
   // 拖进来的文件写成 @路径插在光标处（前面不是空白就先空一格，每个后面跟一个空格），模型自己去读
   const mentionDropped = async (drop: NonNullable<Props['dropFiles']>, files: readonly File[]) => {
@@ -318,12 +422,62 @@ export function Composer({
     else addFiles(files);
   };
 
-  /** 发出去：text 不给就发输入框里的（别处交来的一句话直接发时给 text） */
-  const submit = async (mode: SendMode, text: string = value) => {
+  /** / 开头的一行：认得的命令就执行、认得的技能就变成小标签（后面的字照常发）；都不是就提示，不当提问发出去（同官方）。
+   * 返回 true 表示已经处理了，不再当普通消息发 */
+  const slashLine = async (mode: SendMode, text: string): Promise<boolean> => {
+    const line = parseSlashLine(text);
+    if (!line) return false;
+    let listed = slashMenu.commands;
+    if (commands && !listed) {
+      try {
+        listed = await commands.list();
+      } catch {
+        listed = undefined;
+      }
+    }
+    const command = listed ? resolveCommand(line.name, listed) : undefined;
+    if (command) {
+      // 打的是中文写法（/目标）时换成登记的名字再发
+      await runLine(`/${command.name}${line.rest}`.trim());
+      return true;
+    }
+    const skill = slashSkills.find((s) => s.name === line.name);
+    if (skill) {
+      const mention: Mention = { type: 'skill', id: skill.name, name: skill.name };
+      setMentions((current) =>
+        current.some((m) => mentionKey(m) === mentionKey(mention)) ? current : [...current, mention],
+      );
+      const rest = line.rest.trim();
+      setValue(rest);
+      if (rest)
+        void submit(mode, rest, [...scoped.filter((m) => mentionKey(m) !== mentionKey(mention)), mention]);
+      return true;
+    }
+    toast.warning(
+      commands
+        ? `没有 /${line.name} 这个命令或技能；要发普通消息，开头别用 /`
+        : `命令在对话开始以后才能用；要发普通消息，开头别用 /`,
+    );
+    return true;
+  };
+
+  /** 发出去：text 不给就发输入框里的（别处交来的一句话直接发时给 text）；withMentions 不给就用小标签里的 */
+  const submit = async (mode: SendMode, text: string = value, withMentions?: readonly Mention[]) => {
     if (blocked) {
       toast.warning(blocked);
       return;
     }
+    const claim = commandClaim.claim;
+    if (claim && withMentions === undefined) {
+      // 认领的命令连同参数执行；失败时标签和参数都放回去
+      commandClaim.release();
+      await runLine(claimedLine(claim, text), '', () => {
+        commandClaim.take(claim);
+        setValue(text);
+      });
+      return;
+    }
+    if (withMentions === undefined && (await slashLine(mode, text))) return;
     const problem = validateMessage(text);
     if (problem) {
       toast.warning(problem);
@@ -345,7 +499,7 @@ export function Composer({
       setCaret(0);
       draft.clear();
       try {
-        await onSend(text, mode, sendable(ready), scoped);
+        await onSend(text, mode, sendable(ready), withMentions ?? scoped);
       } catch (error) {
         setValue((current) => current || text);
         draft.restore(items);
@@ -397,10 +551,11 @@ export function Composer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (menu.onKey(event)) {
+    if (slashMenu.onKey(event) || menu.onKey(event)) {
       event.preventDefault();
       return;
     }
+    if (commandClaim.onKey(event, slashMenu.commands, setValue, placeCaret)) return;
     const mode = modeForKey({ ...event, isComposing: event.nativeEvent.isComposing }, running);
     if (!mode) return;
     event.preventDefault();
@@ -451,6 +606,7 @@ export function Composer({
         {/* @ 菜单贴着输入框弹出，不算上面那一行 */}
         <div className="kw-composer-main">
           <MentionMenu menu={menu} />
+          <SlashMenu menu={slashMenu} unopened={ownAccount ? unopened : []} />
           <div
             className={cx('kw-composer-box', dragging && 'is-dragging', disabled && 'is-disabled')}
             onDragOver={(event) => {
@@ -469,6 +625,7 @@ export function Composer({
               <AttachmentChips
                 items={draft.items.map(chipOf)}
                 onRemove={sending ? undefined : (index) => draft.remove(draft.items[index]?.key ?? '')}
+                openerOf={openDraft}
                 label="待发送的附件"
               />
             ) : null}
@@ -485,6 +642,7 @@ export function Composer({
             <MentionChips
               items={canMention ? scoped : []}
               label="这一问 @ 点名的内容"
+              leading={commandClaim.chip}
               onRemove={(mention) =>
                 setMentions((current) => current.filter((m) => mentionKey(m) !== mentionKey(mention)))
               }
@@ -496,11 +654,24 @@ export function Composer({
               value={value}
               disabled={disabled}
               placeholder={
-                placeholder ?? (running ? '补充要求或下一条消息' : quick ? '在知识库里查…' : '有问题，尽管问')
+                placeholder ??
+                (commandClaim.claim
+                  ? (commandClaim.claim.command.hint ?? '')
+                  : running
+                    ? '补充要求或下一条消息'
+                    : quick
+                      ? '在知识库里查…'
+                      : '有问题，尽管问')
               }
               aria-label="消息"
-              aria-controls={menu.open ? MENTION_MENU_ID : undefined}
-              aria-activedescendant={activeOption(menu)}
+              aria-controls={slashMenu.open ? SLASH_MENU_ID : menu.open ? MENTION_MENU_ID : undefined}
+              aria-activedescendant={
+                slashMenu.open
+                  ? slashMenu.rows[slashMenu.active]
+                    ? slashOptionId(slashMenu.active)
+                    : undefined
+                  : activeOption(menu)
+              }
               onChange={(event) => {
                 setValue(event.target.value);
                 setCaret(event.target.selectionStart);
@@ -543,7 +714,8 @@ export function Composer({
               ) : null}
               <Tooltip
                 content={
-                  limits?.mentions ?? (quick ? '@ 点名知识库、文件或标签' : '@ 点名知识库、文件、标签或技能')
+                  limits?.mentions ??
+                  (quick ? '@ 点名知识库、文件或标签' : '@ 点名知识库、文件或标签；开头打 / 用技能或命令')
                 }
                 compact
               >
@@ -593,7 +765,7 @@ export function Composer({
                   uniform
                   aria-label="发送"
                   loading={sending}
-                  disabled={!value.trim() || disabled || blocked !== null}
+                  disabled={(!value.trim() && !commandClaim.claim) || disabled || blocked !== null}
                   onClick={() => void submit('followup')}
                 >
                   <ArrowUp />

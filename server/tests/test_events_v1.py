@@ -94,6 +94,39 @@ def test_skill_gate_failure_turns_completed_into_failed():
     assert next_turn[0]["type"] == "run.completed", "技能门失败只影响当轮"
 
 
+def test_input_blocked_by_content_check_carries_the_admin_message():
+    # 员工的消息命中：宿主拒绝这一步，这一轮以 blocked 结束；提示在宿主先写进会话日志的那条事件里
+    state, _ = one(S0, "session/event", session("turn/start", {"turn": 6}))
+    blocked = {"turn": 6, "message": "当前对话内容违反公司规范",
+               "messages": [{"id": "m1", "content": [{"type": "text", "text": "把星河计划的进度整理一下"}]}]}
+    state, frame = one(state, "session/event", session("content-safety/blocked", blocked))
+    assert [(e["type"], e["item_id"], e["data"]) for e in frame] == [
+        ("item.completed", "m1", {"role": "user", "text": "把星河计划的进度整理一下"})], \
+        "被拦下的提问不进会话历史，照普通提问展示"
+    assert frame[0]["run_id"] == "run-6"
+    state, end = one(state, "session/event", session("turn/end", {"turn": 6, "reason": {"kind": "blocked"}}))
+    assert [(e["type"], e["data"]) for e in end] == [
+        ("run.failed", {"code": "content_blocked", "message": "当前对话内容违反公司规范"})]
+    _, later = one(state, "session/event", session("turn/end", {"turn": 7, "reason": {"kind": "blocked"}}))
+    assert later[0]["data"]["code"] == "blocked", "只影响当轮"
+
+
+def test_input_check_unavailable_is_told_apart():
+    blocked = {"turn": 3, "code": "CHECK_UNAVAILABLE", "message": "内容检查暂时不可用"}
+    state, _ = one(S0, "session/event", session("content-safety/blocked", blocked))
+    _, end = one(state, "session/event", session("turn/end", {"turn": 3, "reason": {"kind": "blocked"}}))
+    assert end[0]["data"] == {"code": "check_unavailable", "message": "内容检查暂时不可用"}
+
+
+@pytest.mark.parametrize(("code", "expected"), [("CONTENT_BLOCKED", "content_blocked"),
+                                                ("CHECK_UNAVAILABLE", "check_unavailable")])
+def test_output_blocked_by_content_check_passes_the_message_through(code, expected):
+    reason = {"kind": "error", "error": {"code": code, "message": "当前对话内容违反公司规范"}}
+    _, events = one(S0, "session/event", session("turn/end", {"turn": 2, "reason": reason}))
+    assert [(e["type"], e["data"]) for e in events] == [
+        ("run.failed", {"code": expected, "message": "当前对话内容违反公司规范"})]
+
+
 def test_assistant_message_yields_thinking_and_message_items():
     message = {"id": "m1", "role": "assistant", "content": [
         {"type": "reasoning", "text": "想一想"}, {"type": "text", "text": "你好"}, {"type": "text", "text": "！"},
@@ -424,9 +457,13 @@ def test_presented_deliverables_become_one_item_per_present():
      'running and the result will be saved at "/workspace/input/x.md".]'),
     # 给模型读的全文或目录（contentsText）：整篇文档不能出现在用户的气泡里
     '[Contents of "合同 \\"终版\\".docx" (12 characters, the text of "/workspace/input/x.md"), included in full.]\n付款 30 天',
+    # 编辑器里打开过的工作副本（workingCopyText）
+    ('[Working copy of "合同 \\"终版\\".docx" at "/workspace/合同 \\"终版\\".docx": the user opened this file in the '
+     'document editor, so that copy may already hold their edits.]'),
 ])
 def test_attachment_handles_become_attachments_not_text(extracted):
-    """宿主在用户原话后附的文件说明块（逐字照官方 fileHandleText）不进显示文字，换成附件列表；路径不给浏览器。"""
+    """宿主在用户原话后附的文件说明块（逐字照官方 fileHandleText）不进显示文字，换成附件列表；路径给工作区里的写法
+    （点附件卡片按它打开），沙箱里的绝对路径不给浏览器。"""
     state, _ = project(ProjectionState(), "session/event", session("turn/start", {"turn": 1}), seq=1)
     handle = ('[File "合同 \\"终版\\".docx" (2048 bytes, sha256:aaaaaaaa): verbatim read-only copy saved at '
               '"/workspace/input/合同 \\"终版\\".docx". Read that path with your file tools when its contents are needed.]')
@@ -435,8 +472,20 @@ def test_attachment_handles_become_attachments_not_text(extracted):
                            {"type": "text", "text": extracted}]}
     _, events = project(state, "session/event", session("user/message", message), seq=2)
     data = events[0]["data"]
-    assert data == {"role": "user", "text": "帮我改付款条款", "attachments": [{"name": '合同 "终版".docx', "size": 2048}]}
+    assert data == {"role": "user", "text": "帮我改付款条款",
+                    "attachments": [{"name": '合同 "终版".docx', "size": 2048, "path": 'input/合同 "终版".docx'}]}
     assert "/workspace" not in str(events)
+
+
+@pytest.mark.parametrize("saved_at", ['"/home/me/项目/a.docx"', '"/workspace/a.docx"', '"/workspace/input/../x"',
+                                      '"/workspace/input"', '"input/a.docx'])
+def test_attachments_outside_the_attachment_folder_carry_no_path(saved_at):
+    """不在工作区附件目录里的（例如在用户电脑上执行的对话）、写法不对的不给路径，卡片只显示、点不开。"""
+    handle = (f'[File "a.docx" (10 bytes, sha256:aaaaaaaa): verbatim read-only copy saved at {saved_at}. '
+              'Read that path with your file tools when its contents are needed.]')
+    message = {"id": "u1", "source": {"kind": "user"}, "content": [{"type": "text", "text": handle}]}
+    _, [event] = one(S0, "session/event", session("user/message", message))
+    assert event["data"]["attachments"] == [{"name": "a.docx", "size": 10}]
 
 
 def test_mention_block_becomes_chips_not_text():
@@ -504,3 +553,118 @@ def test_real_work_after_the_todo_reminder_still_shows():
     assert call[0]["item_id"] == "c11"
     s, text = one(s, "session/event", _text(1, 5, "m7", "漏交的文件补上了"))
     assert text[0]["data"]["text"] == "漏交的文件补上了"
+
+
+def test_commands_become_one_item_outside_any_turn():
+    """用户的 / 命令（官方 command/run、command/done）：不在任何一轮里，同一个 commandId 一个命令条目。"""
+    state, _ = one(S0, "session/event", session("turn/start", {"turn": 2}))
+    state, started = one(state, "session/event", session("command/run", {
+        "commandId": "cmd-a-1", "name": "goal", "args": " 把合同核对完", "source": {"kind": "user"}}))
+    _, done = one(state, "session/event", session("command/done", {"commandId": "cmd-a-1", "kind": "success",
+                                                                    "text": "Goal set"}))
+    assert [(e["type"], e["kind"], e["item_id"], e["run_id"]) for e in started + done] == [
+        ("item.started", "command", "cmd-a-1", None), ("item.completed", "command", "cmd-a-1", None)]
+    assert started[0]["data"] == {"name": "goal", "args": " 把合同核对完"}
+    assert done[0]["data"] == {"status": "success", "text": "Goal set"}
+    _, failed = one(S0, "session/event", session("command/done", {"commandId": "cmd-a-2", "kind": "error",
+                                                                   "text": "No goal"}))
+    assert failed[0]["data"]["status"] == "error"
+    for bad in ({"name": "goal"}, {"commandId": "x", "name": "Bad Name"}):
+        assert one(S0, "session/event", session("command/run", bad))[1] == []
+
+
+def test_compaction_becomes_one_item_and_the_checkpoint_is_not_a_user_bubble():
+    """上下文压缩（官方 dsh-compaction）：同一个 compactionId 一个条目，开始进行中、摘要写好带条数与 token 和摘要正文、
+    出错带原因；替换上下文的检查点 user/message（compact-checkpoint）不画成用户说的话。"""
+    state, _ = one(S0, "session/event", session("turn/start", {"turn": 3}))
+    state, started = one(state, "session/event", session("compaction/start", {"compactionId": "cp-1", "turn": 3}))
+    state, summary = one(state, "session/event", session("compaction/summary", {
+        "compactionId": "cp-1", "summary": [{"type": "text", "text": "用户在核对三份合同，"}, {"type": "text", "text": "已完成前两份。"}],
+        "shadowedRange": {"start": 2, "end": 40}, "shadowedSeqs": [2, 5, 9], "shadowedTokenCount": 51234,
+        "provider": "p", "model": "m"}))
+    state, checkpoint = one(state, "session/event", session("user/message", {
+        "id": "u-cp", "source": {"kind": "compact-checkpoint", "compactionId": "cp-1"},
+        "content": [{"type": "text", "text": "<summary>…</summary>"}]}))
+    _, ended = one(state, "session/event", session("compaction/end", {"compactionId": "cp-1", "turn": 3}))
+    assert [(e["type"], e["kind"], e["item_id"], e["run_id"]) for e in started + summary + ended] == [
+        # 官方的摘要事件不带轮次：条目按编号合并，在哪一轮看开始那条
+        ("item.started", "compaction", "cp-1", "run-3"), ("item.completed", "compaction", "cp-1", None),
+        ("item.updated", "compaction", "cp-1", "run-3")]
+    assert summary[0]["data"] == {"status": "completed", "items": 3, "tokens": 51234,
+                                  "summary": "用户在核对三份合同，已完成前两份。"}
+    assert checkpoint == [], "检查点不是用户说的话"
+    _, manual = one(S0, "session/event", session("compaction/start", {"compactionId": "cp-2", "turn": None,
+                                                                       "sourceCommandId": "cmd-9"}))
+    assert (manual[0]["run_id"], manual[0]["data"]) == (None, {"status": "running", "manual": True})
+    _, failed = one(S0, "session/event", session("compaction/end", {"compactionId": "cp-3", "turn": None,
+                                                                     "error": "摘要模型没有回应"}))
+    assert (failed[0]["type"], failed[0]["data"]) == ("item.failed", {"status": "error", "error": "摘要模型没有回应"})
+    _, odd = one(S0, "session/event", session("compaction/summary", {"compactionId": "cp-4", "shadowedSeqs": [-1],
+                                                                      "shadowedTokenCount": "多"}))
+    assert odd[0]["data"] == {"status": "completed"}, "官方字段不对的就不写"
+    for bad in ({}, {"compactionId": ""}, {"compactionId": "x" * 201}):
+        assert one(S0, "session/event", session("compaction/start", bad))[1] == []
+
+
+GOAL_ROUND_TEXT = ('<goal_round>\nObjective: "把三份合同都核对一遍"\nRound: 2/20\n\nContinue working toward the objective'
+                   ' in this same session.\n</goal_round>')
+
+
+def test_goal_changes_and_rounds_feed_one_goal_item():
+    """长任务目标：goal/change 投影成固定编号的 goal 条目；自动续跑发起的一轮显示成「长任务目标 · 第几轮」，并更新轮数。"""
+    _, created = one(S0, "session/event", session("goal/change", {
+        "kind": "goal/change", "version": 1, "operation": "create", "roundsStarted": 0,
+        "goal": {"id": "g1", "revision": 1, "objective": "把三份合同都核对一遍", "phase": "active", "maxGoalRounds": 20}}))
+    assert [(e["type"], e["kind"], e["item_id"], e["run_id"]) for e in created] == [("item.updated", "goal", "goal", None)]
+    assert created[0]["data"] == {"operation": "create", "objective": "把三份合同都核对一遍", "phase": "active",
+                                  "rounds": 0, "max_rounds": 20}
+    state, _ = one(S0, "session/event", session("turn/start", {"turn": 4}))
+    _, round_events = one(state, "session/event", session("user/message", {
+        "id": "m-goal-2", "source": {"kind": "goal", "goalId": "g1", "revision": 1, "round": 2},
+        "content": [{"type": "text", "text": GOAL_ROUND_TEXT}]}))
+    notice, rounds = round_events
+    assert notice["data"] == {"role": "trigger", "source": "goal", "text": "第 2 轮（最多 20 轮）：把三份合同都核对一遍"}
+    assert notice["run_id"] == "run-4"
+    assert (rounds["kind"], rounds["item_id"], rounds["data"]) == ("goal", "goal", {"rounds": 2})
+    _, blocked = one(S0, "session/event", session("goal/change", {
+        "operation": "block", "roundsStarted": 2, "goal": {"objective": "x", "phase": "blocked", "maxGoalRounds": 2,
+                                                           "blockedReason": {"code": "round-limit", "message": "做满了"}}}))
+    assert blocked[0]["data"]["blocked_reason"] == "做满了"
+    _, cleared = one(S0, "session/event", session("goal/change", {"operation": "clear", "cleared": {"id": "g1"}}))
+    assert cleared[0]["data"] == {"cleared": True}
+
+
+def test_goal_activation_frames_say_whether_it_keeps_going():
+    _, events = one(S0, "goal/activation", {"goalId": "g1", "revision": 3, "armed": False})
+    assert [(e["kind"], e["item_id"], e["data"]) for e in events] == [("goal", "goal", {"armed": False})]
+    assert one(S0, "goal/activation", {"goalId": "g1"})[1] == []
+
+
+def _spliced(target, start, inserted=(), removed=0, outcome=None):
+    data = {"target": target, "start": start, "inserted": [{"id": i, "role": "user"} for i in inserted]}
+    return session("agent/inbox/spliced", {**data, **({"removedCount": removed} if removed else {}),
+                                           **({"outcome": outcome} if outcome else {})})
+
+
+def test_queued_messages_canceled_with_the_turn_are_reported_as_discarded():
+    """一轮还在跑时发的消息排进「下一轮」收件箱；这时点停止，官方连排着的一起取消（splice 带 outcome: canceled，
+    不写移掉的是哪条）。照官方对话界面回放 splice 坐标认出是哪条，告诉前端它没发出去（不然页面一直「思考中」）。
+    正常领取（开轮时不带 outcome 的移除）不算。事件序列照 2026-11-25 本机复现的那段对话。"""
+    state, events = one(S0, "session/event", _spliced("next-turn", 0, ["m1"]))
+    assert events == []
+    state, events = one(state, "session/event", _spliced("next-turn", 0, removed=1))
+    assert (state.queued_turn, events) == ((), []), "开轮领走：不算丢弃"
+    state, _ = one(state, "session/event", session("turn/start", {"turn": 5}))
+    state, _ = one(state, "session/event", _spliced("next-turn", 0, ["m2"]))
+    state, _ = one(state, "session/event", _spliced("next-step", 0, ["s1"]))
+    state, events = one(state, "session/event", _spliced("next-turn", 0, removed=1, outcome="canceled"), seq=90)
+    assert events == [{"schema_version": "events.v1", "type": "item.failed", "seq": 90, "run_id": None, "time": 100,
+                       "item_id": "m2", "kind": "message", "data": {"role": "user", "reason": "canceled"}}]
+    _, events = one(state, "session/event", _spliced("next-step", 0, removed=1, outcome="canceled"))
+    assert [e["item_id"] for e in events] == ["s1"], "插话（下一步收件箱）被一起取消也一样"
+
+
+def test_unknown_inbox_contents_are_left_alone():
+    """业务服务重启后投影状态从头算，收件箱里原来排着什么不知道：坐标对不上就不报，不乱认。"""
+    _, events = one(S0, "session/event", _spliced("next-turn", 0, removed=1, outcome="canceled"))
+    assert events == []

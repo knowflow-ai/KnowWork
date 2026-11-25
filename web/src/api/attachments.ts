@@ -27,6 +27,8 @@ export interface StagedAttachment {
 export interface AttachmentChip {
   readonly name: string;
   readonly size: number;
+  /** 发出去的附件在这段对话工作区里的位置（input/文件名）：消息上的卡片按它打开，没有就点不开（输入框里的草稿按暂存 id 打开） */
+  readonly path?: string;
   readonly note?: string;
   /** 状态还在变（上传中、解析中）：状态前转一个小圈 */
   readonly busy?: boolean;

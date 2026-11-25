@@ -77,6 +77,8 @@ function rowsOf(run: RunView, thinking?: string) {
   const fromTrail = run.trail.map((entry: TrailEntry, i) => {
     if (entry.type === 'thinking') return <TextRow key={`thinking-${i}`} text={entry.text} />;
     if (entry.type === 'note') return <TextRow key={`note-${i}`} text={entry.text} />;
+    // 提问不在过程里列：一轮回答在提问处切成两段，问题和你的回答画在两段之间（events/segments.ts）
+    if (entry.type === 'question') return null;
     const step = steps.get(entry.callId);
     return step ? <StepRow key={`step-${step.callId}`} step={step} /> : null;
   });

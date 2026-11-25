@@ -13,6 +13,8 @@ import { createServer } from 'node:http'
  *   结束原因 length，输出 token 记 8192（照 2026-11 客户实例：管理员设的最大输出 8192）。
  *   token 返回当前有效的 API Key；不匹配返回 401。
  *   pick 按请求内容选回答（多个 Agent 并发请求时按到达顺序不确定，用它按角色分别编排）；给了就不用 script。
+ *   { refuse: { message, status?, text? } } 扮演业务网关拦下这次调用（个人专属宿主的内容检查，server 的 gateway/content_guard.py）：
+ *   给了 status 就不调模型、直接回这个 HTTP 状态和错误；没给就先吐 text、再在流里发一条错误事件后断开。
  */
 export async function startOpenAiStub(options) {
   const requests = []
@@ -35,11 +37,23 @@ export async function startOpenAiStub(options) {
     }
     const step = options.pick?.(body) ?? options.script[Math.min(next, options.script.length - 1)]
     next += 1
+    if ('refuse' in step && step.refuse.status !== undefined) {
+      res.writeHead(step.refuse.status, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ error: { message: step.refuse.message, type: 'content_blocked' } }))
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const id = `chatcmpl-${next}`
     const base = { id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body?.model ?? 'stub' }
     const send = data => res.write(`data: ${JSON.stringify(data)}\n\n`)
     send({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] })
+    if ('refuse' in step) {
+      for (const piece of (step.refuse.text ?? '').match(/.{1,8}/gu) ?? []) {
+        send({ ...base, choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] })
+      }
+      send({ ...base, choices: [], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })
+      send({ error: { message: step.refuse.message, type: 'content_blocked' } })
+      return res.end()
+    }
     if ('truncated' in step) {
       const toolCall = { index: 0, id: `call_${next}`, type: 'function', function: { name: step.truncated.tool, arguments: step.truncated.args } }
       send({ ...base, choices: [{ index: 0, delta: { tool_calls: [toolCall] }, finish_reason: null }] })

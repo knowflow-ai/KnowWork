@@ -3,7 +3,8 @@ Copyright 2026 The KnowWork Authors
 
 本产品以 Apache License 2.0 发布，全文见 LICENSE。
 
-本产品包含或改编自以下第三方软件，它们都以 MIT 许可证发布（许可证全文见本文件末尾）：
+本产品包含或改编自以下第三方软件。注明 Apache License 2.0 的与本产品同一许可证（全文见 LICENSE），
+其余都以 MIT 许可证发布（许可证全文见本文件末尾）：
 
 -------------------------------------------------------------------------------
 DeepSeek Harness（https://www.npmjs.com/package/@deepseek-ai/dsh）
@@ -18,6 +19,14 @@ Copyright (C) 2026 Tencent. All rights reserved.
 
 会话沙箱的 Docker 后端（容器能力、资源限制、镜像内容）与部署编排、IM 渠道的消息处理、知识检索工具与引用定位、
 模型思考开关、回答方式与输入框的 @ 菜单参照其做法改写。
+
+-------------------------------------------------------------------------------
+ToolGood.Words（https://github.com/toolgood/ToolGood.Words）
+Copyright 2020 Lin Zhijun
+Apache License 2.0
+
+内容安全的敏感词匹配（server/src/knowwork_server/content_safety/matcher.py）照搬其 Python 版 StringSearch
+的 AC 自动机构建算法，文件头保留原版权声明。
 
 -------------------------------------------------------------------------------
 MIT License

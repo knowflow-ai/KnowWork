@@ -811,7 +811,7 @@ describe('FileCard 与 AnswerActions', () => {
     });
     renderWithApp(<AnswerActions text="答案" />);
     await userEvent.click(screen.getByRole('button', { name: '复制' }));
-    expect(await screen.findByText('复制没有成功，请手动选中文字复制')).toBeInTheDocument();
+    expect(await screen.findByText('没能复制，请手动选中文字复制')).toBeInTheDocument();
   });
 
   it('运行详情入口：有正文时排在最后；这一轮没有正文（例如失败了）时只留它', async () => {

@@ -13,13 +13,17 @@
  */
 
 import { createServer } from 'node:http'
+import { readPluginInventory } from '@deepseek-ai/dsh-host-plugin-inventory'
+import { setActivationToken } from './multi-user/activation.mjs'
+import { UnknownPlugin, createPluginPresets } from './plugin-presets.mjs'
+import { createCommands } from './commands.mjs'
 import { createRequire } from 'node:module'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { createAnswers } from './answers.mjs'
 import { hostMount } from './workpath.mjs'
-import { EPOCH, dropSession, framesAfter, getSession, oldestCursor, publish, publishLive } from './state.mjs'
+import { EPOCH, LIVE_SOURCE, ROOT_SOURCE, childIdOfKey, childSessionsOf, deliver, dropSession, getSession, mergeByTime, publish, publishLive, resolveRootSession, sourceOf } from './state.mjs'
 import { createIdleTracker, idleMsOf, releasable, sweepMsOf } from './idle-sessions.mjs'
 import { bundledCandidates } from './bundled-skills.mjs'
 
@@ -30,6 +34,36 @@ import { HostError as HttpError, checkSessionId, createTurnIntake, provision, re
 
 // DSH 版本号随 /health 一起报给业务服务，系统信息页显示（所有 @deepseek-ai 包锁在同一版本）
 const DSH_VERSION = createRequire(import.meta.url)('@deepseek-ai/dsh/package.json').version
+
+/** 官方会话日志里的一个事件 → 推给业务服务的帧：根会话的是 session/event，子 Agent 的是 subagent/event（带子会话编号） */
+function durableFrame(root, sessionId, event) {
+  const own = sessionId === root.id
+  return {
+    epoch: sourceOf(root, sessionId), cursor: event.seq, kind: own ? 'session/event' : 'subagent/event',
+    time: event.time ?? Date.now(), data: own ? event : { sessionId, event },
+  }
+}
+
+// 子会话的写法见 state.mjs 的 childKeyOf：原样的编号（同业务服务 device.py 的 SUB_SESSION），或「~」加 40 位摘要；
+// 来源整个存进 run_event.host_epoch，最长 64
+const SOURCE = /^host(:([A-Za-z0-9_.-]{1,56}|~[0-9a-f]{40}))?$/
+const MAX_POSITIONS = 500
+
+/** 事件流的位置参数：<来源>:<序号>，来源是 host 或 host:<子会话>；不合规的整个请求拒绝 */
+function positionsOf(values) {
+  if (values.length > MAX_POSITIONS) throw new HttpError(400, 'invalid_request', `after 最多 ${MAX_POSITIONS} 个`)
+  const positions = new Map()
+  for (const value of values) {
+    const at = value.lastIndexOf(':')
+    const source = value.slice(0, at)
+    const seq = Number(value.slice(at + 1))
+    if (at < 0 || !SOURCE.test(source) || !Number.isSafeInteger(seq) || seq < -1) {
+      throw new HttpError(400, 'invalid_request', `after 格式不对：${value.slice(0, 80)}`)
+    }
+    positions.set(source, seq)
+  }
+  return positions
+}
 
 export const name = 'knowwork-http-host'
 export const inject = ['agents']
@@ -89,7 +123,7 @@ function segmentOf(raw) {
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {{ host?: string, port?: number, token?: string, provider?: string, model?: string, modelTokenRef?: string,
- *   idleMinutes?: number }} [config]
+ *   idleMinutes?: number, plugins?: Record<string, { rows: object[] }> }} [config] plugins：目录之外再认的预置插件
  */
 export function apply(ctx, config) {
   config ??= {}
@@ -123,13 +157,30 @@ export function apply(ctx, config) {
   let shuttingDown = false
   const idleMs = idleMsOf(config.idleMinutes ?? process.env.KNOWWORK_HOST_SESSION_IDLE_MINUTES)
   const idle = createIdleTracker(idleMs)
+  /** 整台宿主最后一次被对话用到的时间（GET /v1/activity 报给业务服务，专属宿主据此判断空闲、回收）。规则同会话的空闲 */
+  let lastActive = Date.now()
+  // 按会话的预置插件装官方预设（plugin-presets.mjs）
+  const presets = createPluginPresets(ctx, config.plugins)
+  // 用户的 / 命令（commands.mjs，官方 dsh-commands，环境层里挂着）
+  const commands = createCommands(() => ctx.get('commands'))
 
+  // 官方会话日志里的事件（根会话的，和它的子 Agent 的）推给这段会话的订阅方：游标是官方序号，按来源各记各的
   ctx.on('session/event', (session, event) => {
-    publish(String(session.id), 'session/event', event)
+    const root = resolveRootSession(session)
+    if (root !== undefined) deliver(root, durableFrame(root, String(session.id), event))
+  })
+  // 长任务目标的自动续跑开着没有（官方 dsh-goal 只记在内存里：会话重开、宿主重启后先关上，要用户「恢复」才再开）：
+  // 转给业务服务，目标面板据此写「待继续」、给「恢复」按钮。没有目标的会话不转
+  ctx.on('goal/activation-changed', ({ sessionId, goal }) => {
+    if (goal === undefined) return
+    publish(String(sessionId), 'goal/activation', { goalId: String(goal.id), revision: goal.revision, armed: goal.activation === 'armed' })
   })
   ctx.on('agent/status', ({ agent, status }) => {
     const sessionId = String(agent.session.id)
-    if (handles.has(sessionId)) idle.touch(sessionId)  // 一轮跑完（变成空闲）从这一刻起算
+    if (handles.has(sessionId)) {
+      idle.touch(sessionId)  // 一轮跑完（变成空闲）从这一刻起算
+      lastActive = Date.now()
+    }
     publish(sessionId, 'agent/status', { status })
   })
   // 逐字输出：官方 dsh-agent-loop 的 agent/assistant-stream（官方会话接口 dsh-api-session-controller、
@@ -156,17 +207,36 @@ export function apply(ctx, config) {
     if (handles.has(sessionId) || opening.has(sessionId) || closing.has(sessionId) || getSession(sessionId) !== undefined) {
       throw new HttpError(409, 'session_busy', `会话已打开、正在打开或正在释放：${sessionId}`)
     }
+    let composition
+    try {
+      composition = await presets.compose(contract.plugins)
+    } catch (error) {
+      if (error instanceof UnknownPlugin) throw new HttpError(400, 'plugin_unknown', error.message)
+      log.warn('composing plugins for session %s failed: %s', sessionId, error instanceof Error ? error.stack : String(error))
+      throw new HttpError(400, 'session_open_failed', '会话打开失败，详情见宿主日志')
+    }
+    // 等预设登记的这一下，同一个会话可能又来了一次打开
+    if (handles.has(sessionId) || opening.has(sessionId) || closing.has(sessionId) || getSession(sessionId) !== undefined) {
+      throw new HttpError(409, 'session_busy', `会话已打开、正在打开或正在释放：${sessionId}`)
+    }
     const state = provision(contract)
     const id = brandString(sessionId)
+    const { preset, setup } = composition
     const task = resume
-      ? ctx.agents.resume({ resumeSessionId: id, agentOptions })
-      : ctx.agents.create({ sessionId: id, meta: { cwd: hostMount(sessionId).root }, agentOptions })
+      ? ctx.agents.resume({ resumeSessionId: id, agentOptions, ...setup === undefined ? {} : { setup } })
+      : ctx.agents.create({
+          sessionId: id,
+          meta: { cwd: hostMount(sessionId).root, ...preset === undefined ? {} : { agentPreset: preset } },
+          agentOptions,
+          ...setup === undefined ? {} : { setup },
+        })
     opening.set(sessionId, task)
     try {
       const handle = await task
       handles.set(sessionId, handle)
       state.agent = handle.agent
       idle.touch(sessionId)
+      lastActive = Date.now()
       return { sessionId, status: handle.agent.status, epoch: EPOCH }
     } catch (error) {
       dropSession(state)
@@ -193,6 +263,35 @@ export function apply(ctx, config) {
       log.warn('syncing models failed: %s', error instanceof Error ? error.stack : String(error))
       throw new HttpError(503, 'models_unavailable', '模型清单没能更新，详情见宿主日志')
     }
+  }
+
+  /**
+   * 用户在我们的页面上改了对话标题：照官方改名写进官方会话标题（来源是用户，之后官方不再自动改它）。
+   * 对话标题以官方为准：官方按第一句话、再用模型起标题，业务服务从会话日志里的 session/title 同步过去。
+   */
+  function retitle(sessionId, body) {
+    const title = body !== null && typeof body === 'object' ? body.title : undefined
+    if (typeof title !== 'string' || title.trim().length === 0 || title.length > 200) {
+      throw new HttpError(400, 'invalid_request', 'title 必须是 1 到 200 个字符的字符串')
+    }
+    const titles = ctx.get('sessionTitle')
+    if (titles === undefined) throw new HttpError(409, 'title_unavailable', '宿主没有挂官方会话标题服务')
+    try {
+      return { sessionId, title: titles.rename(liveAgent(sessionId).session, title).title }
+    } catch (error) {
+      if (error instanceof HttpError) throw error
+      throw new HttpError(400, 'invalid_request', error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  /**
+   * 长任务目标此刻的状态，含自动续跑开着没有（官方 dsh-goal 只记在内存里：会话重开、宿主重启后先关上，要用户「恢复」才再开）。
+   * 开关的变化照官方是进程内的帧（goal/activation，不带序号、不补积压），业务服务的目标面板要知道时来这里现取。没有目标给 null
+   */
+  function goalState(sessionId) {
+    const goal = ctx.get('goals')?.get(liveAgent(sessionId))
+    if (goal === undefined || goal === null) return { goal: null }
+    return { goal: { goalId: String(goal.id), revision: goal.revision, phase: goal.phase, armed: goal.activation === 'armed' } }
   }
 
   async function cancel(sessionId) {
@@ -225,26 +324,30 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * 事件流：游标是官方会话日志的序号，按来源各记各的（根会话 host，子 Agent host:<子会话>），参数 after=<来源>:<序号> 可给多个。
+   * 照官方会话控制器 follow 的拼法：先读位置之后的积压（官方会话的 snapshotEvents），再接实时事件，按序号去重，不断档；
+   * 宿主重启后位置照旧有效。开头先给一帧 host/instance（宿主的实例号）：业务服务只用它判断要不要补发令牌；积压之后给一帧此刻的 Agent 状态。
+   * 进程内的帧（来源 live）不带序号、不补积压。
+   */
   function streamEvents(sessionId, url, req, res) {
     const state = getSession(sessionId)
     if (state === undefined || closing.has(sessionId)) throw new HttpError(404, 'session_not_found', `会话不存在：${sessionId}`)
-    const epoch = url.searchParams.get('epoch')
-    if (epoch !== null && epoch !== EPOCH) throw new HttpError(410, 'epoch_mismatch', '宿主已重启，游标失效，请从头读取')
     if (state.subscribers.size >= MAX_SUBSCRIBERS_PER_SESSION) throw new HttpError(429, 'too_many_subscribers', '订阅过多')
-    const afterRaw = Number(url.searchParams.get('after') ?? 0)
-    const after = Number.isSafeInteger(afterRaw) && afterRaw >= 0 ? afterRaw : 0
+    const positions = positionsOf(url.searchParams.getAll('after'))
 
     res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' })
     const line = frame => res.write(`${JSON.stringify(frame)}\n`)
-    const oldest = oldestCursor(state)
-    if (after > 0 && oldest !== undefined && after < oldest - 1) {
-      line({ epoch: EPOCH, cursor: oldest - 1, kind: 'gap', time: Date.now(), data: { after, oldest } })
-    }
-    for (const frame of framesAfter(state, after)) line(frame)
-
     let ended = false
     const subscriber = {
-      write: frame => !ended && line(frame),
+      write: frame => {
+        if (ended) return false
+        if (frame.epoch !== LIVE_SOURCE) {
+          if (frame.cursor <= (positions.get(frame.epoch) ?? -1)) return true
+          positions.set(frame.epoch, frame.cursor)
+        }
+        return line(frame)
+      },
       end: () => {
         if (ended) return
         ended = true
@@ -253,9 +356,34 @@ export function apply(ctx, config) {
         res.end()
       },
     }
+    line({ epoch: LIVE_SOURCE, cursor: 0, kind: 'host/instance', time: Date.now(), data: { instance: EPOCH } })
+    // 积压与挂上订阅在同一段同步代码里：官方日志事件在提交后同步派发，中间插不进新事件；重叠的由上面按序号去重
+    for (const frame of backlog(state, positions)) subscriber.write(frame)
+    // 积压之后给一帧此刻的 Agent 状态（同官方会话控制器开场快照里的 running）：状态是进程内的帧、不补积压，
+    // 续读的一方靠它知道还在不在跑——积压里有 turn/start 不等于现在还在跑
+    line({ epoch: LIVE_SOURCE, cursor: 0, kind: 'agent/status', time: Date.now(), data: { status: state.agent?.status ?? 'idle' } })
     const heartbeat = setInterval(() => { if (!res.write('\n')) subscriber.end() }, HEARTBEAT_MS)
     state.subscribers.add(subscriber)
     req.on('close', () => subscriber.end())
+  }
+
+  /**
+   * 根会话与它的子 Agent（内存里还记着的、业务服务带来位置的）在位置之后的官方事件：每个来源按官方序号，来源之间按时间穿插
+   * （mergeByTime）
+   */
+  function backlog(state, positions) {
+    const children = new Set(childSessionsOf(state.id))
+    for (const source of positions.keys()) {
+      const child = source.startsWith(`${ROOT_SOURCE}:`) ? childIdOfKey(source.slice(ROOT_SOURCE.length + 1)) : undefined
+      if (child !== undefined) children.add(child)
+    }
+    const read = (sessionId, session) => {
+      if (session === undefined) return []
+      const from = (positions.get(sourceOf(state, sessionId)) ?? -1) + 1
+      return session.snapshotEvents(from).map(event => durableFrame(state, sessionId, event))
+    }
+    // 子 Agent 不在内存里了（跑完释放、宿主重启过）就读不到；它的结果在根会话自己的日志里
+    return mergeByTime([read(state.id, state.agent?.session), ...[...children].map(child => read(child, ctx.agents.get(child)?.session))])
   }
 
   /** 模型网关短期令牌轮换：写入官方凭据服务，下一次模型请求即使用新值。 */
@@ -265,6 +393,14 @@ export function apply(ctx, config) {
     const value = requireString(body.token, 'token')
     if (value.length < 16 || value.length > 4096) throw new HttpError(400, 'invalid_request', 'token 长度不合法')
     await credentials.set(credentialRef(modelTokenRef), value)
+    return { rotated: true }
+  }
+
+  /** 个人专属宿主请业务服务激活对话用的令牌（按这个人签，只能激活他自己的对话）；共享宿主不会收到，照旧用宿主令牌 */
+  function rotateActivationCredential(body) {
+    const value = requireString(body.token, 'token')
+    if (value.length < 16 || value.length > 4096) throw new HttpError(400, 'invalid_request', 'token 长度不合法')
+    setActivationToken(value)
     return { rotated: true }
   }
 
@@ -291,6 +427,21 @@ export function apply(ctx, config) {
    * 宿主自带的技能：业务服务的「技能」页、@ 菜单与「公共与自带」页要列出来，业务服务自己不知道有哪些。
    * 自带技能按会话注册（bundled-skills），这里给的是全部，停用与同名由业务服务按空间算。
    */
+  /**
+   * 宿主里的插件和登记了的工具：业务服务试装上传的插件时读（hosts/trial.py）。插件状态用官方插件清单的读法
+   * （@deepseek-ai/dsh-host-plugin-inventory 的 readPluginInventory，每次直接读加载器：激活了、失败了带原因）；
+   * 工具是全局登记处里此刻看得到的名字（官方登记处不记是谁登记的，业务服务拿不带插件的宿主当基线比出新增的）。
+   */
+  async function pluginInventory() {
+    const { entries } = await readPluginInventory(ctx)
+    const tools = ctx.get('tools')?.definitions().map(definition => definition.name) ?? []
+    return {
+      entries: entries.map(({ entryId, moduleName, enabled, fiberPhase, diagnostic }) =>
+        ({ entryId, moduleName, enabled, fiberPhase, ...diagnostic === undefined ? {} : { diagnostic } })),
+      tools: [...new Set(tools)].sort(),
+    }
+  }
+
   function bundledSkills() {
     return {
       skills: bundledCandidates().map(skill => ({
@@ -301,6 +452,17 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * 这台宿主在不在用：idleMs 是离最后一次被对话用到过了多久（续签令牌、查状态不算），busy 是还没真正停下来的会话数
+   * （正在跑、等审批或提问、有订阅者、名下有后台任务，同空闲会话的释放条件）。个人专属宿主由业务服务按它回收：
+   * 几个业务服务进程看到的是同一份，不用各记各的。
+   */
+  function activity() {
+    const jobs = ctx.get('jobs')
+    const busy = [...handles].filter(([sessionId, handle]) => !releasable(handle.agent, getSession(sessionId), jobs))
+    return { idleMs: Date.now() - lastActive, sessions: handles.size + opening.size, busy: busy.length + opening.size }
+  }
+
   async function route(req, res) {
     const url = new URL(req.url ?? '/', 'http://host')
     const path = url.pathname
@@ -309,8 +471,11 @@ export function apply(ctx, config) {
 
     if (req.method === 'POST' && path === '/v1/sessions') return send(res, 201, await openSession(await readJson(req)))
     if (req.method === 'PUT' && path === '/v1/model-credential') return send(res, 200, await rotateModelCredential(await readJson(req)))
+    if (req.method === 'PUT' && path === '/v1/activation-credential') return send(res, 200, rotateActivationCredential(await readJson(req)))
     if (req.method === 'PUT' && path === '/v1/models') return send(res, 200, await syncModels(await readJson(req)))
     if (req.method === 'GET' && path === '/v1/skills/bundled') return send(res, 200, bundledSkills())
+    if (req.method === 'GET' && path === '/v1/plugins') return send(res, 200, await pluginInventory())
+    if (req.method === 'GET' && path === '/v1/activity') return send(res, 200, activity())
 
     const match = /^\/v1\/sessions\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?$/.exec(path)
     if (match === null) throw new HttpError(404, 'not_found', '路径不存在')
@@ -320,15 +485,22 @@ export function apply(ctx, config) {
     // 业务服务定期续签令牌、查状态不算活动：否则会话永远不空闲
     if (handles.has(sessionId) && !CREDENTIAL_ACTIONS.has(action) && !(req.method === 'GET' && action === undefined)) {
       idle.touch(sessionId)
+      lastActive = Date.now()
     }
 
     if (req.method === 'DELETE' && action === undefined) return send(res, 200, await dispose(sessionId))
     if (req.method === 'GET' && action === undefined) return send(res, 200, { sessionId, status: liveAgent(sessionId).status })
     if (req.method === 'POST' && action === 'messages') return send(res, 202, sendMessage(sessionId, await readJson(req)))
     if (req.method === 'POST' && action === 'cancel') return send(res, 200, await cancel(sessionId))
+    if (req.method === 'PUT' && action === 'title') return send(res, 200, retitle(sessionId, await readJson(req)))
+    if (req.method === 'GET' && action === 'goal') return send(res, 200, goalState(sessionId))
     if (req.method === 'PUT' && action === 'tool-credential') return send(res, 200, rotateAccess(sessionId, await readJson(req), 'toolAccess'))
     if (req.method === 'PUT' && action === 'skill-credential') return send(res, 200, rotateAccess(sessionId, await readJson(req), 'skillAccess'))
     if (req.method === 'GET' && action === 'events') return streamEvents(sessionId, url, req, res)
+    if (req.method === 'GET' && action === 'commands') return send(res, 200, commands.list(liveAgent(sessionId)))
+    if (req.method === 'POST' && action === 'commands') {
+      return send(res, 200, await commands.run(liveAgent(sessionId), await readJson(req)))
+    }
     if (req.method === 'GET' && action === 'approvals' && sub === undefined) return send(res, 200, answers.listApprovals(sessionId))
     if (req.method === 'POST' && action === 'approvals' && sub !== undefined) {
       const body = await readJson(req)

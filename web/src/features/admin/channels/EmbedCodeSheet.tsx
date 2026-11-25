@@ -25,7 +25,7 @@ async function copy(text: string) {
     await navigator.clipboard.writeText(text);
     toast.success('已复制');
   } catch {
-    toast.error('复制没有成功，请手动选中复制');
+    toast.error('没能复制，请手动选中复制');
   }
 }
 
@@ -82,7 +82,7 @@ function SecretSection({ channel }: { readonly channel: Channel }) {
       setShown(result.secret);
       void client.invalidateQueries({ queryKey: KEYS.channels });
     } catch (error) {
-      toast.error(readableError(error, '没有生成成功，请稍后重试'));
+      toast.error(readableError(error, '没能生成，请稍后重试'));
     } finally {
       setPending(false);
     }
@@ -183,7 +183,7 @@ export function EmbedCodeSheet({
   const reset = useAction((id: string) => resetWebKey(id), {
     invalidate: [KEYS.channels],
     success: '已重置，旧的嵌入代码和分享链接都不能用了，请换成新的',
-    failure: '没有重置成功，请稍后重试',
+    failure: '没能重置，请稍后重试',
   });
   const web = channel.web;
   if (!web) return null;
@@ -207,7 +207,8 @@ export function EmbedCodeSheet({
       <div className="kw-embed-reset">
         <Button
           color="danger"
-          variant="outline"
+          variant="ghost"
+          size="sm"
           loading={reset.pending}
           onClick={() =>
             void confirm({

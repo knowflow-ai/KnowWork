@@ -238,7 +238,7 @@ export default function RunsPage() {
             minWidth={1180}
             pageSize={false}
             onRowClick={setOpened}
-            empty={runs.isError ? '运行记录加载失败，请刷新重试' : '这段时间没有运行记录'}
+            empty={runs.isError ? '没能加载运行记录，请刷新重试' : '这段时间没有运行记录'}
           />
           <div className="kw-admin-more">
             <span className="kw-secondary">已加载 {rows.length} 轮</span>

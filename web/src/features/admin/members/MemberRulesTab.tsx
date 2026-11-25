@@ -47,7 +47,7 @@ function RuleDialog({ onClose }: { readonly onClose: () => void }) {
   const action = useAction((input: MemberRuleInput) => createMemberRule(input), {
     invalidate: [KEYS.memberRules, KEYS.members],
     success: '已添加规则，这个部门的人已加进本空间',
-    failure: '添加没有成功，请稍后重试',
+    failure: '没能添加，请稍后重试',
   });
   const submit = async () => {
     if (!departmentId) {
@@ -98,7 +98,7 @@ export function MemberRulesTab() {
   const remove = useAction((id: string) => deleteMemberRule(id), {
     invalidate: [KEYS.memberRules, KEYS.members],
     success: '已删除规则',
-    failure: '删除没有成功，请稍后重试',
+    failure: '没能删除，请稍后重试',
   });
   const name = (rule: MemberRule) =>
     rule.departmentActive
@@ -161,7 +161,7 @@ export function MemberRulesTab() {
           columns={columns}
           rows={rules.data ?? []}
           loading={rules.isFetching}
-          empty={rules.isError ? '成员规则加载失败，请刷新重试' : '还没有成员规则，成员都是手工加的'}
+          empty={rules.isError ? '没能加载成员规则，请刷新重试' : '还没有成员规则，成员都是手工加的'}
         />
       )}
       {adding ? <RuleDialog onClose={() => setAdding(false)} /> : null}

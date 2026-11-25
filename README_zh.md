@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.1.2-2b7de9" alt="Version: v0.1.2"></a>
+  <a href="https://github.com/knowflow-ai/KnowWork/releases"><img src="https://img.shields.io/badge/version-v0.1.3-2b7de9" alt="Version: v0.1.3"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0"></a>
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh"><img src="https://img.shields.io/badge/built%20on-DeepSeek%20Harness-4D6BFE" alt="Built on DeepSeek Harness"></a>
 </p>
@@ -238,7 +238,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 
 **持续兼容 DSH。** KnowWork 不 fork DSH，具体做法有三条。
 
-- 所有 `@deepseek-ai/*` 包锁在同一个版本（当前 `0.2.2-rc.5`）；
+- 所有 `@deepseek-ai/*` 包锁在同一个版本（当前 `0.2.3-alpha.2`）；
 - 升级前先跑预检和准入测试（建会话、执行、取消、恢复、技能加载、子 Agent、工具桥等），通过才换版本；
 - DSH 发新版本后跟进升级，DSH 自带的新能力直接用上。
 
@@ -349,7 +349,7 @@ cd server && uv sync && uv run python ../scripts/dev_stack.py
 
 ## 现状与路线图
 
-当前版本 v0.1.2，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 v0.1.3，接口和数据结构在 1.0 之前还可能变。已知限制见 [CHANGELOG.md](CHANGELOG.md)。
 
 接下来要做：技能验证台（用例、结构断言、草稿版对比发布版）、场景包、固定工作流的界面、备份与恢复、修改密码与禁用账号。
 

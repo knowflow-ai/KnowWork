@@ -14,6 +14,8 @@ const APPROVALS = new Set(['ask', 'never'])
 /** 回答方式的标识（同业务服务 ToolSpec.answer_modes 与 answer-mode.mjs 的 MODE_PATTERN）；不写时只在智能体里提供。
  *  扩展可以登记新的回答方式，这里只校验格式，不认名单 */
 const ANSWER_MODE = /^[a-z][a-z0-9_]{0,31}$/
+/** 按需加载的 MCP 服务名（同业务服务 tools/mcp/naming.py 的 SERVER_NAME_PATTERN）：不含下划线，加载器名字直接拼 */
+const MCP_SERVER = /^[a-z][a-z0-9-]{0,23}$/
 const MAX_GUIDANCE = 1000
 const MAX_TOOLS = 128
 const MAX_DESCRIPTION = 4000
@@ -34,6 +36,7 @@ export class BridgeError extends Error {}
  * @property {string} [guidance] 写进系统提示的使用规则
  * @property {true} [concurrent] 业务服务声明可与同一步里的其它调用同时执行（只读、无状态）
  * @property {string[]} [answerModes] 在哪几种回答方式下提供（agent、quick 或扩展登记的）；不写时只在智能体里
+ * @property {{ server: string }} [onDemand] 管理员给这个工具所属的 MCP 服务开了按需加载（见 mcp-on-demand.mjs）
  */
 
 /** @returns {BridgeTool} */
@@ -59,11 +62,17 @@ function toolOf(raw) {
     || !answerModes.every(mode => typeof mode === 'string' && ANSWER_MODE.test(mode)))) {
     throw new BridgeError(`工具 ${name} 的回答方式格式不对`)
   }
+  const { onDemand } = raw
+  if (onDemand !== undefined && (typeof onDemand !== 'object' || onDemand === null || typeof onDemand.server !== 'string'
+    || !MCP_SERVER.test(onDemand.server))) {
+    throw new BridgeError(`工具 ${name} 的按需加载标记不合法`)
+  }
   return {
     name, description, inputSchema, risk, approval,
     ...(guidance === undefined ? {} : { guidance }),
     ...(raw.concurrent === true ? { concurrent: true } : {}),
     ...(answerModes === undefined ? {} : { answerModes: [...new Set(answerModes)] }),
+    ...(onDemand === undefined ? {} : { onDemand: { server: onDemand.server } }),
   }
 }
 
@@ -100,9 +109,9 @@ function errorMessageOf(body, status) {
 }
 
 /**
- * @param {{ baseUrl: string, executeTimeoutMs: number }} options
+ * @param {{ baseUrl: string }} options
  */
-export function createBridgeClient({ baseUrl, executeTimeoutMs }) {
+export function createBridgeClient({ baseUrl }) {
   const root = baseUrl.replace(/\/+$/, '')
 
   async function call(path, { token, method, body, headers, signal }) {
@@ -136,13 +145,13 @@ export function createBridgeClient({ baseUrl, executeTimeoutMs }) {
      * @returns {Promise<{ actionId: string, status: string, content: string, truncated: boolean, replayed: boolean, presentation?: object }>}
      */
     async execute(token, { toolName, args, agentSessionId, callId, answerMode = 'agent', signal }) {
-      const combined = AbortSignal.any([signal, AbortSignal.timeout(executeTimeoutMs)])
+      // 时限由官方超时策略经 signal 取消（工具定义上的 timeoutMs，见 tool-bridge.mjs）
       const body = await call('/execute', {
         token,
         method: 'POST',
         body: { toolName, arguments: args ?? {}, agentSessionId, callId, answerMode },
         headers: { 'idempotency-key': `${agentSessionId}:${callId}` },
-        signal: combined,
+        signal,
       })
       if (typeof body.content !== 'string' || typeof body.status !== 'string') throw new BridgeError('业务服务响应格式错误')
       return body

@@ -27,7 +27,7 @@ const CHANNEL = {
 const MEMBER_CHANNEL = {
   ...CHANNEL,
   id: 'ch2',
-  name: '数据助手',
+  name: '数据智能体',
   audience: 'member',
   status: 'connected',
   last_error: '',
@@ -140,7 +140,7 @@ describe('渠道', () => {
     await screen.findAllByText('行政助手');
     await userEvent.click(screen.getByRole('button', { name: /添加渠道/ }));
     const dialog = await screen.findByRole('dialog');
-    fill(dialog, '名称', '财务助手');
+    fill(dialog, '名称', '财务智能体');
     // 企业微信最常见的填错：自建应用的 AgentId
     fill(dialog, 'Bot ID', '1000006');
     expect(
@@ -158,7 +158,7 @@ describe('渠道', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
     await waitFor(() =>
       expect(calls.find('POST', B)[0]?.body).toEqual({
-        name: '财务助手',
+        name: '财务智能体',
         platform: 'wecom',
         enabled: true,
         bot_id: 'bot-2',
@@ -181,7 +181,7 @@ describe('渠道', () => {
     await screen.findAllByText('行政助手');
     await userEvent.click(screen.getByRole('button', { name: /添加渠道/ }));
     const dialog = await screen.findByRole('dialog');
-    fill(dialog, '名称', '数据助手');
+    fill(dialog, '名称', '数据智能体');
     fill(dialog, 'Bot ID', 'bot-9');
     fill(dialog, 'Secret', 'sk-secret-999999');
     await userEvent.click(await within(dialog).findByRole('radio', { name: '问数' }));
@@ -202,12 +202,14 @@ describe('渠道', () => {
   it('认出是谁：选组织来源，群聊知识库可以不选；没有组织来源时置灰', async () => {
     const calls = api();
     renderWithApp(<ChannelsPage />);
-    const row = (await screen.findByText('数据助手', { selector: 'td *, td' })).closest('tr') as HTMLElement;
+    const row = (await screen.findByText('数据智能体', { selector: 'td *, td' })).closest(
+      'tr',
+    ) as HTMLElement;
     expect(row).toHaveTextContent('认出是谁');
     expect(row).toHaveTextContent('智能体 · 只开私聊');
     await userEvent.click(screen.getByRole('button', { name: /添加渠道/ }));
     const dialog = await screen.findByRole('dialog');
-    fill(dialog, '名称', '数据助手二');
+    fill(dialog, '名称', '数据智能体二');
     fill(dialog, 'Bot ID', 'bot-3');
     fill(dialog, 'Secret', 'sk-secret-111111');
     await userEvent.click(await within(dialog).findByRole('radio', { name: '认出是谁' }));
@@ -238,7 +240,9 @@ describe('渠道', () => {
   it('认人的渠道：谁在问里显示成员姓名，另列没认出的人', async () => {
     api();
     renderWithApp(<ChannelsPage />);
-    const row = (await screen.findByText('数据助手', { selector: 'td *, td' })).closest('tr') as HTMLElement;
+    const row = (await screen.findByText('数据智能体', { selector: 'td *, td' })).closest(
+      'tr',
+    ) as HTMLElement;
     await userEvent.click(within(row).getByRole('button', { name: '谁在问' }));
     const sheet = await screen.findByRole('dialog', { name: /谁在问/ });
     const person = (await within(sheet).findByText('张三')).closest('tr') as HTMLElement;
@@ -281,7 +285,7 @@ describe('渠道', () => {
     await userEvent.click(within(dialog).getByRole('radio', { name: '飞书' }));
     expect(within(dialog).getByText(/使用长连接接收事件/)).toBeInTheDocument();
     expect(within(dialog).queryByLabelText('机器人名称')).toBeNull();
-    fill(dialog, '名称', '飞书助手');
+    fill(dialog, '名称', '飞书智能体');
     fill(dialog, 'App ID', 'cli_a1b2');
     fill(dialog, 'App Secret', 'secret-feishu-0000');
     await pickOption(dialog, '可查的知识库', '员工手册');
@@ -301,7 +305,7 @@ const WEB_CHANNEL = {
   ...CHANNEL,
   id: 'ch3',
   platform: 'web',
-  name: '官网助手',
+  name: '官网智能体',
   bot_id: '',
   bot_name: '',
   secret_mask: '',
@@ -334,7 +338,7 @@ describe('网页嵌入', () => {
     expect(within(dialog).queryByLabelText('Secret')).toBeNull();
     expect(within(dialog).queryByText('提问的人')).toBeNull();
     expect(within(dialog).getByText(/访客也能让它执行命令、读写文件/)).toBeInTheDocument();
-    fill(dialog, '名称', '官网助手');
+    fill(dialog, '名称', '官网智能体');
     fill(dialog, '允许嵌入的网站', 'https://bi.example.com\nbi.example.com/path');
     await pickOption(dialog, '可查的知识库', '员工手册');
     await userEvent.keyboard('{Escape}');
@@ -346,7 +350,7 @@ describe('网页嵌入', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
     await waitFor(() =>
       expect(calls.find('POST', B)[0]?.body).toMatchObject({
-        name: '官网助手',
+        name: '官网智能体',
         platform: 'web',
         bot_id: '',
         secret: null,
@@ -373,7 +377,9 @@ describe('网页嵌入', () => {
       [`POST ${B}/ch3/web-key`]: jsonResponse(WEB_CHANNEL),
     });
     renderWithApp(<ChannelsPage />);
-    const row = (await screen.findByText('官网助手', { selector: 'td *, td' })).closest('tr') as HTMLElement;
+    const row = (await screen.findByText('官网智能体', { selector: 'td *, td' })).closest(
+      'tr',
+    ) as HTMLElement;
     expect(within(row).getByText('可用')).toBeInTheDocument();
     expect(within(row).getByText('公开访问')).toBeInTheDocument();
     await userEvent.click(within(row).getByRole('button', { name: '嵌入代码' }));
@@ -396,7 +402,7 @@ describe('网页嵌入的认证访问', () => {
   const IDENTIFIED = {
     ...WEB_CHANNEL,
     id: 'ch4',
-    name: 'BI 助手',
+    name: 'BI 智能体',
     audience: 'member',
     secret_set: false,
     secret_mask: '',
@@ -419,7 +425,7 @@ describe('网页嵌入的认证访问', () => {
     await userEvent.click(within(dialog).getByRole('radio', { name: '认证访问' }));
     expect(within(dialog).getByText('限定在这些知识库里')).toBeInTheDocument();
     expect(within(dialog).getByText(/对不上就按下面的设置建外部用户/)).toBeInTheDocument();
-    fill(dialog, '名称', 'BI 助手');
+    fill(dialog, '名称', 'BI 智能体');
     await userEvent.click(within(dialog).getByRole('button', { name: /添加一行/ }));
     fill(dialog, '接入方的组', '华东区域经理');
     await userEvent.click(within(dialog).getByRole('button', { name: /选择用户组/ }));
@@ -452,7 +458,7 @@ describe('网页嵌入的认证访问', () => {
       }),
     });
     renderWithApp(<ChannelsPage />);
-    const row = (await screen.findByText('BI 助手', { selector: 'td *, td' })).closest('tr') as HTMLElement;
+    const row = (await screen.findByText('BI 智能体', { selector: 'td *, td' })).closest('tr') as HTMLElement;
     expect(within(row).getByText('认证访问')).toBeInTheDocument();
     await userEvent.click(within(row).getByRole('button', { name: '嵌入代码' }));
     const sheet = await screen.findByRole('dialog');

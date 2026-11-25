@@ -1,9 +1,9 @@
 /**
- * 不是人发起的一轮（定时任务到点；后台任务、子 Agent 做完时 Agent 正空闲，官方自己开了一轮）：照官方对话界面的做法，
+ * 不是人发起的一轮（定时任务到点；后台任务、子 Agent 做完时 Agent 正空闲，官方自己开了一轮；长任务目标自动接着做的下一轮）：照官方对话界面的做法，
  * 轮次上方一条可展开的通知——图标、由什么发起、时间，展开看详情。不画成用户气泡：这句话不是这个人此刻说的。
  */
 import { useState, type ComponentType } from 'react';
-import { Agent, ChevronDown, ChevronRight, Clock, Terminal } from '@openai/apps-sdk-ui/components/Icon';
+import { Agent, ChevronDown, ChevronRight, Clock, Flag, Terminal } from '@openai/apps-sdk-ui/components/Icon';
 import { formatClock } from '../events/selectors';
 import type { RunTrigger } from '../events/types';
 
@@ -15,12 +15,13 @@ interface Kind {
 
 const KINDS: Readonly<Record<string, Kind>> = {
   schedule: { title: '定时任务', explain: '到点自动发起了这一轮，任务内容：', Icon: Clock },
-  'tool-jobs': { title: '后台任务完成', explain: '后台任务跑完了，Agent 接着处理结果：', Icon: Terminal },
+  'tool-jobs': { title: '后台任务完成', explain: '后台任务跑完了，智能体接着处理结果：', Icon: Terminal },
   'subagent-settled': {
-    title: '子 Agent 完成',
-    explain: '子 Agent 做完了，Agent 接着处理结果：',
+    title: '子智能体完成',
+    explain: '子智能体做完了，智能体接着处理结果：',
     Icon: Agent,
   },
+  goal: { title: '长任务目标', explain: '目标还没完成，自动接着做下一轮：', Icon: Flag },
 };
 const OTHER: Kind = { title: '自动发起', explain: '这一轮不是你发起的：', Icon: Clock };
 

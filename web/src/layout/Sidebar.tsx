@@ -38,7 +38,7 @@ function RecentConversations() {
     <div className="kw-sidebar-section">
       <div className="kw-sidebar-label">最近会话</div>
       {list.isPending ? <Skeleton rows={3} className="kw-sidebar-skeleton" /> : null}
-      {list.isError ? <div className="kw-sidebar-empty">会话列表加载失败</div> : null}
+      {list.isError ? <div className="kw-sidebar-empty">没能加载会话列表</div> : null}
       {list.isSuccess && items.length === 0 ? <div className="kw-sidebar-empty">还没有会话</div> : null}
       {items.map((item) => (
         <ConversationItem key={item.id} item={item} />

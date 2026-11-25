@@ -7,10 +7,13 @@
   之后只用它（workpath.py）；越出工作目录的拒绝；
 - 交付过的文件（回合结束时收进存储的产物）读收好的那份：沙箱回收后也在，表格是做过公式转义的那份，和交付卡片一致；
 - 没交付过的从会话沙箱现读，不为读文件新建容器：沙箱空闲 30 分钟回收，回收后工作区是空的，这时如实说明；
+- 附件目录 input/ 里的先从附件存储读（inputs，和放进沙箱的是同一份）：点消息上的附件卡片、给附件建编辑用的副本，
+  沙箱回收了也读得到；附件存储里没有的（例如知识库取来的文档）照旧从沙箱现读；
 - 转 PDF：交付过的复用产物预览（转一次、缓存）；没交付过的在沙箱里现转、不缓存（文件随时会改）；PDF 原样。
 """
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from ..artifacts.service import ArtifactService
@@ -19,10 +22,12 @@ from ..conversations.models import Conversation
 from ..sandbox.contract import SandboxFileError, SandboxNotStarted, SessionSandbox
 from ..sandbox.docker_sandbox import CONVERTIBLE
 from ..sessionfiles.names import extension
-from ..workpath import InvalidPath, WorkPath, parse
+from ..workpath import INPUT, InvalidPath, WorkPath, parse
 from .preview import DEFAULT_LIMITS, PreviewLimits, PreviewService, PreviewUnsupported
 
 MIB = 1024 * 1024
+# 附件目录里一个名字的文件从附件存储读（attachments.AttachmentService.input_file）；不是附件放进去的返回 None
+InputReader = Callable[[Conversation, str], Awaitable[bytes | None]]
 
 
 class FileOutside(Exception):
@@ -54,12 +59,14 @@ def _pdf_name(name: str) -> str:
 
 class ConversationFiles:
     def __init__(self, artifacts: ArtifactService, sandbox: SessionSandbox, previews: PreviewService, *,
-                 max_bytes: int = 20 * MIB, limits: PreviewLimits = DEFAULT_LIMITS) -> None:
+                 max_bytes: int = 20 * MIB, limits: PreviewLimits = DEFAULT_LIMITS,
+                 inputs: InputReader | None = None) -> None:
         self._artifacts = artifacts
         self._sandbox = sandbox
         self._previews = previews
         self._max_bytes = max_bytes
         self._limits = limits
+        self._inputs = inputs
 
     @staticmethod
     def locate(conversation: Conversation, raw: str) -> WorkPath:
@@ -76,7 +83,7 @@ class ConversationFiles:
         delivered = await self._artifacts.delivered_at(conversation, path)
         if delivered is not None:
             return FileContent(path.name, (await self._artifacts.open(conversation, delivered.id)).data)
-        return FileContent(path.name, await self._live(conversation, path))
+        return FileContent(path.name, await self._undelivered(conversation, path))
 
     async def digest(self, conversation: Conversation, path: WorkPath) -> str:
         """read() 读到的内容的 sha256：交付过的用收下时记的摘要，不整份读出来；没交付过的从沙箱现读再算。"""
@@ -84,6 +91,15 @@ class ConversationFiles:
         if delivered is not None and delivered.digest:
             return delivered.digest
         return hashlib.sha256((await self.read(conversation, path)).data).hexdigest()
+
+    async def exists(self, conversation: Conversation, path: WorkPath) -> bool:
+        """有没有这份：交付过、存过一版，或者沙箱里现有都算。沙箱回收了又没存过的当没有（那份已经随沙箱没了）。
+        别的失败（在设备上执行、沙箱连不上）照常抛出。"""
+        try:
+            await self.digest(conversation, path)
+        except (FileMissing, FileGone):
+            return False
+        return True
 
     async def pdf(self, conversation: Conversation, path: WorkPath) -> FileContent:
         """给 PDF 阅读器的 PDF：Word、PPT 等转换后的，PDF 原样；其他类型抛 PreviewUnsupported。"""
@@ -97,11 +113,19 @@ class ConversationFiles:
         if delivered is not None:
             _, pdf = await self._previews.pdf(conversation, delivered.id)
             return FileContent(_pdf_name(name), pdf)
-        data = await self._live(conversation, path)
+        data = await self._undelivered(conversation, path)
         pdf = await self._sandbox.convert_to_pdf(conversation.workspace_id, conversation.id, ext, data,
                                                  max_bytes=self._limits.max_pdf_bytes,
                                                  timeout_seconds=self._limits.timeout_seconds)
         return FileContent(_pdf_name(name), pdf)
+
+    async def _undelivered(self, conversation: Conversation, path: WorkPath) -> bytes:
+        """没交付过的：附件目录里直接一层的先问附件存储，没有再从沙箱现读。"""
+        if self._inputs is not None and path.relative == f"{INPUT.relative}/{path.name}":
+            stored = await self._inputs(conversation, path.name)
+            if stored is not None:
+                return stored
+        return await self._live(conversation, path)
 
     async def _live(self, conversation: Conversation, path: WorkPath) -> bytes:
         try:

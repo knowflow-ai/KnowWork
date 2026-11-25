@@ -99,10 +99,10 @@ describe('MembersPage', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: '完成' }));
   });
 
-  it('列表加载失败时说明', async () => {
+  it('没能加载列表时说明', async () => {
     routeFetch({ 'GET /api/auth/me': jsonResponse(ME), [`GET ${B}/members`]: jsonResponse({}, 403) });
     renderWithApp(<MembersPage />);
-    expect(await screen.findByText('成员列表加载失败，请刷新重试')).toBeInTheDocument();
+    expect(await screen.findByText('没能加载成员列表，请刷新重试')).toBeInTheDocument();
   });
 });
 

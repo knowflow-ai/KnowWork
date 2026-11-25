@@ -1,0 +1,4 @@
+# 只在测试时叠加：长任务目标最多自动接着做 2 轮（生产配置是 20），测试跑得快
+- id: goal
+  config:
+    defaultMaxGoalRounds: 2

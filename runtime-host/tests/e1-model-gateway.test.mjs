@@ -10,7 +10,7 @@ import { startOpenAiStub } from './support/openai-stub.mjs'
 
 const sessionEvents = frames => frames.filter(f => f.kind === 'session/event').map(f => f.data)
 const turnEndReason = frames => sessionEvents(frames).find(e => e.type === 'turn/end')?.data?.reason?.kind
-const lastCursor = frames => frames.at(-1)?.cursor ?? 0
+const lastCursor = frames => frames.positions
 
 async function startGatewayHost(script, firstToken) {
   let expected = firstToken

@@ -44,6 +44,35 @@ def test_interrupted_marks_status():
     assert usage_from_event("assistant/message", _event(interrupted=True), CTX, AT).status == "interrupted"
 
 
+def _attempt(code: str, *, usage: bool = True) -> dict:
+    """出错的那一步：官方写 assistant/attempt，用量是流里的 usage 块，结束原因是最后的 finish 块。"""
+    stream = [{"type": "text-chunks", "time0": 1000, "index": 0, "dt": [200], "texts": ["半截"]}]
+    if usage:
+        stream.append({"type": "chunk", "time": 1300,
+                       "chunk": {"type": "usage", "usage": {"inputTokens": 80, "outputTokens": 5}}})
+    stream.append({"type": "chunk", "time": 1310, "chunk": {
+        "type": "finish", "reason": {"kind": "error", "failure": {"code": code, "message": "提示"}}}})
+    return {"turn": 3, "step": 2, "stream": stream}
+
+
+def test_blocked_attempt_is_metered_with_its_real_usage():
+    # 内容检查拦下的一步模型已经算过钱，官方也不会重来：照它流里的用量记上
+    entry = usage_from_event("assistant/attempt", _attempt("CONTENT_BLOCKED"), CTX, AT)
+    assert (entry.turn, entry.step, entry.input_tokens, entry.output_tokens, entry.status) == (3, 2, 80, 5, "blocked")
+    assert entry.duration_ms == 310
+    assert usage_from_event("assistant/attempt", _attempt("MODEL_ERROR"), CTX, AT).status == "failed"
+
+
+@pytest.mark.parametrize("code", ["RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT", "EMPTY_RESPONSE"])
+def test_attempts_the_official_retry_will_redo_are_not_metered(code):
+    # 同一步会重来，用量表按（轮、步）只记一条：先记了这次，重来成功的那次就记不上了
+    assert usage_from_event("assistant/attempt", _attempt(code), CTX, AT) is None
+
+
+def test_attempt_without_usage_is_skipped():
+    assert usage_from_event("assistant/attempt", _attempt("CONTENT_BLOCKED", usage=False), CTX, AT) is None
+
+
 @pytest.mark.parametrize("kind,data", [
     ("tool/call", _event()),
     ("assistant/message", "not a dict"),

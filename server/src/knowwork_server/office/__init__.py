@@ -5,15 +5,21 @@
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
 from ..sandbox.docker_engine import DockerEngine
 from ..sandbox.docker_host import client_factory
 from .config import OfficeSettings
-from .containers import OfficeContainers, OfficeSpec
+from .containers import OfficeContainers, OfficeKey, OfficeSpec
 from .files import LocalOfficeFiles, OfficeFiles
+
+
+class ConversationRef(Protocol):
+    id: str
+    workspace_id: str
+    user_id: str
 
 
 @dataclass
@@ -28,6 +34,14 @@ class OfficeRuntime:
         if self.containers is not None:
             self.containers.sweeper.trigger()  # 启动时清扫一次（同会话沙箱），之后定时清扫
             self.containers.start()
+
+    def eraser(self) -> Callable[[ConversationRef], Awaitable[None]]:
+        """删对话时清掉对话主人编辑器里这段对话的文件（conversations 的 erasers）。删不掉就让删除失败，对话留着可以再删。"""
+
+        async def erase(conversation: ConversationRef) -> None:
+            await self.files.erase(OfficeKey.of(conversation.workspace_id, conversation.user_id), conversation.id)
+
+        return erase
 
     async def aclose(self) -> None:
         if self.containers is not None:
@@ -66,5 +80,7 @@ def build_office(settings: OfficeSettings, *, engine: DockerEngine | None = None
     spec = OfficeSpec(image=settings.image or "", memory_bytes=settings.memory_mb * 1024 * 1024,
                       shm_bytes=settings.shm_mb * 1024 * 1024, nano_cpus=int(settings.cpus * 1e9),
                       network=settings.network, idle_ttl_seconds=settings.idle_minutes * 60)
-    containers = OfficeContainers(engine, spec, max_containers=settings.max_containers, http=http, author_of=author_of)
+    keep_stopped = settings.keep_stopped_days * 24 * 3600 if settings.keep_stopped_days > 0 else None
+    containers = OfficeContainers(engine, spec, max_containers=settings.max_containers, http=http, author_of=author_of,
+                                  prewarm=settings.prewarm, keep_stopped_seconds=keep_stopped)
     return OfficeRuntime(files=containers, containers=containers, _closers=closers)

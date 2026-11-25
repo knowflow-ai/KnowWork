@@ -24,6 +24,9 @@ import {
 import { onDeliverables } from './deliverables';
 import { onQuestion, onQuestionExpired, onTodos } from './questions';
 import { onLive, settleLive } from './live';
+import { onCommand, onLocalCommand } from './commands';
+import { onGoal } from './goal';
+import { onCompaction } from './compactions';
 
 export const initialChatState: ChatState = {
   log: [],
@@ -34,6 +37,10 @@ export const initialChatState: ChatState = {
   internalCalls: [],
   expiredQuestions: [],
   sent: [],
+  discarded: [],
+  commands: [],
+  compactions: [],
+  localCommands: [],
 };
 
 const ITEM_TYPES = new Set(['item.started', 'item.completed', 'item.failed', 'item.updated']);
@@ -49,6 +56,10 @@ function applyItem(state: ChatState, event: V1Event): ChatState {
   if (!itemId || !ITEM_TYPES.has(event.type)) return state;
   if (event.kind === 'approval') return applyApproval(state, event, itemId);
   if (event.kind === 'input_request') return onQuestion(state, event, itemId);
+  if (event.kind === 'command') return onCommand(state, event, itemId);
+  if (event.kind === 'compaction') return onCompaction(state, event, itemId);
+  if (event.kind === 'goal') return onGoal(state, event);
+  if (event.kind === 'message' && event.type === 'item.failed') return onDiscarded(state, itemId);
   const runId = runFor(state, event);
   if (!runId) return state;
   switch (event.kind) {
@@ -71,6 +82,13 @@ function applyItem(state: ChatState, event: V1Event): ChatState {
     default:
       return state; // evidence 等后端还没有产出，界面先忽略
   }
+}
+
+/** 排着队的用户消息随停止一起取消了（服务端回放收件箱认出来的，events_v1.py 的 _inbox）。 */
+function onDiscarded(state: ChatState, messageId: string): ChatState {
+  return state.discarded.includes(messageId)
+    ? state
+    : { ...state, discarded: [...state.discarded, messageId] };
 }
 
 /** 应用一帧，不处理位置（由 reduceWire 负责）。 */
@@ -104,12 +122,13 @@ function indexOf(log: readonly WireEvent[], cursor: Cursor): { found: boolean; i
 }
 
 /** 本页自己维护、不来自事件流的字段：重算时原样保留。 */
-type Kept = Pick<ChatState, 'sent' | 'citations' | 'expiredQuestions'>;
+type Kept = Pick<ChatState, 'sent' | 'citations' | 'expiredQuestions' | 'localCommands'>;
 
 export function rebuild(log: readonly WireEvent[], kept: Kept): ChatState {
   const folded = log.reduce(applyEvent, {
     ...initialChatState,
     sent: kept.sent,
+    localCommands: kept.localCommands,
     citations: kept.citations,
     expiredQuestions: kept.expiredQuestions,
   });
@@ -134,6 +153,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return action.events.reduce((s, wire) => settleLive(reduceWire(s, wire), wire.event), state);
     case 'live':
       return onLive(state, action.live);
+    case 'local/command':
+      return onLocalCommand(state, action.command);
     case 'local/sent': {
       const message = {
         localId: action.localId,

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { act, screen, within } from '@testing-library/react';
 import { utils, write } from 'xlsx';
 import userEvent from '../../test/user';
 import { ApiError } from '../../api/http';
 import { jsonResponse, renderWithApp, routeFetch } from '../../test/render';
 import { FileCard } from '../chat/components/FileCard';
-import { FilePreview, opensInEditor } from './FilePreview';
+import { EDITOR_STARTING_HINT_MS, FilePreview, opensInEditor } from './FilePreview';
 import { serverFile } from './serverFile';
 import { staticHtmlDocument } from './htmlDocument';
 import { pdfSource, previewKindOf } from './previewKind';
@@ -149,13 +149,46 @@ describe('文件预览', () => {
     renderWithApp(
       <FilePreview
         file={localDocx(async () => {
-          throw new ApiError(409, '附件是只读的，不能直接改；可以让助手另存一份再编辑');
+          throw new ApiError(409, '附件是只读的，不能直接改；可以让智能体另存一份再编辑');
         })}
         onClose={() => undefined}
       />,
     );
     expect(await screen.findByText('Word 原件：local-word')).toBeInTheDocument();
-    expect(screen.getByText('附件是只读的，不能直接改；可以让助手另存一份再编辑')).toBeInTheDocument();
+    expect(screen.getByText('附件是只读的，不能直接改；可以让智能体另存一份再编辑')).toBeInTheDocument();
+  });
+
+  it('编辑器还在起（第一次打开要现起一个）：等了一会儿说一句在等什么，打开后收掉', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let open: (value: { url: string }) => void = () => undefined;
+      const starting = new Promise<{ url: string }>((resolve) => {
+        open = resolve;
+      });
+      const hint = '正在启动编辑器，第一次打开要十几秒';
+      renderWithApp(
+        <FilePreview
+          file={{
+            name: '报告.docx',
+            id: 'c1\n报告.docx',
+            read: async () => new ArrayBuffer(0),
+            mutable: true,
+            edit: () => starting,
+          }}
+          onClose={() => undefined}
+        />,
+      );
+      expect(screen.queryByText(hint)).not.toBeInTheDocument();
+      await act(async () => {
+        vi.advanceTimersByTime(EDITOR_STARTING_HINT_MS);
+      });
+      expect(screen.getByText(hint)).toBeInTheDocument();
+      open({ url: 'http://127.0.0.1:5123/docs/?path=%2Fw%2F%E6%8A%A5%E5%91%8A.docx' });
+      expect(await screen.findByTitle('编辑 报告.docx')).toBeInTheDocument();
+      expect(screen.queryByText(hint)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('编辑器打不开、文件本身也不在了（例如已随执行环境回收）：原因只说一次，头部和正文都不给下载', async () => {

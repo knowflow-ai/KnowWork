@@ -5,6 +5,10 @@ usage 为 dsh-llm 的 TokenUsage：{inputTokens, outputTokens, totalTokens?, cac
 cacheWriteTokens?, reasoningTokens?}。事件里没有模型名，模型别名取会话的 `request/header`
 （data.config.model）或会话自己记录的模型，由调用方传入。
 
+出错的那一步官方不写 `assistant/message`，写 `assistant/attempt`：data = {turn, step, stream}，用量是 stream 里的一个
+usage 块（`{type: "chunk", chunk: {type: "usage", usage}}`），结束原因是最后的 finish 块。模型已经算过钱的出错步骤
+（内容检查拦下的、模型中途出错且不再重试的）都在这里，要记上。
+
 只取数字，不取 message 与 stream 里的文本：默认不存提示词与回答原文。
 """
 
@@ -14,6 +18,11 @@ from datetime import datetime
 from typing import Any
 
 ASSISTANT_MESSAGE = "assistant/message"
+ASSISTANT_ATTEMPT = "assistant/attempt"
+# 官方重试会重来的失败码（dsh-llm 0.2.2-rc.5 retry-policy.ts 的 DEFAULT_RETRYABLE_CODES，宿主用 normal 模式、默认码表）。
+# 这几种出错以后同一步会再调一次模型，用量表按（轮、步）只记一条，先记了出错的这次，重来成功的那次就记不上了；
+# 所以这几种不记（重来前那次的用量照旧漏掉，和以前一样），别的码（例如内容检查拦下的 CONTENT_BLOCKED）不会重来，记上
+RETRIED_CODES = frozenset({"EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT"})
 REQUEST_HEADER = "request/header"
 STEP_START = "step/start"
 
@@ -40,7 +49,7 @@ class UsageEntry:
     cache_read_tokens: int
     reasoning_tokens: int
     duration_ms: int | None
-    status: str  # ok | interrupted
+    status: str  # ok | interrupted | blocked（内容检查拦下）| failed（模型出错、不再重来）
     occurred_at: datetime
 
 
@@ -79,12 +88,40 @@ def stream_duration_ms(stream: Any) -> int | None:
     return max(int(max(ends) - min(starts)), 0)
 
 
+def _stream_chunks(stream: Any) -> list[dict]:
+    if not isinstance(stream, list):
+        return []
+    return [record["chunk"] for record in stream
+            if isinstance(record, dict) and record.get("type") == "chunk" and isinstance(record.get("chunk"), dict)]
+
+
+def _attempt_usage(data: dict) -> tuple[dict | None, str]:
+    """出错那一步的用量与状态；官方会重来的、没有用量的返回 (None, "")。"""
+    chunks = _stream_chunks(data.get("stream"))
+    usage = next((chunk.get("usage") for chunk in reversed(chunks) if chunk.get("type") == "usage"), None)
+    finish = next((chunk for chunk in reversed(chunks) if chunk.get("type") == "finish"), None)
+    reason = finish.get("reason") if isinstance(finish, dict) and isinstance(finish.get("reason"), dict) else {}
+    failure = reason.get("failure") if isinstance(reason.get("failure"), dict) else {}
+    if not isinstance(usage, dict) or failure.get("code") in RETRIED_CODES:
+        return None, ""
+    return usage, "blocked" if failure.get("code") == "CONTENT_BLOCKED" else "failed"
+
+
 def usage_from_event(kind: str, data: Any, context: UsageContext, occurred_at: datetime) -> UsageEntry | None:
-    """把一条宿主事件转成用量记录；不是 assistant/message、没带用量或格式不对时返回 None。"""
-    if kind != ASSISTANT_MESSAGE or not isinstance(data, dict) or not isinstance(data.get("usage"), dict):
+    """把一条宿主事件转成用量记录；不是 assistant/message、assistant/attempt，没带用量或格式不对时返回 None。"""
+    if not isinstance(data, dict):
+        return None
+    if kind == ASSISTANT_MESSAGE and isinstance(data.get("usage"), dict):
+        usage = data["usage"]
+        status = "interrupted" if data.get("interrupted") is True else "ok"
+    elif kind == ASSISTANT_ATTEMPT:
+        found, status = _attempt_usage(data)
+        if found is None:
+            return None
+        usage = found
+    else:
         return None
     turn, step = _non_negative_int(data.get("turn")), _non_negative_int(data.get("step"))
-    usage = data["usage"]
     counts = {key: _count(usage, key) for key in ("inputTokens", "outputTokens", "cacheReadTokens",
                                                   "reasoningTokens")}
     if turn is None or step is None or any(value is None for value in counts.values()):
@@ -98,7 +135,7 @@ def usage_from_event(kind: str, data: Any, context: UsageContext, occurred_at: d
         total_tokens=total if total is not None else computed,
         cache_read_tokens=counts["cacheReadTokens"], reasoning_tokens=counts["reasoningTokens"],
         duration_ms=stream_duration_ms(data.get("stream")),
-        status="interrupted" if data.get("interrupted") is True else "ok", occurred_at=occurred_at)
+        status=status, occurred_at=occurred_at)
 
 
 def model_from_header(kind: str, data: Any) -> str | None:

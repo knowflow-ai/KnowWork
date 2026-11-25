@@ -13,7 +13,8 @@
 - id: sdk-jsonrpc-server
   disabled: true
 
-# 本机 shell、终端、工作目录工具
+# 本机 shell、终端（模型切工作目录的工具 dsh-tool-working-directory 在 DSH 0.2.3-alpha.2 删了：工作目录只由宿主改，
+# 工作目录服务 dsh-working-directory 照旧挂着，子 Agent 等依赖它）
 - id: persistent-bash
   disabled: true
 - id: persistent-pwsh
@@ -21,8 +22,6 @@
 - id: terminal-bash
   disabled: true
 - id: terminal-pwsh
-  disabled: true
-- id: tool-working-directory
   disabled: true
 # 终端会话服务：终端后端与终端工具都停了，没有插件再用它
 - id: pty
@@ -102,6 +101,25 @@
       name: '@knowwork/dsh-host/remote-fs'
     - id: knowwork-remote-subprocess
       name: '@knowwork/dsh-host/remote-subprocess'
+    # 官方大输出溢出（照 dsh-base 的挂法：存储后端加策略，上限同官方 12500）：超出预算的工具结果给模型留开头和结尾，
+    # 完整内容写进会话工作区的 tmp/tool-results/，模型照提示用 read、grep 读。存储后端换成 knowwork-remote-spill，
+    # 不用写宿主机的 dsh-spill-local（服务端的模型读不到宿主机上的文件）
+    # 官方用模型起会话标题（照 dsh-base 的挂法与配置）：第一句话之后起一个短标题，不耽误回答；对话标题以官方为准，
+    # 业务服务从会话日志里的 session/title 同步。官方按第一句话的兜底标题由 dsh-sdk-minimal 里的 session-title 给
+    - id: session-title-llm
+      name: '@deepseek-ai/dsh-session-title-first-prompt-llm'
+      config:
+        targetWords: 5
+        targetCjkCharacters: 10
+        maxInputBytes: 4096
+        maxOutputTokens: 4096
+        timeoutMs: 60000
+    - id: knowwork-remote-spill
+      name: '@knowwork/dsh-host/remote-spill'
+    - id: spill-policy
+      name: '@deepseek-ai/dsh-spill-policy'
+      config:
+        maxInlineTokens: 12500
 
     # 官方 PTC 运行时：模型写的程序在会话容器里跑（经 remote-subprocess 的流式执行，即官方 SSH 执行环境），
     # 程序里调用的宿主函数走 fd 7 控制管道回到宿主。启动脚本是沙箱镜像里装的同版本文件（摘要由 dsh-ssh 校验）。
@@ -127,6 +145,10 @@
       name: '@deepseek-ai/dsh-tool-bash'
     - id: tool-jobs
       name: '@deepseek-ai/dsh-tool-jobs'
+    # 官方工具调用时限（照 dsh-base 的挂法）：声明了 timeoutMs 的工具到点取消、模型收到统一的超时报错，
+    # 没声明的（bash、读写文件）不受影响。业务工具的时限声明在工具桥注册的定义上
+    - id: timeout-policy
+      name: '@deepseek-ai/dsh-tool-call-timeout-policy'
     - id: fs-observation-policy
       name: '@deepseek-ai/dsh-fs-observation-policy'
 
@@ -253,6 +275,33 @@
 
     - id: tool-skill
       name: '@deepseek-ai/dsh-tool-skill'
+
+    # 预置插件「长任务目标」的服务（官方 dsh-goal，照官方 dsh-base 挂全局）：目标的读写与会话里的记录。
+    # 给模型用的工具 dsh-tool-goal 不在这里，在预设里（plugin-catalog.mjs），只有启用了这个插件的会话才有
+    - id: goal
+      name: '@deepseek-ai/dsh-goal'
+      config:
+        # 一个目标最多自动接着做几轮（官方默认 256）：每一轮都是一次完整回答、都耗额度，企业里先收在 20
+        defaultMaxGoalRounds: 20
+
+    # 长任务目标的自动续跑（官方 dsh-goal-round-driver，原样挂）：目标没完成、智能体空下来就发起下一轮。
+    # 每一轮开始前先经下面的 goal-gate 请业务服务核对（人、对话、额度），不通过就把目标标成卡住
+    - id: goal-round-driver
+      name: '@deepseek-ai/dsh-goal-round-driver'
+    - id: knowwork-goal-gate
+      name: '@knowwork/dsh-host/goal-gate'
+
+    # 官方命令服务（dsh-commands，照官方 dsh-base 挂全局）：用户在输入框敲 / 的命令，插件往里登记，按会话列出与执行
+    #（dsh-host 的 commands.mjs 经 HTTP 交给业务服务）。命令本身由各插件带：预置插件的在预设里，上传插件的在个人宿主里
+    - id: commands
+      name: '@deepseek-ai/dsh-commands'
+
+    # 官方 Agent 预设登记处：按会话挂预置插件（plugin-presets.mjs 按组合登记预设，http-host 建会话时装上）。
+    # default 是没指定预设时用的那个；我们每次都指定，这里写空预设的名字
+    - id: agent-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
+      config:
+        default: kw-none
 
     - id: knowwork-http-host
       name: '@knowwork/dsh-host/http-host'

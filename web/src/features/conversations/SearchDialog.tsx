@@ -160,7 +160,7 @@ export function SearchDialog({ onClose }: { readonly onClose: () => void }) {
         )}
       </ul>
       {empty ? <p className="kw-search-empty">没有找到相关的对话</p> : null}
-      {found.isError ? <p className="kw-search-empty">搜索没有成功，请稍后再试</p> : null}
+      {found.isError ? <p className="kw-search-empty">没能搜索，请稍后再试</p> : null}
     </Dialog>
   );
 }

@@ -80,8 +80,8 @@
   align-items: center;
   gap: 8px;
   padding: 10px;
-  color: var(--kw-text-secondary);
-  font-size: var(--kw-font-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--font-text-sm-size);
 }
 
 .kw-pdf-state {
@@ -98,7 +98,7 @@
 .kw-pdf-mark {
   position: absolute;
   z-index: 0;
-  border-radius: 2px;
+  border-radius: var(--radius-2xs);
   background: color-mix(in srgb, var(--kw-link) 22%, transparent);
   outline: 1px solid color-mix(in srgb, var(--kw-link) 55%, transparent);
   pointer-events: none;
@@ -107,7 +107,7 @@
 }
 
 .kw-preview-mark {
-  border-radius: 2px;
+  border-radius: var(--radius-2xs);
   background: color-mix(in srgb, var(--kw-link) 22%, transparent);
   color: inherit;
 }
@@ -204,7 +204,7 @@
   gap: 2px;
   padding: 4px;
   background: var(--kw-content-bg);
-  border-radius: 9999px;
+  border-radius: var(--radius-full);
   box-shadow: var(--kw-shadow-floating);
   opacity: 0;
   pointer-events: none;
@@ -246,7 +246,7 @@
 .kw-preview-text {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: var(--kw-font-sm);
+  font-size: var(--font-text-sm-size);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -353,8 +353,8 @@
 }
 
 .kw-end-notice {
-  font-size: var(--kw-font-sm);
-  color: var(--kw-text-secondary);
+  font-size: var(--font-text-sm-size);
+  color: var(--color-text-secondary);
 }
 
 /* Word 原件预览（DocxView）：docx-preview 自带灰底与白色页面，这里只管滚动和高亮 */
@@ -369,7 +369,7 @@
 }
 
 .kw-docx-view .kw-docx-mark {
-  border-radius: 2px;
+  border-radius: var(--radius-2xs);
   background-color: color-mix(in srgb, var(--kw-link) 14%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--kw-link) 14%, transparent);
   /* 定位后高亮区的顶端对齐视口顶部，上面留一点边距 */
@@ -476,4 +476,15 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+/* 整栏收起（FileEditPane hidden）、没在看的标签（hidden）：照样挂着，不显示；本身是 flex 的要显式藏起来 */
+.kw-file-pane[hidden],
+.kw-file-pane-body[hidden] {
+  display: none;
+}
+
+/* 右边那栏的收起、展开按钮：用左侧栏图标的镜像（照官方右侧栏的展开按钮） */
+.kw-icon-mirror {
+  transform: scaleX(-1);
 }

@@ -172,12 +172,34 @@ class DockerEngine:
     async def unpause_container(self, container_id: str) -> None:
         await self._call("unpause", lambda c: c.api.unpause(container_id))
 
+    async def stop_container(self, container_id: str, timeout_seconds: int = 10) -> None:
+        """停掉（文件系统留着，再 start 就接着用）；本来就不存在不算错。"""
+        try:
+            await self._call("stop", lambda c: c.api.stop(container_id, timeout=timeout_seconds))
+        except DockerNotFound:
+            return
+
     async def remove_container(self, container_id: str) -> None:
         """强制删除，连匿名卷一起删；本来就不存在不算错。"""
         try:
             await self._call("remove", lambda c: c.api.remove_container(container_id, force=True, v=True))
         except DockerNotFound:
             return
+
+    async def remove_volume(self, name: str) -> None:
+        """删一个具名卷；本来就不存在不算错。还有容器在用它时 Docker 会拒绝（抛错，调用方下次再试）。"""
+        try:
+            await self._call("remove_volume", lambda c: c.api.remove_volume(name))
+        except DockerNotFound:
+            return
+
+    async def container_logs(self, container_id: str, *, tail: int = 300) -> str:
+        """容器最近的输出（标准输出和标准错误合在一起）；容器已经没了返回空。"""
+        try:
+            raw = await self._call("logs", lambda c: c.api.logs(container_id, tail=tail))
+        except DockerNotFound:
+            return ""
+        return raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
 
     async def put_archive(self, container_id: str, path: str, tar_bytes: bytes) -> None:
         ok = await self._call("put_archive", lambda c: c.api.put_archive(container_id, path, tar_bytes))

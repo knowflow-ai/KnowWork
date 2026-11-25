@@ -30,7 +30,7 @@ function ProvidersTable() {
   const remove = useAction((id: string) => deleteLoginProvider(id), {
     invalidate: [LOGIN_PROVIDERS_KEY],
     success: '已删除登录方式',
-    failure: '删除没有成功，请稍后重试',
+    failure: '没能删除，请稍后重试',
   });
   const columns: readonly Column<LoginProvider>[] = [
     { key: 'name', title: '名称', ellipsis: true, render: (p) => p.name },
@@ -91,7 +91,7 @@ function ProvidersTable() {
           rows={providers.data ?? []}
           loading={providers.isFetching}
           empty={
-            providers.isError ? '登录方式加载失败，请刷新重试' : '还没有登录方式，员工只能用账号密码登录'
+            providers.isError ? '没能加载登录方式，请刷新重试' : '还没有登录方式，员工只能用账号密码登录'
           }
         />
       )}

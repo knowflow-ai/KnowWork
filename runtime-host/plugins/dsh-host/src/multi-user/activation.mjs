@@ -11,9 +11,29 @@
  *
  * 认证用宿主与业务服务之间的共享令牌（业务服务调宿主用的同一个）：两边本来就靠它互信；
  * 要激活哪段对话由宿主说，能不能激活由业务服务按它自己的数据判。
+ * 个人专属宿主不用这把共享令牌（它里面跑着没审过的上传插件）：业务服务给它下发按这个人签的激活令牌
+ * （PUT /v1/activation-credential，随模型令牌一起续），只能激活这个人自己的对话。下发过就用它，没下发过用宿主令牌。
  */
 
 import { getSession } from '../state.mjs'
+
+/** 业务服务下发的激活令牌（只有个人专属宿主有）；同一个宿主进程里的插件共用这一份 */
+let issued
+
+/** http-host 收到下发的激活令牌时调 */
+export function setActivationToken(token) {
+  issued = token
+}
+
+/** 业务服务不同意激活：status 是它的回应码（403 人不在空间、404 对话不在或不归他、429 额度用完、503 宿主打不开），
+ *  reason 是给人看的一句话 */
+export class ActivationRefused extends Error {
+  constructor(sessionId, status, reason) {
+    super(`业务服务没有激活会话 ${sessionId}（${status}）：${reason}`)
+    this.status = status
+    this.reason = reason
+  }
+}
 
 // 本机开发时业务服务的内部端口；部署编排里配成 api 的内部端口（同其余回调地址）
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8001/internal/host/v1'
@@ -23,10 +43,11 @@ const TIMEOUT_MS = 30_000
 export function createActivationClient(options = {}) {
   const baseUrl = options.baseUrl ?? process.env.KNOWWORK_ACTIVATION_BASE_URL ?? DEFAULT_BASE_URL
   const url = `${baseUrl.replace(/\/+$/, '')}/activations`
-  const token = options.token ?? process.env.KNOWWORK_HOST_TOKEN
   return {
     /** @param {{ kind: string, sessionId: string, owner: import('./caller.mjs').Owner }} request */
     async activate(request) {
+      // 每次现取：下发的激活令牌会续期
+      const token = options.token ?? issued ?? process.env.KNOWWORK_HOST_TOKEN
       if (!token) throw new Error('宿主令牌没有配置，不能请业务服务激活会话')
       const response = await fetch(url, {
         method: 'POST',
@@ -35,10 +56,11 @@ export function createActivationClient(options = {}) {
         signal: AbortSignal.timeout(TIMEOUT_MS),
       })
       if (!response.ok) {
-        // 业务服务的拒绝原因是一句话；请求体不合规时是逐项的列表
+        // 业务服务的拒绝原因是一句话；额度用完时是带 message 的对象；请求体不合规时是逐项的列表
         const detail = (await response.json().catch(() => ({})))?.detail ?? ''
-        const reason = typeof detail === 'string' ? detail : JSON.stringify(detail)
-        throw new Error(`业务服务没有激活会话 ${request.sessionId}（${response.status}）：${reason}`)
+        const reason = typeof detail === 'string' ? detail
+          : typeof detail?.message === 'string' ? detail.message : JSON.stringify(detail)
+        throw new ActivationRefused(request.sessionId, response.status, reason)
       }
     },
   }

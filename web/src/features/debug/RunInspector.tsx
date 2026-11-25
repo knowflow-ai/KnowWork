@@ -119,7 +119,7 @@ function Trace({
   const main = detail.steps.slice(0, replay.replaying ? replay.shown : detail.steps.length);
   const groups: StepGroup[] = [
     { agent: null, steps: main },
-    ...detail.subagents.map((a) => ({ agent: a.sessionId, label: `子 Agent：${a.label}`, steps: a.steps })),
+    ...detail.subagents.map((a) => ({ agent: a.sessionId, label: `子智能体：${a.label}`, steps: a.steps })),
   ];
   // 回放时跟着最新的一步走；平时停在用户点的那一步，没点过就是第一步
   const latest = main[main.length - 1];

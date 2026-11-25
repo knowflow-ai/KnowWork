@@ -6,14 +6,18 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { startHost, collectEvents, isTurnEnd, isApprovalAsked, approvalEvent, decidedOutcome, pendingApprovals } from './support/harness.mjs'
+import { startHost, collectEvents, isTurnEnd, isTurnEndAfter, isApprovalAsked, approvalEvent, decidedOutcome, pendingApprovals } from './support/harness.mjs'
+import { readFileSync as readPinned } from 'node:fs'
+
+const PINNED_DSH = JSON.parse(readPinned(new URL('../package.json', import.meta.url), 'utf8')).dependencies['@deepseek-ai/dsh']
 
 const sessionEvents = frames => frames.filter(f => f.kind === 'session/event').map(f => f.data)
 const toolNamesOf = request => (request.body?.tools ?? []).map(t => t.name)
 const messagesText = request => JSON.stringify(request.body?.messages ?? [])
-const lastCursor = frames => frames.at(-1)?.cursor ?? 0
-const isRunning = f => f.kind === 'agent/status' && f.data.status === 'running'
-const turnEndReason = frames => sessionEvents(frames).find(e => e.type === 'turn/end')?.data?.reason?.kind
+const lastCursor = frames => frames.positions
+// 跑起来了：Agent 状态是进程内的帧、不补积压（订阅晚了就错过），也认持久的 turn/start
+const isRunning = f => (f.kind === 'agent/status' && f.data.status === 'running') || (f.kind === 'session/event' && f.data?.type === 'turn/start')
+const turnEndReason = frames => sessionEvents(frames).filter(e => e.type === 'turn/end').at(-1)?.data?.reason?.kind
 
 test('生命周期：执行中取消、取消后马上再发、释放后恢复再发', async () => {
   const host = await startHost({ sequence: ['slow_success', 'success'], chunkDelayMs: 200, successText: '第二轮的回答内容' })
@@ -35,7 +39,8 @@ test('生命周期：执行中取消、取消后马上再发、释放后恢复�
     const resumed = await host.call('POST', '/v1/sessions', { sessionId: 'life-1', resume: true, policy: {} })
     assert.equal(resumed.status, 201, JSON.stringify(resumed.body))
     await host.call('POST', '/v1/sessions/life-1/messages', { text: '恢复后第三轮' })
-    const third = await collectEvents(host, 'life-1', isTurnEnd)
+    // 释放后重开：事件流从头读时积压里还有前两轮（第一轮是取消的），等恢复后这一句的那一轮
+    const third = await collectEvents(host, 'life-1', isTurnEndAfter('恢复后第三轮'))
     assert.equal(turnEndReason(third), 'completed')
     const last = host.llm.requests.at(-1)
     assert.ok(messagesText(last).includes('恢复后第三轮'), '最后一次请求不是恢复后这一轮发出的')
@@ -237,8 +242,8 @@ test('stdin 关闭时宿主仍持续服务（服务端部署形态）', async ()
     assert.equal(host.child.exitCode, null, '宿主在 stdin 关闭后退出了')
     const health = await fetch(`${host.base}/health`)
     assert.equal(health.status, 200)
-    // 版本号与锁定的 DSH 版本一致，系统信息页靠它显示
-    assert.equal((await health.json()).dsh, '0.2.2-rc.5')
+    // 版本号与锁定的 DSH 版本一致（package.json 里钉的那个），系统信息页靠它显示
+    assert.equal((await health.json()).dsh, PINNED_DSH)
   } finally {
     await host.stop()
   }

@@ -49,7 +49,7 @@ function NameForm() {
   const [draft, setDraft] = useState<string>();
   const value = draft ?? custom;
   const [problem, setProblem] = useState<string | null>(null);
-  const rename = useBrandChange(renameBrand, '名称已保存', '名称没有保存成功，请稍后重试');
+  const rename = useBrandChange(renameBrand, '名称已保存', '名称没能保存，请稍后重试');
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const invalid = validateBrandName(value);
@@ -91,8 +91,8 @@ function NameForm() {
 function LogoForm() {
   const brand = useBrand();
   const picker = useRef<HTMLInputElement>(null);
-  const upload = useBrandChange(uploadLogo, 'Logo 已更新', 'Logo 没有上传成功，请稍后重试');
-  const reset = useBrandChange(resetLogo, '已恢复默认 Logo', '没有恢复成功，请稍后重试');
+  const upload = useBrandChange(uploadLogo, 'Logo 已更新', 'Logo 没能上传，请稍后重试');
+  const reset = useBrandChange(resetLogo, '已恢复默认 Logo', '没能恢复，请稍后重试');
   const pick = (file: File | undefined) => {
     if (!file) return;
     const problem = validateLogo(file);

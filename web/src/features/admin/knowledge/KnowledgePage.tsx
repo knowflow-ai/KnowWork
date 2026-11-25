@@ -45,7 +45,7 @@ export default function KnowledgePage() {
   const remove = useAction((id: string) => deleteSource(id), {
     invalidate: [KEYS.sources, KEYS.knowledgeBases, KEYS.grants],
     success: '已删除知识源',
-    failure: '删除没有成功，请稍后重试',
+    failure: '没能删除，请稍后重试',
   });
 
   const columns: readonly Column<KnowledgeSource>[] = [
@@ -116,7 +116,7 @@ export default function KnowledgePage() {
           columns={columns}
           rows={sources.data ?? []}
           loading={sources.isFetching}
-          empty={sources.isError ? '知识源加载失败，请刷新重试' : '还没有知识源'}
+          empty={sources.isError ? '没能加载知识源，请刷新重试' : '还没有知识源'}
         />
       )}
       {editing ? <SourceDialog source={editing.item} onClose={() => setEditing(null)} /> : null}

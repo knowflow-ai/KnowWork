@@ -28,11 +28,11 @@ TOKEN = "t" * 48
 AUTH = {"authorization": f"Bearer {TOKEN}"}
 
 
-def setup(files_db, tmp_path, *, user="alice"):
+def setup(files_db, tmp_path, *, user="alice", inputs=None):
     sandbox, stores = FakeSandbox(), local_session_stores(tmp_path)
     artifacts = build_artifacts(files_db.sessionmaker, stores, sandbox)
     previews = PreviewService(artifacts.service, sandbox)
-    files = ConversationFiles(artifacts.service, sandbox, previews)
+    files = ConversationFiles(artifacts.service, sandbox, previews, inputs=inputs)
     app = FastAPI()
     app.include_router(build_router(previews, files_db.lookup, token_actor(TOKEN, user, "ws1"), files=files))
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://public")
@@ -81,6 +81,32 @@ async def test_delivered_files_stay_readable_after_the_sandbox_is_recycled(files
     assert "attachment" in delivered.headers["content-disposition"]
     assert gone.status_code == 410
     assert gone.json()["detail"] == "文件已随执行环境回收，交付过的文件仍可在交付卡片里打开"
+
+
+async def test_attachments_are_read_from_attachment_storage_even_after_the_sandbox_is_recycled(files_db, tmp_path):
+    """附件目录 input/ 里的文件先从附件存储读（和放进沙箱的是同一份，沙箱回收了也在）；不是附件放进去的
+    （例如知识库取来的文档）照旧从沙箱现读；附件目录外的不去问附件存储。"""
+    conv = await files_db.conversation()
+    asked: list[str] = []
+
+    async def inputs(conversation, name):
+        asked.append(name)
+        return b"PK-attached" if (conversation.id, name) == (conv.id, "合同.docx") else None
+
+    http, _, sandbox = setup(files_db, tmp_path, inputs=inputs)
+    sandbox.write_output("ws1", conv.id, "input/知识库文档.md", b"# fetched")
+    sandbox.write_output("ws1", conv.id, "out.md", b"# out")
+    async with http:
+        attached = await http.get(**content(conv, "/workspace/input/合同.docx"), headers=AUTH)
+        fetched = await http.get(**content(conv, "input/知识库文档.md"), headers=AUTH)
+        outside = await http.get(**content(conv, "out.md"), headers=AUTH)
+        sandbox.recycle("ws1", conv.id)
+        after = await http.get(**content(conv, "input/合同.docx"), headers=AUTH)
+        converted = await http.get(**preview(conv, "input/合同.docx"), headers=AUTH)
+    assert attached.content == b"PK-attached" and after.content == b"PK-attached"
+    assert fetched.content == b"# fetched" and outside.content == b"# out"
+    assert converted.status_code == 200 and converted.content.startswith(b"%PDF-")
+    assert "out.md" not in asked and "input/合同.docx" not in sandbox.reads
 
 
 async def test_artifacts_delivered_before_paths_were_recorded_are_found_by_name(files_db, tmp_path):

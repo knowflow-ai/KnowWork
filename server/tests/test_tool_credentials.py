@@ -21,7 +21,7 @@ from knowwork_server.conversations.tool_credentials import (
     require_membership,
 )
 from knowwork_server.conversations.writer import BatchWriter
-from knowwork_server.kernel.contract import KernelError, SessionNotFound, TurnInput
+from knowwork_server.kernel.contract import KernelError, SessionBusy, SessionNotFound, TurnInput
 
 from .fakes import FakeKernel
 
@@ -383,3 +383,62 @@ async def test_renew_due_skips_sessions_issued_recently():
     assert [cid for cid, _ in kernel.tool_rotations] == ["c_old"]
     await credentials.renew_due()
     assert len(kernel.tool_rotations) == 1
+
+
+async def test_ensure_fresh_adopts_sessions_it_is_not_tracking():
+    """续期表里没有的会话（业务服务重启过，表在内存里）：每轮开始前当场签新令牌交给宿主并记回表里；宿主上没有这段会话的
+    不记；宿主一时不通的也记回表里、算已到期，续期循环下一拍再试，不等满一个间隔。"""
+    kernel, clock = FakeKernel(), WallClock()
+    credentials = ToolCredentials(kernel, fixed_token, interval=300, clock=clock)
+    await credentials.ensure_fresh(conv("c_open"))
+    assert [cid for cid, _ in kernel.tool_rotations] == ["c_open"]
+    assert credentials.tracked() == {"c_open"}
+    await credentials.ensure_fresh(conv("c_open"))
+    assert len(kernel.tool_rotations) == 1, "刚续过的照常不续"
+
+    kernel.tool_rotation_effects = [SessionNotFound("session_not_found", "gone", 404)]
+    await credentials.ensure_fresh(conv("c_gone"))
+    assert "c_gone" not in credentials.tracked(), "宿主上没有的不记"
+
+    kernel.tool_rotation_effects = [KernelError("internal", "宿主一时不通", 500)]
+    await credentials.ensure_fresh(conv("c_flaky"))
+    assert "c_flaky" in credentials.tracked()
+    await credentials.renew_due()
+    assert [cid for cid, _ in kernel.tool_rotations] == ["c_open", "c_flaky"], "下一拍就补上"
+
+
+async def test_after_a_business_service_restart_the_next_turn_hands_the_host_fresh_tokens(sessionmaker):
+    """业务服务单独重启（热重载、崩溃、单独升级）：续期表空了，宿主上的会话还开着、拿着重启前签的令牌，15 分钟后过期，
+    之后工具调用、内容检查一律 401（宿主插件激活时宿主回「已经开着」，原来既不下发令牌也不记回续期表）。下一轮开始前
+    （宿主插件激活、用户发消息）当场换新令牌并记回续期表，之后照常续。工具令牌与技能令牌都一样。"""
+    kernel, issuer, clock = FakeKernel(), Issuer(), WallClock()
+    writer, broadcaster = BatchWriter(sessionmaker), Broadcaster()
+    pump = EventPump(kernel, sessionmaker, writer, broadcaster, timings=PumpTimings(idle_timeout=0.2))
+    feed = EventFeed(sessionmaker, writer, broadcaster, pump.produced_upto)
+
+    def restarted():
+        tools = ToolCredentials(kernel, issuer, interval=300, clock=clock)
+        skills = ToolCredentials(kernel, issuer, interval=300, clock=clock, label="skill",
+                                 rotate=kernel.rotate_skill_credential)
+        service = ConversationService(kernel, sessionmaker, pump, feed, tool_credentials=tools,
+                                      skill_credentials=skills, resume_retry_delays=(0.01,))
+        return service, tools, skills
+
+    before, _, _ = restarted()
+    conversation = await before.create(workspace_id="default", user_id="u1")
+
+    service, tools, skills = restarted()
+    kernel.open_effects = [SessionBusy("session_busy", "已经开着", 409)]
+    await service.activate(conversation, trigger="goal")
+    assert [cid for cid, _ in kernel.tool_rotations] == [conversation.id], "激活时宿主上已开着：换新令牌"
+    assert [cid for cid, _ in kernel.skill_rotations] == [conversation.id]
+    assert tools.tracked() == {conversation.id} and skills.tracked() == {conversation.id}
+    clock.now += 300
+    await tools.renew_due()
+    assert len(kernel.tool_rotations) == 2, "记回续期表以后照常续"
+
+    service, tools, _ = restarted()
+    await service.send(conversation, TurnInput(text="接着做"))
+    assert len(kernel.tool_rotations) == 3, "发消息前也一样"
+    assert tools.tracked() == {conversation.id}
+    await pump.close()

@@ -47,7 +47,7 @@ function OrgPanel({ id, path }: { readonly id: string; readonly path: string }) 
         rows={members.data ?? []}
         loading={members.isPending}
         pageSize={false}
-        empty={members.isError ? '成员加载失败，请刷新重试' : '这一级没有人'}
+        empty={members.isError ? '没能加载成员，请刷新重试' : '这一级没有人'}
       />
     </section>
   );

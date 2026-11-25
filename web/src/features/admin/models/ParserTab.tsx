@@ -60,7 +60,7 @@ function ParserForm({ parser }: { readonly parser: DocumentParser }) {
       client.setQueryData(KEY, saved);
       toast.success('文档解析配置已保存，几秒内生效');
     },
-    onError: (error) => toast.error(readableError(error, '配置没有保存成功')),
+    onError: (error) => toast.error(readableError(error, '配置没能保存')),
   });
   const test = useMutation({
     mutationFn: () => testDocumentParser(baseUrl, apiKey.trim() || undefined),
@@ -197,7 +197,7 @@ export function ParserTab() {
   const parser = useQuery({ queryKey: KEY, queryFn: getDocumentParser });
   if (parser.isPending) return <Skeleton rows={5} />;
   if (parser.isError)
-    return <Empty area icon={<Warning />} title="配置加载失败" description="请稍后刷新重试" />;
+    return <Empty area icon={<Warning />} title="没能加载配置" description="请稍后刷新重试" />;
   // 保存后取回的值变了，换 key 让表单按新值重来
   return <ParserForm key={`${parser.data.source}-${parser.data.updatedAt ?? ''}`} parser={parser.data} />;
 }

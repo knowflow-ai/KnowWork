@@ -1,4 +1,10 @@
-/** 一轮助手回答：执行过程摘要、待办、审批与提问、正文（不套气泡）、文件、工具的说明（如已记住）、结束说明、操作图标。 */
+/**
+ * 一轮助手回答：执行过程一行、待办、审批、正文（不套气泡）、文件、工具的说明（如已记住）、结束说明、操作图标。
+ * 中途向用户提问时照 ChatGPT「问一句 → 你答 → 接着做」的节奏，在提问处切成两段（events/segments.ts）：提问之前的工作
+ * 一行过程、下面是提问卡片；答完后你的回答画成一条用户气泡，后面的工作另起一行过程，紧跟着最终回答。
+ * 还在干活时，调工具之前写的进度说明按先后显示在过程那一行下面，一轮结束后收进过程，只留最终回答。
+ */
+import { Fragment, useMemo } from 'react';
 import type { QuestionAnswer } from '../../../api/conversations';
 import type { ApprovalView, CitationSource, QuestionView, RunView } from '../events/types';
 import { AnswerActions } from './AnswerActions';
@@ -8,13 +14,15 @@ import { AnswerSources } from './AnswerSources';
 import { citedFiles, citedNumbers } from './citations';
 import { DeliverableCards } from './FileCard';
 import { Markdown } from './Markdown';
+import { turnFiles } from './turnFiles';
 import { ProcessSummary } from './ProcessSummary';
-import { QuestionCard } from './QuestionCard';
+import { QuestionCard, QuestionReplyBubble } from './QuestionCard';
 import { ResultCards } from './ResultCards';
 import { SearchConditions } from './SearchConditions';
 import { TodoList } from './TodoList';
 import { answerNotices } from '../events/notices';
-import { hasProcess, selectRunCards, selectRunSearch } from '../events/selectors';
+import { splitAtQuestions } from '../events/segments';
+import { hasDetails, selectRunCards, selectRunSearch } from '../events/selectors';
 import type { FeedbackInput, Rating } from '../../../api/feedback';
 
 interface Props {
@@ -83,17 +91,55 @@ export function AssistantTurn({
   const invalid = invalidCitations(run, sources);
   const notice = run.endReason && run.endReason.kind !== 'completed' ? run.endReason.message : undefined;
   const search = selectRunSearch(run);
+  // 这一轮改过、交付的文件：正文里反引号点到它们的变成文件链接（照官方交付插件）
+  const files = useMemo(() => turnFiles(run.steps, run.deliverables), [run.steps, run.deliverables]);
+  const segments = useMemo(() => splitAtQuestions(run, questions), [run, questions]);
+  const placed = new Set(segments.flatMap((segment) => (segment.question ? [segment.question.id] : [])));
+  const asked = segments.at(-2)?.question;
+  const progress = ended ? [] : (segments.at(-1)?.run.notes ?? []);
+  // 最后一段还没东西、正在等上一个问题的回答：这一轮停在提问那里（同 ChatGPT），不再转一行「等待你回答」
+  const waitingOnQuestion = asked?.status === 'pending' && !asked.continued;
+  const answer = (question: QuestionView) =>
+    question.status === 'answered' ? (
+      <QuestionReplyBubble key={question.id} question={question} />
+    ) : (
+      <QuestionCard
+        key={question.id}
+        question={question}
+        onAnswer={(answers) => onAnswer(question.id, answers)}
+      />
+    );
   return (
-    <article className="kw-assistant" aria-label="助手回答">
-      {hasProcess(run) ? (
-        <ProcessSummary
-          run={run}
-          preparing={liveTools}
-          thinking={liveReasoning || undefined}
-          answering={Boolean(liveText)}
-        />
-      ) : null}
-      {run.todos ? <TodoList todos={run.todos} running={!ended} /> : null}
+    <article className="kw-assistant" aria-label="智能体回答">
+      {segments.map((segment, index) => {
+        const last = index === segments.length - 1;
+        const shown = last
+          ? hasDetails(segment.run) || (!ended && !waitingOnQuestion)
+          : hasDetails(segment.run);
+        return (
+          <Fragment key={segment.key}>
+            {shown ? (
+              <ProcessSummary
+                run={segment.run}
+                {...(last
+                  ? {
+                      preparing: liveTools,
+                      thinking: liveReasoning || undefined,
+                      answering: Boolean(liveText),
+                    }
+                  : {})}
+              />
+            ) : null}
+            {index === 0 && run.todos ? <TodoList todos={run.todos} running={!ended} /> : null}
+            {segment.question ? answer(segment.question) : null}
+          </Fragment>
+        );
+      })}
+      {/* 还在干活时，调工具之前写的那几句进度说明留在这里（照 ChatGPT 做长任务：干活时进度说明一直看得到，做完才和过程
+          一起收进一行），正在写的那句接在后面、变成说明时位置不动，不再先冒出来又被收走 */}
+      {progress.map((note, index) => (
+        <Markdown key={`progress-${index}`} text={note} sources={sources} files={files} />
+      ))}
       {approvals.map((approval) => (
         <ApprovalCard
           key={approval.id}
@@ -103,13 +149,7 @@ export function AssistantTurn({
           onDecide={(allow, remember) => onDecide(approval.id, allow, remember)}
         />
       ))}
-      {questions.map((question) => (
-        <QuestionCard
-          key={question.id}
-          question={question}
-          onAnswer={(answers) => onAnswer(question.id, answers)}
-        />
-      ))}
+      {questions.filter((question) => !placed.has(question.id)).map(answer)}
       {search ? (
         <SearchConditions
           search={search}
@@ -120,7 +160,7 @@ export function AssistantTurn({
           }
         />
       ) : null}
-      {shown ? <Markdown text={shown} sources={sources} streaming={Boolean(liveText)} /> : null}
+      {shown ? <Markdown text={shown} sources={sources} streaming={Boolean(liveText)} files={files} /> : null}
       {invalid.length > 0 ? (
         <span className="kw-citation-notice">
           已去掉 {invalid.length} 处没有出处的引用编号：{invalid.map((n) => `[${n}]`).join(' ')}

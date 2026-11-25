@@ -95,7 +95,7 @@ function ConnectDialog({
   const connect = useAction((value: string) => connectMcp(connection.serverId, value), {
     invalidate: [CONNECTIONS],
     success: `已连接，新开一个对话就能用「${connection.title}」`,
-    failure: '连接没有成功',
+    failure: '没能连接',
   });
   const submit = async () => {
     if (!token.trim()) {
@@ -145,7 +145,7 @@ export function ConnectionsTab() {
   const disconnect = useAction((serverId: string) => disconnectMcp(serverId), {
     invalidate: [CONNECTIONS],
     success: '已断开',
-    failure: '断开没有成功，请稍后重试',
+    failure: '没能断开，请稍后重试',
   });
   const columns: readonly Column<MyConnection>[] = [
     { key: 'title', title: '服务', width: 180, ellipsis: true, render: (c) => c.title },
@@ -203,7 +203,7 @@ export function ConnectionsTab() {
           columns={columns}
           rows={connections.data ?? []}
           minWidth={760}
-          empty={connections.isError ? '连接加载失败，请刷新重试' : '还没有你能用的外部服务'}
+          empty={connections.isError ? '没能加载连接，请刷新重试' : '还没有你能用的外部服务'}
         />
       )}
       {connecting ? <ConnectDialog connection={connecting} onClose={() => setConnecting(undefined)} /> : null}

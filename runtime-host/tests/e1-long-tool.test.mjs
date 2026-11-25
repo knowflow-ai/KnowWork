@@ -8,7 +8,7 @@ import { startHost, collectEvents, isTurnEnd } from './support/harness.mjs'
 
 const sessionEvents = frames => frames.filter(f => f.kind === 'session/event').map(f => f.data)
 const messagesText = request => JSON.stringify(request.body?.messages ?? [])
-const lastCursor = frames => frames.at(-1)?.cursor ?? 0
+const lastCursor = frames => frames.positions
 const isToolCall = f => f.kind === 'session/event' && f.data?.type === 'tool/call'
 
 test('长工具执行中插话：不打断正在执行的工具，内容在工具结束后的下一次模型请求里生效', async () => {

@@ -34,9 +34,9 @@ export function JobList({ kinds, pools }: Props) {
   const list = useJobList({ status, pool, kind });
   const rows = (list.data?.pages ?? []).flatMap((page) => page.items);
   const options = { invalidate: [JOBS_KEY] };
-  const cancel = useAction(cancelJob, { ...options, success: '已请求取消', failure: '取消没有成功' });
-  const retry = useAction(retryJob, { ...options, success: '已重新排队', failure: '重跑没有成功' });
-  const remove = useAction(deleteJob, { ...options, success: '记录已删除', failure: '删除没有成功' });
+  const cancel = useAction(cancelJob, { ...options, success: '已请求取消', failure: '没能取消' });
+  const retry = useAction(retryJob, { ...options, success: '已重新排队', failure: '没能重跑' });
+  const remove = useAction(deleteJob, { ...options, success: '记录已删除', failure: '没能删除' });
 
   const columns: readonly Column<JobRow>[] = [
     {
@@ -163,7 +163,7 @@ export function JobList({ kinds, pools }: Props) {
             loading={list.isFetching && !list.isFetchingNextPage}
             minWidth={1080}
             pageSize={false}
-            empty={list.isError ? '任务列表加载失败，请刷新重试' : '没有符合条件的任务'}
+            empty={list.isError ? '没能加载任务列表，请刷新重试' : '没有符合条件的任务'}
           />
           <div className="kw-admin-more">
             <span className="kw-secondary">已加载 {rows.length} 条</span>

@@ -130,6 +130,17 @@ async def test_failed_runs_are_reported(env):
     assert connection.streams[0].final == "（这一轮没有完成：本轮执行失败）"
 
 
+async def test_content_blocked_runs_send_only_the_admin_message(env):
+    channel = await make_channel(env)
+    env.conversations.scripts = [run(1, ("item.completed", {"kind": "message",
+                                                            "data": {"role": "assistant", "text": "根据资料，本季度"}}),
+                                     ("run.failed", {"data": {"code": "content_blocked",
+                                                              "message": "当前对话内容违反公司规范"}}))]
+    connection = FakeConnection()
+    await env.channels.service.handle(message(channel), connection)
+    assert connection.streams[0].final == "当前对话内容违反公司规范", "说了一半的话不发出去"
+
+
 async def test_turns_waiting_for_someone_are_cancelled(env):
     channel = await make_channel(env)
     env.conversations.scripts = [run(1, ("item.completed", {"kind": "message",

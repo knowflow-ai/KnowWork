@@ -188,12 +188,13 @@ class ManagedContainers[K]:
         self._created_hooks.append(hook)
 
     @contextlib.asynccontextmanager
-    async def using(self, key: K, *, create: bool = True) -> AsyncIterator[str | None]:
-        """拿到运行中的容器 ID（create=False 且不存在时为 None）；使用期间不会被空闲清扫删掉。"""
+    async def using(self, key: K, *, create: bool = True, revive: bool = True) -> AsyncIterator[str | None]:
+        """拿到运行中的容器 ID（create=False 且不存在时为 None）；使用期间不会被空闲清扫删掉。
+        revive=False：停着的容器也当不在（None），不为一次顺带的查看把它拉起来占内存（空闲先停的 Office 编辑器）。"""
         self._busy[key] = self._busy.get(key, 0) + 1
         try:
             async with self.lock(key):
-                container_id, created = await self._ensure(key, create=create)
+                container_id, created = await self._ensure(key, create=create, revive=revive)
             if self.on_sweep is not None:
                 self.on_sweep()
             if created:
@@ -216,8 +217,10 @@ class ManagedContainers[K]:
     def _hook_args(self, key: K) -> tuple[str, str]:
         raise NotImplementedError
 
-    async def _ensure(self, key: K, *, create: bool) -> tuple[str | None, bool]:
+    async def _ensure(self, key: K, *, create: bool, revive: bool = True) -> tuple[str | None, bool]:
         info = await self._engine.inspect_container(self._spec.name(key))
+        if info is not None and not revive and _status(info) != "running":
+            return None, False
         if info is not None:
             existing = await self._reuse(key, info)
             if existing is not None:

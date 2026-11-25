@@ -28,6 +28,8 @@ const ModelsPage = lazy(() => import('../features/admin/models/ModelsPage'));
 const KnowledgePage = lazy(() => import('../features/admin/knowledge/KnowledgePage'));
 const UsagePage = lazy(() => import('../features/admin/UsagePage'));
 const AuditPage = lazy(() => import('../features/admin/audit/AuditPage'));
+const PluginsPage = lazy(() => import('../features/admin/plugins/PluginsPage'));
+const ContentSafetyPage = lazy(() => import('../features/admin/contentSafety/ContentSafetyPage'));
 const RunsPage = lazy(() => import('../features/admin/runs/RunsPage'));
 const InsightsPage = lazy(() => import('../features/admin/insights/InsightsPage'));
 const ToolsPage = lazy(() => import('../features/admin/tools/ToolsPage'));
@@ -53,6 +55,8 @@ const adminRoutes = (): RouteObject[] => [
   { path: 'tools', element: page(<ToolsPage />) },
   { path: 'channels', element: page(<ChannelsPage />) },
   { path: 'runs', element: page(<RunsPage />) },
+  { path: 'plugins', element: page(<PluginsPage />) },
+  { path: 'content-safety', element: page(<ContentSafetyPage />) },
   { path: 'audit', element: page(<AuditPage />) },
   { path: 'login-methods', element: page(<LoginMethodsPage />) },
   { path: 'system', element: page(<SystemPage />) },

@@ -4,6 +4,8 @@
  */
 import { ChevronLeft, ChevronRight, FileDocument, Folder } from '@openai/apps-sdk-ui/components/Icon';
 import { cx } from '../../../ui/cx';
+import { pointerMoved, useScrollIntoView } from './scrollActive';
+import type { MouseEvent } from 'react';
 import { groupMeta, kindOf, type MentionGroup } from './kinds';
 import { MENTION_MENU_ID, optionId, type MentionMenu as Menu, type Row } from './useMentionMenu';
 
@@ -11,13 +13,18 @@ const keep = (event: { preventDefault(): void }) => event.preventDefault();
 
 function RowView({ row, index, menu }: { readonly row: Row; readonly index: number; readonly menu: Menu }) {
   const selected = index === menu.active;
+  const ref = useScrollIntoView<HTMLDivElement>(selected);
   const common = {
+    ref,
     id: optionId(index),
     role: 'option' as const,
     'aria-selected': selected,
     className: cx('kw-mention-row', selected && 'is-active'),
     onMouseDown: keep,
-    onMouseEnter: () => menu.setActive(index),
+    // 鼠标真的动了才改高亮：按键让列表滚到鼠标底下时不算（见 scrollActive.ts）
+    onMouseMove: (event: MouseEvent) => {
+      if (pointerMoved(event) && !selected) menu.setActive(index);
+    },
     onClick: () => menu.choose(row),
   };
   const groupOf = (group: MentionGroup) => groupMeta(group, menu.options.extensions);
@@ -97,7 +104,7 @@ export function MentionMenu({ menu }: { readonly menu: Menu }) {
           <span className="kw-mention-detail">{current.effect}</span>
         </button>
       ) : (
-        <div className="kw-mention-title">用 @ 点名这一问的范围或技能 · 接着打字查找，→ 进入分组</div>
+        <div className="kw-mention-title">用 @ 点名这一问的范围 · 接着打字查找，→ 进入分组</div>
       )}
       <div id={MENTION_MENU_ID} className="kw-mention-list" role="listbox" aria-label="@ 点名">
         {menu.rows.map((row, index) => [

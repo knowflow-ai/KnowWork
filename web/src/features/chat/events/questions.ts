@@ -86,8 +86,14 @@ function onQuestionRequested(state: ChatState, event: V1Event, id: string): Chat
     status: expired ? 'closed' : 'pending',
     continued: false,
     closedReason: expired ? 'expired' : undefined,
+    askedAt: event.time,
   };
-  return { ...state, questions: [...state.questions, question] };
+  const asked = { ...state, questions: [...state.questions, question] };
+  // 记进这一轮的先后：一轮回答在提问处切成两段显示（events/segments.ts）
+  const runId = question.runId;
+  return runId && asked.runs[runId]
+    ? updateRun(asked, runId, (r) => ({ ...r, trail: [...r.trail, { type: 'question' as const, id }] }))
+    : asked;
 }
 
 function onQuestionAnswered(state: ChatState, event: V1Event, id: string): ChatState {
@@ -97,6 +103,7 @@ function onQuestionAnswered(state: ChatState, event: V1Event, id: string): ChatS
     status: 'answered',
     answers: listOf(event.data.answers, parseAnswer),
     closedReason: undefined,
+    answeredAt: event.time,
   }));
   return resumeRun(answered, target);
 }

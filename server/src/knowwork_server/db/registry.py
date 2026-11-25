@@ -28,6 +28,9 @@ MODEL_MODULES = (
     "knowwork_server.jobs.models",
     "knowwork_server.docparse.models",
     "knowwork_server.channels.models",
+    "knowwork_server.content_safety.models",
+    "knowwork_server.plugins.models",
+    "knowwork_server.hosts.models",
 )
 
 # 带 workspace_id 的业务表。identity 的表是全局的（账号跨空间），不在此列。
@@ -80,6 +83,10 @@ RLS_TABLES = (
     "channel",
     "channel_session",
     "channel_stranger",
+    "content_safety_policy",
+    "plugin_installation",
+    "plugin_switch",
+    "plugin_workspace_setting",
 )
 
 

@@ -1,6 +1,7 @@
-"""事件泵：坏帧不卡死、异常退避而不静默死掉、空闲回收与再拉起、宿主重启通知、gap 单独标记。"""
+"""事件泵：坏帧不卡死、异常退避而不静默死掉、空闲回收与再拉起、按来源与官方序号续读、宿主重启通知。"""
 
 import asyncio
+import hashlib
 import logging
 
 import httpx
@@ -11,9 +12,9 @@ from knowwork_server.conversations.listeners import Broadcaster
 from knowwork_server.conversations.models import RunEvent
 from knowwork_server.conversations.pump import EventPump, PumpTimings
 from knowwork_server.conversations.writer import BatchWriter
-from knowwork_server.kernel.contract import EpochMismatch, KernelError, SessionNotFound
+from knowwork_server.kernel.contract import KernelError, SessionNotFound
 
-from .fakes import HOLD, FakeKernel, frame, session_event, status
+from .fakes import HOLD, FakeKernel, frame, instance, session_event, status
 
 pytestmark = pytest.mark.anyio
 
@@ -56,13 +57,14 @@ async def wait_until(predicate, timeout=5.0):
 
 
 async def test_frames_are_numbered_stored_and_projected(sessionmaker, conversation_id):
-    kernel = FakeKernel([[session_event(1, "turn/start", {"turn": 1}), status(2, "running"),
+    kernel = FakeKernel([[instance("i1"), session_event(1, "turn/start", {"turn": 1}), status(0, "running"),
                           session_event(3, "turn/end", {"turn": 1, "reason": {"kind": "completed"}}), HOLD]])
     async with Harness(kernel, sessionmaker) as h:
         h.pump.ensure(conversation_id, "default")
-        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 3)
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 2)
         rows = await h.rows(conversation_id)
-    assert [(r.seq, r.host_cursor) for r in rows] == [(1, 1), (2, 2), (3, 3)]
+    assert [(r.seq, r.host_epoch, r.host_cursor) for r in rows] == [(1, "host", 1), (2, "host", 3)], \
+        "进程内的帧（实例号、Agent 状态）不落库、不占序号；游标是官方序号"
     assert [u["type"] for r in rows for u in r.ui] == ["run.started", "run.completed"]
     assert rows[0].data["type"] == "turn/start", "原始帧必须完整落库"
 
@@ -101,7 +103,7 @@ async def test_resubscribes_from_last_position(sessionmaker, conversation_id):
     async with Harness(kernel, sessionmaker) as h:
         h.pump.ensure(conversation_id, "default")
         await wait_until(lambda: h.pump.produced_upto(conversation_id) == 2)
-    assert kernel.subscribe_calls == [(0, None), (5, "e1")]
+    assert kernel.subscribe_calls == [{}, {"host": 5}]
 
 
 async def test_position_is_restored_from_database(sessionmaker, conversation_id):
@@ -114,51 +116,99 @@ async def test_position_is_restored_from_database(sessionmaker, conversation_id)
         h.pump.ensure(conversation_id, "default")
         await wait_until(lambda: h.pump.produced_upto(conversation_id) == 2)
         rows = await h.rows(conversation_id)
-    assert second.subscribe_calls[0] == (7, "e1")
+    assert second.subscribe_calls[0] == {"host": 7}
     assert [r.seq for r in rows] == [1, 2]
 
 
-async def test_epoch_change_restarts_from_zero_and_notifies(sessionmaker, conversation_id):
-    kernel = FakeKernel([[session_event(3, "turn/start", {"turn": 1}), EpochMismatch("epoch_mismatch", "x", 410)],
-                         [session_event(1, "turn/start", {"turn": 2}, epoch="e2"), HOLD]])
+async def test_host_restart_keeps_the_position_and_asks_for_tokens(sessionmaker, conversation_id):
+    """宿主重启后官方序号照旧：从原位置接着读，不从头来；实例号变了请上层补发令牌（第一次见到的不算）。"""
+    kernel = FakeKernel([[instance("i1"), session_event(3, "turn/start", {"turn": 1}), httpx.RemoteProtocolError("cut")],
+                         [instance("i1"), HOLD]])
+    async with Harness(kernel, sessionmaker) as h:
+        h.pump.ensure(conversation_id, "default")
+        await wait_until(lambda: len(kernel.subscribe_calls) == 2)
+        assert h.restarts == 0, "同一个宿主实例重连不算重启"
+    kernel = FakeKernel([[instance("i1"), httpx.RemoteProtocolError("restarting")],
+                         [instance("i2"), session_event(4, "turn/end", {"turn": 1}), HOLD]])
     async with Harness(kernel, sessionmaker) as h:
         h.pump.ensure(conversation_id, "default")
         await wait_until(lambda: h.pump.produced_upto(conversation_id) == 2)
         rows = await h.rows(conversation_id)
         assert h.restarts == 1
-    assert kernel.subscribe_calls[1] == (0, None)
-    assert {(r.host_epoch, r.host_cursor) for r in rows} == {("e1", 3), ("e2", 1)}
+    assert kernel.subscribe_calls == [{"host": 3}, {"host": 3}]
+    assert [(r.host_epoch, r.host_cursor) for r in rows] == [("host", 3), ("host", 4)]
 
 
-async def test_gap_is_stored_separately_with_warning(sessionmaker, conversation_id, caplog):
-    kernel = FakeKernel([[frame(9, "gap", {"after": 1, "oldest": 10}), HOLD]])
-    caplog.set_level(logging.WARNING)
+async def test_subagent_sources_keep_their_own_positions(sessionmaker, conversation_id):
+    """子 Agent 是另一段会话、序号另起：来源 host:<子会话>，各记各的位置，续读时一起带上。"""
+    child = {"sessionId": "kid", "event": {"type": "turn/start", "seq": 0, "data": {"turn": 1}}}
+    kernel = FakeKernel([[session_event(2, "turn/start", {"turn": 1}), frame(0, "subagent/event", child, epoch="host:kid"),
+                          httpx.RemoteProtocolError("cut")], [HOLD]])
     async with Harness(kernel, sessionmaker) as h:
         h.pump.ensure(conversation_id, "default")
-        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 1)
-        rows = await h.rows(conversation_id)
-    assert rows[0].kind == "kernel.gap" and rows[0].data == {"after": 1, "oldest": 10}
-    assert rows[0].ui[0]["data"]["code"] == "events_gap"
-    assert "dropped frames" in caplog.text
+        await wait_until(lambda: len(kernel.subscribe_calls) == 2)
+    assert kernel.subscribe_calls[1] == {"host": 2, "host:kid": 0}
+
+
+async def test_old_and_new_rows_together_keep_every_source_position(sessionmaker, conversation_id):
+    """升级后老对话又收了新事件：新行的位置和老行里取的合在一起、各来源取大的。只有老行的子 Agent 照样有位置，
+    不合宿主写法的子会话编号换成同宿主的摘要写法。"""
+    async with sessionmaker() as session:
+        def row(seq, epoch, cursor, kind, data):
+            return RunEvent(conversation_id=conversation_id, seq=seq, workspace_id="default", host_epoch=epoch,
+                            host_cursor=cursor, kind=kind, data=data, ui=[])
+        session.add_all([
+            row(1, "b7f3e1", 10, "session/event", {"type": "turn/start", "seq": 4}),
+            row(2, "b7f3e1", 11, "subagent/event", {"sessionId": "kid", "event": {"type": "turn/start", "seq": 2}}),
+            row(3, "b7f3e1", 12, "subagent/event", {"sessionId": "团队/成员", "event": {"type": "x", "seq": 5}}),
+            row(4, "host", 9, "session/event", {"type": "turn/end", "seq": 9}),
+        ])
+        await session.commit()
+    kernel = FakeKernel([[HOLD]])
+    async with Harness(kernel, sessionmaker) as h:
+        h.pump.ensure(conversation_id, "default")
+        await wait_until(lambda: len(kernel.subscribe_calls) == 1)
+    hashed = "host:~" + hashlib.sha256("团队/成员".encode()).hexdigest()[:40]
+    assert kernel.subscribe_calls == [{"host": 9, "host:kid": 2, hashed: 5}]
+
+
+async def test_old_rows_resume_from_the_official_sequence_in_their_frames(sessionmaker, conversation_id):
+    """改用官方序号之前落的行（来源是宿主启动编号、游标是进程内帧号）：从帧里带着的官方序号接着读，不从头重放。"""
+    async with sessionmaker() as session:
+        def row(seq, kind, data, cursor):
+            return RunEvent(conversation_id=conversation_id, seq=seq, workspace_id="default", host_epoch="b7f3e1",
+                            host_cursor=cursor, kind=kind, data=data, ui=[])
+        session.add_all([
+            row(1, "session/event", {"type": "turn/start", "seq": 4, "data": {}}, 10),
+            row(2, "agent/status", {"status": "running"}, 11),
+            row(3, "subagent/event", {"sessionId": "kid", "event": {"type": "turn/start", "seq": 2}}, 12),
+            row(4, "session/event", {"type": "turn/end", "seq": 9, "data": {}}, 13),
+        ])
+        await session.commit()
+    kernel = FakeKernel([[HOLD]])
+    async with Harness(kernel, sessionmaker) as h:
+        h.pump.ensure(conversation_id, "default")
+        await wait_until(lambda: len(kernel.subscribe_calls) == 1)
+    assert kernel.subscribe_calls == [{"host": 9, "host:kid": 2}]
 
 
 async def test_pump_exits_after_idle_and_is_restarted_on_demand(sessionmaker, conversation_id):
-    kernel = FakeKernel([[session_event(1, "turn/start", {"turn": 1}), status(2, "running"),
+    kernel = FakeKernel([[session_event(1, "turn/start", {"turn": 1}), status(0, "running"),
                           session_event(3, "turn/end", {"turn": 1, "reason": {"kind": "completed"}}),
-                          status(4, "idle"), HOLD],
-                         [status(5, "running"), HOLD]])
+                          status(0, "idle"), HOLD],
+                         [session_event(4, "turn/start", {"turn": 2}), HOLD]])
     async with Harness(kernel, sessionmaker) as h:
         h.pump.ensure(conversation_id, "default")
-        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 4)
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 2)
         await wait_until(lambda: not h.pump.is_active(conversation_id), timeout=2)
         h.pump.ensure(conversation_id, "default")
         assert h.pump.is_active(conversation_id)
-        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 5)
-    assert kernel.subscribe_calls == [(0, None), (4, "e1")]
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 3)
+    assert kernel.subscribe_calls == [{}, {"host": 3}]
 
 
 async def test_running_agent_keeps_pump_alive_without_frames(sessionmaker, conversation_id):
-    kernel = FakeKernel([[status(1, "running"), HOLD]])
+    kernel = FakeKernel([[status(0, "running"), session_event(1, "x/y"), HOLD]])
     async with Harness(kernel, sessionmaker) as h:
         h.pump.ensure(conversation_id, "default")
         await wait_until(lambda: h.pump.produced_upto(conversation_id) == 1)
@@ -167,10 +217,11 @@ async def test_running_agent_keeps_pump_alive_without_frames(sessionmaker, conve
 
 
 async def test_demand_during_idle_grace_keeps_pump(sessionmaker, conversation_id):
-    kernel = FakeKernel([[status(1, "idle"), HOLD], [status(2, "running"), HOLD]])
+    kernel = FakeKernel([[status(0, "running"), session_event(1, "x/y"), status(0, "idle"), HOLD],
+                         [session_event(2, "turn/start", {"turn": 2}), HOLD]])
     async with Harness(kernel, sessionmaker) as h:
         h.pump.ensure(conversation_id, "default")
-        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 1)
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 1 and not h.pump._streams[conversation_id].running)
         h.pump.ensure(conversation_id, "default")  # 宽限期内有人发送
         await wait_until(lambda: h.pump.produced_upto(conversation_id) == 2)
         assert h.pump.is_active(conversation_id)
@@ -193,12 +244,12 @@ async def test_someone_asking_during_a_missing_read_reads_again(sessionmaker, co
     calls = []
 
     class Opening(FakeKernel):
-        async def subscribe(self, session_id, *, after=0, epoch=None):
-            calls.append(after)
+        async def subscribe(self, session_id, *, positions=None):
+            calls.append(positions)
             if len(calls) == 1:
                 h.pump.ensure(conversation_id, "default")  # 发送方这时打开了会话、要泵接着读
                 raise SessionNotFound("session_not_found", "x", 404)
-            async for item in super().subscribe(session_id, after=after, epoch=epoch):
+            async for item in super().subscribe(session_id, positions=positions):
                 yield item
 
     kernel = Opening([[session_event(1, "turn/start", {"turn": 1}), HOLD]])
@@ -238,7 +289,7 @@ async def test_observer_sees_every_frame_and_its_errors_do_not_stop_the_pump(ses
         seen.append((cid, workspace_id, kind))
         raise RuntimeError("observer bug")
 
-    kernel = FakeKernel([[session_event(1, "turn/start", {"turn": 1}), status(2, "running"), HOLD]])
+    kernel = FakeKernel([[session_event(1, "turn/start", {"turn": 1}), status(0, "running"), session_event(2, "x/y"), HOLD]])
     writer, broadcaster = BatchWriter(sessionmaker), Broadcaster()
     writer.start()
     pump = EventPump(kernel, sessionmaker, writer, broadcaster, timings=FAST, observer=observer)
@@ -248,7 +299,7 @@ async def test_observer_sees_every_frame_and_its_errors_do_not_stop_the_pump(ses
     finally:
         await pump.close()
         await writer.close()
-    assert seen == [(conversation_id, "default", "session/event"), (conversation_id, "default", "agent/status")]
+    assert seen == [(conversation_id, "default", "session/event")] * 2, "进程内的帧不经观察者（只看落库的）"
 
 
 def live(cursor: int, data: dict) -> object:
@@ -258,7 +309,7 @@ def live(cursor: int, data: dict) -> object:
 async def test_live_pieces_are_pushed_but_never_stored_or_numbered(sessionmaker, conversation_id):
     """逐字片段（官方 agent/assistant-stream 的临时帧）：推给正在看的浏览器，不落库、不分配序号、不推进续读位置；
     泵记着这一步已出的字，给中途打开的页面补快照；agent 空闲后清掉。"""
-    kernel = FakeKernel([[session_event(1, "turn/start", {"turn": 1}), status(2, "running"),
+    kernel = FakeKernel([[session_event(1, "turn/start", {"turn": 1}), status(0, "running"),
                           live(2, {"type": "start", "attemptId": "a1", "turn": 1, "step": 1}),
                           live(2, {"type": "text", "attemptId": "a1", "text": "短剧"}),
                           live(2, {"type": "text", "attemptId": "a1", "text": "规模增长"}), HOLD]])
@@ -268,23 +319,23 @@ async def test_live_pieces_are_pushed_but_never_stored_or_numbered(sessionmaker,
             await wait_until(lambda: (h.pump.live_snapshot(conversation_id) or {}).get("text") == "短剧规模增长")
             pushed = [e for e in await listener.next_batch() if not hasattr(e, "seq")]
         assert [e.payload.get("text") for e in pushed] == ["", "短剧", "规模增长"]
-        assert h.pump.produced_upto(conversation_id) == 2
+        assert h.pump.produced_upto(conversation_id) == 1
         rows = await h.rows(conversation_id)
-        assert [r.kind for r in rows] == ["session/event", "agent/status"], "片段不落库"
+        assert [r.kind for r in rows] == ["session/event"], "片段与状态不落库"
 
     kernel = FakeKernel([[live(0, {"type": "start", "attemptId": "a1", "turn": 1, "step": 1}),
-                          live(0, {"type": "text", "attemptId": "a1", "text": "半截"}), status(1, "idle"), HOLD]])
+                          live(0, {"type": "text", "attemptId": "a1", "text": "半截"}), status(0, "idle"),
+                          session_event(2, "x/y"), HOLD]])
     async with Harness(kernel, sessionmaker) as h:
         h.pump.ensure(conversation_id, "other")
-        await wait_until(lambda: h.pump.produced_upto(conversation_id) is not None
-                         and h.pump.produced_upto(conversation_id) >= 3)
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 2)
         assert h.pump.live_snapshot(conversation_id) is None, "跑完了不再给新打开的页面补半截"
 
 
 
 def _thinking_turn() -> list:
     message = {"message": {"content": [{"type": "reasoning", "text": "想一想"}, {"type": "text", "text": "你好"}]}}
-    return [session_event(1, "turn/start", {"turn": 1}), status(2, "running"),
+    return [session_event(1, "turn/start", {"turn": 1}), status(0, "running"),
             session_event(3, "request/header", {"header": {"tools": [], "config": {"model": "qwen", "provider": "gw"}},
                                                 "reason": "initial"}),
             live(3, {"type": "start", "attemptId": "a1", "turn": 1, "step": 1}),
@@ -305,7 +356,7 @@ async def test_thinking_reaches_the_page_only_when_the_model_shows_it(sessionmak
     async with Harness(FakeKernel([_thinking_turn()]), sessionmaker, thinking_visible=visible) as h:
         async with h.broadcaster.listen(conversation_id) as listener:
             h.pump.ensure(conversation_id, "default")
-            await wait_until(lambda: h.pump.produced_upto(conversation_id) == 4)
+            await wait_until(lambda: h.pump.produced_upto(conversation_id) == 3)
             pushed = [e.payload for e in await listener.next_batch() if not hasattr(e, "seq")]
         rows = await h.rows(conversation_id)
     assert asked == ["qwen"]
@@ -323,7 +374,7 @@ async def test_restarted_pump_recalls_the_model_from_stored_header(sessionmaker,
 
     async with Harness(FakeKernel([_thinking_turn()]), sessionmaker, thinking_visible=hidden) as h:
         h.pump.ensure(conversation_id, "default")
-        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 4)
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 3)
         await h.writer.flush()
 
     asked: list[str | None] = []
@@ -341,7 +392,7 @@ async def test_restarted_pump_recalls_the_model_from_stored_header(sessionmaker,
     async with (Harness(FakeKernel([second_turn]), sessionmaker, thinking_visible=visible) as h,
                 h.broadcaster.listen(conversation_id) as listener):
         h.pump.ensure(conversation_id, "default")
-        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 6)
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 5)
         pushed = [e.payload for e in await listener.next_batch() if not hasattr(e, "seq")]
     assert asked == ["qwen"], "拉起时从库里取这段对话在用的模型"
     assert not any(p.get("reasoning") for p in pushed), "关着显示的模型重启后照样不推思考"
@@ -398,3 +449,15 @@ async def test_each_pushed_source_keeps_its_own_position(sessionmaker, conversat
         rows = await h.rows(conversation_id)
     assert [(r.seq, r.host_epoch, r.host_cursor) for r in rows] == [
         (1, "device", 0), (2, "device", 1), (3, "device:kid", 0), (4, "device:kid", 1)]
+
+
+async def test_host_facts_from_the_session_log_are_restored_to_their_frames(sessionmaker, conversation_id):
+    """宿主插件写进会话日志的事实（自动批准、技能加载、技能门）：事件泵还原成原来的帧落库，投影与技能运行事实照旧认它们。"""
+    loaded = {"sessionId": "s1", "skill": "contract-extract", "version": 3, "mode": "manual", "unlocked": []}
+    kernel = FakeKernel([[session_event(1, "turn/start", {"turn": 1}), session_event(2, "skill/loaded", loaded), HOLD]])
+    async with Harness(kernel, sessionmaker) as h:
+        h.pump.ensure(conversation_id, "default")
+        await wait_until(lambda: h.pump.produced_upto(conversation_id) == 2)
+        rows = await h.rows(conversation_id)
+    assert [r.kind for r in rows] == ["session/event", "skill/loaded"]
+    assert rows[1].data == loaded and rows[1].host_cursor == 2

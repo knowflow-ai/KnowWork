@@ -15,7 +15,8 @@
   分组没正好分完 y 就不分组。画什么由工具定（例如问数按结果的形状推断），界面只照着画，用户可以在兼容的图形之间切换、也可以切回表；
   `drill`（可选）说哪几列的取值能点着往下钻：`{name, ref, columns}`，name 是扩展在前端插槽 chat.card.drill 里登记的
   组件名，ref 原样交给它（例如查询编号），columns 是能点的那几列（列名，对不上表里的列的去掉，一列都不剩就不带）；
-  前端没登记那个组件时值不能点，下钻本身由扩展的接口判权；
+  前端没登记那个组件时值不能点，下钻本身由扩展的接口判权；`empty`（可选，只认 true）说这次没有数据（一行都没有，
+  或只做了汇总、汇总出来全是空值，由工具判断）：界面不画表和图，写一句没有符合条件的数据；0 行的表界面也这么写；
 - provenance：出处。`label` 是最前面那个词（如「口径」），`text` 一行说明，`items` 展开后的明细 `{name, value}`，
   `code` 是展开后的代码块（如 SQL，`code_language` 标语言），`open` 为真时默认展开；`actions` 是这张卡上的操作
   `{name, ref}`（最多 6 个）：name 是扩展在前端插槽 chat.card.actions 里登记的操作名，ref 原样交给它（例如查询编号）。
@@ -92,7 +93,8 @@ def _table(item: dict[str, Any]) -> dict[str, Any] | None:
     names = {c["name"] for c in columns}
     chart, drill = _chart(item.get("chart"), names), _drill(item.get("drill"), names)
     return {**table, **({"title": title} if title else {}), **({"subtitle": subtitle} if subtitle else {}),
-            **({"chart": chart} if chart else {}), **({"drill": drill} if drill else {})}
+            **({"chart": chart} if chart else {}), **({"drill": drill} if drill else {}),
+            **({"empty": True} if item.get("empty") is True else {})}
 
 
 def _drill(value: Any, names: set[str]) -> dict[str, Any] | None:
