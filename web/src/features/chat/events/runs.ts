@@ -411,7 +411,11 @@ export function onApprovalRequested(state: ChatState, event: V1Event, approvalId
     runId: event.runId ?? state.openRun,
     status: 'pending' as const,
   };
-  const next = { ...state, approvals: [...state.approvals, approval] };
+  // 批准请求和「工具开始」是两路事件，常常批准先到：这时写到这里的字也是工具调用之前的说明，同 onToolStarted 收进说明。
+  // 不收的话它还算回答正文、排在批准卡片下面，长的改法清单把卡片顶到上方看不见（2026-11-25 客户：建模助手写了清单和
+  // 「请确认是否发布」，下面没有按钮，以为没弹出来、一直干等）
+  const withApproval = { ...state, approvals: [...state.approvals, approval] };
+  const next = approval.runId ? updateRun(withApproval, approval.runId, answerToNote) : withApproval;
   return callId ? updateStepAnywhere(next, callId, (s) => ({ ...s, status: 'awaiting-approval' })) : next;
 }
 

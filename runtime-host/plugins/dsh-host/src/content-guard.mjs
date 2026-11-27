@@ -65,10 +65,13 @@ export function apply(ctx, config) {
     return { root, token, policy }
   }
 
-  /** 送去查；干净返回 undefined，命中或查不成返回结束原因 */
+  /** 送去查；干净返回 undefined，命中或查不成返回结束原因。令牌取根会话这会儿的：业务服务每隔有效期的三分之一换一次，
+   *  一次模型调用可能比有效期（15 分钟）还长（推理模型、本地部署出字慢，模型网关一次调用的上限默认 20 分钟），调用开头
+   *  记下的那个用到后面已经过期，「令牌无效」会把整轮当成检查不可用拦下（2026-11-25 实测：推理 18 分钟后才开始写的一次调用） */
   async function verify(access, direction, texts, tool, signal) {
+    const token = getSession(access.root)?.toolAccess?.token ?? access.token
     try {
-      const verdict = await client.check(access.token, { direction, tool, texts, holdback: access.policy.holdback, signal })
+      const verdict = await client.check(token, { direction, tool, texts, holdback: access.policy.holdback, signal })
       return verdict.blocked ? { code: 'CONTENT_BLOCKED', message: verdict.message } : undefined
     } catch (error) {
       if (signal?.aborted || !(error instanceof CheckUnavailable)) throw error

@@ -1,8 +1,10 @@
 /**
  * 执行过程：默认收起成一行摘要，点开后按发生先后列出思考、说明与每一步（照 ChatGPT 的思考面板）。
  * - 单色低调：左侧一条细竖线，正文一律次要色小字，不用彩色状态图标；
- * - 思考照 ChatGPT：边想边在摘要下面滚动显示最新几行（上沿渐隐），正文开始写或这一步结束就收起；
- *   想完的思考收进执行过程，点开按先后看全文（2026-11-10 起；之前只显示「思考中」，不展示思考原文）；
+ * - 思考照 ChatGPT：边想边在摘要下面滚动显示最新几行（上沿渐隐）；想完的思考收进执行过程，点开按先后看全文
+ *   （2026-11-10 起；之前只显示「思考中」，不展示思考原文）；
+ * - 思考框一出现就是固定四行高，这一轮跑完或点开过程才收起：两步之间、开始写字时都留着上一步最后想的。原来开始写字
+ *   或一步结束就收、下一步再从零长高，下面的进度说明跟着上下跳（2026-11-26）；
  * - 步骤一行：人话标题（「检索知识库」）+ 目标 + 耗时，进行中的标题带微光；
  *   失败或拒绝只在行尾写一句原因，不变色；参数与结果默认收起，点标题才在代码框里看。
  */
@@ -96,28 +98,36 @@ export function ProcessSummary({
   run,
   preparing,
   thinking,
-  answering = false,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   readonly run: RunView;
   /** 模型正在写的工具调用（还没开始跑，events/live.ts） */
   readonly preparing?: readonly string[];
   /** 正在输出的那一步到目前为止的思考（events/live.ts） */
   readonly thinking?: string;
-  /** 这一步已经开始写正文：思考预览收起，和 ChatGPT 一样 */
-  readonly answering?: boolean;
+  /** 由外面管开合时给（一轮回答要按它决定下面的进度说明显不显示，点开时不列两遍）；不给就自己管 */
+  readonly open?: boolean;
+  readonly onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = controlledOpen ?? ownOpen;
   const running = run.endedAt === undefined;
   const summary = summarizeProcess(run, preparing);
   const expandable = hasDetails(run) || Boolean(thinking);
-  const preview = running && !open && !answering ? thinking : undefined;
+  // 这一轮跑完才收起：这一步还没开始想（或已经在写字）时留着上一步最后想的，框不消失、不缩，下面的说明不跳
+  const preview = running && !open ? thinking || run.thinking.at(-1) : undefined;
+  const toggle = () => {
+    setOwnOpen(!open);
+    onOpenChange?.(!open);
+  };
   return (
     <div>
       <button
         type="button"
         className="kw-process-toggle"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         disabled={!expandable}
       >
         {running ? <LoadingIndicator size={14} /> : null}

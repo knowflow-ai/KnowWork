@@ -1061,6 +1061,62 @@
   height: 16px;
 }
 
+/* 知识库图标（ui/KnowledgeBaseIcon）：圆角底块里的深色书本，和不带底块的目录（线条文件夹）一眼分开。
+   默认 22px 底块；树里、已选标签里小一号，@ 菜单那一格本身就是底块（见下面） */
+.kw-kb-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-tertiary);
+  color: var(--color-text);
+}
+
+.kw-kb-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.kw-tree-node-icon .kw-kb-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.kw-tree-node-icon .kw-kb-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.kw-mention-chip-icon .kw-kb-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.kw-mention-chip-icon .kw-kb-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* @ 菜单每种类型都放在浅灰底块里：知识库这一格换成深一档的底块、图标用正文色，里面不再套一层底块 */
+.kw-mention-icon:has(> .kw-kb-icon) {
+  background: var(--color-surface-tertiary);
+  color: var(--color-text);
+}
+
+.kw-mention-icon > .kw-kb-icon {
+  width: auto;
+  height: auto;
+  background: none;
+}
+
+.kw-mention-icon > .kw-kb-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
 .kw-tree-title.is-group {
   color: var(--color-text-secondary);
 }

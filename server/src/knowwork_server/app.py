@@ -79,7 +79,7 @@ from .documents.editing import ConversationFileEditing
 from .extensions import ApiContext, Extensions, installed_extensions
 from .extensions.contract import DeviceTokenIssuer
 from .gateway.credential_rotation import CredentialRotator
-from .gateway.model_gateway import MODEL_AUDIENCE, PUBLIC_PREFIX, fixed_upstream, router_from_settings
+from .gateway.model_gateway import MODEL_AUDIENCE, PUBLIC_PREFIX, check_owner, fixed_upstream, router_from_settings
 from .hosts import HostKey, PluginHosts, RoutedKernel, build_plugin_hosts
 from .identity.api import build_router as identity_router
 from .identity.config import IdentityConfig, OidcConfig
@@ -96,6 +96,7 @@ from .kernel.contract import KnowledgeCatalog
 from .kernel.host_client import HostKernel
 from .kernel.tokens import TOOLS_AUDIENCE, TokenError, TokenOwner, TokenSigner, derive_key, host_callback_signer
 from .knowledge import KnowledgeModule, Pinned, TurnScope, build_knowledge
+from .knowledge.answer_check import requeue_rated
 from .knowledge.api import build_router as knowledge_router
 from .knowledge.catalog import turn_catalog
 from .knowledge.citation_api import build_router as citations_router
@@ -679,7 +680,9 @@ def build_runtime(settings: Settings, *, extensions: Extensions | None = None) -
                    identity=identity,
                    access=access, models=models, usage=usage, knowledge=knowledge, mcp=mcp,
                    knowledge_reader=knowledge_reader_, links=links, knowledge_mcp=knowledge_mcp,
-                   mention_sources=mention_sources, answer_modes=answer_modes, feedback=FeedbackStore(scoped),
+                   mention_sources=mention_sources, answer_modes=answer_modes,
+                   # 点踩、撤回踩让这一轮重新判断知识库答上了没有（knowledge/answer_check.py）
+                   feedback=FeedbackStore(scoped, on_dislike=partial(requeue_rated, scoped)),
                    scopes=scopes,
                    debug=debug,
                    runs=build_run_records(scoped, models.recorder, debug, service, access, audit.sink,
@@ -858,17 +861,12 @@ def create_internal_app(runtime: Runtime) -> FastAPI:
     app.include_router(build_activation_router(runtime.service, settings.host_token.get_secret_value(), member=member,
                                                owner_of=activation_owner))
     def gateway_owner(token: str) -> tuple[str, str] | None:
-        """模型网关转来的专属宿主模型令牌：认出归属（空间，人）。别的令牌返回 None，照工具令牌校验。"""
-        if not token.isascii():
-            return None
-        try:
-            owner = runtime.signer.verify(token, audience=MODEL_AUDIENCE).owner
-        except TokenError:
-            return None
-        return None if owner is None else (owner.workspace_id, owner.user_id)
+        """模型网关替专属宿主来查：带的是那台宿主的模型令牌，或网关替这次调用另签的送检令牌，认出归属（空间，人）。
+        别的令牌返回 None，照工具令牌校验。"""
+        return check_owner(runtime.signer, token)
 
     # 宿主插件送文字来查敏感词：令牌是这段会话的工具令牌，成员资格按当前授权再判一次。模型网关替专属宿主来查时
-    # 带的是那台宿主的模型令牌（gateway/content_guard.py）
+    # 带的是那台宿主的模型令牌或网关另签的送检令牌（gateway/content_guard.py）
     app.include_router(content_safety_internal_router(runtime.content_safety, runtime.tools, member,
                                                       owner_of=gateway_owner))
     if runtime.sandbox is not None:

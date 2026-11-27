@@ -2,9 +2,11 @@
  * 一轮助手回答：执行过程一行、待办、审批、正文（不套气泡）、文件、工具的说明（如已记住）、结束说明、操作图标。
  * 中途向用户提问时照 ChatGPT「问一句 → 你答 → 接着做」的节奏，在提问处切成两段（events/segments.ts）：提问之前的工作
  * 一行过程、下面是提问卡片；答完后你的回答画成一条用户气泡，后面的工作另起一行过程，紧跟着最终回答。
- * 还在干活时，调工具之前写的进度说明按先后显示在过程那一行下面，一轮结束后收进过程，只留最终回答。
+ * 还在干活时只露一块、高度基本不变：过程一行、思考框（固定四行，ProcessSummary）、最新的一段进度说明（最多两行）；
+ * 新的一段开始写就替换上一段，之前的收进过程，点开按先后看；一轮结束后都收进过程，只留最终回答。原来说明按先后
+ * 全部留着，步骤一多最上面的思考就滚出屏幕（2026-11-26）。点开过程时下面不再重复显示说明。
  */
-import { Fragment, useMemo } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import type { QuestionAnswer } from '../../../api/conversations';
 import type { ApprovalView, CitationSource, QuestionView, RunView } from '../events/types';
 import { AnswerActions } from './AnswerActions';
@@ -94,9 +96,17 @@ export function AssistantTurn({
   // 这一轮改过、交付的文件：正文里反引号点到它们的变成文件链接（照官方交付插件）
   const files = useMemo(() => turnFiles(run.steps, run.deliverables), [run.steps, run.deliverables]);
   const segments = useMemo(() => splitAtQuestions(run, questions), [run, questions]);
+  // 哪几段的过程点开了：最后一段点开时，下面的进度说明让给过程列表，不显示两遍
+  const [openSegments, setOpenSegments] = useState<ReadonlySet<string>>(() => new Set());
+  const setSegmentOpen = (key: string, open: boolean) =>
+    setOpenSegments((current) =>
+      open ? new Set([...current, key]) : new Set([...current].filter((k) => k !== key)),
+    );
   const placed = new Set(segments.flatMap((segment) => (segment.question ? [segment.question.id] : [])));
   const asked = segments.at(-2)?.question;
-  const progress = ended ? [] : (segments.at(-1)?.run.notes ?? []);
+  const lastOpen = openSegments.has(segments.at(-1)?.key ?? '');
+  // 已经在写下一段（或写完还没调工具、不知道是说明还是回答）时，它在正文的位置往下长，替换掉上一段说明
+  const latestNote = ended || lastOpen || shown ? undefined : segments.at(-1)?.run.notes.at(-1);
   // 最后一段还没东西、正在等上一个问题的回答：这一轮停在提问那里（同 ChatGPT），不再转一行「等待你回答」
   const waitingOnQuestion = asked?.status === 'pending' && !asked.continued;
   const answer = (question: QuestionView) =>
@@ -121,13 +131,9 @@ export function AssistantTurn({
             {shown ? (
               <ProcessSummary
                 run={segment.run}
-                {...(last
-                  ? {
-                      preparing: liveTools,
-                      thinking: liveReasoning || undefined,
-                      answering: Boolean(liveText),
-                    }
-                  : {})}
+                open={openSegments.has(segment.key)}
+                onOpenChange={(open) => setSegmentOpen(segment.key, open)}
+                {...(last ? { preparing: liveTools, thinking: liveReasoning || undefined } : {})}
               />
             ) : null}
             {index === 0 && run.todos ? <TodoList todos={run.todos} running={!ended} /> : null}
@@ -135,11 +141,13 @@ export function AssistantTurn({
           </Fragment>
         );
       })}
-      {/* 还在干活时，调工具之前写的那几句进度说明留在这里（照 ChatGPT 做长任务：干活时进度说明一直看得到，做完才和过程
-          一起收进一行），正在写的那句接在后面、变成说明时位置不动，不再先冒出来又被收走 */}
-      {progress.map((note, index) => (
-        <Markdown key={`progress-${index}`} text={note} sources={sources} files={files} />
-      ))}
+      {/* 还在干活时只留最新的一段进度说明（照 ChatGPT 干活时顶上那块只显示最新进展）：正在写的那段在正文的位置长出来，
+          写完调了工具就落在这里，位置不动 */}
+      {latestNote ? (
+        <div className="kw-progress-latest">
+          <Markdown text={latestNote} sources={sources} files={files} />
+        </div>
+      ) : null}
       {approvals.map((approval) => (
         <ApprovalCard
           key={approval.id}
@@ -173,6 +181,7 @@ export function AssistantTurn({
           cards={selectRunCards(run)}
           question={run.asked[0]?.text}
           onAsk={busy ? undefined : onAsk}
+          hideEmpty
         />
       ) : null}
       <DeliverableCards files={run.deliverables ?? []} />

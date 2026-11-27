@@ -34,7 +34,7 @@ from ..models.errors import NotFound, Unavailable
 from ..models.schemas import Route
 from ..models.thinking import with_thinking
 from .content_check import ContentCheckClient
-from .content_guard import ContentGuard, Refusal
+from .content_guard import CHECK_AUDIENCE, ContentGuard, Refusal
 from .request_filter import InvalidRequest, parse_request
 
 log = logging.getLogger(__name__)
@@ -107,6 +107,20 @@ def _within_output_limit(payload: dict[str, Any], limit: int | None) -> dict[str
         return payload
     return {**payload, **{key: min(int(payload[key]), limit) for key in ("max_tokens", "max_completion_tokens")
                           if isinstance(payload.get(key), int) and not isinstance(payload.get(key), bool)}}
+
+
+def check_owner(signer: TokenSigner, token: str) -> tuple[str, str] | None:
+    """内容检查接口（content_safety 的内部接口）认的归属（空间，人）：个人专属宿主的模型令牌，或网关替一次调用另签的
+    送检令牌（content_guard.CHECK_AUDIENCE）。别的令牌返回 None，检查接口照工具令牌校验。"""
+    if not token.isascii():
+        return None
+    for audience in (MODEL_AUDIENCE, CHECK_AUDIENCE):
+        try:
+            owner = signer.verify(token, audience=audience).owner
+        except TokenError:
+            continue
+        return None if owner is None else (owner.workspace_id, owner.user_id)
+    return None
 
 
 def _verify(signer: TokenSigner, header: str) -> TokenClaims:
@@ -241,7 +255,7 @@ def build_router(signer: TokenSigner, upstream: httpx.AsyncClient, upstream_mode
             return _error(400, str(error))
         wrap = None
         if guard is not None and claims.owner is not None:
-            admitted = await guard.admit(claims.owner.workspace_id, header, body)
+            admitted = await guard.admit(claims.owner, header, body)
             if isinstance(admitted, Refusal):
                 return _error(admitted.status, admitted.message)
             wrap = admitted
@@ -270,6 +284,7 @@ def router_from_settings(settings: Settings, signer: TokenSigner, resolver: Rout
     limits = GatewayLimits(total_timeout_seconds=settings.model_call_timeout_seconds,
                            idle_timeout_seconds=settings.model_idle_timeout_seconds)
     # 专属宿主的调用回调业务服务内部端口上的检查接口（独立网关进程要把 KNOWWORK_INTERNAL_URL 指到业务服务）
-    guard = ContentGuard(ContentCheckClient(http, settings.internal_url.rstrip("/") + CONTENT_SAFETY_PATH))
+    guard = ContentGuard(ContentCheckClient(http, settings.internal_url.rstrip("/") + CONTENT_SAFETY_PATH), signer,
+                         call_seconds=settings.model_call_timeout_seconds)
     return build_router(signer, upstream, fallback, resolver=resolver, http=http, limits=limits,
                         path_prefix=path_prefix, guard=guard)

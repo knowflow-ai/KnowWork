@@ -108,7 +108,7 @@ describe('ProcessSummary', () => {
     expect(screen.getByText('想一想')).toBeInTheDocument();
   });
 
-  it('边想边在摘要下面显示思考，开始写正文或点开后不再重复显示', async () => {
+  it('边想边在摘要下面显示思考，点开后不再重复显示', async () => {
     const thinking: RunView = {
       ...endedTurn,
       endedAt: undefined,
@@ -119,15 +119,56 @@ describe('ProcessSummary', () => {
       thinking: [],
       trail: [],
     };
-    const first = renderWithApp(<ProcessSummary run={thinking} thinking="先看看去年的数据" />);
+    renderWithApp(<ProcessSummary run={thinking} thinking="先看看去年的数据" />);
     expect(screen.getByText('思考中')).toBeInTheDocument();
     expect(document.querySelector('.kw-thinking-preview')?.textContent).toBe('先看看去年的数据');
     await userEvent.click(screen.getByRole('button', { name: /思考中/ }));
     expect(document.querySelector('.kw-thinking-preview')).toBeNull();
     expect(document.querySelector('.kw-process-body')?.textContent).toContain('先看看去年的数据');
-    first.unmount();
-    renderWithApp(<ProcessSummary run={thinking} thinking="先看看去年的数据" answering />);
+  });
+
+  it('这一轮还在跑时思考框不收起：两步之间留着上一步最后想的（高度不变，下面不跳）', () => {
+    const between: RunView = {
+      ...endedTurn,
+      endedAt: undefined,
+      status: 'running',
+      steps: [],
+      notes: [],
+      problems: [],
+      thinking: ['先看看去年的数据', '再按区域拆开'],
+      trail: [
+        { type: 'thinking', text: '先看看去年的数据' },
+        { type: 'thinking', text: '再按区域拆开' },
+      ],
+    };
+    renderWithApp(<ProcessSummary run={between} />);
+    expect(document.querySelector('.kw-thinking-preview')?.textContent).toBe('再按区域拆开');
+  });
+
+  it('没想过的（不带思考的模型）不出思考框；这一轮结束就收起', () => {
+    const quiet: RunView = {
+      ...endedTurn,
+      endedAt: undefined,
+      status: 'running',
+      steps: [],
+      notes: [],
+      problems: [],
+      thinking: [],
+      trail: [],
+    };
+    const first = renderWithApp(<ProcessSummary run={quiet} />);
     expect(document.querySelector('.kw-thinking-preview')).toBeNull();
+    first.unmount();
+    renderWithApp(<ProcessSummary run={{ ...endedTurn, thinking: ['想一想'] }} thinking="想一想" />);
+    expect(document.querySelector('.kw-thinking-preview')).toBeNull();
+  });
+
+  it('开合可以由外面管：给了 open 就照它，点一下只报给外面', async () => {
+    const onOpenChange = vi.fn();
+    renderWithApp(<ProcessSummary run={endedTurn} open={false} onOpenChange={onOpenChange} />);
+    await userEvent.click(screen.getByRole('button', { name: /已完成/ }));
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+    expect(document.querySelector('.kw-process-body')).toBeNull();
   });
 
   it('运行中显示当前步骤', () => {

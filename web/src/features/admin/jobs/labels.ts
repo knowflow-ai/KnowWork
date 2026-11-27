@@ -6,6 +6,7 @@ const POOLS: Readonly<Record<string, string>> = {
   core: '解析',
   enrichment: '富化',
   maintenance: '维护',
+  analysis: '分析',
 };
 
 export const poolLabel = (pool: string) => (POOLS[pool] ? `${POOLS[pool]}（${pool}）` : pool);

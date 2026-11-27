@@ -273,3 +273,15 @@ async def test_api_is_for_the_system_admin_in_the_browser_only(files_db):
         assert (await client.post(f"/api/workspaces/ws1/jobs/{job_id}/retry", headers=admin)).json()["status"] == "queued"
         assert (await client.post(f"/api/workspaces/ws1/jobs/{job_id}/cancel", headers=admin)).json()["cancel_requested"]
         assert (await client.delete("/api/workspaces/ws1/jobs/job_missing", headers=admin)).status_code == 404
+
+
+async def test_the_panel_leaves_out_what_a_stage_keeps_for_itself(files_db):
+    """阶段记录里 _ 开头的键是处理函数留给自己重试时接着做的（例如每一批模型给的原始结果），运行面板不显示"""
+    async def work(ctx, stage):
+        stage.record(labels=3, _proposed=[{"dataset": "orders", "label": "订单"}])
+
+    r, clock = build(files_db, Recorder(work))
+    job_id = await put(files_db)
+    await r.run_once("ws1")
+    _, steps = await panel(files_db, clock).detail("ws1", job_id)
+    assert [s.detail for s in steps] == [{"n": 1, "labels": 3}]

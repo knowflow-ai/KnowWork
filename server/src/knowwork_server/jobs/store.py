@@ -155,6 +155,14 @@ class JobStore:
                                  try_no=claim.tries, name=name, status="running", detail=detail, started_at=now))
         return stage_id, bool(flag)
 
+    async def finished_stages(self, claim: Claim) -> dict[str, dict]:
+        """这个任务做完的阶段（阶段名 → 结论，按开始的先后，同名的后面盖前面）。在处理函数开头读，这次还没有做完的阶段。"""
+        async with self._tx(claim.workspace_id) as session:
+            rows = (await session.execute(select(JobStage.name, JobStage.detail)
+                                          .where(JobStage.job_id == claim.job_id, JobStage.status == "done")
+                                          .order_by(JobStage.started_at, JobStage.id))).all()
+        return {name: dict(detail or {}) for name, detail in rows}
+
     async def close_stage(self, claim: Claim, stage_id: str, status: str, *, error_code: str | None = None,
                           detail: dict | None = None) -> None:
         values = {"status": status, "error_code": error_code, "finished_at": self._clock()}

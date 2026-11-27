@@ -4,7 +4,8 @@
  * 选目录就是按目录授权，下面的子目录和知识库都算；其余知识源平铺知识库。值是完整资源（`类型:id`）。
  * 给专家选能查的知识库时也用它（folders 为假：目录只能展开、不能选，专家的范围只认知识库和「全部知识库」）。
  */
-import { BookClosed, BookOpen } from '@openai/apps-sdk-ui/components/Icon';
+import { BookOpen } from '@openai/apps-sdk-ui/components/Icon';
+import { KnowledgeBaseIcon } from '../../../ui/KnowledgeBaseIcon';
 import type { SourceBases } from '../../../api/knowledge';
 import type { GrantTreeNode } from '../../../slots/registry';
 import { TreeSelect, type TreeSelectNode } from '../../../ui/TreeSelect';
@@ -41,7 +42,7 @@ export function knowledgeNodes(
       : s.bases.map((b) => ({
           key: `knowledge_base:${b.id}`,
           label: b.name,
-          icon: <BookClosed />,
+          icon: <KnowledgeBaseIcon />,
           children: [],
         }));
     const all = `knowledge_base:${s.sourceId}.*`;

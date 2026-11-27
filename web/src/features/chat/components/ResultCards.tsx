@@ -44,6 +44,9 @@ interface Props {
   readonly question?: string;
   /** 在这个对话里问一句（接着问的建议点了用）；不给时建议只列出来 */
   readonly onAsk?: (text: string) => void;
+  /** 不画没有数据的卡片（连同它的口径）：对话回答里用，回答里那句「没有」就够了，一张全是横杠的表只占地方
+   * （2026-11-26）；看板上钉住的卡片查不到数据时还要写一句没有符合条件的数据，不给 */
+  readonly hideEmpty?: boolean;
 }
 
 interface Group {
@@ -65,11 +68,19 @@ function grouped(cards: readonly ResultCard[]): readonly Group[] {
   return out;
 }
 
-export function ResultCards({ cards, question = '', onAsk, chartPreference, onChartPreference }: Props) {
-  if (cards.length === 0) return null;
+export function ResultCards({
+  cards,
+  question = '',
+  onAsk,
+  chartPreference,
+  onChartPreference,
+  hideEmpty = false,
+}: Props) {
+  const groups = grouped(cards).filter((group) => !(hideEmpty && group.table && isEmpty(group.table)));
+  if (groups.length === 0) return null;
   return (
     <div className="kw-result-cards">
-      {grouped(cards).map((group, index) =>
+      {groups.map((group, index) =>
         // 卡片只追加、不重排，序号当键足够稳定
         group.suggestions ? (
           <SuggestionsView key={index} card={group.suggestions} onAsk={onAsk} />

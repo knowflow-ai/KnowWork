@@ -185,6 +185,9 @@
             # 输出上限显式写死：0.2.2 起没声明的模型默认 128000（0.2.1 是 32768），请求里的 max_tokens 会超过很多
             # 模型服务自己的上限而被拒；保持 0.2.1 的值
             defaultMaxTokens: 32768
+            # 一次调用多久算超时由模型网关管（KNOWWORK_MODEL_CALL_TIMEOUT_SECONDS，最多 3600 秒；开始出字后 60 秒没动静也截断）。
+            # 官方默认 5 分钟收不到数据就断（等第一块也算），模型读长输入时会抢在网关前面断掉，这里放到比网关的上限还宽
+            streamIdleTimeoutMs: 3660000
             models:
               - id: !!js process.env.KNOWWORK_MODEL ?? 'default'
                 name: 工作空间默认模型

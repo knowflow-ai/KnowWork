@@ -8,6 +8,7 @@ import { createServer } from 'node:http'
 /**
  * @param {{ token: string, words: string[], input?: boolean, output?: boolean, message?: string,
  *   checkStatus?: number }} options checkStatus：/check 回这个状态码（模拟检查服务出错）
+ * 返回的 useToken(token) 换成只认另一个令牌（扮演业务服务换了令牌、旧的过期）。
  */
 export async function startContentSafetyStub(options) {
   const checks = []
@@ -15,12 +16,13 @@ export async function startContentSafetyStub(options) {
   const input = options.input ?? true
   const output = options.output ?? true
   const enabled = (input || output) && options.words.length > 0
+  let accepted = options.token
   const server = createServer(async (req, res) => {
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
     const body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : undefined
     const reply = (status, payload) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)) }
-    if (req.headers.authorization !== `Bearer ${options.token}`) {
+    if (req.headers.authorization !== `Bearer ${accepted}`) {
       return reply(401, { error: { code: 'unauthorized', message: '令牌无效' } })
     }
     if (req.method === 'GET' && req.url.endsWith('/policy')) {
@@ -41,6 +43,7 @@ export async function startContentSafetyStub(options) {
   return {
     baseUrl: `http://127.0.0.1:${port}/internal/extensions/content-safety`,
     checks,
+    useToken: token => { accepted = token },
     close: () => new Promise(resolve => { server.closeAllConnections?.(); server.close(() => resolve(undefined)) }),
   }
 }

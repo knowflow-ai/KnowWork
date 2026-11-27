@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
+import userEvent from '../../../test/user';
 import { renderWithApp } from '../../../test/render';
 import { AssistantTurn } from './AssistantTurn';
 import { splitAtQuestions } from '../events/segments';
@@ -70,7 +71,9 @@ function turn(view: RunView, questions: readonly QuestionView[]) {
 function order(): string[] {
   const article = screen.getByRole('article', { name: '智能体回答' });
   return [
-    ...article.querySelectorAll('.kw-process-toggle, .kw-question-reply, .kw-question, .kw-markdown'),
+    ...article.querySelectorAll(
+      '.kw-process-toggle, .kw-question-reply, .kw-question, .kw-markdown, .kw-thinking-preview',
+    ),
   ].map((el) => el.textContent?.trim() ?? '');
 }
 
@@ -117,7 +120,7 @@ describe('一轮回答在提问处切成两段（照 ChatGPT「问一句 → 你
     expect(screen.getByText('思考中')).toBeInTheDocument();
   });
 
-  it('还在干活时，调工具之前写的进度说明留在过程那一行下面；这一轮结束后收进过程，只留最终回答', () => {
+  it('还在干活时，过程那一行下面只留最新的一段说明，正在写的替换它；这一轮结束后收进过程，只留最终回答', () => {
     const working: RunView = {
       ...run,
       status: 'running',
@@ -141,10 +144,66 @@ describe('一轮回答在提问处切成两段（照 ChatGPT「问一句 → 你
         liveText="找到了，接着整理"
       />,
     );
-    expect(order()).toEqual(['思考中', '先查一下知识库', '找到了，接着整理']);
+    expect(order()).toEqual(['思考中', '找到了，接着整理']);
     view.unmount();
+    const settled = turn(working, []);
+    expect(order()).toEqual(['思考中', '先查一下知识库']);
+    settled.unmount();
     turn({ ...working, status: 'completed', endedAt: 9000, answer: '整理好了' }, []);
     expect(screen.queryByText('先查一下知识库')).toBeNull();
     expect(order()).toEqual([expect.stringContaining('已完成 1 个步骤'), '整理好了']);
+  });
+
+  describe('干活时只露一块：过程一行、思考框、最新的一段说明（内容换、高度不跳）', () => {
+    const working: RunView = {
+      ...run,
+      status: 'running',
+      endedAt: undefined,
+      answer: '',
+      thinking: [],
+      notes: ['先查一下知识库', '没找到，换个说法再搜'],
+      trail: [
+        { type: 'note', text: '先查一下知识库' },
+        { type: 'step', callId: 'c1' },
+        { type: 'note', text: '没找到，换个说法再搜' },
+        { type: 'step', callId: 'c2' },
+      ],
+      steps: [step('c1', 1000, 3000), step('c2', 4000, 6000)],
+    };
+    const workingTurn = (live: { liveReasoning?: string; liveText?: string }) =>
+      renderWithApp(
+        <AssistantTurn
+          run={working}
+          approvals={[]}
+          questions={[]}
+          onDecide={vi.fn()}
+          onAnswer={vi.fn(async () => true)}
+          busy={false}
+          {...live}
+        />,
+      );
+
+    it('思考在最上面，下面只留最新的一段说明，之前的收进过程', () => {
+      workingTurn({ liveReasoning: '还是没有，要不要问用户' });
+      expect(order()).toEqual(['思考中', '还是没有，要不要问用户', '没找到，换个说法再搜']);
+      expect(screen.queryByText('先查一下知识库')).toBeNull();
+    });
+
+    it('开始写下一句：思考框不收起（收起的话下面往上跳），正在写的替换上一段说明', () => {
+      workingTurn({ liveReasoning: '还是没有，要不要问用户', liveText: '换成按状态筛' });
+      expect(order()).toEqual(['思考中', '还是没有，要不要问用户', '换成按状态筛']);
+    });
+
+    it('跑着时点开过程：说明和正在想的只在过程里按先后列一遍，下面不再重复', async () => {
+      workingTurn({ liveReasoning: '还是没有，要不要问用户' });
+      await userEvent.click(screen.getByRole('button', { name: /思考中/ }));
+      expect(document.querySelector('.kw-thinking-preview')).toBeNull();
+      expect(screen.getAllByText('先查一下知识库')).toHaveLength(1);
+      expect(screen.getAllByText('没找到，换个说法再搜')).toHaveLength(1);
+      const body = document.querySelector('.kw-process-body')?.textContent ?? '';
+      expect(body.indexOf('没找到，换个说法再搜')).toBeLessThan(body.indexOf('还是没有，要不要问用户'));
+      await userEvent.click(screen.getByRole('button', { name: /思考中/ }));
+      expect(order()).toEqual(['思考中', '还是没有，要不要问用户', '没找到，换个说法再搜']);
+    });
   });
 });

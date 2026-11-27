@@ -308,3 +308,25 @@ async def test_stage_records_detail(files_db):
     async with tx(files_db) as session:
         [row] = (await session.scalars(select(JobStage).where(JobStage.job_id == job_id))).all()
     assert (row.status, row.detail, row.finished_at is not None) == ("done", {"n": 1, "pages": 12}, True)
+
+
+async def test_a_retry_sees_the_stages_finished_in_earlier_tries(files_db):
+    """重试、worker 重启后重新领到时，处理函数读得到之前做完的阶段（阶段名 → 记下的结论），可以跳过做完的那几步
+    （例如分好几批调模型的任务，答完的批次不用再问）；失败的阶段、这次刚开的阶段不算。"""
+    seen = []
+
+    async def answer_one_then_fail(ctx, stage):
+        assert await ctx.finished() == {}, "第一次什么都没做过"
+        async with ctx.stage("batch:1") as one:
+            one.record(labels=2, _proposed=[{"field": "a"}])
+        raise JobError("busy", "服务忙", error_class="service")
+
+    async def look(ctx, stage):
+        seen.append(await ctx.finished())
+
+    r, clock = build(files_db, Recorder(answer_one_then_fail, look))
+    await put(files_db)
+    assert (await r.run_once("ws1")).status == "retry"
+    clock.advance(10)
+    assert (await r.run_once("ws1")).status == "succeeded"
+    assert seen == [{"batch:1": {"labels": 2, "_proposed": [{"field": "a"}]}}]

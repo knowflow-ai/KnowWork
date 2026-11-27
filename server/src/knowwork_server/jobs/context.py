@@ -16,7 +16,8 @@ log = logging.getLogger(__name__)
 
 
 class Stage:
-    """一个阶段的输出摘要（页数、块数、耗时等），阶段结束时写进 job_stage.detail。"""
+    """一个阶段的输出摘要（页数、块数、耗时等），阶段结束时写进 job_stage.detail。以 _ 开头的键是处理函数留给自己重试时
+    接着做的（JobContext.finished），运行面板不显示。"""
 
     def __init__(self, detail: dict) -> None:
         self.detail = detail
@@ -84,6 +85,11 @@ class JobContext:
             await self._store.close_stage(self.claim, stage_id, status, error_code=code, detail=detail)
         except Exception:  # 阶段记录写不进去不影响任务本身，收尾时还会再关一次
             log.warning("failed to close stage %s of job %s", stage_id, self.claim.job_id, exc_info=True)
+
+    async def finished(self) -> dict[str, dict]:
+        """这个任务之前几次尝试里做完的阶段：阶段名 → 记下的结论（同名的取最后一次）。重试、worker 重启后重新领到时，
+        处理函数可以跳过做完的那几步（例如分好几批调模型的任务，答完的批次不再问）；失败的、这次的阶段不算。"""
+        return await self._store.finished_stages(self.claim)
 
     def bind_deadline(self, deadline: asyncio.Timeout) -> None:
         self._deadline = deadline

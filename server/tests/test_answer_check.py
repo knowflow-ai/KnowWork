@@ -1,25 +1,33 @@
 """回合结束后判断知识库答上了没有（knowledge.answer_check）：取这个空间等着的回合，每次调用判 5 轮，给模型看问题、
-最终回答和这一轮检索到的片段原文；分级结论并进每轮汇总的知识事实，判完删掉待判断的那一行。返回看不懂的留着下次再判，
-模型调不通按服务问题重试。"""
+最终回答、这一轮检索到的片段原文，以及前几轮问了什么、用户紧接着说了什么；分级结论、原因、相关片段出自哪个库、用户的
+反应（纠正、换说法）并进每轮汇总的知识事实，判完删掉待判断的那一行。还在等下一条消息的先不判；返回看不懂的留着下次
+再判，模型调不通按服务问题重试。
+
+用户给这一轮点了踩的，判断时也给模型看（选的分类、写的说明），点了踩就不再等下一条消息；结论里记下点了踩和说明。
+已经判过的轮次后来被点踩或撤回了踩，检索过知识库、在 RERATE_DAYS 天内的，从会话记录里取回最后的回答重新排进待判断。"""
 
 import json
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 
-from knowwork_server.conversations.models import Conversation, RunSummary
-from knowwork_server.jobs import JobError
+from knowwork_server.conversations.feedback import FeedbackStore
+from knowwork_server.conversations.models import AnswerFeedback, Conversation, RunEvent, RunSummary
+from knowwork_server.jobs import Done, Job, JobError
 from knowwork_server.knowledge.answer_check import (
     CITED_CHARS,
+    KIND,
     MAX_CHECK_TRIES,
     PER_CALL,
+    RERATE_DAYS,
     SNIPPET_CHARS,
     SNIPPETS_BUDGET,
     AnswerChecker,
     parse_verdicts,
+    requeue_rated,
 )
 from knowwork_server.knowledge.tables import (
     Citation,
@@ -68,6 +76,11 @@ class Models:
         return reply(items) if callable(reply) else reply
 
 
+def checker(sessionmaker, models, *, wait_seconds: float = 0.0) -> AnswerChecker:
+    """测试里的回合都是刚答完的：默认不等下一条消息，要测「等」的用例自己给 wait_seconds"""
+    return AnswerChecker(sessionmaker, models, wait_seconds=wait_seconds)
+
+
 def results(*verdicts):
     return lambda items: json.dumps({"results": [
         {"id": item["id"], **verdict} for item, verdict in zip(items, verdicts, strict=False)]}, ensure_ascii=False)
@@ -90,7 +103,8 @@ async def seed(sessionmaker, turns: int) -> Ctx:
             Citation(catalog_id=c1, workspace_id=ws, number=13, source_id="builtin", doc_ref="kb1/c", span_ref="c1",
                      title="报销规定", text="报销须在发生后 30 天内提交")])
         for turn in range(1, turns + 1):
-            session.add(RunSummary(conversation_id=c1, turn=turn, workspace_id=ws, user_id="alice", question="问",
+            session.add(RunSummary(conversation_id=c1, turn=turn, workspace_id=ws, user_id="alice",
+                                   question=f"第 {turn} 个问题",
                                    status="completed", started_at=datetime.now(UTC),
                                    facts={"knowledge": {"searches": 1, "cited": 1}}))
             session.add(KnowledgeSearchLog(id=f"{ws}-log{turn}", workspace_id=ws, conversation_id=c1, turn=turn,
@@ -119,9 +133,9 @@ async def pending(sessionmaker, ctx: Ctx) -> list[int]:
 
 async def test_judges_in_batches_and_merges_the_verdict_into_the_turn_facts(sessionmaker):
     ctx = await seed(sessionmaker, PER_CALL + 1)
-    gap = {"verdict": "partial", "missing": "会员续费的退款规则", "reason": "kb_lacks"}
+    gap = {"verdict": "partial", "missing": "会员续费的退款规则", "reason": "content_missing"}
     models = Models(results(*[{"verdict": "answered"}] * (PER_CALL - 1), gap), results({"verdict": "unanswered"}))
-    assert await AnswerChecker(sessionmaker, models).handle(ctx) is None
+    assert await checker(sessionmaker, models).handle(ctx) is None
     assert [len(call) for call in models.calls] == [PER_CALL, 1]
     first = models.calls[0][0]
     assert (first["question"], first["answer"]) == ("第 1 个问题", "第 1 个回答 [13]")
@@ -134,8 +148,9 @@ async def test_judges_in_batches_and_merges_the_verdict_into_the_turn_facts(sess
     facts = await facts_of(sessionmaker, ctx)
     assert facts[1] == {"searches": 1, "cited": 1, "verdict": "answered"}
     assert facts[PER_CALL] == {"searches": 1, "cited": 1, "verdict": "partial", "missing": "会员续费的退款规则",
-                               "reason": "kb_lacks"}
-    assert facts[PER_CALL + 1]["verdict"] == "unanswered" and facts[PER_CALL + 1]["reason"] == "kb_lacks"
+                               "reason": "content_missing"}
+    assert facts[PER_CALL + 1]["verdict"] == "unanswered" and facts[PER_CALL + 1]["reason"] == "content_missing", \
+        "没写原因的按「片段里没有」记，交给核实"
     assert await pending(sessionmaker, ctx) == []
 
 
@@ -167,7 +182,7 @@ async def seed_long(sessionmaker, answer: str, texts: dict[int, str], *, images:
 
 async def item_seen(sessionmaker, ctx: Ctx) -> dict:
     models = Models(results({"verdict": "answered"}))
-    await AnswerChecker(sessionmaker, models).handle(ctx)
+    await checker(sessionmaker, models).handle(ctx)
     return models.calls[0][0]
 
 
@@ -221,7 +236,7 @@ async def test_turns_without_a_readable_verdict_wait_for_the_next_batch(sessionm
     ctx = await seed(sessionmaker, 2)
     models = Models(lambda items: "好的：" + json.dumps({"results": [
         {"id": items[0]["id"], "verdict": "answered"}, {"id": items[1]["id"], "verdict": "maybe"}]}))
-    await AnswerChecker(sessionmaker, models).handle(ctx)
+    await checker(sessionmaker, models).handle(ctx)
     assert await pending(sessionmaker, ctx) == [2]
     assert "verdict" not in (await facts_of(sessionmaker, ctx))[2]
 
@@ -231,7 +246,7 @@ async def test_a_turn_that_never_gets_a_verdict_is_given_up_so_it_cannot_block_n
     ctx = await seed(sessionmaker, 1)
     models = Models(*["看不懂"] * MAX_CHECK_TRIES)
     for tried in range(1, MAX_CHECK_TRIES + 1):
-        await AnswerChecker(sessionmaker, models).handle(ctx)
+        await checker(sessionmaker, models).handle(ctx)
         assert await pending(sessionmaker, ctx) == ([] if tried == MAX_CHECK_TRIES else [1])
     assert len(models.calls) == MAX_CHECK_TRIES
     assert "verdict" not in (await facts_of(sessionmaker, ctx))[1]
@@ -243,8 +258,8 @@ async def test_a_regenerated_answer_judged_again_drops_the_old_gap(sessionmaker)
     async with sessionmaker() as session, session.begin():
         summary = await session.get(RunSummary, (f"{ctx.workspace_id}-c1", 1))
         summary.facts = {"knowledge": {"searches": 1, "cited": 1, "verdict": "partial", "missing": "旧的",
-                                       "reason": "kb_lacks"}}
-    await AnswerChecker(sessionmaker, Models(results({"verdict": "answered"}))).handle(ctx)
+                                       "reason": "content_missing", "follow": "corrected", "correction": "旧的"}}
+    await checker(sessionmaker, Models(results({"verdict": "answered"}))).handle(ctx)
     assert (await facts_of(sessionmaker, ctx))[1] == {"searches": 1, "cited": 1, "verdict": "answered"}
 
 
@@ -252,16 +267,151 @@ async def test_a_model_that_cannot_be_reached_is_retried_as_a_service_problem(se
     ctx = await seed(sessionmaker, 1)
     models = Models(ModelCallError("model_unavailable", "连不上模型服务", retryable=True))
     with pytest.raises(JobError) as raised:
-        await AnswerChecker(sessionmaker, models).handle(ctx)
+        await checker(sessionmaker, models).handle(ctx)
     assert (raised.value.code, raised.value.error_class, raised.value.retryable) == (
         "model_unavailable", "service", True)
     assert await pending(sessionmaker, ctx) == [1]
 
 
 def test_parse_verdicts_skips_what_it_cannot_use():
-    text = '```json\n{"results": [{"id": "a", "verdict": "unanswered", "missing": " 年假\\n天数 ", "reason": "x"},' \
-           ' {"id": "zzz", "verdict": "answered"}, {"id": "b"}]}\n```'
+    text = '```json\n{"results": [{"id": "a", "verdict": "unanswered", "missing": " 年假\\n天数 ", "reason": "x",' \
+           ' "refs": [2, "3", null], "follow": "maybe"}, {"id": "zzz", "verdict": "answered"}, {"id": "b"}]}\n```'
     verdicts = parse_verdicts(text, ["a", "b"])
     assert list(verdicts) == ["a"]
-    assert verdicts["a"].facts() == {"verdict": "unanswered", "missing": "年假 天数", "reason": "kb_lacks"}
+    assert verdicts["a"].facts({2: "builtin.kb1"}) == {
+        "verdict": "unanswered", "missing": "年假 天数", "reason": "content_missing", "about": ["builtin.kb1"]}, \
+        "认不出的原因按「片段里没有」，认不出的反应不记，相关片段只认数字"
     assert parse_verdicts("看不懂", ["a"]) == {}
+
+
+async def test_the_judge_sees_what_was_asked_before_and_what_the_user_said_next(sessionmaker):
+    """追问（「他是哪一年成立」）只看这一句判不了；用户下一句说「不对」、换了个说法重问，都说明这一轮没答好"""
+    ctx = await seed(sessionmaker, 3)
+    models = Models(results({"verdict": "answered"}, {"verdict": "answered"}, {"verdict": "answered"}))
+    await checker(sessionmaker, models).handle(ctx)
+    items = {item["question"]: item for item in models.calls[0]}
+    assert "context" not in items["第 1 个问题"] and items["第 1 个问题"]["next_message"] == "第 2 个问题"
+    assert items["第 2 个问题"]["context"] == ["第 1 个问题"] and items["第 2 个问题"]["next_message"] == "第 3 个问题"
+    assert items["第 3 个问题"]["context"] == ["第 1 个问题", "第 2 个问题"] and "next_message" not in items["第 3 个问题"]
+
+
+async def test_a_turn_still_waiting_for_the_next_message_is_judged_later(sessionmaker):
+    """刚答完、用户还没接着说的先不判（纠正、换说法都在下一条里）；有下一条的照判，等着的稍后再排一次"""
+    ctx = await seed(sessionmaker, 2)
+    models = Models(results({"verdict": "answered"}))
+    done = await checker(sessionmaker, models, wait_seconds=600).handle(ctx)
+    assert [item["question"] for item in models.calls[0]] == ["第 1 个问题"]
+    assert await pending(sessionmaker, ctx) == [2]
+    assert isinstance(done, Done) and done.apply is not None, "等着的那几轮稍后再排一次，不靠下一轮来触发"
+
+
+async def test_reasons_reactions_and_the_knowledge_base_it_was_about_are_recorded(sessionmaker):
+    """原因分细（不该知识库答、片段里没有、含糊或过时、没用上、模型自己的知识）；相关片段对到它出自的库；用户纠正
+    摘出原话、换说法记下新说法：这些是后面配置建议（同义词、版本过期……）的信号"""
+    ctx = await seed(sessionmaker, 3)
+    models = Models(results(
+        {"verdict": "partial", "reason": "content_unclear", "missing": "最新的住宿标准", "refs": [2, 13],
+         "follow": "corrected", "correction": "住宿标准现在是 500"},
+        {"verdict": "unanswered", "reason": "content_missing", "missing": "差旅补贴", "refs": [],
+         "follow": "rephrased", "rephrased": "出差补助怎么算"},
+        {"verdict": "unanswered", "reason": "not_for_kb", "follow": "satisfied"}))
+    await checker(sessionmaker, models).handle(ctx)
+    facts = await facts_of(sessionmaker, ctx)
+    assert facts[1] == {"searches": 1, "cited": 1, "verdict": "partial", "reason": "content_unclear",
+                        "missing": "最新的住宿标准", "about": ["builtin.kb1"], "follow": "corrected",
+                        "correction": "住宿标准现在是 500"}, "第 13 段这一轮没检索到，查不到出自哪个库就不算"
+    assert facts[2]["follow"] == "rephrased" and facts[2]["rephrased"] == "出差补助怎么算" and "about" not in facts[2]
+    assert facts[3]["reason"] == "not_for_kb" and "follow" not in facts[3], "满意了、看不出来的不记反应"
+
+
+async def rate(sessionmaker, ctx: Ctx, turn: int, rating: str, *, category: str | None = None,
+               note: str | None = None) -> None:
+    async with sessionmaker() as session, session.begin():
+        session.add(AnswerFeedback(conversation_id=f"{ctx.workspace_id}-c1", run_id=f"run-{turn}",
+                                   workspace_id=ctx.workspace_id, user_id="alice", rating=rating, category=category,
+                                   note=note))
+
+
+async def test_a_dislike_is_shown_to_the_judge_and_the_turn_does_not_wait_for_the_next_message(sessionmaker):
+    """点了踩就是用户的反应：判断看得到分类和说明（点赞不给），不再等下一条消息；结论里记下点了踩和说明，配置建议
+    拿它当证据（写了说明的分量和纠正一样）"""
+    ctx = await seed(sessionmaker, 3)
+    await rate(sessionmaker, ctx, 1, "like")
+    await rate(sessionmaker, ctx, 3, "dislike", category="task-result", note="住宿标准写错了，现在是 600")
+    models = Models(results({"verdict": "answered"}, {"verdict": "answered"},
+                            {"verdict": "unanswered", "reason": "content_unclear", "missing": "住宿标准"}))
+    await checker(sessionmaker, models, wait_seconds=600).handle(ctx)
+    items = {item["question"]: item for item in models.calls[0]}
+    assert set(items) == {"第 1 个问题", "第 2 个问题", "第 3 个问题"}, "第 3 轮没有下一条，但点了踩，不等"
+    assert items["第 3 个问题"]["feedback"] == {"category": "任务结果", "note": "住宿标准写错了，现在是 600"}
+    assert "feedback" not in items["第 1 个问题"], "点赞不给判断看"
+    facts = await facts_of(sessionmaker, ctx)
+    assert (facts[3]["disliked"], facts[3]["dislike_note"]) == (True, "住宿标准写错了，现在是 600")
+    assert "disliked" not in facts[1]
+
+
+async def seed_events(sessionmaker, ctx: Ctx, turn: int, answer: str) -> None:
+    """会话记录里这一轮的事件：开始、两条助手消息（后一条是最终回答）、结束。"""
+    frames = [{"type": "turn/start", "data": {"turn": turn}},
+              {"type": "assistant/message", "data": {"message": {"content": "我先查一下"}}},
+              {"type": "assistant/message", "data": {"message": {"content": [{"type": "text", "text": answer}]}}},
+              {"type": "turn/end", "data": {"turn": turn}}]
+    async with sessionmaker() as session, session.begin():
+        for seq, data in enumerate(frames, start=turn * 10):
+            session.add(RunEvent(conversation_id=f"{ctx.workspace_id}-c1", seq=seq, workspace_id=ctx.workspace_id,
+                                 host_epoch="e1", host_cursor=seq, kind="session/event", data=data, ui=[]))
+
+
+async def test_a_late_dislike_puts_a_judged_turn_back_with_its_answer_from_the_conversation_record(sessionmaker):
+    """判完以后才点的踩（或撤回了踩）：重新排进待判断，回答从会话记录里取回最后一条助手回答；这一轮的判断任务也排上"""
+    ctx = await seed(sessionmaker, 2)
+    await checker(sessionmaker, Models(results({"verdict": "answered"}, {"verdict": "answered"}))).handle(ctx)
+    assert await pending(sessionmaker, ctx) == []
+    await seed_events(sessionmaker, ctx, 1, "第 1 个回答（最终）[13]")
+    await seed_events(sessionmaker, ctx, 2, "第 2 个回答")
+    assert await requeue_rated(sessionmaker, ctx.workspace_id, f"{ctx.workspace_id}-c1", 1) is True
+    assert await pending(sessionmaker, ctx) == [1]
+    async with sessionmaker() as session:
+        check = await session.scalar(select(KnowledgeAnswerCheck).where(
+            KnowledgeAnswerCheck.workspace_id == ctx.workspace_id))
+        assert (check.question, check.answer) == ("第 1 个问题", "第 1 个回答（最终）[13]")
+        assert await session.scalar(select(Job.id).where(Job.workspace_id == ctx.workspace_id, Job.kind == KIND.name))
+    assert await requeue_rated(sessionmaker, ctx.workspace_id, f"{ctx.workspace_id}-c1", 1) is False, \
+        "已经在等着判断的不重复排（判的时候会看到最新的评分）"
+
+
+async def test_a_late_dislike_is_not_queued_without_a_search_or_after_the_window(sessionmaker):
+    """没检索知识库的轮次本来就不判；太久以前的（超过 RERATE_DAYS 天）不再翻出来"""
+    ctx = await seed(sessionmaker, 2)
+    await checker(sessionmaker, Models(results({"verdict": "answered"}, {"verdict": "answered"}))).handle(ctx)
+    await seed_events(sessionmaker, ctx, 1, "回答一")
+    await seed_events(sessionmaker, ctx, 2, "回答二")
+    async with sessionmaker() as session, session.begin():
+        await session.execute(KnowledgeSearchLog.__table__.delete().where(
+            KnowledgeSearchLog.id == f"{ctx.workspace_id}-log1"))
+        old = await session.get(RunSummary, (f"{ctx.workspace_id}-c1", 2))
+        old.started_at = datetime.now(UTC) - timedelta(days=RERATE_DAYS + 1)
+    assert await requeue_rated(sessionmaker, ctx.workspace_id, f"{ctx.workspace_id}-c1", 1) is False
+    assert await requeue_rated(sessionmaker, ctx.workspace_id, f"{ctx.workspace_id}-c1", 2) is False
+    assert await pending(sessionmaker, ctx) == []
+
+
+async def test_rating_a_turn_down_or_taking_the_dislike_back_tells_the_checker(sessionmaker):
+    """评分的存取：点了踩、改了踩的说明、把踩撤回或改成赞，都通知一次（重新判断这一轮）；只点赞、撤回赞不通知"""
+    ctx = await seed(sessionmaker, 1)
+    told: list[tuple[str, str, int]] = []
+
+    async def on_dislike(workspace_id: str, conversation_id: str, turn: int) -> None:
+        told.append((workspace_id, conversation_id, turn))
+
+    store = FeedbackStore(sessionmaker, on_dislike=on_dislike)
+    async with sessionmaker() as session:
+        conversation = await session.get(Conversation, f"{ctx.workspace_id}-c1")
+    await store.put(conversation, "run-1", "like")
+    await store.delete(conversation, "run-1")
+    assert told == []
+    await store.put(conversation, "run-1", "dislike", note="不对")
+    await store.put(conversation, "run-1", "like")
+    await store.put(conversation, "run-1", "dislike")
+    await store.delete(conversation, "run-1")
+    assert told == [(ctx.workspace_id, f"{ctx.workspace_id}-c1", 1)] * 4

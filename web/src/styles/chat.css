@@ -724,18 +724,32 @@ a.kw-source-item:hover {
   list-style: none;
 }
 
-/* 思考中的预览（照 ChatGPT）：摘要下面几行，只露最新的部分、上沿渐隐；样子同展开后的执行过程 */
+/* 思考中的预览（照 ChatGPT）：摘要下面几行，只露最新的部分、上沿渐隐；样子同展开后的执行过程。
+   高度固定四行、不随内容伸缩（这一轮跑完才收起）：伸缩的话下面的进度说明跟着上下跳 */
 .kw-thinking-preview {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  max-height: calc(var(--font-text-sm-size) * 1.7 * 4);
+  height: calc(var(--font-text-sm-size) * 1.7 * 4);
   margin: 6px 0 0;
   padding: 0 0 0 14px;
   border-left: 2px solid var(--color-border-subtle);
   overflow: hidden;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 45%);
   mask-image: linear-gradient(to bottom, transparent 0, #000 45%);
+}
+
+/* 干活时只留的最新一段进度说明：最多两行，换一段时高度基本不变 */
+.kw-progress-latest {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.kw-progress-latest :where(p, ul, ol) {
+  margin: 0;
 }
 
 .kw-step + .kw-step {

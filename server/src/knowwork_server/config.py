@@ -124,7 +124,9 @@ class Settings(BaseSettings):
     # 单次模型调用：总时长上限、两个流式块之间的空闲上限；每轮最多几次模型调用（0 表示不限）。
     # 每轮调用次数默认不限，同 DSH 官方（一轮做到模型自己停下为止）：原来默认 50，长一点的活（边改文档边跑命令）
     # 做到第 51 步就被取消，界面上像是被人停了。要兜底的部署自己设
-    model_call_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
+    # 一次模型调用从发出到流结束的上限（模型读输入也算）。2026-11-25 从 300 放大：推理模型、本地部署出字慢，很长的
+    # 回答要好几分钟；卡住的调用由开始出字后的空闲超时（下一行）截断，不靠它
+    model_call_timeout_seconds: float = Field(default=1200.0, gt=0, le=3600)
     model_idle_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
     model_max_calls_per_turn: int = Field(default=0, ge=0, le=10000)
     model_probe_timeout_seconds: float = Field(default=15.0, gt=0, le=120)

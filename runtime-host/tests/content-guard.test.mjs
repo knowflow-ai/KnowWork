@@ -6,6 +6,7 @@
  * - 工具参数命中：工具不执行；
  * - 没开：检查接口一次都不调，流程照旧；检查接口出错：开了检查的不放行，以 CHECK_UNAVAILABLE 结束；
  * - 个人专属宿主里模型网关拦下（调用前回 HTTP 错误，或输出中途发错误事件）：换成同样的结束和话术，不重试。
+ * - 一次模型调用比令牌有效期长（推理很久才开始写）：中途换了令牌，回答用新令牌送检，不报检查不可用。
  */
 
 import { test } from 'node:test'
@@ -30,11 +31,13 @@ async function startAllowAll() {
 const WORD = '星河计划'
 const MESSAGE = '当前对话内容违反公司规范，请修改后重新输入'
 const TOKEN = 'guard-tools-token-'.padEnd(40, 'g')
+const NEXT_TOKEN = 'guard-tools-token-next-'.padEnd(40, 'n')
 
 async function startEnv(script, { guard = {}, execute, entry = true, overlays = false } = {}) {
   const gateway = await startOpenAiStub({ script })
   const tools = await startToolsStub({
-    toolsByToken: { [TOKEN]: [bizTool('kw_biz_lookup', 'read', '查资料'), bizTool('kw_biz_send', 'read', '把内容发给某人')] },
+    toolsByToken: Object.fromEntries([TOKEN, NEXT_TOKEN].map(token =>
+      [token, [bizTool('kw_biz_lookup', 'read', '查资料'), bizTool('kw_biz_send', 'read', '把内容发给某人')]])),
     execute,
   })
   const safety = await startContentSafetyStub({ token: TOKEN, words: [WORD], message: MESSAGE, ...guard })
@@ -242,6 +245,31 @@ test('长任务目标：用 /goal 写进去的目标命中，自动接着做的�
     const shown = (await env.host.call('POST', '/v1/sessions/guard-goal/commands', { line: '/goal' })).body.text
     assert.match(shown, /Status: blocked/)
     assert.ok(shown.includes(MESSAGE), '卡住的原因是管理员写的阻断提示')
+  } finally {
+    await env.stop()
+  }
+})
+
+test('一次模型调用比令牌有效期长：中途换了令牌，回答用新令牌送检，不报检查不可用', async () => {
+  // 2026-11-25 实测：慢模型下「建议指标」那次调用推理了 18 分钟才开始写，送检时还拿着调用开头记下的令牌（15 分钟有效），
+  // 「令牌无效」→ 整轮以「内容检查暂时不可用」结束。业务服务每隔有效期的三分之一换一次令牌，送检要用会话现在的那个
+  let release
+  const thinking = new Promise(resolve => { release = resolve })
+  const env = await startEnv([{ text: '想了很久之后写的回答', wait: thinking }])
+  try {
+    await open(env.host, 'guard-rotate')
+    const sent = await env.host.call('POST', '/v1/sessions/guard-rotate/messages', { text: '慢慢想' })
+    assert.equal(sent.status, 202, JSON.stringify(sent.body))
+    for (let i = 0; i < 100 && env.chat().length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(env.chat().length, 1, '模型调用已经开始')
+    const rotated = await env.host.call('PUT', '/v1/sessions/guard-rotate/tool-credential', { token: NEXT_TOKEN })
+    assert.equal(rotated.status, 200, JSON.stringify(rotated.body))
+    env.safety.useToken(NEXT_TOKEN)
+    release()
+    const frames = await collectEvents(env.host, 'guard-rotate', isTurnEnd)
+    assert.notEqual(turnEnd(frames)?.reason?.error?.code, 'CHECK_UNAVAILABLE', JSON.stringify(turnEnd(frames)))
+    assert.ok(JSON.stringify(frames).includes('想了很久之后'), '回答照常送到')
+    assert.ok(env.safety.checks.some(check => check.direction === 'output'), '回答送检了')
   } finally {
     await env.stop()
   }

@@ -15,6 +15,7 @@ import { createServer } from 'node:http'
  *   pick 按请求内容选回答（多个 Agent 并发请求时按到达顺序不确定，用它按角色分别编排）；给了就不用 script。
  *   { refuse: { message, status?, text? } } 扮演业务网关拦下这次调用（个人专属宿主的内容检查，server 的 gateway/content_guard.py）：
  *   给了 status 就不调模型、直接回这个 HTTP 状态和错误；没给就先吐 text、再在流里发一条错误事件后断开。
+ *   { text, wait } 先回响应头、等 wait（一个 Promise）落定再出字：扮演推理很久才开始写回答的一次调用。
  */
 export async function startOpenAiStub(options) {
   const requests = []
@@ -63,6 +64,7 @@ export async function startOpenAiStub(options) {
       return res.end()
     }
     if ('text' in step) {
+      if (step.wait !== undefined) await step.wait
       for (const piece of step.text.match(/.{1,8}/gu) ?? []) {
         send({ ...base, choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] })
       }

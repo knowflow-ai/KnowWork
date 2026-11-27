@@ -8,7 +8,8 @@ import GrantsPage from './GrantsPage';
 import { resourceKeys, validateGrant, subjectNodes } from './form';
 import { resourceLabel, subjectLabel, type Directory } from './labels';
 import type { ReactElement } from 'react';
-import { BookClosed, BookOpen, Folder, Folders } from '@openai/apps-sdk-ui/components/Icon';
+import { BookOpen, Folder, Folders } from '@openai/apps-sdk-ui/components/Icon';
+import { KnowledgeBaseIcon } from '../../../ui/KnowledgeBaseIcon';
 import { knowledgeNodes } from './KnowledgeBasePicker';
 import { pathOf, type TreeSelectNode } from '../../../ui/TreeSelect';
 
@@ -526,7 +527,7 @@ describe('授权的纯函数', () => {
 });
 
 describe('授权页知识库树的图标', () => {
-  it('和知识库首页、@ 一致：知识源是打开的书，「全部」是多个文件夹，目录是文件夹，知识库是书', () => {
+  it('和知识库首页、@ 一致：知识源是打开的书，「全部」是多个文件夹，目录是线条文件夹，知识库是带底块的书', () => {
     const [source] = knowledgeNodes(
       [
         {
@@ -554,7 +555,7 @@ describe('授权页知识库树的图标', () => {
       BookOpen,
       Folders,
       Folder,
-      BookClosed,
+      KnowledgeBaseIcon,
     ]);
   });
 });

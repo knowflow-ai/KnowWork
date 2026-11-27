@@ -17,7 +17,10 @@
 - 命中以后内容一律不转，读完上游、把用量转出去（用量照记），最后发一条错误事件，文字同样以 BLOCKED 开头。官方适配器把它
   当成这次调用失败（非重试类），宿主插件认出这个开头，换成和它自己拦下时一样的结束（CONTENT_BLOCKED 加阻断提示），
   员工看到的是同一句话；插件被绕开时员工看到的是调用失败；
-- 检查接口不通：不放行（不可用不等于通过），错误文字以 UNAVAILABLE 开头。
+- 检查接口不通：不放行（不可用不等于通过），错误文字以 UNAVAILABLE 开头；
+- 送检带的令牌：调用前那几次用调用带来的模型令牌；流式输出用网关在调用开始时另签的送检令牌（受众 CHECK_AUDIENCE，只能用在
+  检查接口，有效期是一次调用的上限再多一点）。模型令牌 15 分钟就过期，一次调用最长 20 分钟（推理模型、本地部署要想很久），
+  拿开头那个查到后面会「令牌无效」，整次调用以检查不可用断掉（2026-11-25 宿主插件那一侧实测撞上过）。
 """
 
 import json
@@ -26,6 +29,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..kernel.tokens import TokenOwner, TokenSigner
 from .content_check import CheckRefused, CheckUnavailable, ContentCheckClient, GatePolicy, Verdict
 
 # 宿主插件认这两个开头（content-guard-stream.mjs 的 gatewayEndings），改了两边一起改
@@ -35,6 +39,8 @@ UNAVAILABLE_MESSAGE = "内容检查暂时不可用，请稍后再试"
 CHECK_EVERY_CHARS = 64
 CHECK_EVERY_SECONDS = 0.2
 MAX_JSON_DEPTH = 32
+CHECK_AUDIENCE = "content-check"  # 网关替一次调用另签的送检令牌：检查接口认（model_gateway.check_owner），调不了模型
+CHECK_TOKEN_MARGIN = 120  # 送检令牌比一次调用的上限多活这么久：读完上游、转出用量还要查最后一段
 
 Scan = Callable[[str, list[str], str | None], Awaitable[Verdict]]
 Wrap = Callable[[AsyncIterator[bytes]], AsyncIterator[bytes]]
@@ -274,12 +280,15 @@ async def guard_stream(source: AsyncIterator[bytes], scan: Scan, holdback: int, 
 # ---- 网关接上 ----
 
 class ContentGuard:
-    def __init__(self, client: ContentCheckClient) -> None:
-        self._client = client
+    def __init__(self, client: ContentCheckClient, signer: TokenSigner, *, call_seconds: float) -> None:
+        """signer：签送检令牌（同校验模型令牌的那一把）；call_seconds：一次模型调用最长多久（送检令牌的有效期按它算）。"""
+        self._client, self._signer = client, signer
+        self._check_ttl = int(call_seconds) + CHECK_TOKEN_MARGIN
 
-    async def admit(self, workspace_id: str, authorization: str, body: dict[str, Any]) -> Refusal | Wrap | None:
-        """调模型之前：查请求，命中或查不成回 Refusal；要查输出时回包流的函数；都不用查回 None。"""
-        client = self._client
+    async def admit(self, owner: TokenOwner, authorization: str, body: dict[str, Any]) -> Refusal | Wrap | None:
+        """调模型之前：查请求，命中或查不成回 Refusal；要查输出时回包流的函数；都不用查回 None。
+        owner：模型令牌的归属（哪个空间的哪个人），按那个空间的策略查。"""
+        client, workspace_id = self._client, owner.workspace_id
         try:
             policy = await client.policy(workspace_id, authorization)
             if not policy.input and not policy.output:
@@ -299,9 +308,12 @@ class ContentGuard:
         if body.get("stream") is not True:
             # 官方适配器总是流式调用；不流式的整段回答没法边转边查，干脆不接
             return Refusal(400, "开了输出检查时只支持流式调用")
-        return self._wrap(workspace_id, authorization, policy)
+        checking = self._signer.issue(audience=CHECK_AUDIENCE, workspace_id=workspace_id, ttl_seconds=self._check_ttl,
+                                      owner=owner)
+        return self._wrap(workspace_id, f"Bearer {checking}", policy)
 
     def _wrap(self, workspace_id: str, authorization: str, policy: GatePolicy) -> Wrap:
+        """authorization：这次调用的送检令牌（不是模型令牌，见模块说明）"""
         client = self._client
 
         async def scan(direction: str, segments: list[str], tool: str | None) -> Verdict:

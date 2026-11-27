@@ -302,6 +302,21 @@ describe('chatReducer 审批', () => {
     expect(fold([ev.approvalResolved(4, 'ap1', 'timeout')], before).approvals[0]!.status).toBe('cancelled');
   });
 
+  it('审批先于工具调用到达时，之前写的那段字也算说明：不留在回答正文里，批准卡片才不会被它压在上面', () => {
+    // 客户现场：建模助手写了一长段改法清单、结尾「请确认是否发布」再调 model_update，批准请求先到；清单还算正文、
+    // 排在批准卡片下面，右栏滚在底部只看得到那句话，以为没弹出按钮
+    const waiting = fold([
+      ev.runStarted(1),
+      ev.message(2, '要改的清单……\n\n请确认是否发布'),
+      ev.approvalRequested(3, 'ap1', 'model_update', 'c9'),
+    ]);
+    expect(waiting.runs['run-1']!.answer).toBe('');
+    expect(waiting.runs['run-1']!.notes).toEqual(['要改的清单……\n\n请确认是否发布']);
+    const started = fold([ev.toolStarted(4, 'c9', 'model_update')], waiting);
+    expect(started.runs['run-1']!.notes).toHaveLength(1);
+    expect(started.runs['run-1']!.trail.filter((t) => t.type === 'note')).toHaveLength(1);
+  });
+
   it('不带轮次的审批也能显示', () => {
     const state = fold([ev.approvalRequested(1, 'ap1', 'bash', undefined, null)]);
     expect(state.approvals[0]).toMatchObject({ runId: undefined, toolName: 'bash', callId: undefined });

@@ -3,18 +3,12 @@
  * 用户分得清的关键是：每一处都写出类型名，并且说清选了之后的效果（只在哪里找，或者按什么做法来做）。
  * 前四种都是「在哪里找」，MCP 是「优先用什么工具」，技能是「怎么做」，排序上也分开。
  * 扩展登记的类型（例如数据源）名字和效果由扩展给（@ 菜单的接口里带着），图标统一用一个。
+ * 知识库用带底块的书本（ui/KnowledgeBaseIcon），和不带底块的目录（文件夹）一眼分开。
  */
 import type { ReactNode } from 'react';
-import {
-  Bolt,
-  BookClosed,
-  Cube,
-  FileDocument,
-  Folder,
-  Tag,
-  Tools,
-} from '@openai/apps-sdk-ui/components/Icon';
+import { Bolt, Cube, FileDocument, Folder, Tag, Tools } from '@openai/apps-sdk-ui/components/Icon';
 import type { Mention, MentionExtension, MentionType } from '../../../api/mentions';
+import { KnowledgeBaseIcon } from '../../../ui/KnowledgeBaseIcon';
 
 export interface MentionKind {
   /** 类型名，小标签上写在名字前面 */
@@ -27,7 +21,7 @@ export interface MentionKind {
 type BuiltInType = Exclude<MentionType, 'extension'>;
 
 export const MENTION_KINDS: Record<BuiltInType, MentionKind> = {
-  knowledge_base: { label: '知识库', icon: <BookClosed />, effect: '只在这个知识库里找' },
+  knowledge_base: { label: '知识库', icon: <KnowledgeBaseIcon />, effect: '只在这个知识库里找' },
   folder: { label: '目录', icon: <Folder />, effect: '只在这个目录下的知识库里找' },
   document: { label: '文件', icon: <FileDocument />, effect: '只在这份文件里找' },
   tag: { label: '标签', icon: <Tag />, effect: '只在带这个标签的文件里找' },
@@ -59,7 +53,7 @@ export const MENTION_GROUPS: readonly {
   readonly effect: string;
 }[] = [
   { group: 'workspace', label: '工作文件夹', icon: <Folder />, effect: '把文件写进这一问，智能体自己去读' },
-  { group: 'bases', label: '知识库', icon: <BookClosed />, effect: '只在选中的知识库或目录里找' },
+  { group: 'bases', label: '知识库', icon: <KnowledgeBaseIcon />, effect: '只在选中的知识库或目录里找' },
   { group: 'documents', label: '文件', icon: <FileDocument />, effect: '只在选中的文件里找' },
   { group: 'tags', label: '标签', icon: <Tag />, effect: '只在带这个标签的文件里找' },
   { group: 'services', label: 'MCP', icon: <Tools />, effect: '这一轮优先用选中服务的工具' },

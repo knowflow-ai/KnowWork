@@ -64,7 +64,7 @@ describe('ResultCards', () => {
     expect(screen.getByText('结果超过上限，只取了前 2000 行')).toBeInTheDocument();
   });
 
-  it('没有数据（工具标了 empty，或一行都没有）：只写标题、时间和一句没有符合条件的数据，不画表、图、下钻提示', () => {
+  it('没有数据（工具标了 empty，或一行都没有）：看板上只写标题、时间和一句没有符合条件的数据，不画表、图、下钻提示', () => {
     const titled = { title: '缺陷数量合计', subtitle: '2026-11-01 至 2026-11-30' };
     // 只做了汇总、汇总出来是空值：工具标 empty（不然会画成「1 行、值是 —」）
     const totals: TableCard = {
@@ -89,6 +89,24 @@ describe('ResultCards', () => {
     rerender(<ResultCards cards={[{ ...table(0), ...titled }, sql]} />);
     expect(screen.getByText('没有符合条件的数据')).toBeInTheDocument();
     expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  it('对话回答里不画没有数据的卡片（连同它的口径）：回答里那句「没有」就够了，有数的照常画', () => {
+    const none: TableCard = {
+      ...table(0),
+      title: '营收、订单数、销量',
+      rows: [[null, 0, null]],
+      rowCount: 1,
+      empty: true,
+    };
+    const full: TableCard = { ...table(3), title: '营收 · 按区域' };
+    const { rerender } = render(<ResultCards cards={[none, sql, full]} hideEmpty />);
+    expect(screen.queryByRole('region', { name: '营收、订单数、销量' })).toBeNull();
+    expect(screen.queryByText('没有符合条件的数据')).toBeNull();
+    expect(screen.getByRole('region', { name: '营收 · 按区域' })).toBeInTheDocument();
+    expect(screen.queryAllByRole('button', { name: /口径/ })).toHaveLength(0);
+    rerender(<ResultCards cards={[none, sql]} hideEmpty />);
+    expect(document.querySelector('.kw-result-cards')).toBeNull();
   });
 
   it('出处默认一行，点开看明细与代码；标了 open 的默认展开；没有明细的不能点', async () => {

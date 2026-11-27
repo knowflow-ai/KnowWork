@@ -1,6 +1,8 @@
 """模型网关替个人专属宿主查敏感词：带归属的模型令牌，网关拿它回调业务服务的检查接口（真的策略、匹配与审计），
-调用前查整份请求，流式输出边转边查；不带归属的令牌（共享宿主）一次都不查。"""
+调用前查整份请求，流式输出边转边查；不带归属的令牌（共享宿主）一次都不查。流式输出的检查用网关替这次调用另签的送检令牌，
+调用比模型令牌的有效期长也查得成。"""
 
+import asyncio
 import json
 import uuid
 
@@ -13,9 +15,9 @@ from knowwork_server.auth.principal import Principal
 from knowwork_server.content_safety import build_content_safety, build_router, internal_router
 from knowwork_server.gateway.content_check import ContentCheckClient
 from knowwork_server.gateway.content_guard import ContentGuard
-from knowwork_server.gateway.model_gateway import MODEL_AUDIENCE
+from knowwork_server.gateway.model_gateway import MODEL_AUDIENCE, check_owner
 from knowwork_server.gateway.model_gateway import build_router as gateway_router
-from knowwork_server.kernel.tokens import TokenError, TokenOwner, TokenSigner, derive_key
+from knowwork_server.kernel.tokens import TokenOwner, TokenSigner, derive_key
 from knowwork_server.tools.service import ToolAccessError
 
 pytestmark = pytest.mark.anyio
@@ -39,11 +41,7 @@ class NoToolTokens:
 
 
 def owner_of(token: str) -> tuple[str, str] | None:
-    try:
-        owner = SIGNER.verify(token, audience=MODEL_AUDIENCE).owner
-    except TokenError:
-        return None
-    return None if owner is None else (owner.workspace_id, owner.user_id)
+    return check_owner(SIGNER, token)  # 同 app.py 装给检查接口的那个
 
 
 def sse(*payloads) -> bytes:
@@ -71,10 +69,11 @@ class Counting(httpx.AsyncBaseTransport):
     """记下网关往业务服务送了哪些段。"""
 
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
-        self.inner, self.segments, self.calls = inner, [], 0
+        self.inner, self.segments, self.calls, self.authorizations = inner, [], 0, []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.calls += 1
+        self.authorizations.append(request.headers.get("authorization", ""))
         if request.url.path.endswith("/check"):
             self.segments.extend(json.loads(request.content)["segments"])
         return await self.inner.handle_async_request(request)
@@ -108,7 +107,8 @@ async def env(sessionmaker):
 
 def gateway(checks: httpx.AsyncClient, upstream: Upstream) -> httpx.AsyncClient:
     client = httpx.AsyncClient(base_url="http://fixed/v1", transport=httpx.MockTransport(upstream))
-    guard = ContentGuard(ContentCheckClient(checks, "http://kw/internal/extensions/content-safety"))
+    guard = ContentGuard(ContentCheckClient(checks, "http://kw/internal/extensions/content-safety"), SIGNER,
+                         call_seconds=60)
     app = FastAPI()
     app.include_router(gateway_router(SIGNER, client, "fixed-model", guard=guard))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gw")
@@ -255,3 +255,37 @@ async def test_nothing_is_checked_when_the_workspace_has_no_policy(env):
         response = await gw.post(CHAT, headers=auth(ws), json=chat(user=WORD, stream=False))
     assert response.content == reply
     assert counting.calls == 1, "只取了一次策略"
+
+
+class Slow(httpx.AsyncByteStream):
+    """上游先憋 delay 秒再出字：扮演推理很久才开始写的一次调用"""
+
+    def __init__(self, reply: bytes, delay: float) -> None:
+        self.reply, self.delay = reply, delay
+
+    async def __aiter__(self):
+        await asyncio.sleep(self.delay)
+        yield self.reply
+
+
+async def test_a_call_that_outlives_its_model_token_still_gets_its_output_checked(env):
+    """一次调用比模型令牌的有效期（15 分钟）长：推理模型、本地部署要想很久，模型网关一次调用最长默认 20 分钟。原来流式输出
+    拿着调用开头的模型令牌去查，过期了以「检查不可用」断掉；现在网关在调用开始时另签一个只能送检的令牌。"""
+    ws, admin, _, counting, checks = env
+    await turn_on(admin, ws)
+    token = SIGNER.issue(audience=MODEL_AUDIENCE, workspace_id="platform", ttl_seconds=2, owner=TokenOwner(ws, "alice"))
+
+    def thinking(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=Slow(text_reply(f"好的{WORD}"), 3.0), headers={"content-type": "text/event-stream"})
+
+    async with gateway(checks, thinking) as gw:
+        response = await gw.post(CHAT, headers={"authorization": f"Bearer {token}"}, json=chat())
+    events = [json.loads(line[6:]) for line in response.text.split("\n") if line.startswith("data: {")]
+    assert events[-1] == {"error": {"message": f"knowwork-content-blocked: {MESSAGE}", "type": "content_blocked"}}, (
+        "模型令牌过期以后，输出照样查到命中")
+    sent = counting.authorizations[-1]
+    assert sent != f"Bearer {token}" and check_owner(SIGNER, sent[7:]) == (ws, "alice"), "送检用另签的令牌，认得出归属"
+    async with gateway(checks, Upstream(text_reply("好的"))) as gw:
+        refused = await gw.post(CHAT, headers={"authorization": sent}, json=chat())
+    assert refused.status_code == 401, "送检令牌不能拿来调模型"
+

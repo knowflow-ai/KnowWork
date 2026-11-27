@@ -28,7 +28,7 @@ from .queue import notify
 
 PAGE = 50
 RECENT = timedelta(hours=24)
-POOL_ORDER = ("core", "enrichment", "maintenance")
+POOL_ORDER = ("core", "enrichment", "maintenance", "analysis")
 RETRYING = "retrying"  # 列表筛选用：排队中、已经试过至少一次（在等重试退避）
 STATUSES = (QUEUED, RETRYING, RUNNING, SUCCEEDED, FAILED, CANCELED)
 
@@ -208,8 +208,10 @@ class JobsAdmin:
             job = await self._get(session, job_id)
             stages = (await session.scalars(select(JobStage).where(JobStage.job_id == job_id)
                                             .order_by(JobStage.started_at, JobStage.id))).all()
+        # _ 开头的键是处理函数留给自己重试时接着做的（JobContext.finished），不给面板
         return _row(job), tuple(StageRow(try_no=s.try_no, name=s.name, status=s.status, error_code=s.error_code,
-                                         detail=dict(s.detail or {}), started_at=s.started_at,
+                                         detail={k: v for k, v in (s.detail or {}).items() if not k.startswith("_")},
+                                         started_at=s.started_at,
                                          finished_at=s.finished_at) for s in stages)
 
     async def cancel(self, workspace_id: str, actor: str, job_id: str) -> JobRow:
